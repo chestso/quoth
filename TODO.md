@@ -1,0 +1,70 @@
+# crush.el TODO
+
+## Goal
+
+crush.el is a GNU Emacs package for interacting with the [Crush CLI](https://github.com/charmbracelet/crush).
+
+It operates in two ways:
+
+1. **Dedicated chat buffer**: A buffer that sends structured prompts to the Crush CLI and receives responses through the CLI. The buffer maintains a single continuous session across prompts (using `crush run --continue`), so follow-up questions keep context.
+
+2. **Selection-as-context**: In any Emacs buffer, a selection can be used as context. When sent, the selection is formatted as an org-mode source block with file path and line numbers, then inserted into the crush buffer. The user can then add additional context about what to do with the selection before sending the prompt.
+
+## Interaction Model
+
+- **Per-prompt calling**: Each prompt is sent to `crush run` as a separate invocation. The CLI streams the response to stdout and exits.
+- **Session continuity**: The first prompt starts a fresh session. Each subsequent prompt passes `--continue`, which continues the active session in the working directory. `crush-new-session` resets this so the next prompt starts a new session.
+- **Context format**: Selections are formatted as org-mode source blocks:
+
+```
+#+begin_src text :file src/foo.go :lines 42-58
+...selected code...
+#+end_src
+```
+
+## Roadmap
+
+### Phase 1: Core (complete)
+
+- [x] Skeleton: `crush.el`, `README.md`, `TODO.md`
+- [x] Basic prompt sending via `crush run`
+- [x] Response streaming into the crush buffer
+- [x] Session continuation via `--continue`
+- [x] Selection insertion as org source blocks
+- [x] Prompt region management (`crush-prompt-start` marker)
+- [x] Input locking while process runs
+- [x] Prompt response header in buffer
+- [x] Stderr routing to separate `*crush-errors*` buffer
+- [x] Working directory resolution (`crush-working-directory` / project root)
+- [x] ERT test suite with mock CLI integration tests
+- [x] Minor mode (`crush-minor-mode`) for source buffer keybindings
+- [x] `crush-insert-buffer` (whole buffer as context)
+- [x] `crush-insert-filepath` (file path as context)
+- [x] Context blocks inserted before prompt as attachments
+- [x] Context sent to CLI via stdin with explanatory preamble
+- [x] Shared buffer init helper (`crush--init-buffer`)
+- [x] `format.sh` for elisp, markdown, and shell formatting
+
+### Phase 2: Polish
+
+- [ ] Syntax highlighting in the crush buffer
+- [ ] Markdown rendering of crush responses
+- [ ] Model selection (`--model` flag support)
+- [ ] Working directory support (`-c` / `--cwd` flag)
+- [ ] Error handling and retry
+
+### Phase 3: Integration
+
+- [ ] `use-package` integration
+- [ ] MELPA submission
+- [ ] Project.el integration (auto-detect project root)
+- [ ] Multiple concurrent crush sessions
+- [ ] Keybindings for common operations (switch model, yolo mode, etc.)
+
+### Phase 4: Advanced
+
+- [ ] MCP server support via Emacs
+- [ ] Tool call display and approval
+- [ ] Diff/patch application from crush responses
+- [ ] Context menu for richer selection formatting
+- [ ] Transient-based command dispatch

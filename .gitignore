@@ -1,0 +1,11 @@
+*.elc
+*.el~
+\#*\#
+.\#*
+*.so
+*.dll
+*.fasl
+*.o
+.DS_Store
+.envrc
+result
