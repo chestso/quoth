@@ -14,6 +14,7 @@ It operates in two ways:
 
 - **Per-prompt calling**: Each prompt is sent to `crush run` as a separate invocation. The CLI streams the response to stdout and exits.
 - **Session continuity**: The first prompt starts a fresh session. Each subsequent prompt passes `--continue`, which continues the active session in the working directory. `crush-new-session` resets this so the next prompt starts a new session.
+- **Manual session selection**: Setting `crush--session` passes `--session <id>` to continue a specific session by ID.
 - **Context format**: Selections are formatted as org-mode source blocks:
 
 ```
@@ -44,14 +45,20 @@ It operates in two ways:
 - [x] Context sent to CLI via stdin with explanatory preamble
 - [x] Shared buffer init helper (`crush--init-buffer`)
 - [x] `format.sh` for elisp, markdown, and shell formatting
+- [x] `--quiet` flag to suppress spinner output
+- [x] SIGINT handling (show "Interrupted" message)
+- [x] Model selection via `crush-model` defcustom (`--model` flag)
+- [x] Manual session selection via `crush--session` (`--session` flag)
+- [x] Permission behavior documentation (auto-approve warning)
 
 ### Phase 2: Polish
 
 - [ ] Syntax highlighting in the crush buffer
 - [ ] Markdown rendering of crush responses
-- [ ] Model selection (`--model` flag support)
-- [ ] Working directory support (`-c` / `--cwd` flag)
 - [ ] Error handling and retry
+- [ ] Client/server mode for structured output (SSE event stream)
+- [ ] Permission request handling via client/server mode
+- [ ] Tool call visibility in responses
 
 ### Phase 3: Integration
 

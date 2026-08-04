@@ -458,5 +458,113 @@ Returns the contents of the capture file after BODY completes."
     (should (string-match-p "\\-\\-continue" result))
     (should (string-match-p "follow up question" result))))
 
+;;; 11. --quiet flag suppresses spinner
+
+(ert-deftest crush-test/build-command-includes-quiet ()
+  "`crush--build-command' should always include --quiet to suppress spinner."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((cmd (crush--build-command)))
+            (should (member "--quiet" cmd)))))
+    (crush-test--cleanup)))
+
+;;; 12. Exit code handling
+
+(ert-deftest crush-test/sentinel-shows-interrupted-on-sigint ()
+  "When process exits with code 130, sentinel should show 'Interrupted'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; Simulate a process that was interrupted
+          (let* ((fake-proc (make-process
+                             :name "crush-test-fake"
+                             :buffer buf
+                             :command '("sh" "-c" "kill -INT $$")
+                             :connection-type 'pipe
+                             :noquery t)))
+            (setq-local crush-process fake-proc)
+            (set-marker (process-mark fake-proc) (point-max))
+            (accept-process-output fake-proc 1)
+            ;; Manually call sentinel with "interrupt" signal
+            (crush--process-sentinel fake-proc "interrupt\n")
+            ;; Check for interrupted message
+            (goto-char (point-min))
+            (should (search-forward "Interrupted" nil t)))))
+    (crush-test--cleanup)))
+
+;;; 13. --session flag support
+
+(ert-deftest crush-test/build-command-includes-session-when-set ()
+  "`crush--build-command' should include --session when set."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local crush--session "abc123")
+          (let ((cmd (crush--build-command)))
+            (should (member "--session" cmd))
+            (should (member "abc123" cmd)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/build-command-omits-session-when-nil ()
+  "`crush--build-command' should omit --session when nil."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local crush--session nil)
+          (let ((cmd (crush--build-command)))
+            (should-not (member "--session" cmd)))))
+    (crush-test--cleanup)))
+
+;;; 14. --model flag support
+
+(ert-deftest crush-test/build-command-includes-model-when-set ()
+  "`crush--build-command' should include --model when `crush-model' is set."
+  (let ((crush-model "claude-sonnet-4-20250514"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((cmd (crush--build-command)))
+              (should (member "--model" cmd))
+              (should (member "claude-sonnet-4-20250514" cmd)))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/build-command-omits-model-when-nil ()
+  "`crush--build-command' should omit --model when `crush-model' is nil."
+  (let ((crush-model nil))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((cmd (crush--build-command)))
+              (should-not (member "--model" cmd)))))
+      (crush-test--cleanup))))
+
+;;; 15. Stderr buffer creation
+
+(ert-deftest crush-test/stderr-buffer-is-created ()
+  "The `*crush-errors*' buffer should be created when sending input."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "test")
+          (let ((fake-proc (make-process
+                            :name "crush-test-fake"
+                            :buffer buf
+                            :command '("true")
+                            :connection-type 'pipe
+                            :noquery t)))
+            (set-marker (process-mark fake-proc) (point-max))
+            (cl-letf (((symbol-function #'make-process)
+                       (lambda (&rest args)
+                         ;; Return the fake process
+                         fake-proc)))
+              (call-interactively #'crush-send-input))
+            ;; The errors buffer should exist
+            (should (get-buffer "*crush-errors*"))
+            (when (process-live-p fake-proc)
+              (interrupt-process fake-proc)))))
+    (crush-test--cleanup)))
+
 (provide 'crush-test)
 ;;; crush-test.el ends here

@@ -42,6 +42,12 @@
 ;; into the crush buffer where the user can add additional context
 ;; about what to do with it.
 ;;
+;; IMPORTANT: This package uses `crush run' mode, which auto-approves
+;; all permissions.  Tools like `edit', `write', and `bash' execute
+;; immediately without prompting for user confirmation.  This is
+;; functionally equivalent to running `crush --yolo'.  See CRUSH-SPEC.md
+;; for details on permission behavior and alternative client/server mode.
+;;
 ;; See TODO.md for the full project goal and roadmap.
 
 ;;; Code:
@@ -80,6 +86,13 @@ otherwise `default-directory'."
   :type '(choice (const nil) directory)
   :group 'crush)
 
+(defcustom crush-model nil
+  "Model to use for the Crush CLI.
+When nil, uses the default model configured in Crush.
+Should be a model name like 'claude-sonnet-4-20250514' or 'gpt-4o'."
+  :type '(choice (const nil) string)
+  :group 'crush)
+
 ;;; Buffer-local state
 
 (defvar crush--continue nil
@@ -87,6 +100,12 @@ otherwise `default-directory'."
 When non-nil, the next prompt continues the active session in the folder.
 Set to nil by `crush-new-session' and `crush-clear-buffer' so the next
 prompt starts a fresh session.
+Buffer-local.")
+
+(defvar crush--session nil
+  "Session ID to pass to the Crush CLI via --session.
+When non-nil, continues a specific session by ID.
+Takes precedence over `crush--continue'.
 Buffer-local.")
 
 (defvar crush-prompt-start nil
@@ -122,7 +141,8 @@ and receives streamed responses.  Use `crush' to start a session.
   (setq-local comint-prompt-regexp "^crush> ")
   (setq-local crush-prompt-start (crush--make-prompt-marker))
   (setq-local crush-process nil)
-  (setq-local crush--continue nil))
+  (setq-local crush--continue nil)
+  (setq-local crush--session nil))
 
 ;;; Internal helpers
 
@@ -134,10 +154,14 @@ and receives streamed responses.  Use `crush' to start a session.
 
 (defun crush--build-command ()
   "Build the Crush CLI command list."
-  (let ((base (append (list crush-program "run")
-                      (when crush-args crush-args))))
+  (let ((base (append (list crush-program "run" "--quiet")
+                      (when crush-args crush-args)
+                      (when crush-model
+                        (list "--model" crush-model)))))
     (append base
-            (when crush--continue
+            (when crush--session
+              (list "--session" crush--session))
+            (when (and crush--continue (not crush--session))
               (list "--continue")))))
 
 (defun crush--init-buffer (buf)
@@ -206,16 +230,20 @@ Insert OUTPUT into the buffer."
           (goto-char (process-mark process)))
         (force-mode-line-update)))))
 
-(defun crush--process-sentinel (process _event)
+(defun crush--process-sentinel (process event)
   "Sentinel for Crush PROCESS.
-Handles process completion."
+Handles process completion and interruption."
   (when (buffer-live-p (process-buffer process))
     (with-current-buffer (process-buffer process)
-      (let ((inhibit-read-only t))
+      (let* ((inhibit-read-only t)
+             (event-str (if (stringp event) event (format "%s" event)))
+             (interrupted (string-match-p "interrupt\\|signal" event-str)))
         (save-excursion
           (goto-char (process-mark process))
           (newline)
-          (insert "------------------------------------\n")
+          (if interrupted
+              (insert "---------- Interrupted ----------\n")
+            (insert "------------------------------------\n"))
           (insert "crush> "))
         (setq-local crush-process nil)
         (setq-local crush-prompt-start (crush--make-prompt-marker))
