@@ -64,6 +64,12 @@
   :group 'tools
   :prefix "crush-")
 
+(defface crush-response-face
+  '((((background dark)) :background "gray20")
+    (((background light)) :background "gray90"))
+  "Face for Crush response text."
+  :group 'crush)
+
 (defcustom crush-program "crush"
   "Path to the Crush CLI executable."
   :type 'file
@@ -350,12 +356,18 @@ Insert OUTPUT into the buffer."
         (save-excursion
           (goto-char (process-mark process))
           (newline)
-          (if interrupted
-              (insert "---------- Interrupted ----------\n")
-            (insert "------------------------------------\n"))
-          ;; Tag response text with prompt ID it answers
-          (when (and response-start (> (point) response-start))
-            (put-text-property response-start (point) 'crush-response-to prompt-id))
+          ;; Remember where response ends (before separator)
+          (let ((response-end (point)))
+            (if interrupted
+                (insert "---------- Interrupted ----------\n")
+              (insert "------------------------------------\n"))
+            ;; Tag response text with prompt ID it answers
+            (when (and response-start (> response-end response-start))
+              (put-text-property response-start response-end 'crush-response-to prompt-id)
+              ;; Apply response face via overlay (survives font-lock)
+              (let ((ov (make-overlay response-start response-end nil t)))
+                (overlay-put ov 'face 'crush-response-face)
+                (overlay-put ov 'crush-overlay t))))
           ;; Make everything before new prompt read-only
           (put-text-property (point-min) (point) 'read-only t)
           ;; Generate new prompt ID BEFORE inserting marker

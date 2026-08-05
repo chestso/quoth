@@ -784,5 +784,205 @@ Returns the contents of the capture file after BODY completes."
                 (should (member second-id all-prompts)))))))
     (crush-test--cleanup)))
 
+;;; 24. Response text has response face
+
+(ert-deftest crush-test/response-has-response-face ()
+  "Response text should have crush-response-face applied via overlay."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((prompt-id crush--prompt-id))
+            ;; Simulate a response manually
+            (goto-char (point-max))
+            (insert "---------- Crush Response ----------\n")
+            (let ((response-start (point)))
+              (insert "response text\n")
+              ;; Tag and apply face like sentinel does
+              (put-text-property response-start (point) 'crush-response-to prompt-id)
+              (let ((ov (make-overlay response-start (point) nil t)))
+                (overlay-put ov 'face 'crush-response-face)
+                (overlay-put ov 'crush-overlay t))
+              (insert "------------------------------------\n")
+              (crush--insert-prompt-marker))
+            ;; Check response text has face via overlay
+            (goto-char (point-min))
+            (should (search-forward "response text" nil t))
+            (let ((face (get-char-property (- (point) 5) 'face)))
+              (should (eq face 'crush-response-face))))))
+    (crush-test--cleanup)))
+
+;;; 25. Sentinel applies response face
+
+(ert-deftest crush-test/sentinel-applies-response-face ()
+  "Sentinel should apply crush-response-face to response text via overlay."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((prompt-id crush--prompt-id))
+            ;; Simulate sending a prompt
+            (goto-char (point-max))
+            (insert "test prompt")
+            ;; Set response-start marker
+            (setq-local crush--response-start (point-marker))
+            (insert "response text\n")
+            ;; Run sentinel
+            (crush--process-sentinel (make-process :name "test" :buffer buf :command '("true") :connection-type 'pipe :noquery t) "finished\n")
+            ;; Check response text has face via overlay
+            (goto-char (point-min))
+            (should (search-forward "response text" nil t))
+            (let ((face (get-char-property (- (point) 5) 'face)))
+              (should (eq face 'crush-response-face))))))
+    (crush-test--cleanup)))
+
+;;; 26. Integration: real process produces response with face
+
+(ert-deftest crush-test/integration-response-has-face ()
+  "Full integration: sending prompt and receiving response should apply face."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((prompt-id crush--prompt-id))
+              ;; Insert prompt (simulating user typing)
+              (goto-char (point-max))
+              (insert "hello")
+              ;; Simulate what crush-send-input does before starting process
+              (goto-char (point-max))
+              (newline)
+              (let ((inhibit-read-only t))
+                (insert "---------- Crush Response ----------\n"))
+              ;; Mark where response will start
+              (setq-local crush--response-start (point-marker))
+              ;; Use mock process with actual filter to output response
+              (let* ((mock-proc (make-process
+                                 :name "crush-mock"
+                                 :buffer buf
+                                 :command '("sh" "-c" "echo 'response text'")
+                                 :connection-type 'pipe
+                                 :filter #'crush--process-filter
+                                 :noquery t)))
+                (set-marker (process-mark mock-proc) (point-max))
+                ;; Let process complete
+                (accept-process-output mock-proc 2)
+                ;; Run sentinel to apply faces
+                (crush--process-sentinel mock-proc "finished\n"))
+              ;; Check response text has face via overlay
+              (goto-char (point-min))
+              (should (search-forward "response text" nil t))
+              (let* ((pos (- (point) 5))
+                     (face (get-char-property pos 'face)))
+                (should face)
+                (should (eq face 'crush-response-face))))))
+      (crush-test--cleanup))))
+
+;;; 27. Integration: empty response still applies face
+
+(ert-deftest crush-test/integration-empty-response ()
+  "Even empty response should not crash when applying face."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            ;; Setup buffer
+            (goto-char (point-max))
+            (newline)
+            (let ((inhibit-read-only t))
+              (insert "---------- Crush Response ----------\n"))
+            (setq-local crush--response-start (point-marker))
+            ;; Create process with no output
+            (let* ((mock-proc (make-process
+                               :name "crush-mock"
+                               :buffer buf
+                               :command '("sh" "-c" "true")
+                               :connection-type 'pipe
+                               :filter #'crush--process-filter
+                               :noquery t)))
+              (set-marker (process-mark mock-proc) (point-max))
+              (accept-process-output mock-proc 2)
+              ;; Should not error on empty response
+              (crush--process-sentinel mock-proc "finished\n"))
+            ;; Check buffer still has separator
+            (goto-char (point-min))
+            (should (search-forward "------------------------------------" nil t))))
+      (crush-test--cleanup))))
+
+;;; 28. Integration: interrupted response still inserts new prompt
+
+(ert-deftest crush-test/integration-interrupted-response ()
+  "Interrupted response should still insert separator and new prompt."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            ;; Setup buffer
+            (goto-char (point-max))
+            (newline)
+            (let ((inhibit-read-only t))
+              (insert "---------- Crush Response ----------\n"))
+            (setq-local crush--response-start (point-marker))
+            ;; Create process that gets interrupted
+            (let* ((mock-proc (make-process
+                               :name "crush-mock"
+                               :buffer buf
+                               :command '("sh" "-c" "echo 'partial'; sleep 10")
+                               :connection-type 'pipe
+                               :filter #'crush--process-filter
+                               :noquery t)))
+              (set-marker (process-mark mock-proc) (point-max))
+              (accept-process-output mock-proc 0.5)
+              ;; Simulate interrupt
+              (crush--process-sentinel mock-proc "interrupt\n"))
+            ;; Check buffer has interrupted message
+            (goto-char (point-min))
+            (should (search-forward "Interrupted" nil t))
+            ;; Check buffer has new prompt
+            (should (search-forward "crush> " nil t))))
+      (crush-test--cleanup))))
+
+;;; 29. Overlays survive font-lock fontification
+
+(ert-deftest crush-test/overlays-survive-font-lock ()
+  "Response face overlays must survive font-lock fontification.
+This is the core bug: text properties get stripped by font-lock,
+but overlays persist."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            ;; Simulate a complete response cycle
+            (goto-char (point-max))
+            (insert "test")
+            (goto-char (point-max))
+            (newline)
+            (let ((inhibit-read-only t))
+              (insert "---------- Crush Response ----------\n"))
+            (setq-local crush--response-start (point-marker))
+            (let* ((mock-proc (make-process
+                               :name "crush-mock"
+                               :buffer buf
+                               :command '("sh" "-c" "echo 'response text'")
+                               :connection-type 'pipe
+                               :filter #'crush--process-filter
+                               :noquery t)))
+              (set-marker (process-mark mock-proc) (point-max))
+              (accept-process-output mock-proc 2)
+              (crush--process-sentinel mock-proc "finished\n"))
+            ;; Verify overlay exists before font-lock
+            (goto-char (point-min))
+            (should (search-forward "response text" nil t))
+            (let ((pos (- (point) 5)))
+              (should (get-char-property pos 'face))
+              (should (eq (get-char-property pos 'face) 'crush-response-face)))
+            ;; Now run font-lock fontify (simulates interactive Emacs)
+            (font-lock-fontify-buffer)
+            ;; Overlay must survive font-lock
+            (goto-char (point-min))
+            (should (search-forward "response text" nil t))
+            (let* ((pos (- (point) 5))
+                   (face (get-char-property pos 'face)))
+              (should face)
+              (should (eq face 'crush-response-face)))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test)
 ;;; crush-test.el ends here
