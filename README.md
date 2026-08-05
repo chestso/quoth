@@ -151,6 +151,66 @@ With manual session ID:
 crush--session="abc123"  crush run --quiet --session abc123 "resume"
 ```
 
+## Prompt IDs and Attachments
+
+Each prompt is assigned a unique ID when the `crush> ` prompt is created, before you type anything. This ID is used to track attachments (context blocks) that belong to that prompt. All metadata is stored as text properties on the buffer content, so it persists across sessions and can be retrieved at any time.
+
+### Text Properties
+
+| Text Region             | Property                                  | Value                                   |
+| ----------------------- | ----------------------------------------- | --------------------------------------- |
+| `crush> ` prompt marker | `crush-prompt-id`                         | Unique ID for the prompt                |
+| User input after prompt | `crush-prompt-id`                         | Same ID as the prompt marker            |
+| Attachment org blocks   | `crush-attachment-id` + `crush-prompt-id` | Unique attachment ID + parent prompt ID |
+| Response text           | `crush-response-to`                       | The prompt ID being answered            |
+
+### Modeline Display
+
+The modeline shows the prompt ID at point and attachment count:
+
+```
+*crush* [20260805-091012-abc123 (2 attach)]
+```
+
+The ID changes based on where your cursor is - if you move to an older prompt or response, the modeline shows that prompt's ID.
+
+### Attachments
+
+When you insert context via:
+
+- `C-c C-s` (`crush-insert-selection`)
+- `C-c C-b` (`crush-insert-buffer`)
+- `C-c C-p` (`crush-insert-filepath`)
+
+Each attachment is tagged with text properties (`crush-attachment-id` and `crush-prompt-id`) that persist in the buffer.
+
+### History Retrieval Functions
+
+```elisp
+;; Get prompt ID at current point
+(crush-get-prompt-at-point)
+;; => "20260805-091012-abc123"
+
+;; Get all attachment regions for a specific prompt
+(crush-get-attachments-for-prompt "20260805-091012-abc123")
+;; => ((start end "attach-id-1") (start end "attach-id-2"))
+
+;; Get all prompt IDs in buffer
+(crush-get-all-prompts)
+;; => ("20260805-091012-abc123" "20260805-091000-xyz789")
+```
+
+### Programmatic Access
+
+Text properties can be accessed directly:
+
+```elisp
+;; Get property at point
+(get-text-property (point) 'crush-prompt-id)
+(get-text-property (point) 'crush-attachment-id)
+(get-text-property (point) 'crush-response-to)
+```
+
 ## Stderr Handling
 
 Stderr from Crush is routed to a separate `*crush-errors*` buffer to keep the main chat buffer clean. This buffer is created automatically when you send a prompt.

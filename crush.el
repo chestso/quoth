@@ -89,7 +89,7 @@ otherwise `default-directory'."
 (defcustom crush-model nil
   "Model to use for the Crush CLI.
 When nil, uses the default model configured in Crush.
-Should be a model name like 'claude-sonnet-4-20250514' or 'gpt-4o'."
+Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
   :type '(choice (const nil) string)
   :group 'crush)
 
@@ -106,6 +106,21 @@ Buffer-local.")
   "Session ID to pass to the Crush CLI via --session.
 When non-nil, continues a specific session by ID.
 Takes precedence over `crush--continue'.
+Buffer-local.")
+
+(defvar crush--prompt-id nil
+  "Unique ID for the current pending prompt.
+Generated when prompt marker is created, used when prompt is sent.
+Buffer-local.")
+
+(defvar crush--attachments nil
+  "List of attachments for current pending prompt.
+Each attachment is a plist: (:id <uuid> :prompt-id <uuid> :content <string>).
+Buffer-local.")
+
+(defvar crush--response-start nil
+  "Marker for where response text starts.
+Set when prompt is sent, used by sentinel to tag response text.
 Buffer-local.")
 
 (defvar crush-prompt-start nil
@@ -142,9 +157,45 @@ and receives streamed responses.  Use `crush' to start a session.
   (setq-local crush-prompt-start (crush--make-prompt-marker))
   (setq-local crush-process nil)
   (setq-local crush--continue nil)
-  (setq-local crush--session nil))
+  (setq-local crush--session nil)
+  (setq-local crush--prompt-id (crush--generate-id))
+  (setq-local crush--attachments nil)
+  (setq-local crush--response-start nil)
+  (crush--update-header-line)
+  (add-hook 'after-change-functions #'crush--after-change nil t)
+  (add-hook 'post-command-hook #'crush--update-header-line nil t))
 
 ;;; Internal helpers
+
+(defun crush--generate-id ()
+  "Generate a unique ID for prompt and attachment IDs."
+  (format "%s-%s"
+          (format-time-string "%Y%m%d-%H%M%S")
+          (substring (md5 (format "%s%s" (random) (current-time))) 0 8)))
+
+(defun crush--count-attachments-for-prompt (prompt-id)
+  "Count attachments for PROMPT-ID in current buffer."
+  (length (crush-get-attachments-for-prompt prompt-id)))
+
+(defun crush--update-header-line ()
+  "Update header line with current prompt ID and attachment count."
+  (let* ((prompt-id (or (crush-get-prompt-at-point) crush--prompt-id))
+         (attach-count (crush--count-attachments-for-prompt prompt-id))
+         (attach-str (if (> attach-count 0)
+                         (format " (%d attach)" attach-count)
+                       "")))
+    (setq header-line-format
+          (list (propertize (format "Prompt: %s%s" prompt-id attach-str)
+                            'face 'bold)))))
+
+(defun crush--after-change (beg end _len)
+  "Tag inserted text with prompt ID if at or after prompt marker.
+BEG and END are standard after-change hook arguments."
+  (when (and crush-prompt-start
+             (markerp crush-prompt-start)
+             (>= beg (marker-position crush-prompt-start)))
+    (put-text-property beg end 'crush-prompt-id crush--prompt-id))
+  (crush--update-header-line))
 
 (defun crush--make-prompt-marker ()
   "Create a marker at point-max for `crush-prompt-start'."
@@ -164,15 +215,60 @@ and receives streamed responses.  Use `crush' to start a session.
             (when (and crush--continue (not crush--session))
               (list "--continue")))))
 
+(defun crush--insert-prompt-marker ()
+  "Insert the `crush> ' prompt marker with crush-prompt-id text property."
+  (let ((start (point)))
+    (insert "crush> ")
+    (put-text-property start (point) 'crush-prompt-id crush--prompt-id)))
+
+(defun crush-get-prompt-at-point ()
+  "Return the prompt ID at or before point, or nil if not found."
+  (or (get-text-property (point) 'crush-prompt-id)
+      (get-text-property (point) 'crush-response-to)
+      (when (> (point) (point-min))
+        (get-text-property (1- (point)) 'crush-prompt-id))))
+
+(defun crush-get-attachments-for-prompt (prompt-id)
+  "Return list of attachment regions for PROMPT-ID.
+Each element is (START END ATTACHMENT-ID)."
+  (let ((pos (point-min))
+        attachments)
+    (while (setq pos (text-property-any pos (point-max) 'crush-prompt-id prompt-id))
+      (let ((attach-id (get-text-property pos 'crush-attachment-id)))
+        (if attach-id
+            (let ((end (or (next-single-property-change pos 'crush-attachment-id nil (point-max))
+                           (point-max))))
+              (push (list pos end attach-id) attachments)
+              (setq pos end))
+          ;; No attachment at this position, move to next property change
+          (setq pos (or (next-single-property-change pos 'crush-prompt-id nil (point-max))
+                        (point-max))))))
+    (nreverse attachments)))
+
+(defun crush-get-all-prompts ()
+  "Return list of all unique prompt IDs in buffer."
+  (let ((pos (point-min))
+        prompts)
+    (while (< pos (point-max))
+      (let ((prompt-id (get-text-property pos 'crush-prompt-id)))
+        (when (and prompt-id (not (member prompt-id prompts)))
+          (push prompt-id prompts))
+        (setq pos (or (next-single-property-change pos 'crush-prompt-id nil (point-max))
+                      (point-max)))))
+    (nreverse prompts)))
+
 (defun crush--init-buffer (buf)
   "Initialize BUF as a crush buffer if not already initialized."
-  (unless (buffer-base-buffer buf)
-    (with-current-buffer buf
+  (with-current-buffer buf
+    (unless (eq major-mode 'crush-mode)
+      ;; Generate prompt ID BEFORE inserting marker
+      (setq-local crush--prompt-id (crush--generate-id))
       (crush-mode)
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert "crush> "))
+        (crush--insert-prompt-marker))
       (setq-local crush-prompt-start (crush--make-prompt-marker))
+      (setq-local crush--attachments nil)
       (setq-local default-directory
                   (file-name-as-directory
                    (or crush-working-directory
@@ -180,20 +276,31 @@ and receives streamed responses.  Use `crush' to start a session.
                          (project-root proj))
                        default-directory))))))
 
-(defun crush--insert-before-prompt (buf formatted)
+(defun crush--insert-before-prompt (buf formatted &optional attachment-id prompt-id)
   "Insert FORMATTED content into BUF before the `crush> ' prompt line.
-The `crush-prompt-start' marker shifts automatically to stay correct."
+The `crush-prompt-start' marker shifts automatically to stay correct.
+If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties."
   (with-current-buffer buf
     (let ((inhibit-read-only t))
       (if (markerp crush-prompt-start)
-          (let ((prompt-pos (marker-position crush-prompt-start)))
+          (let ((prompt-pos (marker-position crush-prompt-start))
+                (start nil))
             (save-excursion
               (goto-char prompt-pos)
               (beginning-of-line)
-              (insert formatted "\n\n")))
-        (save-excursion
-          (goto-char (point-max))
-          (insert formatted "\n\n"))))))
+              (setq start (point))
+              (insert formatted "\n\n")
+              (when (and attachment-id prompt-id)
+                (put-text-property start (point) 'crush-attachment-id attachment-id)
+                (put-text-property start (point) 'crush-prompt-id prompt-id))))
+        (let ((start nil))
+          (save-excursion
+            (goto-char (point-max))
+            (setq start (point))
+            (insert formatted "\n\n")
+            (when (and attachment-id prompt-id)
+              (put-text-property start (point) 'crush-attachment-id attachment-id)
+              (put-text-property start (point) 'crush-prompt-id prompt-id))))))))
 
 (defun crush--format-selection (file start end)
   "Format selection as an `org-mode' source block.
@@ -231,22 +338,34 @@ Insert OUTPUT into the buffer."
         (force-mode-line-update)))))
 
 (defun crush--process-sentinel (process event)
-  "Sentinel for Crush PROCESS.
-Handles process completion and interruption."
+  "Sentinel for PROCESS that handles completion and interruption for EVENT."
   (when (buffer-live-p (process-buffer process))
     (with-current-buffer (process-buffer process)
       (let* ((inhibit-read-only t)
              (event-str (if (stringp event) event (format "%s" event)))
-             (interrupted (string-match-p "interrupt\\|signal" event-str)))
+             (interrupted (string-match-p "interrupt\\|signal" event-str))
+             (response-start (when (markerp crush--response-start)
+                               (marker-position crush--response-start)))
+             (prompt-id crush--prompt-id))
         (save-excursion
           (goto-char (process-mark process))
           (newline)
           (if interrupted
               (insert "---------- Interrupted ----------\n")
             (insert "------------------------------------\n"))
-          (insert "crush> "))
+          ;; Tag response text with prompt ID it answers
+          (when (and response-start (> (point) response-start))
+            (put-text-property response-start (point) 'crush-response-to prompt-id))
+          ;; Make everything before new prompt read-only
+          (put-text-property (point-min) (point) 'read-only t)
+          ;; Generate new prompt ID BEFORE inserting marker
+          (setq-local crush--prompt-id (crush--generate-id))
+          (crush--insert-prompt-marker))
         (setq-local crush-process nil)
+        (setq-local crush--response-start nil)
         (setq-local crush-prompt-start (crush--make-prompt-marker))
+        (setq-local crush--attachments nil)
+        (crush--update-header-line)
         (goto-char (point-max))))))
 
 ;;; Major mode commands
@@ -284,6 +403,9 @@ Handles process completion and interruption."
     (let ((inhibit-read-only t))
       (insert "---------- Crush Response ----------\n"))
     (setq-local crush-prompt-start nil)
+    (setq-local crush--attachments nil)
+    ;; Mark where response will start for tagging
+    (setq-local crush--response-start (point-marker))
     (let* ((args (if has-context
                      (crush--build-command)
                    (append (crush--build-command) (list prompt))))
@@ -351,7 +473,12 @@ BEG and END are the bounds of the selection."
          (formatted (crush--format-selection file beg end))
          (buf (get-buffer-create crush-buffer-name)))
     (crush--init-buffer buf)
-    (crush--insert-before-prompt buf formatted)
+    (with-current-buffer buf
+      (let ((attachment-id (crush--generate-id)))
+        ;; Insert with text properties
+        (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id)
+        ;; Update header line to show attachment count
+        (crush--update-header-line)))
     (switch-to-buffer-other-window buf)))
 
 (defun crush-insert-buffer ()
@@ -374,7 +501,10 @@ BEG and END are the bounds of the selection."
                               relative-file))
            (buf (get-buffer-create crush-buffer-name)))
       (crush--init-buffer buf)
-      (crush--insert-before-prompt buf formatted)
+      (with-current-buffer buf
+        (let ((attachment-id (crush--generate-id)))
+          (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id)
+          (crush--update-header-line)))
       (switch-to-buffer-other-window buf))))
 
 ;;; Entry point

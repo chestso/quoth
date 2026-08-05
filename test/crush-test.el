@@ -566,5 +566,223 @@ Returns the contents of the capture file after BODY completes."
               (interrupt-process fake-proc)))))
     (crush-test--cleanup)))
 
+;;; 16. Prompt ID generation
+
+(ert-deftest crush-test/prompt-id-is-set-on-buffer-init ()
+  "After buffer init, `crush--prompt-id' should be a non-nil string."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (stringp crush--prompt-id))
+          (should (> (length crush--prompt-id) 0))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/prompt-id-regenerated-after-response ()
+  "After sentinel runs, `crush--prompt-id' should be a new unique ID."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((old-id crush--prompt-id))
+            ;; Simulate process completion
+            (let* ((fake-proc (make-process
+                               :name "crush-test-fake"
+                               :buffer buf
+                               :command '("true")
+                               :connection-type 'pipe
+                               :noquery t)))
+              (setq-local crush-process fake-proc)
+              (set-marker (process-mark fake-proc) (point-max))
+              (accept-process-output fake-proc 1)
+              (crush--process-sentinel fake-proc "finished\n")
+              ;; New ID should be different
+              (should (stringp crush--prompt-id))
+              (should (not (string= old-id crush--prompt-id))))))
+	(crush-test--cleanup)))
+
+;;; 17. Attachment tracking
+
+  (ert-deftest crush-test/insert-selection-records-attachment ()
+    "Inserting selection should record attachment with prompt ID."
+    (let ((crush-buffer-name "*crush-test*"))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (let ((prompt-id crush--prompt-id))
+		;; Insert selection from temp buffer
+		(with-temp-buffer
+                  (insert "selected code\n")
+                  (setq-local buffer-file-name "/test/file.el")
+                  (crush-insert-selection (point-min) (point-max)))
+		;; Check attachment was recorded
+		(should (listp crush--attachments))
+		(should (= 1 (length crush--attachments)))
+		(let ((attach (car crush--attachments)))
+                  (should (string= (plist-get attach :prompt-id) prompt-id))
+                  (should (stringp (plist-get attach :id)))
+                  (should (string-match-p "selected code" (plist-get attach :content))))))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/attachments-cleared-after-send ()
+  "Attachments should be cleared after sending prompt."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; Add an attachment manually
+          (push (list :id "attach-test" :prompt-id crush--prompt-id :content "test")
+                crush--attachments)
+          (should (= 1 (length crush--attachments)))
+          ;; Send a prompt
+          (goto-char (point-max))
+          (insert "test prompt")
+          (let ((fake-proc (make-process
+                            :name "crush-test-fake"
+                            :buffer buf
+                            :command '("true")
+                            :connection-type 'pipe
+                            :noquery t)))
+            (set-marker (process-mark fake-proc) (point-max))
+            (cl-letf (((symbol-function #'make-process)
+                       (lambda (&rest _) fake-proc)))
+              (call-interactively #'crush-send-input))
+            ;; Attachments should be cleared
+            (should (null crush--attachments))
+            (when (process-live-p fake-proc)
+              (interrupt-process fake-proc)))))
+    (crush-test--cleanup)))
+
+;;; 18. Header line display
+
+(ert-deftest crush-test/header-line-shows-prompt-id ()
+  "Header line should show prompt ID."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should header-line-format)
+          (should (string-match-p crush--prompt-id (format "%s" header-line-format)))))
+    (crush-test--cleanup)))
+
+;;; 19. Prompt marker has prompt-id property
+
+(ert-deftest crush-test/prompt-marker-has-prompt-id-property ()
+  "The `crush> ' prompt marker should have crush-prompt-id text property."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; Find the "crush> " text
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))
+          (let ((prompt-id (get-text-property (- (point) 7) 'crush-prompt-id)))
+            (should prompt-id)
+            (should (string= prompt-id crush--prompt-id)))))
+    (crush-test--cleanup)))
+
+;;; 20. User input gets prompt-id property
+
+(ert-deftest crush-test/user-input-gets-prompt-id-property ()
+  "Text typed after the prompt should have crush-prompt-id property."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "hello world")
+          ;; Check that the inserted text has the property
+          (let ((prompt-id (get-text-property (- (point) 5) 'crush-prompt-id)))
+            (should prompt-id)
+            (should (string= prompt-id crush--prompt-id)))))
+    (crush-test--cleanup)))
+
+;;; 21. Attachments have attachment-id and prompt-id properties
+
+(ert-deftest crush-test/attachment-has-properties ()
+  "Inserted attachments should have crush-attachment-id and crush-prompt-id properties."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((prompt-id crush--prompt-id))
+              ;; Insert selection from temp buffer
+              (with-temp-buffer
+                (insert "selected code\n")
+                (setq-local buffer-file-name "/test/file.el")
+                (crush-insert-selection (point-min) (point-max)))
+              ;; Find the org block in crush buffer
+              (goto-char (point-min))
+              (should (search-forward "selected code" nil t))
+              (let ((attach-id (get-text-property (- (point) 5) 'crush-attachment-id))
+                    (attach-prompt-id (get-text-property (- (point) 5) 'crush-prompt-id)))
+                (should attach-id)
+                (should (string= attach-prompt-id prompt-id))))))
+      (crush-test--cleanup))))
+
+;;; 22. Response text has response-to property
+
+(ert-deftest crush-test/response-has-response-to-property ()
+  "Response text should have crush-response-to property linking to prompt."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((prompt-id crush--prompt-id))
+            ;; Simulate a response manually
+            (goto-char (point-max))
+            (insert "---------- Crush Response ----------\n")
+            (let ((response-start (point)))
+              (insert "response text\n")
+              ;; Tag it manually like sentinel does
+              (put-text-property response-start (point) 'crush-response-to prompt-id)
+              (insert "------------------------------------\n")
+              (crush--insert-prompt-marker))
+            ;; Check response text has property
+            (goto-char (point-min))
+            (should (search-forward "response text" nil t))
+            (let ((response-to (get-text-property (- (point) 5) 'crush-response-to)))
+              (should response-to)
+              (should (string= response-to prompt-id))))))
+    (crush-test--cleanup)))
+
+;;; 23. History retrieval functions
+
+(ert-deftest crush-test/get-prompt-at-point ()
+  "`crush-get-prompt-at-point' should return prompt ID at cursor."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "test input")
+          (let ((prompt-id (crush-get-prompt-at-point)))
+            (should prompt-id)
+            (should (string= prompt-id crush--prompt-id)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/get-all-prompts ()
+  "`crush-get-all-prompts' should return all prompt IDs in buffer."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; First prompt
+          (let ((first-id crush--prompt-id))
+            (goto-char (point-max))
+            (insert "first prompt")
+            ;; Simulate response and new prompt
+            (let ((fake-proc (make-process
+                              :name "crush-test-fake"
+                              :buffer buf
+                              :command '("true")
+                              :connection-type 'pipe
+                              :noquery t)))
+              (set-marker (process-mark fake-proc) (point-max))
+              (cl-letf (((symbol-function #'make-process)
+                         (lambda (&rest _) fake-proc)))
+                (call-interactively #'crush-send-input))
+              (accept-process-output fake-proc 1)
+              (crush--process-sentinel fake-proc "finished\n"))
+            ;; Second prompt should exist
+            (let ((second-id crush--prompt-id))
+              (goto-char (point-max))
+              (insert "second prompt")
+              (let ((all-prompts (crush-get-all-prompts)))
+                (should (member first-id all-prompts))
+                (should (member second-id all-prompts)))))))
+    (crush-test--cleanup)))
+
 (provide 'crush-test)
 ;;; crush-test.el ends here
