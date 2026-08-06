@@ -2206,5 +2206,65 @@ The overlays must persist in the crush buffer across prompt cycles."
                 (should (= (length overlays-after) (length overlays-before)))))))
       (crush-test--cleanup))))
 
+;;; 75. Bug: org overlays disappear after second prompt
+
+(ert-deftest crush-test/org-overlays-survive-second-prompt ()
+  "Org attachment overlays from the first prompt should survive sending
+a second prompt and receiving its response, plus font-lock-fontify-buffer."
+  (skip-unless (require 'org nil t))
+  (let ((crush-buffer-name "*crush-test*"))
+    (crush-test--cleanup)
+    ;; Kill any leftover crush processes
+    (dolist (proc (process-list))
+      (when (string-prefix-p "crush" (process-name proc))
+        (delete-process proc)))
+    (unwind-protect
+        (let* ((cap1 (make-temp-file "crush-cap1"))
+               (cap2 (make-temp-file "crush-cap2"))
+               (crush-program (crush-test--mock-program))
+               (env1 (cons (format "CRUSH_CAPTURE_FILE=%s" cap1) process-environment))
+               (env2 (cons (format "CRUSH_CAPTURE_FILE=%s" cap2) process-environment)))
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (crush--insert-before-prompt
+               buf
+               "#+begin_src text :file test.el\n(code)\n#+end_src"
+               "attach-1" crush--prompt-id)
+              (let ((count-overlays
+                     (lambda ()
+                       (cl-remove-if-not
+                        (lambda (ov)
+                          (and (overlay-buffer ov)
+                               (overlay-get ov 'crush-overlay)
+                               (eq (get-text-property
+                                    (overlay-start ov) 'crush-region-type) 'org)))
+                        (overlays-in (point-min) (point-max))))))
+                (let ((before (length (funcall count-overlays))))
+                  (should (> before 0))
+                  ;; First prompt
+                  (goto-char (point-max))
+                  (insert "first prompt")
+                  (let ((process-environment env1))
+                    (call-interactively #'crush-send-input)
+                    (accept-process-output crush-process 3)
+                    (while (and crush-process (process-live-p crush-process))
+                      (accept-process-output crush-process 1)))
+                  (should (= (length (funcall count-overlays)) before))
+                  ;; Second prompt
+                  (goto-char (point-max))
+                  (insert "second prompt")
+                  (let ((process-environment env2))
+                    (call-interactively #'crush-send-input)
+                    (accept-process-output crush-process 3)
+                    (while (and crush-process (process-live-p crush-process))
+                      (accept-process-output crush-process 1)))
+                  (should (= (length (funcall count-overlays)) before))
+                  ;; Font-lock should not destroy overlays
+                  (font-lock-fontify-buffer)
+                  (should (= (length (funcall count-overlays)) before))))))
+          (when (file-exists-p cap1) (delete-file cap1))
+          (when (file-exists-p cap2) (delete-file cap2)))
+      (crush-test--cleanup))))
+
 (provide 'crush-test)
 ;;; crush-test.el ends here
