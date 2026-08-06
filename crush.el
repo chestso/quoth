@@ -117,6 +117,11 @@ When nil, only the fallback face is applied."
   :type 'boolean
   :group 'crush)
 
+(defcustom crush-debug-mode t
+  "When non-nil, log commands, input, and output to a *crush-debug* buffer."
+  :type 'boolean
+  :group 'crush)
+
 ;;; Buffer-local state
 
 (defvar crush--continue nil
@@ -200,6 +205,16 @@ and receives streamed responses.  Use `crush' to start a session.
   (add-hook 'post-command-hook #'crush--update-header-line nil t))
 
 ;;; Internal helpers
+
+(defun crush--debug-log (category message)
+  "Log MESSAGE with CATEGORY to *crush-debug* buffer when `crush-debug-mode' is non-nil."
+  (when crush-debug-mode
+    (with-current-buffer (get-buffer-create "*crush-debug*")
+      (goto-char (point-max))
+      (let ((inhibit-read-only t))
+        (insert (format "[%s] %s: %s\n"
+                        (format-time-string "%H:%M:%S")
+                        category message))))))
 
 (defun crush--generate-id ()
   "Generate a unique ID for prompt and attachment IDs."
@@ -453,6 +468,7 @@ FILE is the file path, START and END are the line numbers."
   "Suppress false prompt detection by comint-output-filter.
 Comint treats the last line of output as a prompt.  Crush responses
 end with text, not a prompt.  This function clears the false prompt."
+  (crush--debug-log 'output (format "%S" _str))
   (when comint-last-prompt
     (let ((inhibit-read-only t))
       (font-lock--remove-face-from-text-property
@@ -472,6 +488,7 @@ end with text, not a prompt.  This function clears the false prompt."
              (response-start (when (markerp crush--response-start)
 			       (marker-position crush--response-start)))
              (prompt-id crush--prompt-id))
+        (crush--debug-log 'sentinel (format "%s" event-str))
         (save-excursion
           (goto-char (process-mark process))
           (newline)
@@ -539,6 +556,9 @@ PROC is the placeholder process; it stays alive to satisfy comint."
                      :sentinel #'crush--process-sentinel
                      :stderr (get-buffer-create "*crush-errors*")
                      :noquery t)))
+    (crush--debug-log 'command (format "%s" args))
+    (crush--debug-log 'input (format "%S (context: %s)"
+                                     input (if has-context "yes" "none")))
     (let ((inhibit-read-only t)
           (sep-start (point)))
       (insert "---------- Crush Response ----------\n")

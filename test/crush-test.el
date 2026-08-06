@@ -17,7 +17,7 @@
 
 (defun crush-test--cleanup ()
   "Kill test buffers."
-  (dolist (name '("*crush-test*" "*crush-errors*"))
+  (dolist (name '("*crush-test*" "*crush-errors*" "*crush-debug*"))
     (when (get-buffer name)
       (kill-buffer name))))
 
@@ -1796,6 +1796,146 @@ but overlays persist."
           (goto-char (point-min))
           (should (search-forward "response text" nil t))
           (should (eq (get-text-property (- (point) 5) 'field) 'output))))
+    (crush-test--cleanup)))
+
+;;; 57. Debug logging - crush-debug-mode defcustom
+
+(ert-deftest crush-test/debug-mode-defaults-to-t ()
+  "crush-debug-mode should default to t."
+  (should (eq crush-debug-mode t)))
+
+;;; 58. Debug logging - crush--debug-log creates buffer and writes
+
+(ert-deftest crush-test/debug-log-creates-buffer ()
+  "crush--debug-log should create *crush-debug* buffer when enabled."
+  (unwind-protect
+      (let ((crush-debug-mode t))
+        (should-not (get-buffer "*crush-debug*"))
+        (crush--debug-log 'test "hello world")
+        (should (get-buffer "*crush-debug*"))
+        (with-current-buffer "*crush-debug*"
+          (goto-char (point-min))
+          (should (search-forward "test: hello world" nil t))))
+    (crush-test--cleanup)))
+
+;;; 59. Debug logging - disabled mode is no-op
+
+(ert-deftest crush-test/debug-log-disabled-no-op ()
+  "crush--debug-log should do nothing when crush-debug-mode is nil."
+  (unwind-protect
+      (let ((crush-debug-mode nil))
+        (crush--debug-log 'test "should not appear")
+        (should-not (get-buffer "*crush-debug*")))
+    (crush-test--cleanup)))
+
+;;; 60. Debug logging - command logged in input-sender
+
+(ert-deftest crush-test/debug-logs-command-invocation ()
+  "crush--input-sender should log the command to *crush-debug*."
+  (unwind-protect
+      (let ((crush-debug-mode t)
+            (buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local crush--pending-context nil)
+          (let ((crush-program "my-crush")
+                (crush--continue t))
+            (cl-letf (((symbol-function #'make-process)
+                       (let ((real-make-process (symbol-function #'make-process)))
+                         (lambda (&rest _args)
+                           (let ((proc (funcall real-make-process
+                                                :name "fake"
+                                                :buffer (current-buffer)
+                                                :command '("sleep" "30")
+                                                :connection-type 'pipe
+                                                :noquery t)))
+                             (set-process-query-on-exit-flag proc nil)
+                             proc)))))
+              (crush--input-sender nil "test prompt"))))
+        (should (get-buffer "*crush-debug*"))
+        (with-current-buffer "*crush-debug*"
+          (goto-char (point-min))
+          (should (search-forward "command" nil t))
+          (should (search-forward "my-crush" nil t))
+          (should (search-forward "test prompt" nil t))))
+    (crush-test--cleanup)))
+
+;;; 61. Debug logging - input logged in input-sender
+
+(ert-deftest crush-test/debug-logs-input ()
+  "crush--input-sender should log the input text to *crush-debug*."
+  (unwind-protect
+      (let ((crush-debug-mode t)
+            (buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local crush--pending-context nil)
+          (cl-letf (((symbol-function #'make-process)
+                     (let ((real-make-process (symbol-function #'make-process)))
+                       (lambda (&rest _args)
+                         (let ((proc (funcall real-make-process
+                                              :name "fake"
+                                              :buffer (current-buffer)
+                                              :command '("sleep" "30")
+                                              :connection-type 'pipe
+                                              :noquery t)))
+                           (set-process-query-on-exit-flag proc nil)
+                           proc)))))
+            (crush--input-sender nil "hello from test")))
+        (with-current-buffer "*crush-debug*"
+          (goto-char (point-min))
+          (should (search-forward "input" nil t))
+          (should (search-forward "hello from test" nil t))))
+    (crush-test--cleanup)))
+
+;;; 62. Debug logging - output logged in suppress-false-prompt
+
+(ert-deftest crush-test/debug-logs-output ()
+  "crush--suppress-false-prompt should log output to *crush-debug*."
+  (unwind-protect
+      (let ((crush-debug-mode t)
+            (buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local comint-last-prompt nil)
+          (crush--suppress-false-prompt "some output text"))
+        (with-current-buffer "*crush-debug*"
+          (goto-char (point-min))
+          (should (search-forward "output" nil t))
+          (should (search-forward "some output text" nil t))))
+    (crush-test--cleanup)))
+
+;;; 63. Debug logging - sentinel logged
+
+(ert-deftest crush-test/debug-logs-sentinel ()
+  "crush--process-sentinel should log the event to *crush-debug*."
+  (unwind-protect
+      (let ((crush-debug-mode t)
+            (buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "test")
+          (goto-char (point-max))
+          (newline)
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t)
+                (sep-start (point)))
+            (insert "---------- Crush Response ----------\n")
+            (put-text-property sep-start (point) 'crush-region-type 'separator))
+          (setq-local crush--response-start (point-marker))
+          (setq-local crush-prompt-start nil)
+          (let* ((mock-proc (make-process
+                             :name "crush-mock"
+                             :buffer buf
+                             :command '("sh" "-c" "echo response")
+                             :connection-type 'pipe
+                             :filter #'comint-output-filter
+                             :sentinel #'ignore
+                             :noquery t)))
+            (set-marker (process-mark mock-proc) (point-max))
+            (accept-process-output mock-proc 2)
+            (crush--process-sentinel mock-proc "finished\n")))
+        (with-current-buffer "*crush-debug*"
+          (goto-char (point-min))
+          (should (search-forward "sentinel" nil t))
+          (should (search-forward "finished" nil t))))
     (crush-test--cleanup)))
 
 (provide 'crush-test)
