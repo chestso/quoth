@@ -157,10 +157,6 @@ Buffer-local.")
 Used by `crush--input-sender' to send context via stdin.
 Buffer-local.")
 
-(defvar crush-prompt-start nil
-  "Marker for the start of the current prompt.
-Buffer-local.")
-
 (defvar crush-process nil
   "The currently running Crush process, if any.
 Buffer-local.")
@@ -191,7 +187,6 @@ and receives streamed responses.  Use `crush' to start a session.
   (setq-local comint-input-sender #'crush--input-sender)
   (setq-local comint-input-ring-file-name
               (expand-file-name "crush-history" user-emacs-directory))
-  (setq-local crush-prompt-start (crush--make-prompt-marker))
   (setq-local crush-process nil)
   (setq-local crush--continue nil)
   (setq-local crush--session nil)
@@ -238,19 +233,13 @@ and receives streamed responses.  Use `crush' to start a session.
                             'face 'bold)))))
 
 (defun crush--after-change (beg end _len)
-  "Tag inserted text with prompt ID and region type if at or after prompt marker.
+  "Tag inserted text with prompt ID if at or after the comint prompt.
 BEG and END are standard after-change hook arguments."
-  (when (and crush-prompt-start
-             (markerp crush-prompt-start)
-             (>= beg (marker-position crush-prompt-start)))
+  (when (and comint-last-prompt
+             (markerp (car comint-last-prompt))
+             (>= beg (marker-position (car comint-last-prompt))))
     (put-text-property beg end 'crush-prompt-id crush--prompt-id))
   (crush--update-header-line))
-
-(defun crush--make-prompt-marker ()
-  "Create a marker at point-max for `crush-prompt-start'."
-  (let ((m (make-marker)))
-    (set-marker m (point-max))
-    m))
 
 (defun crush--build-command ()
   "Build the Crush CLI command list."
@@ -336,7 +325,7 @@ BUFFER-OFFSET is the position offset to map temp buffer positions."
             (overlay-put ov 'crush-overlay t)))
         (setq pos next)))))
 
-(defun crush--insert-prompt-marker ()
+(defun crush--insert-prompt ()
   "Insert the `crush> ' prompt marker with comint field properties."
   (let ((inhibit-read-only t)
         (start (point)))
@@ -398,8 +387,7 @@ Each element is (START END ATTACHMENT-ID)."
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (erase-buffer)
-        (crush--insert-prompt-marker))
-      (setq-local crush-prompt-start (crush--make-prompt-marker))
+        (crush--insert-prompt))
       (setq-local crush--attachments nil)
       (comint-read-input-ring)
       (setq-local default-directory
@@ -411,13 +399,14 @@ Each element is (START END ATTACHMENT-ID)."
 
 (defun crush--insert-before-prompt (buf formatted &optional attachment-id prompt-id)
   "Insert FORMATTED content into BUF before the `crush> ' prompt line.
-The `crush-prompt-start' marker shifts automatically to stay correct.
+Uses `comint-last-prompt' to find the prompt position.
 If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties."
   (with-current-buffer buf
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t))
-      (if (markerp crush-prompt-start)
-          (let ((prompt-pos (marker-position crush-prompt-start))
+      (if (and comint-last-prompt
+               (markerp (car comint-last-prompt)))
+          (let ((prompt-pos (marker-position (car comint-last-prompt)))
                 (start nil))
             (save-excursion
               (goto-char prompt-pos)
@@ -507,14 +496,11 @@ end with text, not a prompt.  This function clears the false prompt."
 	      (put-text-property response-start response-end 'crush-region-type 'response)
 	      ;; Fontify response text as markdown
 	      (crush--fontify-region response-start response-end 'response)))
-          ;; Make everything before new prompt read-only
-          (put-text-property (point-min) (point) 'read-only t)
           ;; Generate new prompt ID BEFORE inserting marker
           (setq-local crush--prompt-id (crush--generate-id))
-          (crush--insert-prompt-marker))
+          (crush--insert-prompt))
         (setq-local crush-process nil)
         (setq-local crush--response-start nil)
-        (setq-local crush-prompt-start (crush--make-prompt-marker))
         (setq-local crush--attachments nil)
         (comint-write-input-ring)
         (crush--update-header-line)
@@ -526,11 +512,13 @@ end with text, not a prompt.  This function clears the false prompt."
   "Ensure a placeholder process exists for comint with an up-to-date mark.
 In Model A, the real crush process exits after each response.
 This creates a sleeping placeholder so `get-buffer-process' returns non-nil.
-The process mark is always synced to `crush-prompt-start' so `comint-send-input'
-reads only the current prompt, not stale text from previous exchanges."
-  (let ((mark-pos (if (markerp crush-prompt-start)
-                      (marker-position crush-prompt-start)
-                    (point-max))))
+The process mark is synced to the start of the last comint prompt so
+`comint-send-input' reads only the current prompt, not stale text from
+previous exchanges."
+  (let ((mark-pos (or (when (and comint-last-prompt
+                                 (markerp (car comint-last-prompt)))
+                        (marker-position (car comint-last-prompt)))
+                      (point-max))))
     (if-let ((proc (get-buffer-process (current-buffer))))
         (set-marker (process-mark proc) mark-pos)
       (let ((proc (start-process "crush-placeholder" (current-buffer)
@@ -578,8 +566,9 @@ PROC is the placeholder process; it stays alive to satisfy comint."
   (interactive)
   (when (and crush-process (process-live-p crush-process))
     (user-error "Crush is still running; interrupt with C-c C-c"))
-  (let* ((prompt-pos (if (markerp crush-prompt-start)
-                         (marker-position crush-prompt-start)
+  (let* ((prompt-pos (if (and comint-last-prompt
+                              (markerp (cdr comint-last-prompt)))
+                         (marker-position (cdr comint-last-prompt))
                        (point-min)))
          (input (buffer-substring-no-properties
                  prompt-pos (line-end-position)))
@@ -610,7 +599,6 @@ PROC is the placeholder process; it stays alive to satisfy comint."
     ;; The response separator and response-start marker are set by
     ;; `crush--input-sender' so they land before the process mark.
     (comint-send-input)
-    (setq-local crush-prompt-start nil)
     (setq-local crush--attachments nil)
     (goto-char (point-max))))
 
@@ -625,8 +613,7 @@ PROC is the placeholder process; it stays alive to satisfy comint."
         (goto-char (point-max))
         (newline)
         (insert "------------------------------------\n")
-        (insert "crush> ")))
-    (setq-local crush-prompt-start (crush--make-prompt-marker))
+        (crush--insert-prompt)))
     (goto-char (point-max))
     (message "Crush process interrupted"))
   (unless crush-process
@@ -642,8 +629,7 @@ PROC is the placeholder process; it stays alive to satisfy comint."
       (delete-overlay ov)))
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (insert "crush> "))
-  (setq-local crush-prompt-start (crush--make-prompt-marker)))
+    (crush--insert-prompt)))
 
 (defun crush-new-session ()
   "Start a new Crush session.
