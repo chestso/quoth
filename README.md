@@ -55,12 +55,25 @@ Additional command-line arguments passed to the Crush CLI:
 (setq crush-args '("--verbose"))
 ```
 
+### crush-fontify-responses
+
+When non-nil (default), fontify response text using `markdown-mode` if available, with native syntax highlighting for fenced code blocks. When nil, only the fallback face is applied.
+
+### crush-fontify-attachments
+
+When non-nil (default), fontify attachment blocks using `org-mode` if available. When nil, only the fallback face is applied.
+
+### crush-debug-mode
+
+When non-nil (default), log commands, input, output, and sentinel events to a `*crush-debug*` buffer. Set to `nil` to disable logging.
+
 ## Usage
 
 ### Crush buffer (major mode)
 
 - `M-x crush` — open the crush interaction buffer
 - Type a prompt and press `RET` to send it to the Crush CLI
+- `M-p` / `M-n` — navigate input history (previous/next input)
 - `C-c C-c` — interrupt the running crush process
 - `C-c C-k` — clear the crush buffer (also starts a fresh session)
 - `C-c C-s` — start a new session
@@ -164,15 +177,15 @@ Each prompt is assigned a unique ID when the `crush> ` prompt is created, before
 | Attachment org blocks   | `crush-attachment-id` + `crush-prompt-id` | Unique attachment ID + parent prompt ID |
 | Response text           | `crush-response-to`                       | The prompt ID being answered            |
 
-### Modeline Display
+### Header Line Display
 
-The modeline shows the prompt ID at point and attachment count:
+The header line shows the prompt ID at point and attachment count:
 
 ```
-*crush* [20260805-091012-abc123 (2 attach)]
+Prompt: 20260805-091012-abc123 (2 attach)
 ```
 
-The ID changes based on where your cursor is - if you move to an older prompt or response, the modeline shows that prompt's ID.
+The ID changes based on where your cursor is - if you move to an older prompt or response, the header line shows that prompt's ID.
 
 ### Attachments
 
@@ -211,9 +224,37 @@ Text properties can be accessed directly:
 (get-text-property (point) 'crush-response-to)
 ```
 
+## Fontification
+
+Response text is fontified as markdown using `markdown-mode` (if installed), with native syntax highlighting for fenced code blocks. Attachment blocks are fontified as org using `org-mode` (if installed). Both use a temp-buffer technique with overlay-based faces that survive `jit-lock` refontification.
+
+When the respective major mode is not available, a configurable fallback face is applied:
+
+- `crush-response-face` — background face for response text (gray20 dark / gray90 light)
+- `crush-org-face` — background face for attachment blocks (gray15 dark / gray95 light)
+
+Disable fontification with:
+
+```elisp
+(setq crush-fontify-responses nil
+      crush-fontify-attachments nil)
+```
+
+## Input History
+
+Input history is managed by comint's built-in `comint-input-ring`. Use `M-p` and `M-n` to navigate previous inputs. History is persisted to `~/.emacs.d/crush-history` and loaded on buffer creation.
+
 ## Stderr Handling
 
 Stderr from Crush is routed to a separate `*crush-errors*` buffer to keep the main chat buffer clean. This buffer is created automatically when you send a prompt.
+
+## Debug Logging
+
+When `crush-debug-mode` is non-nil (default), commands, input, output, and sentinel events are logged to a `*crush-debug*` buffer. This is useful for diagnosing issues with the Crush CLI integration. Disable with:
+
+```elisp
+(setq crush-debug-mode nil)
+```
 
 ## License
 

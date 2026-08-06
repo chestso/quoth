@@ -32,7 +32,7 @@ It operates in two ways:
 - [x] Response streaming into the crush buffer
 - [x] Session continuation via `--continue`
 - [x] Selection insertion as org source blocks
-- [x] Prompt region management (`crush-prompt-start` marker)
+- [x] Prompt region management (comint field-based prompts)
 - [x] Input locking while process runs
 - [x] Prompt response header in buffer
 - [x] Stderr routing to separate `*crush-errors*` buffer
@@ -51,10 +51,30 @@ It operates in two ways:
 - [x] Manual session selection via `crush--session` (`--session` flag)
 - [x] Permission behavior documentation (auto-approve warning)
 
+### Phase 1b: Comint integration (complete)
+
+- [x] `comint-output-filter` as process filter
+- [x] `comint-send-input` for input handling with custom `comint-input-sender`
+- [x] Field-based prompts (`comint-use-prompt-regexp` nil)
+- [x] `comint-highlight-prompt` face on prompts
+- [x] `comint-input-ring` for input history (M-p/M-n, persisted to file)
+- [x] Placeholder process pattern for per-prompt model
+- [x] False-prompt suppression via `comint-output-filter-functions`
+- [x] Prompt and attachment text property tracking
+- [x] Debug logging to `*crush-debug*` buffer
+
+### Phase 1c: Fontification (complete)
+
+- [x] Region-based fontification dispatch (`crush--fontify-region`)
+- [x] Markdown fontification of responses via temp-buffer technique
+- [x] Org fontification of attachment blocks via temp-buffer technique
+- [x] Overlay-based faces (survive `jit-lock` refontification)
+- [x] `crush-response-face` and `crush-org-face` fallback faces
+- [x] `crush-fontify-responses` and `crush-fontify-attachments` defcustoms
+- [x] Region type tagging (`response`, `org`, `separator`)
+
 ### Phase 2: Polish
 
-- [ ] Syntax highlighting in the crush buffer
-- [ ] Markdown rendering of crush responses
 - [ ] Error handling and retry
 - [ ] Client/server mode for structured output (SSE event stream)
 - [ ] Permission request handling via client/server mode
