@@ -479,7 +479,6 @@ end with text, not a prompt.  This function clears the false prompt."
     (with-current-buffer (process-buffer process)
       (let* ((inhibit-read-only t)
              (event-str (if (stringp event) event (format "%s" event)))
-             (interrupted (string-match-p "interrupt\\|signal" event-str))
              (response-start (when (markerp crush--response-start)
 			       (marker-position crush--response-start)))
              (prompt-id crush--prompt-id))
@@ -487,15 +486,8 @@ end with text, not a prompt.  This function clears the false prompt."
         (save-excursion
           (goto-char (process-mark process))
           (newline)
-          ;; Remember where response ends (before separator)
-          (let ((response-end (point))
-                (separator-start nil))
-            (setq separator-start (point))
-            (if interrupted
-                (insert "---------- Interrupted ----------\n")
-	      (insert "------------------------------------\n"))
-            ;; Tag separator as 'separator region type
-            (put-text-property separator-start (point) 'crush-region-type 'separator)
+          ;; Remember where response ends (before new prompt)
+          (let ((response-end (point)))
             ;; Tag response text with prompt ID it answers and region type
             (when (and response-start (> response-end response-start))
 	      (put-text-property response-start response-end 'crush-response-to prompt-id)
@@ -553,10 +545,6 @@ PROC is the placeholder process; it stays alive to satisfy comint."
     (crush--debug-log 'command (format "%s" args))
     (crush--debug-log 'input (format "%S (context: %s)"
                                      input (if has-context "yes" "none")))
-    (let ((inhibit-read-only t)
-          (sep-start (point)))
-      (insert "---------- Crush Response ----------\n")
-      (put-text-property sep-start (point) 'crush-region-type 'separator))
     (set-marker (process-mark real-proc) (point-max))
     (setq-local crush-process real-proc)
     (setq-local crush--continue t)
@@ -618,7 +606,6 @@ PROC is the placeholder process; it stays alive to satisfy comint."
       (save-excursion
         (goto-char (point-max))
         (newline)
-        (insert "------------------------------------\n")
         (crush--insert-prompt)))
     (goto-char (point-max))
     (message "Crush process interrupted"))
