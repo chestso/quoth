@@ -2125,5 +2125,86 @@ Works even when crush-prompt-start is nil."
             (should (null crush-process))))
       (crush-test--cleanup))))
 
+;;; 73. Bug fix: org fontification creates syntax overlays in crush buffer
+
+(ert-deftest crush-test/fontify-org-creates-syntax-overlays-in-crush-buffer ()
+  "Fontifying org text should create syntax overlays in the crush buffer,
+not just the base face overlay. The temp-buffer overlays must be copied
+back to the crush buffer."
+  (skip-unless (require 'org nil t))
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (insert "#+begin_src text :file test.el\n(code)\n#+end_src")
+          (crush--fontify-as-org (point-min) (point-max))
+          ;; Should have MORE than just the base overlay — org syntax
+          ;; elements (e.g. org-block, org-meta-line) should have overlays
+          (let ((overlays (overlays-in (point-min) (point-max))))
+            ;; At least 2 overlays: base face + at least one syntax overlay
+            (should (> (length overlays) 1))
+            ;; At least one overlay should have a face that is NOT crush-org-face
+            (should (cl-some (lambda (ov)
+                               (let ((face (overlay-get ov 'face)))
+                                 (and face
+                                      (not (eq face 'crush-org-face))
+                                      (overlay-get ov 'crush-overlay))))
+                             overlays)))))
+    (crush-test--cleanup)))
+
+;;; 74. Bug fix: org overlays survive sentinel (next prompt)
+
+(ert-deftest crush-test/org-overlays-survive-sentinel ()
+  "Org attachment overlays should survive sentinel inserting a new prompt.
+The overlays must persist in the crush buffer across prompt cycles."
+  (skip-unless (require 'org nil t))
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            ;; Insert an attachment via the real function
+            (crush--insert-before-prompt
+             buf
+             "#+begin_src text :file test.el\n(code)\n#+end_src"
+             "attach-1" crush--prompt-id)
+            ;; Count org-region overlays before sentinel
+            (let ((overlays-before
+                   (cl-remove-if-not
+                    (lambda (ov)
+                      (and (overlay-get ov 'crush-overlay)
+                           (eq (get-text-property
+                                (overlay-start ov) 'crush-region-type) 'org)))
+                    (overlays-in (point-min) (point-max)))))
+              ;; Simulate a response cycle
+              (goto-char (point-max))
+              (newline)
+              (let ((inhibit-read-only t)
+                    (inhibit-modification-hooks t)
+                    (sep-start (point)))
+                (insert "---------- Crush Response ----------\n")
+                (put-text-property sep-start (point) 'crush-region-type 'separator))
+              (setq-local crush--response-start (point-marker))
+              (let* ((mock-proc (make-process
+                                 :name "crush-mock"
+                                 :buffer buf
+                                 :command '("sh" "-c" "echo 'response'")
+                                 :connection-type 'pipe
+                                 :filter #'comint-output-filter
+                                 :sentinel #'ignore
+                                 :noquery t)))
+                (set-marker (process-mark mock-proc) (point-max))
+                (accept-process-output mock-proc 2)
+                (crush--process-sentinel mock-proc "finished\n"))
+              ;; Org overlays should still exist after sentinel
+              (let ((overlays-after
+                     (cl-remove-if-not
+                      (lambda (ov)
+                        (and (overlay-buffer ov)
+                             (overlay-get ov 'crush-overlay)
+                             (eq (get-text-property
+                                  (overlay-start ov) 'crush-region-type) 'org)))
+                      (overlays-in (point-min) (point-max)))))
+                (should (= (length overlays-after) (length overlays-before)))))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test)
 ;;; crush-test.el ends here

@@ -273,10 +273,10 @@ Uses temp-buffer technique with `markdown-mode' if available."
               ;; Try to activate markdown-mode
               (when (require 'markdown-mode nil t)
                 (markdown-mode)
-                (font-lock-ensure))
-              ;; Copy faces back as overlays
-              (when (fboundp 'markdown-mode)
-                (crush--copy-faces-as-overlays start temp-buffer)))
+                (font-lock-ensure)))
+          ;; Copy faces back as overlays (in crush buffer, not temp)
+          (when (fboundp 'markdown-mode)
+            (crush--copy-faces-as-overlays start temp-buffer))
           (kill-buffer temp-buffer))
         ;; Apply base response face overlay
         (let ((ov (make-overlay start end nil t)))
@@ -295,10 +295,10 @@ Uses temp-buffer technique with `org-mode' if available."
               ;; Try to activate org-mode
               (when (require 'org nil t)
                 (org-mode)
-                (font-lock-ensure))
-              ;; Copy faces back as overlays
-              (when (fboundp 'org-mode)
-                (crush--copy-faces-as-overlays start temp-buffer)))
+                (font-lock-ensure)))
+          ;; Copy faces back as overlays (in crush buffer, not temp)
+          (when (fboundp 'org-mode)
+            (crush--copy-faces-as-overlays start temp-buffer))
           (kill-buffer temp-buffer))
         ;; Apply base org face overlay
         (let ((ov (make-overlay start end nil t)))
@@ -307,23 +307,27 @@ Uses temp-buffer technique with `org-mode' if available."
 
 (defun crush--copy-faces-as-overlays (buffer-offset temp-buffer)
   "Copy face properties from TEMP-BUFFER to current buffer as overlays.
-BUFFER-OFFSET is the position offset to map temp buffer positions."
-  (let ((pos (point-min))
-        (next nil)
-        (face nil)
-        (max-pos (with-current-buffer temp-buffer (point-max))))
+BUFFER-OFFSET is the position offset to map temp buffer positions.
+Called from the crush buffer; TEMP-BUFFER is the fontified temp buffer."
+  (let ((max-pos (with-current-buffer temp-buffer (point-max)))
+        (face-regions nil))
     (with-current-buffer temp-buffer
-      (while (< pos max-pos)
-        (setq face (get-text-property pos 'face))
-        (setq next (or (next-single-property-change pos 'face nil max-pos)
-                       max-pos))
-        (when (and face (> next pos))
-          (let ((ov (make-overlay (+ buffer-offset (1- pos))
-                                  (+ buffer-offset (1- next))
-                                  nil t)))
-            (overlay-put ov 'face face)
-            (overlay-put ov 'crush-overlay t)))
-        (setq pos next)))))
+      (let ((pos (point-min))
+            (next nil)
+            (face nil))
+        (while (< pos max-pos)
+          (setq face (get-text-property pos 'face))
+          (setq next (or (next-single-property-change pos 'face nil max-pos)
+                         max-pos))
+          (when (and face (> next pos))
+            (push (list pos next face) face-regions))
+          (setq pos next))))
+    (dolist (region face-regions)
+      (let ((ov (make-overlay (+ buffer-offset (1- (car region)))
+                              (+ buffer-offset (1- (cadr region)))
+                              nil t)))
+        (overlay-put ov 'face (nth 2 region))
+        (overlay-put ov 'crush-overlay t)))))
 
 (defun crush--insert-prompt ()
   "Insert the `crush> ' prompt marker with comint field properties."
