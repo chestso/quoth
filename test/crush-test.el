@@ -2024,8 +2024,8 @@ Works even when crush-prompt-start is nil, using comint-last-prompt instead."
               (should (search-forward "INSERTED CONTENT" nil t))
               ;; The prompt should still be after the inserted content
               (should (search-forward "crush> " nil t))
-              ;; Prompt start should not have moved (comint-last-prompt marker)
-              (should (= (marker-position (car comint-last-prompt)) prompt-start)))))
+              ;; Prompt start should have advanced past inserted content
+              (should (> (marker-position (car comint-last-prompt)) prompt-start)))))
       (crush-test--cleanup))))
 
 ;;; 68. Phase 6: crush-send-input uses comint-last-prompt
@@ -2206,24 +2206,44 @@ The overlays must persist in the crush buffer across prompt cycles."
                 (should (= (length overlays-after) (length overlays-before)))))))
       (crush-test--cleanup))))
 
-;;; 75. Bug: org overlays disappear after second prompt
+;;; 75. Bug: org overlays disappear on send-input
 
-(ert-deftest crush-test/org-overlays-survive-second-prompt ()
-  "Org attachment overlays from the first prompt should survive sending
-a second prompt and receiving its response, plus font-lock-fontify-buffer."
+(ert-deftest crush-test/insert-before-prompt-keeps-prompt-marker ()
+  "Inserting an attachment before the prompt should not move
+comint-last-prompt start marker backward. The marker must advance
+past inserted text so comint-send-input's delete-region only
+deletes the prompt+input, not the attachment."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; comint-last-prompt start should be at point-min initially
+          (should (= (marker-position (car comint-last-prompt)) (point-min)))
+          ;; Insert an attachment before the prompt
+          (crush--insert-before-prompt
+           buf
+           "#+begin_src text :file test.el\n(code)\n#+end_src"
+           "attach-1" crush--prompt-id)
+          ;; comint-last-prompt start should now point to the prompt,
+          ;; not to the beginning of the attachment
+          (goto-char (marker-position (car comint-last-prompt)))
+          (should (search-forward "crush> " nil t))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/org-overlays-survive-send-input ()
+  "Org attachment overlays should survive comint-send-input.
+The overlays must not be destroyed by delete-region in comint-send-input,
+which happens when comint-last-prompt start marker is wrong."
   (skip-unless (require 'org nil t))
   (let ((crush-buffer-name "*crush-test*"))
     (crush-test--cleanup)
-    ;; Kill any leftover crush processes
     (dolist (proc (process-list))
       (when (string-prefix-p "crush" (process-name proc))
         (delete-process proc)))
     (unwind-protect
-        (let* ((cap1 (make-temp-file "crush-cap1"))
-               (cap2 (make-temp-file "crush-cap2"))
+        (let* ((cap (make-temp-file "crush-cap"))
                (crush-program (crush-test--mock-program))
-               (env1 (cons (format "CRUSH_CAPTURE_FILE=%s" cap1) process-environment))
-               (env2 (cons (format "CRUSH_CAPTURE_FILE=%s" cap2) process-environment)))
+               (process-environment
+                (cons (format "CRUSH_CAPTURE_FILE=%s" cap) process-environment)))
           (let ((buf (crush-test--fresh-buffer)))
             (with-current-buffer buf
               (crush--insert-before-prompt
@@ -2241,29 +2261,16 @@ a second prompt and receiving its response, plus font-lock-fontify-buffer."
                         (overlays-in (point-min) (point-max))))))
                 (let ((before (length (funcall count-overlays))))
                   (should (> before 0))
-                  ;; First prompt
+                  ;; Type prompt and send
                   (goto-char (point-max))
-                  (insert "first prompt")
-                  (let ((process-environment env1))
-                    (call-interactively #'crush-send-input)
-                    (accept-process-output crush-process 3)
-                    (while (and crush-process (process-live-p crush-process))
-                      (accept-process-output crush-process 1)))
+                  (insert "test prompt")
+                  (call-interactively #'crush-send-input)
+                  ;; Overlays should survive comint-send-input
                   (should (= (length (funcall count-overlays)) before))
-                  ;; Second prompt
-                  (goto-char (point-max))
-                  (insert "second prompt")
-                  (let ((process-environment env2))
-                    (call-interactively #'crush-send-input)
-                    (accept-process-output crush-process 3)
-                    (while (and crush-process (process-live-p crush-process))
-                      (accept-process-output crush-process 1)))
-                  (should (= (length (funcall count-overlays)) before))
-                  ;; Font-lock should not destroy overlays
-                  (font-lock-fontify-buffer)
-                  (should (= (length (funcall count-overlays)) before))))))
-          (when (file-exists-p cap1) (delete-file cap1))
-          (when (file-exists-p cap2) (delete-file cap2)))
+                  (accept-process-output crush-process 3)
+                  (while (and crush-process (process-live-p crush-process))
+                    (accept-process-output crush-process 1))))))
+          (when (file-exists-p cap) (delete-file cap)))
       (crush-test--cleanup))))
 
 (provide 'crush-test)

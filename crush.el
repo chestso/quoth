@@ -342,8 +342,10 @@ Called from the crush buffer; TEMP-BUFFER is the fontified temp buffer."
 	     rear-nonsticky (field read-only font-lock-face)
 	     read-only t
 	     font-lock-face comint-highlight-prompt))
-    (setq comint-last-prompt
-          (cons (copy-marker start) (point-marker)))))
+    (let ((start-marker (copy-marker start)))
+      (set-marker-insertion-type start-marker t)
+      (setq comint-last-prompt
+            (cons start-marker (point-marker))))))
 
 (defun crush-get-prompt-at-point ()
   "Return the prompt ID at or before point, or nil if not found."
