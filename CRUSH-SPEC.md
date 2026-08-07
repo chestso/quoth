@@ -413,7 +413,7 @@ MCP (Model Context Protocol) is used for **external tool integration only**. Cru
 
 ## References
 
-- Crush source: `../crush/`
+- Crush source: https://github.com/charmbracelet/crush
 - Permission auto-approve: `internal/cmd/run.go:337`
 - Server protocol: `internal/server/proto.go`, `internal/server/server.go`
 - Client protocol: `internal/client/proto.go`, `internal/client/client.go`
