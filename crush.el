@@ -57,6 +57,9 @@
 (require 'project)
 (require 'seq)
 
+(declare-function markdown-mode "markdown-mode" ())
+(declare-function org-mode "org" ())
+
 ;;; Configuration
 
 (defgroup crush nil
@@ -202,7 +205,8 @@ and receives streamed responses.  Use `crush' to start a session.
 ;;; Internal helpers
 
 (defun crush--debug-log (category message)
-  "Log MESSAGE with CATEGORY to *crush-debug* buffer when `crush-debug-mode' is non-nil."
+  "Log MESSAGE with CATEGORY to *crush-debug* buffer.
+Only logs when `crush-debug-mode' is non-nil."
   (when crush-debug-mode
     (with-current-buffer (get-buffer-create "*crush-debug*")
       (goto-char (point-max))
@@ -459,11 +463,11 @@ FILE is the file path, START and END are the line numbers."
     (format "#+begin_src text :file %s :lines %d-%d\n%s\n#+end_src"
             relative-file start-line end-line selected-text)))
 
-(defun crush--suppress-false-prompt (_str)
+(defun crush--suppress-false-prompt (str)
   "Suppress false prompt detection by comint-output-filter.
 Comint treats the last line of output as a prompt.  Crush responses
 end with text, not a prompt.  This function clears the false prompt."
-  (crush--debug-log 'output (format "%S" _str))
+  (crush--debug-log 'output (format "%S" str))
   (when comint-last-prompt
     (let ((inhibit-read-only t))
       (font-lock--remove-face-from-text-property
@@ -525,9 +529,9 @@ previous exchanges."
         (set-process-query-on-exit-flag proc nil)
         (set-process-filter proc #'comint-output-filter)))))
 
-(defun crush--input-sender (proc input)
+(defun crush--input-sender (_proc input)
   "Send INPUT to Crush as a new process.
-PROC is the placeholder process; it stays alive to satisfy comint."
+_PROC is the placeholder process; it stays alive to satisfy comint."
   (let* ((has-context (and crush--pending-context
                            (not (string-empty-p crush--pending-context))))
          (args (if has-context
