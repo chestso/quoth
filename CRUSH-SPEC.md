@@ -414,10 +414,10 @@ MCP (Model Context Protocol) is used for **external tool integration only**. Cru
 ## References
 
 - Crush source: https://github.com/charmbracelet/crush
-- Permission auto-approve: `internal/cmd/run.go:337`
-- Server protocol: `internal/server/proto.go`, `internal/server/server.go`
-- Client protocol: `internal/client/proto.go`, `internal/client/client.go`
-- Event types: `internal/pubsub/events.go`
-- Message schema: `internal/proto/message.go`, `internal/message/content.go`
-- Permission schema: `internal/proto/permission.go`
-- HTTP API spec: `internal/swagger/swagger.yaml`
+- Permission auto-approve: [`internal/cmd/run.go:337`](https://github.com/charmbracelet/crush/blob/main/internal/cmd/run.go#L337)
+- Server protocol: [`internal/server/proto.go`](https://github.com/charmbracelet/crush/blob/main/internal/server/proto.go), [`internal/server/server.go`](https://github.com/charmbracelet/crush/blob/main/internal/server/server.go)
+- Client protocol: [`internal/client/proto.go`](https://github.com/charmbracelet/crush/blob/main/internal/client/proto.go), [`internal/client/client.go`](https://github.com/charmbracelet/crush/blob/main/internal/client/client.go)
+- Event types: [`internal/pubsub/events.go`](https://github.com/charmbracelet/crush/blob/main/internal/pubsub/events.go)
+- Message schema: [`internal/proto/message.go`](https://github.com/charmbracelet/crush/blob/main/internal/proto/message.go), [`internal/message/content.go`](https://github.com/charmbracelet/crush/blob/main/internal/message/content.go)
+- Permission schema: [`internal/proto/permission.go`](https://github.com/charmbracelet/crush/blob/main/internal/proto/permission.go)
+- HTTP API spec: [`internal/swagger/swagger.yaml`](https://github.com/charmbracelet/crush/blob/main/internal/swagger/swagger.yaml)
