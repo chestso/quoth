@@ -464,9 +464,10 @@ FILE is the file path, START and END are the line numbers."
             relative-file start-line end-line selected-text)))
 
 (defun crush--suppress-false-prompt (str)
-  "Suppress false prompt detection by comint-output-filter.
+  "Suppress false prompt detection by `comint-output-filter'.
 Comint treats the last line of output as a prompt.  Crush responses
-end with text, not a prompt.  This function clears the false prompt."
+end with text, not a prompt.  This function clears the false prompt.
+STR is the output string from `comint-output-filter'."
   (crush--debug-log 'output (format "%S" str))
   (when comint-last-prompt
     (let ((inhibit-read-only t))
