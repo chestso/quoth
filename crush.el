@@ -591,25 +591,37 @@ Called from the crush buffer; TEMP-BUFFER is the fontified temp buffer."
         (overlay-put ov 'crush-overlay t)))))
 
 (defun crush--freeze-region (start end)
-  "Make the region from START to END read-only via an overlay.
-The overlay is tagged with `crush-overlay' so `crush-clear-buffer'
-can clean it up.  Uses overlays instead of text properties to
-avoid stickiness issues with font-lock refontification."
+  "Make the region from START to END read-only via text properties.
+The `read-only' property blocks both insertion into and deletion of the
+covered text.  `front-sticky' and `rear-nonsticky' keep the freeze from
+leaking: text typed just before the region stays read-only, and text typed
+just after it stays editable.
+Modification hooks are suppressed while applying so other buffer metadata
+(like prompt IDs) is not re-tagged by `crush--after-change'."
   (when (> end start)
-    (let ((ov (make-overlay start end)))
-      (overlay-put ov 'read-only t)
-      (overlay-put ov 'crush-overlay t))))
+    (let ((inhibit-modification-hooks t))
+      (add-text-properties
+       start end
+       '(read-only t
+		   front-sticky (read-only)
+		   rear-nonsticky (read-only))))))
 
 (defun crush--insert-prompt ()
   "Insert the `crush> ' prompt marker with crush-specific properties.
-Read-only is enforced via overlays (not text properties) to avoid
-stickiness issues.  Previous content is also frozen read-only."
+Read-only is enforced via text properties.  The prompt itself and all
+previous content are frozen read-only; new text after the prompt stays
+editable."
   (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t)
         (start (point)))
     (insert "crush> ")
     (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
-    (put-text-property start (point) 'font-lock-face 'crush-prompt-face)
-    (crush--freeze-region start (point))
+    (add-text-properties
+     start (point)
+     '(read-only t
+		 front-sticky (read-only)
+		 rear-nonsticky (read-only font-lock-face)
+		 font-lock-face crush-prompt-face))
     (crush--freeze-region (point-min) start)
     (setq-local crush--prompt-start-marker (copy-marker start))
     (set-marker-insertion-type crush--prompt-start-marker t)

@@ -1640,11 +1640,12 @@ New overlays created by the fresh prompt are expected to remain."
   "crush--insert-prompt-marker should not be defined (renamed to crush--insert-prompt)."
   (should-not (fboundp 'crush--insert-prompt-marker)))
 
-;;; 65. Phase 6: Sentinel does not set manual read-only
+;;; 65. Phase 6: Sentinel freezes previous response read-only
 
-(ert-deftest crush-test/sentinel-no-manual-read-only ()
-  "Sentinel should not set 'read-only text property manually.
-comint-prompt-read-only handles read-only via field properties."
+(ert-deftest crush-test/sentinel-freezes-previous-response ()
+  "Sentinel should freeze the previous response read-only.
+After the sentinel inserts the next prompt, the prior response becomes
+read-only previous content, blocking edits and insertions."
   (let ((crush-buffer-name "*crush-test*"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -1665,12 +1666,13 @@ comint-prompt-read-only handles read-only via field properties."
               (set-marker (process-mark mock-proc) (point-max))
               (accept-process-output mock-proc 2)
               (crush--process-sentinel mock-proc "finished\n"))
-            ;; Response text should NOT have manual read-only property.
-            ;; comint handles read-only via field properties on prompts.
+            ;; Response text becomes frozen as previous content.
             (goto-char (point-min))
             (should (search-forward "response text" nil t))
-            (let ((ro (get-text-property (- (point) 5) 'read-only)))
-              (should-not ro)))))
+            (should (get-char-property (match-beginning 0) 'read-only))
+            (should (get-text-property (match-beginning 0) 'read-only))
+            (goto-char (match-beginning 0))
+            (should-error (insert-and-inherit "X") :type 'text-read-only))))
     (crush-test--cleanup)))
 
 ;;; 66. Phase 6: crush--ensure-process uses crush--prompt-start-marker (DELETED in Phase 3: ensure-process removed)
@@ -2601,7 +2603,7 @@ is always set after crush--init-buffer."
           (should (derived-mode-p crush--parent-mode))))
     (crush-test--cleanup)))
 
-;;; Overlay-based read-only prompt
+;;; Text-property-based read-only prompt
 
 (ert-deftest crush-test/can-type-after-prompt ()
   "User should be able to type after the prompt without text-read-only error."
@@ -2615,8 +2617,8 @@ is always set after crush--init-buffer."
           (should (search-forward "hello" nil t))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/prompt-is-read-only-via-overlay ()
-  "The prompt text should be read-only via an overlay, not text properties.
+(ert-deftest crush-test/prompt-is-read-only-via-text-property ()
+  "The prompt text should be read-only via a text property.
 Backspacing into the prompt should be blocked."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
@@ -2624,12 +2626,23 @@ Backspacing into the prompt should be blocked."
           (goto-char (point-min))
           (should (search-forward "crush> " nil t))
           (goto-char (match-beginning 0))
-          (should (get-char-property (point) 'read-only))
-          (should-not (get-text-property (point) 'read-only))))
+          (should (get-text-property (point) 'read-only))
+          (should (get-char-property (point) 'read-only))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/cannot-type-into-prompt ()
+  "Typing into the read-only prompt should signal text-read-only."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))
+          (goto-char (match-beginning 0))
+          (should-error (insert-and-inherit "X") :type 'text-read-only)))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/previous-content-is-read-only ()
-  "After a response cycle, previous content should be read-only via overlay."
+  "After a response cycle, previous content should be read-only via text property."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2651,7 +2664,35 @@ Backspacing into the prompt should be blocked."
             (crush--process-sentinel mock-proc "finished\n"))
           (goto-char (point-min))
           (should (search-forward "response" nil t))
+          (should (get-text-property (match-beginning 0) 'read-only))
           (should (get-char-property (match-beginning 0) 'read-only))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/cannot-type-into-previous-response ()
+  "Typing into a frozen previous response should signal text-read-only."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "test")
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (let* ((mock-proc (make-process
+                             :name "crush-mock"
+                             :buffer buf
+                             :command '("sh" "-c" "echo response")
+                             :connection-type 'pipe
+                             :filter #'crush--output-filter
+                             :sentinel #'ignore
+                             :noquery t)))
+            (set-marker (process-mark mock-proc) (point-max))
+            (accept-process-output mock-proc 2)
+            (crush--process-sentinel mock-proc "finished\n"))
+          (goto-char (point-min))
+          (should (search-forward "response" nil t))
+          (goto-char (match-beginning 0))
+          (should-error (insert-and-inherit "X") :type 'text-read-only)))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/input-area-is-editable ()
@@ -2682,20 +2723,32 @@ Backspacing into the prompt should be blocked."
           (should (search-forward "new input" nil t))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/read-only-overlay-tagged ()
-  "Read-only overlays should be tagged with crush-overlay for cleanup."
+(ert-deftest crush-test/read-only-via-text-property-tagged ()
+  "Read-only should be enforced via a text property, not an overlay."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((overlays (overlays-in (point-min) (point-max))))
-            (should (cl-some (lambda (ov)
-                               (and (overlay-get ov 'read-only)
-                                    (overlay-get ov 'crush-overlay)))
-                             overlays)))))
+          ;; The prompt carries a read-only text property.
+          (should (get-text-property 1 'read-only))
+          ;; No overlay should be responsible for read-only.
+          (should-not (cl-some (lambda (ov) (overlay-get ov 'read-only))
+                               (overlays-in (point-min) (point-max))))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/clear-buffer-removes-read-only-overlays ()
-  "crush-clear-buffer should allow typing after the new prompt."
+(ert-deftest crush-test/inhibit-read-only-allows-programmatic-insert ()
+  "Programmatic insertion with inhibit-read-only should bypass the freeze."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (goto-char (point-min))
+            (insert "PROGRAMMATIC"))
+          (goto-char (point-min))
+          (should (search-forward "PROGRAMMATIC" nil t))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/clear-buffer-keeps-prompt-readable-input ()
+  "crush-clear-buffer should reset the buffer so input is editable again."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2732,9 +2785,46 @@ Backspacing into the prompt should be blocked."
           (goto-char (point-min))
           (should (search-forward "crush> " nil t))
           (should (get-char-property (match-beginning 0) 'read-only))
+          (goto-char (match-beginning 0))
+          (should-error (insert-and-inherit "X") :type 'text-read-only)
           (goto-char (point-max))
           (should-not (get-char-property (point) 'read-only))))
     (crush-test--cleanup)))
+
+(ert-deftest crush-test/read-only-survives-markdown-font-lock ()
+  "Read-only should survive markdown font-lock when markdown-mode is available.
+This mirrors the user session where markdown fontification could previously
+fail to enforce read-only."
+  (skip-unless (require 'markdown-mode nil t))
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (insert "test")
+            (goto-char (point-max))
+            (newline)
+            (setq-local crush--response-start (point-marker))
+            (let* ((mock-proc (make-process
+                               :name "crush-mock"
+                               :buffer buf
+                               :command '("sh" "-c" "echo '# heading'")
+                               :connection-type 'pipe
+                               :filter #'crush--output-filter
+                               :sentinel #'ignore
+                               :noquery t)))
+              (set-marker (process-mark mock-proc) (point-max))
+              (accept-process-output mock-proc 2)
+              (crush--process-sentinel mock-proc "finished\n"))
+            (font-lock-fontify-buffer)
+            (goto-char (point-min))
+            (should (search-forward "crush> " nil t))
+            (goto-char (match-beginning 0))
+            (should (get-text-property (point) 'read-only))
+            (should-error (insert-and-inherit "X") :type 'text-read-only)
+            (goto-char (point-max))
+            (should-not (get-char-property (point) 'read-only))))
+      (crush-test--cleanup))))
 
 (provide 'crush-test)
 ;;; crush-test.el ends here
