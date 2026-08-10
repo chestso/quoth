@@ -58,18 +58,17 @@
 ;;; 3. Prompt region management
 
 (ert-deftest crush-test/prompt-start-set-on-buffer-init ()
-  "After `crush' creates the buffer, comint-last-prompt should be set."
+  "After `crush' creates the buffer, crush--prompt-start-marker should be set."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should comint-last-prompt)
-          (should (markerp (car comint-last-prompt)))
-          ;; Prompt should be at the start of the buffer
-          (should (= (marker-position (car comint-last-prompt)) (point-min)))))
+          (should crush--prompt-start-marker)
+          (should (markerp crush--prompt-start-marker))
+          (should (= (marker-position crush--prompt-start-marker) (point-min)))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/sentinel-resets-prompt-start ()
-  "After process sentinel runs, comint-last-prompt should be reset."
+  "After process sentinel runs, crush--prompt-start-marker should be reset."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -83,10 +82,9 @@
             (set-marker (process-mark proc) (point-max))
             (accept-process-output proc 1)
             (funcall #'crush--process-sentinel proc 'finished)
-            (should comint-last-prompt)
-            (should (markerp (car comint-last-prompt)))
-            ;; New prompt should be at the end of the buffer
-            (should (= (marker-position (car comint-last-prompt)) (- (point-max) (length "crush> ")))))))
+            (should crush--prompt-start-marker)
+            (should (markerp crush--prompt-start-marker))
+            (should (= (marker-position crush--prompt-start-marker) (- (point-max) (length "crush> ")))))))
     (crush-test--cleanup)))
 
 ;;; 4. Input locking
@@ -124,7 +122,7 @@
                             :command '("true")
                             :connection-type 'pipe
                             :noquery t)))
-            (set-marker (process-mark fake-proc) (marker-position (car comint-last-prompt)))
+            (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
             (cl-letf (((symbol-function 'make-process)
                        (lambda (&rest _) fake-proc))
                       ((symbol-function 'start-process)
@@ -152,7 +150,7 @@
                             :command '("true")
                             :connection-type 'pipe
                             :noquery t)))
-            (set-marker (process-mark fake-proc) (marker-position (car comint-last-prompt)))
+            (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
             (cl-letf (((symbol-function 'make-process)
                        (lambda (&rest args)
                          (setq captured-stderr (plist-get args :stderr))
@@ -218,27 +216,57 @@
           (should (null crush--continue))))
     (crush-test--cleanup)))
 
-;;; 10. build-command includes --continue when set
+;;; 10. Backend command includes --continue when continue-p is true
 
-(ert-deftest crush-test/build-command-with-continue ()
-  "`crush--build-command' should include --continue when `crush--continue' is non-nil."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (setq-local crush--continue t)
-          (let ((cmd (crush--build-command)))
-            (should (member "--continue" cmd)))))
-    (crush-test--cleanup)))
+(ert-deftest crush-test/backend-command-includes-continue ()
+  "crush-backend-send-prompt should include --continue when :continue-p is t."
+  (let ((captured-args nil)
+        (real-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest args)
+                 (setq captured-args (plist-get args :command))
+                 (let ((proc (funcall real-make-process
+                                      :name "crush-fake"
+                                      :buffer (current-buffer)
+                                      :command '("true")
+                                      :connection-type 'pipe
+                                      :noquery t)))
+                   (set-process-query-on-exit-flag proc nil)
+                   proc))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (setq-local crush--continue t)
+              (goto-char (point-max))
+              (insert "test")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should (member "--continue" captured-args))))
 
-(ert-deftest crush-test/build-command-without-continue ()
-  "`crush--build-command' should omit --continue when `crush--continue' is nil."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (setq-local crush--continue nil)
-          (let ((cmd (crush--build-command)))
-            (should-not (member "--continue" cmd)))))
-    (crush-test--cleanup)))
+(ert-deftest crush-test/backend-command-omits-continue ()
+  "crush-backend-send-prompt should omit --continue when :continue-p is nil."
+  (let ((captured-args nil)
+        (real-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest args)
+                 (setq captured-args (plist-get args :command))
+                 (let ((proc (funcall real-make-process
+                                      :name "crush-fake"
+                                      :buffer (current-buffer)
+                                      :command '("true")
+                                      :connection-type 'pipe
+                                      :noquery t)))
+                   (set-process-query-on-exit-flag proc nil)
+                   proc))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (setq-local crush--continue nil)
+              (goto-char (point-max))
+              (insert "test")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should-not (member "--continue" captured-args))))
 
 ;;; Minor mode
 
@@ -425,6 +453,31 @@ Returns the contents of the capture file after BODY completes."
     (should (string-match-p "what is 2+2?" result))
     (should-not (string-match-p "STDIN:" result))))
 
+(ert-deftest crush-test/mock-process-exits-promptly-without-context ()
+  "Without context, the crush process should exit promptly after sending EOF.
+Regression test: `crush run' reads all of stdin before processing, so stdin
+must be closed with EOF even when the prompt is a CLI arg. Otherwise the
+process never exits and the buffer hangs after hitting RET."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (crush-test--with-mock
+         (lambda ()
+           (let ((buf (crush-test--fresh-buffer)))
+             (with-current-buffer buf
+               (goto-char (point-max))
+               (insert "exit test")
+               (call-interactively #'crush-send-input)
+               ;; Wait for the process to exit on its own, timing how long.
+               (let ((start (float-time)))
+                 (while (and crush-process
+                             (process-live-p crush-process)
+                             (< (- (float-time) start) 2.0))
+                   (accept-process-output crush-process 0.1))
+                 ;; It must finish well under the old 2s hang window.
+                 (should (< (- (float-time) start) 1.0))
+                 (should-not (process-live-p crush-process)))))))
+      (crush-test--cleanup))))
+
 (ert-deftest crush-test/mock-sends-context-via-stdin ()
   "With context blocks, the context and prompt should be sent via stdin."
   (let ((result (crush-test--with-mock
@@ -433,7 +486,8 @@ Returns the contents of the capture file after BODY completes."
                      (with-current-buffer buf
                        ;; Simulate an inserted org block before the prompt
                        (goto-char (point-min))
-                       (let ((start (point)))
+                       (let ((start (point))
+                             (inhibit-read-only t))
                          (insert "#+begin_src text :file foo.el :lines 1-3\n(foo)\n#+end_src\n\n")
                          (add-text-properties
                           start (point)
@@ -466,14 +520,29 @@ Returns the contents of the capture file after BODY completes."
 
 ;;; 11. --quiet flag suppresses spinner
 
-(ert-deftest crush-test/build-command-includes-quiet ()
-  "`crush--build-command' should always include --quiet to suppress spinner."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (let ((cmd (crush--build-command)))
-            (should (member "--quiet" cmd)))))
-    (crush-test--cleanup)))
+(ert-deftest crush-test/backend-command-includes-quiet ()
+  "crush-backend-send-prompt should always include --quiet."
+  (let ((captured-args nil)
+        (real-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest args)
+                 (setq captured-args (plist-get args :command))
+                 (let ((proc (funcall real-make-process
+                                      :name "crush-fake"
+                                      :buffer (current-buffer)
+                                      :command '("true")
+                                      :connection-type 'pipe
+                                      :noquery t)))
+                   (set-process-query-on-exit-flag proc nil)
+                   proc))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (goto-char (point-max))
+              (insert "test")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should (member "--quiet" captured-args))))
 
 ;;; 12. Exit code handling
 
@@ -501,49 +570,109 @@ Returns the contents of the capture file after BODY completes."
 
 ;;; 13. --session flag support
 
-(ert-deftest crush-test/build-command-includes-session-when-set ()
-  "`crush--build-command' should include --session when set."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (setq-local crush--session "abc123")
-          (let ((cmd (crush--build-command)))
-            (should (member "--session" cmd))
-            (should (member "abc123" cmd)))))
-    (crush-test--cleanup)))
+(ert-deftest crush-test/backend-command-includes-session-when-set ()
+  "crush-backend-send-prompt should include --session when session-id is set."
+  (let ((captured-args nil)
+        (real-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest args)
+                 (setq captured-args (plist-get args :command))
+                 (let ((proc (funcall real-make-process
+                                      :name "crush-fake"
+                                      :buffer (current-buffer)
+                                      :command '("true")
+                                      :connection-type 'pipe
+                                      :noquery t)))
+                   (set-process-query-on-exit-flag proc nil)
+                   proc))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (setq-local crush--session "abc123")
+              (goto-char (point-max))
+              (insert "test")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should (member "--session" captured-args))
+    (should (member "abc123" captured-args))))
 
-(ert-deftest crush-test/build-command-omits-session-when-nil ()
-  "`crush--build-command' should omit --session when nil."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (setq-local crush--session nil)
-          (let ((cmd (crush--build-command)))
-            (should-not (member "--session" cmd)))))
-    (crush-test--cleanup)))
+(ert-deftest crush-test/backend-command-omits-session-when-nil ()
+  "crush-backend-send-prompt should omit --session when session-id is nil."
+  (let ((captured-args nil)
+        (real-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest args)
+                 (setq captured-args (plist-get args :command))
+                 (let ((proc (funcall real-make-process
+                                      :name "crush-fake"
+                                      :buffer (current-buffer)
+                                      :command '("true")
+                                      :connection-type 'pipe
+                                      :noquery t)))
+                   (set-process-query-on-exit-flag proc nil)
+                   proc))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (setq-local crush--session nil)
+              (goto-char (point-max))
+              (insert "test")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should-not (member "--session" captured-args))))
 
 ;;; 14. --model flag support
 
-(ert-deftest crush-test/build-command-includes-model-when-set ()
-  "`crush--build-command' should include --model when `crush-model' is set."
-  (let ((crush-model "claude-sonnet-4-20250514"))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            (let ((cmd (crush--build-command)))
-              (should (member "--model" cmd))
-              (should (member "claude-sonnet-4-20250514" cmd)))))
-      (crush-test--cleanup))))
+(ert-deftest crush-test/backend-command-includes-model-when-set ()
+  "crush-backend-send-prompt should include --model when crush-model is set."
+  (let ((crush-model "claude-sonnet-4-20250514")
+        (captured-args nil)
+        (real-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest args)
+                 (setq captured-args (plist-get args :command))
+                 (let ((proc (funcall real-make-process
+                                      :name "crush-fake"
+                                      :buffer (current-buffer)
+                                      :command '("true")
+                                      :connection-type 'pipe
+                                      :noquery t)))
+                   (set-process-query-on-exit-flag proc nil)
+                   proc))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (goto-char (point-max))
+              (insert "test")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should (member "--model" captured-args))
+    (should (member "claude-sonnet-4-20250514" captured-args))))
 
-(ert-deftest crush-test/build-command-omits-model-when-nil ()
-  "`crush--build-command' should omit --model when `crush-model' is nil."
-  (let ((crush-model nil))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            (let ((cmd (crush--build-command)))
-              (should-not (member "--model" cmd)))))
-      (crush-test--cleanup))))
+(ert-deftest crush-test/backend-command-omits-model-when-nil ()
+  "crush-backend-send-prompt should omit --model when crush-model is nil."
+  (let ((crush-model nil)
+        (captured-args nil)
+        (real-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest args)
+                 (setq captured-args (plist-get args :command))
+                 (let ((proc (funcall real-make-process
+                                      :name "crush-fake"
+                                      :buffer (current-buffer)
+                                      :command '("true")
+                                      :connection-type 'pipe
+                                      :noquery t)))
+                   (set-process-query-on-exit-flag proc nil)
+                   proc))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (goto-char (point-max))
+              (insert "test")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should-not (member "--model" captured-args))))
 
 ;;; 15. Stderr buffer creation
 
@@ -560,7 +689,7 @@ Returns the contents of the capture file after BODY completes."
                             :command '("true")
                             :connection-type 'pipe
                             :noquery t)))
-            (set-marker (process-mark fake-proc) (marker-position (car comint-last-prompt)))
+            (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
             (cl-letf (((symbol-function #'make-process)
                        (lambda (&rest _args) fake-proc))
                       ((symbol-function #'start-process)
@@ -643,7 +772,7 @@ Returns the contents of the capture file after BODY completes."
                             :command '("true")
                             :connection-type 'pipe
                             :noquery t)))
-            (set-marker (process-mark fake-proc) (marker-position (car comint-last-prompt)))
+            (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
             (cl-letf (((symbol-function #'make-process)
                        (lambda (&rest _) fake-proc))
                       ((symbol-function #'start-process)
@@ -769,7 +898,7 @@ Returns the contents of the capture file after BODY completes."
                               :command '("true")
                               :connection-type 'pipe
                               :noquery t)))
-              (set-marker (process-mark fake-proc) (marker-position (car comint-last-prompt)))
+              (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
               (cl-letf (((symbol-function #'make-process)
                          (lambda (&rest _) fake-proc))
                         ((symbol-function #'start-process)
@@ -856,7 +985,7 @@ Returns the contents of the capture file after BODY completes."
                                  :buffer buf
                                  :command '("sh" "-c" "echo 'response text'")
                                  :connection-type 'pipe
-                                 :filter #'comint-output-filter
+                                 :filter #'crush--output-filter
 				 :sentinel #'ignore
                                  :noquery t)))
                 (set-marker (process-mark mock-proc) (point-max))
@@ -891,7 +1020,7 @@ Returns the contents of the capture file after BODY completes."
                                :buffer buf
                                :command '("sh" "-c" "true")
                                :connection-type 'pipe
-                               :filter #'comint-output-filter
+                               :filter #'crush--output-filter
                                :sentinel #'ignore
                                :noquery t)))
               (set-marker (process-mark mock-proc) (point-max))
@@ -921,7 +1050,7 @@ Returns the contents of the capture file after BODY completes."
                                :buffer buf
                                :command '("sh" "-c" "echo 'partial'; sleep 10")
                                :connection-type 'pipe
-                               :filter #'comint-output-filter
+                               :filter #'crush--output-filter
                                :sentinel #'ignore
                                :noquery t)))
               (set-marker (process-mark mock-proc) (point-max))
@@ -954,7 +1083,7 @@ but overlays persist."
                                :buffer buf
                                :command '("sh" "-c" "echo 'response text'")
                                :connection-type 'pipe
-                               :filter #'comint-output-filter
+                               :filter #'crush--output-filter
                                :sentinel #'ignore
                                :noquery t)))
               (set-marker (process-mark mock-proc) (point-max))
@@ -999,7 +1128,7 @@ but overlays persist."
                              :buffer buf
                              :command '("sh" "-c" "echo 'response text'")
                              :connection-type 'pipe
-                             :filter #'comint-output-filter
+                             :filter #'crush--output-filter
                              :sentinel #'ignore
                              :noquery t)))
             (set-marker (process-mark mock-proc) (point-max))
@@ -1110,17 +1239,21 @@ never set in the buffer."
 ;;; 38. Fontification: crush--fontify-as-markdown
 
 (ert-deftest crush-test/fontify-markdown-creates-overlays ()
-  "Fontifying markdown text should create overlays for syntax elements."
+  "Fontifying markdown text should NOT create face overlays in markdown parent.
+When the buffer is markdown-mode, native font-lock provides highlighting
+and no face overlays are created by crush."
   (skip-unless (require 'markdown-mode nil t))
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (insert "**bold text** and `inline code`")
-          (crush--fontify-as-markdown (point-min) (point-max))
-          ;; Should have overlays with crush-overlay property
-          (let ((overlays (overlays-in (point-min) (point-max))))
-            (should (cl-some (lambda (ov) (overlay-get ov 'crush-overlay)) overlays)))))
-    (crush-test--cleanup)))
+  (let ((crush--parent-mode 'markdown-mode))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (insert "**bold text** and `inline code`")
+            (crush--fontify-as-markdown (point-min) (point-max))
+            ;; No face overlays should be created in markdown parent
+            (let ((overlays (overlays-in (point-min) (point-max))))
+              (should-not (cl-some (lambda (ov) (overlay-get ov 'face))
+                                   overlays)))))
+      (crush-test--cleanup))))
 
 (ert-deftest crush-test/fontify-markdown-applies-base-face ()
   "Fontifying markdown should apply crush-response-face as base overlay."
@@ -1158,6 +1291,40 @@ never set in the buffer."
               (when (overlay-get ov 'face)
                 (should (overlay-get ov 'crush-overlay)))))))
     (crush-test--cleanup)))
+
+;;; 38b. Fontification: markdown parent relies on native font-lock
+;;;        (no fallback face, no overlay fontification)
+
+(ert-deftest crush-test/fontify-markdown-no-overlay-in-markdown-parent ()
+  "When the buffer is markdown-mode, response fontification should NOT
+create any crush overlays. Native markdown font-lock handles highlighting,
+and the fallback face overlay must not be applied."
+  (let ((crush--parent-mode 'markdown-mode))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (insert "**bold** and `code`")
+            (crush--fontify-as-markdown (point-min) (point-max))
+            ;; No face overlays should be created in the response region
+            (let ((overlays (overlays-in (point-min) (point-max))))
+              (should-not (cl-some (lambda (ov) (overlay-get ov 'face))
+                                   overlays)))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/fontify-markdown-keeps-face-in-text-fallback ()
+  "When the buffer is text-mode (no markdown-mode), the fallback
+crush-response-face overlay SHOULD be applied so responses stay distinct."
+  (let ((crush--parent-mode 'text-mode))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (insert "plain response text")
+            (crush--fontify-as-markdown (point-min) (point-max))
+            (let ((overlays (overlays-in (point-min) (point-max))))
+              (should (cl-some (lambda (ov)
+                                 (eq (overlay-get ov 'face) 'crush-response-face))
+                               overlays)))))
+      (crush-test--cleanup))))
 
 ;;; 39. Fontification: crush--fontify-as-org
 
@@ -1216,7 +1383,7 @@ never set in the buffer."
                              :buffer buf
                              :command '("sh" "-c" "echo '**bold** text'")
                              :connection-type 'pipe
-                             :filter #'comint-output-filter
+                             :filter #'crush--output-filter
                              :sentinel #'ignore
                              :noquery t)))
             (set-marker (process-mark mock-proc) (point-max))
@@ -1252,298 +1419,52 @@ never set in the buffer."
 ;;; 42. Integration: crush-clear-buffer removes overlays
 
 (ert-deftest crush-test/clear-buffer-removes-overlays ()
-  "crush-clear-buffer should remove all crush-overlay tagged overlays."
+  "crush-clear-buffer should remove old crush-overlay tagged overlays.
+New overlays created by the fresh prompt are expected to remain."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          ;; Create some overlays manually
+          ;; Create an extra overlay manually
           (let ((ov (make-overlay (point-min) (point-max))))
-            (overlay-put ov 'crush-overlay t))
+            (overlay-put ov 'crush-overlay t)
+            (overlay-put ov 'face 'highlight))
           ;; Call clear-buffer
           (call-interactively #'crush-clear-buffer)
-          ;; Should have no crush-overlay overlays that are still live
+          ;; Should have no overlay with face 'highlight' (the manual one is gone)
           (should-not (cl-some (lambda (ov)
                                  (and (overlay-buffer ov)
-                                      (overlay-get ov 'crush-overlay)))
+                                      (eq (overlay-get ov 'face) 'highlight)))
                                (overlays-in (point-min) (point-max))))))
     (crush-test--cleanup)))
 
-;;; 43. Phase 1: comint-output-filter produces field=output
+;;; 44. Phase 1: comint-output-filter-functions hook runs (DELETED in Phase 2)
 
-(ert-deftest crush-test/comint-filter-sets-field-output ()
-  "Process output should have field=output property when using comint-output-filter."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (let ((proc (make-process
-                       :name "crush-test"
-                       :buffer buf
-                       :command '("true")
-                       :connection-type 'pipe
-                       :noquery t))
-                (inhibit-read-only t))
-            (set-process-filter proc #'comint-output-filter)
-            (set-marker (process-mark proc) (point-max))
-            (comint-output-filter proc "response text\n")
-            (should (eq (get-text-property (- (point-max) 5) 'field) 'output))
-            (delete-process proc))))
-    (crush-test--cleanup)))
+;;; 45. Phase 1: comint-output-filter inserts at process mark (rewritten in Phase 2 as output-filter-inserts-at-mark)
 
-;;; 44. Phase 1: comint-output-filter-functions hook runs
+;;; 46. Phase 2: comint prompt fields - prompt is read-only (DELETED in Phase 4: replaced by prompt-is-read-only)
 
-(ert-deftest crush-test/comint-filter-functions-hook-runs ()
-  "comint-output-filter-functions should run when output is filtered."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (hook-called nil))
-        (with-current-buffer buf
-          (let ((proc (make-process
-                       :name "crush-test"
-                       :buffer buf
-                       :command '("true")
-                       :connection-type 'pipe
-                       :noquery t))
-                (hook-fn (lambda (_str) (setq hook-called t)))
-                (inhibit-read-only t))
-            (set-process-filter proc #'comint-output-filter)
-            (set-marker (process-mark proc) (point-max))
-            (add-hook 'comint-output-filter-functions hook-fn nil t)
-            (comint-output-filter proc "test output\n")
-            (should hook-called)
-            (remove-hook 'comint-output-filter-functions hook-fn t)
-            (delete-process proc))))
-    (crush-test--cleanup)))
+;;; 47. Phase 2: comint prompt fields - field-at-pos (DELETED in Phase 4: no field property)
 
-;;; 45. Phase 1: comint-output-filter inserts at process mark
+;;; 48. Phase 2: comint prompt fields - comint-highlight-prompt face (DELETED in Phase 4: replaced by prompt-has-crush-prompt-face)
 
-(ert-deftest crush-test/comint-filter-inserts-at-process-mark ()
-  "comint-output-filter should insert output at the process mark position."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (let* ((mark-pos (point))
-                 (proc (make-process
-                        :name "crush-test"
-                        :buffer buf
-                        :command '("true")
-                        :connection-type 'pipe
-                        :noquery t))
-                 (inhibit-read-only t))
-            (set-process-filter proc #'comint-output-filter)
-            (set-marker (process-mark proc) mark-pos)
-            (comint-output-filter proc "hello world\n")
-            (goto-char mark-pos)
-            (should (search-forward "hello world" nil t))
-            (should (> (process-mark proc) mark-pos))
-            (delete-process proc))))
-    (crush-test--cleanup)))
+;;; 49. Phase 3: comint-send-input calls crush--input-sender (DELETED in Phase 3)
 
-;;; 46. Phase 2: comint prompt fields - prompt is read-only
+;;; 50. Phase 3: comint-send-input adds to input ring (DELETED in Phase 3: replaced by custom-input-ring tests)
 
-(ert-deftest crush-test/comint-prompt-is-read-only ()
-  "The prompt text should be read-only when using comint field-based prompts."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
-          ;; Text before point (the prompt) should be read-only
-          (should (get-text-property (1- (point)) 'read-only))))
-    (crush-test--cleanup)))
+;;; 51. Phase 3: crush--ensure-process creates placeholder (DELETED in Phase 3: no placeholder needed)
 
-;;; 47. Phase 2: comint prompt fields - field-at-pos
+;;; 52. Phase 4: Input history - M-p retrieves previous input (DELETED: replaced by custom-input-ring tests)
 
-(ert-deftest crush-test/comint-field-at-pos-prompt ()
-  "field-at-pos should return the correct field for prompt text."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          ;; The prompt text should have a field property
-          (should (get-text-property 1 'field))))
-    (crush-test--cleanup)))
+;;; 53. Phase 5: Sentinel inserts prompt with comint field properties (DELETED in Phase 4: no field property)
 
-;;; 48. Phase 2: comint prompt fields - comint-highlight-prompt face
-
-(ert-deftest crush-test/comint-prompt-has-highlight-face ()
-  "The prompt should have comint-highlight-prompt face."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
-          ;; Check for comint-highlight-prompt face on prompt text
-          (let ((face (get-text-property 1 'font-lock-face)))
-            (should (eq face 'comint-highlight-prompt)))))
-    (crush-test--cleanup)))
-
-;;; 49. Phase 3: comint-send-input calls crush--input-sender
-
-(ert-deftest crush-test/send-input-calls-input-sender ()
-  "comint-send-input should call crush--input-sender with the input text."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (sender-called nil)
-            (sent-input nil))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test prompt")
-          (cl-letf (((symbol-function #'crush--input-sender)
-                     (lambda (_proc input)
-                       (setq sender-called t
-                             sent-input input)))
-                    ((symbol-function #'crush--ensure-process)
-                     (lambda ()
-                       (let ((proc (make-process
-                                    :name "crush-fake"
-                                    :buffer (current-buffer)
-                                    :command '("sleep" "30")
-                                    :connection-type 'pipe
-                                    :noquery t)))
-                         (set-marker (process-mark proc)
-                                     (marker-position (car comint-last-prompt)))
-                         proc))))
-            (call-interactively #'crush-send-input))
-          (should sender-called)
-          (should (string-match-p "test prompt" sent-input))))
-    (crush-test--cleanup)))
-
-;;; 50. Phase 3: comint-send-input adds to input ring
-
-(ert-deftest crush-test/send-input-adds-to-ring ()
-  "comint-send-input should add input to comint-input-ring."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "history test")
-          (cl-letf (((symbol-function #'crush--input-sender)
-                     (lambda (_proc _input) nil))
-                    ((symbol-function #'crush--ensure-process)
-                     (lambda ()
-                       (let ((proc (make-process
-                                    :name "crush-fake"
-                                    :buffer (current-buffer)
-                                    :command '("sleep" "30")
-                                    :connection-type 'pipe
-                                    :noquery t)))
-                         (set-marker (process-mark proc)
-                                     (marker-position (car comint-last-prompt)))
-                         proc))))
-            (call-interactively #'crush-send-input))
-          (should (ring-p comint-input-ring))
-          (should (> (ring-length comint-input-ring) 0))
-          (should (string-match-p "history test"
-                                  (ring-ref comint-input-ring 0)))))
-    (crush-test--cleanup)))
-
-;;; 51. Phase 3: crush--ensure-process creates placeholder
-
-(ert-deftest crush-test/ensure-process-creates-placeholder ()
-  "crush--ensure-process should create a placeholder process if none exists."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          ;; Kill any existing process
-          (when-let ((proc (get-buffer-process buf)))
-            (delete-process proc))
-          ;; Call ensure-process
-          (crush--ensure-process)
-          ;; Should have a process now
-          (should (get-buffer-process buf))
-          ;; Clean up
-          (delete-process (get-buffer-process buf))))
-    (crush-test--cleanup)))
-
-;;; 52. Phase 4: Input history - M-p retrieves previous input
-
-(ert-deftest crush-test/input-ring-initialized ()
-  "comint-input-ring should be initialized in crush-mode."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (should (ring-p comint-input-ring))))
-    (crush-test--cleanup)))
-
-(ert-deftest crush-test/input-ring-has-file-name ()
-  "comint-input-ring-file-name should be set in crush-mode."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (should comint-input-ring-file-name)))
-    (crush-test--cleanup)))
-
-;;; 53. Phase 5: Sentinel inserts prompt with comint field properties
-
-(ert-deftest crush-test/sentinel-prompt-has-field-property ()
-  "Sentinel-inserted prompt should have field property for comint navigation."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test")
-          (goto-char (point-max))
-          (newline)
-          (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo 'response'")
-                             :connection-type 'pipe
-                             :filter #'comint-output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
-          ;; New prompt should have field property
-          (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
-          (should (get-text-property (match-beginning 0) 'field))))
-    (crush-test--cleanup)))
-
-;;; 54. Phase 5: Sentinel sets comint-last-prompt
-
-(ert-deftest crush-test/sentinel-sets-comint-last-prompt ()
-  "Sentinel should set comint-last-prompt after inserting new prompt."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test")
-          (goto-char (point-max))
-          (newline)
-          (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo 'response'")
-                             :connection-type 'pipe
-                             :filter #'comint-output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
-          ;; comint-last-prompt should be set
-          (should comint-last-prompt)
-          (should (markerp (car comint-last-prompt)))
-          (should (markerp (cdr comint-last-prompt)))))
-    (crush-test--cleanup)))
+;;; 54. Phase 5: Sentinel sets comint-last-prompt (DELETED in Phase 4: no comint-last-prompt)
 
 ;;; 55. Phase 6: Vestigial code removed
 
-(ert-deftest crush-test/comint-use-prompt-regexp-is-nil ()
-  "comint-use-prompt-regexp should be nil (field-based prompts)."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (should (null comint-use-prompt-regexp))))
-    (crush-test--cleanup)))
+;;; 48. Phase 2: comint-use-prompt-regexp (DELETED in Phase 3: comint settings removed)
 
 (ert-deftest crush-test/crush-process-filter-removed ()
-  "crush--process-filter should not be defined (replaced by comint-output-filter)."
+  "crush--process-filter should not be defined (replaced by crush--output-filter)."
   (should-not (fboundp 'crush--process-filter)))
 
 ;;; 56. Phase 7: Region-type/field reconciliation
@@ -1563,7 +1484,7 @@ never set in the buffer."
                              :buffer buf
                              :command '("sh" "-c" "echo 'response text'")
                              :connection-type 'pipe
-                             :filter #'comint-output-filter
+                             :filter #'crush--output-filter
                              :sentinel #'ignore
                              :noquery t)))
             (set-marker (process-mark mock-proc) (point-max))
@@ -1604,7 +1525,7 @@ never set in the buffer."
                              :buffer buf
                              :command '("sh" "-c" "echo 'response'")
                              :connection-type 'pipe
-                             :filter #'comint-output-filter
+                             :filter #'crush--output-filter
                              :sentinel #'ignore
                              :noquery t)))
             (set-marker (process-mark mock-proc) (point-max))
@@ -1617,31 +1538,7 @@ never set in the buffer."
           (should-not (search-forward "------------------------------------" nil t))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/field-output-on-response ()
-  "Response text should have field=output (set by comint-output-filter)."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test")
-          (goto-char (point-max))
-          (newline)
-          (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo 'response text'")
-                             :connection-type 'pipe
-                             :filter #'comint-output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
-          (goto-char (point-min))
-          (should (search-forward "response text" nil t))
-          (should (eq (get-text-property (- (point) 5) 'field) 'output))))
-    (crush-test--cleanup)))
+;;; 56. field-output-on-response (DELETED in Phase 2: no field=output with custom filter)
 
 ;;; 57. Debug logging - crush-debug-mode defcustom
 
@@ -1675,72 +1572,28 @@ never set in the buffer."
 
 ;;; 60. Debug logging - command logged in input-sender
 
-(ert-deftest crush-test/debug-logs-command-invocation ()
-  "crush--input-sender should log the command to *crush-debug*."
-  (unwind-protect
-      (let ((crush-debug-mode t)
-            (buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (setq-local crush--pending-context nil)
-          (let ((crush-program "my-crush")
-                (crush--continue t))
-            (cl-letf (((symbol-function #'make-process)
-                       (let ((real-make-process (symbol-function #'make-process)))
-                         (lambda (&rest _args)
-                           (let ((proc (funcall real-make-process
-                                                :name "fake"
-                                                :buffer (current-buffer)
-                                                :command '("sleep" "30")
-                                                :connection-type 'pipe
-                                                :noquery t)))
-                             (set-process-query-on-exit-flag proc nil)
-                             proc)))))
-              (crush--input-sender nil "test prompt"))))
-        (should (get-buffer "*crush-debug*"))
-        (with-current-buffer "*crush-debug*"
-          (goto-char (point-min))
-          (should (search-forward "command" nil t))
-          (should (search-forward "my-crush" nil t))
-          (should (search-forward "test prompt" nil t))))
-    (crush-test--cleanup)))
+;;; 60. Debug logging - command logged (DELETED: crush--input-sender removed in Phase 3)
 
-;;; 61. Debug logging - input logged in input-sender
+;;; 61. Debug logging - input logged (DELETED: crush--input-sender removed in Phase 3)
 
-(ert-deftest crush-test/debug-logs-input ()
-  "crush--input-sender should log the input text to *crush-debug*."
-  (unwind-protect
-      (let ((crush-debug-mode t)
-            (buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (setq-local crush--pending-context nil)
-          (cl-letf (((symbol-function #'make-process)
-                     (let ((real-make-process (symbol-function #'make-process)))
-                       (lambda (&rest _args)
-                         (let ((proc (funcall real-make-process
-                                              :name "fake"
-                                              :buffer (current-buffer)
-                                              :command '("sleep" "30")
-                                              :connection-type 'pipe
-                                              :noquery t)))
-                           (set-process-query-on-exit-flag proc nil)
-                           proc)))))
-            (crush--input-sender nil "hello from test")))
-        (with-current-buffer "*crush-debug*"
-          (goto-char (point-min))
-          (should (search-forward "input" nil t))
-          (should (search-forward "hello from test" nil t))))
-    (crush-test--cleanup)))
-
-;;; 62. Debug logging - output logged in suppress-false-prompt
+;;; 62. Debug logging - output logged in crush--output-filter
 
 (ert-deftest crush-test/debug-logs-output ()
-  "crush--suppress-false-prompt should log output to *crush-debug*."
+  "crush--output-filter should log output to *crush-debug*."
   (unwind-protect
       (let ((crush-debug-mode t)
             (buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq-local comint-last-prompt nil)
-          (crush--suppress-false-prompt "some output text"))
+          (let* ((proc (make-process
+                        :name "crush-test"
+                        :buffer buf
+                        :command '("true")
+                        :connection-type 'pipe
+                        :noquery t))
+                 (inhibit-read-only t))
+            (set-marker (process-mark proc) (point-max))
+            (crush--output-filter proc "some output text")
+            (delete-process proc)))
         (with-current-buffer "*crush-debug*"
           (goto-char (point-min))
           (should (search-forward "output" nil t))
@@ -1765,7 +1618,7 @@ never set in the buffer."
                              :buffer buf
                              :command '("sh" "-c" "echo response")
                              :connection-type 'pipe
-                             :filter #'comint-output-filter
+                             :filter #'crush--output-filter
                              :sentinel #'ignore
                              :noquery t)))
             (set-marker (process-mark mock-proc) (point-max))
@@ -1806,7 +1659,7 @@ comint-prompt-read-only handles read-only via field properties."
                                :buffer buf
                                :command '("sh" "-c" "echo 'response text'")
                                :connection-type 'pipe
-                               :filter #'comint-output-filter
+                               :filter #'crush--output-filter
                                :sentinel #'ignore
                                :noquery t)))
               (set-marker (process-mark mock-proc) (point-max))
@@ -1820,59 +1673,30 @@ comint-prompt-read-only handles read-only via field properties."
               (should-not ro)))))
     (crush-test--cleanup)))
 
-;;; 66. Phase 6: crush--ensure-process uses comint-last-prompt
+;;; 66. Phase 6: crush--ensure-process uses crush--prompt-start-marker (DELETED in Phase 3: ensure-process removed)
 
-(ert-deftest crush-test/ensure-process-syncs-to-comint-last-prompt ()
-  "crush--ensure-process should sync process mark to comint-last-prompt start.
-Works even when crush-prompt-start is nil, using comint-last-prompt instead."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          ;; Kill any existing process
-          (when-let ((proc (get-buffer-process buf)))
-            (delete-process proc))
-          ;; comint-last-prompt should be set from the initial prompt
-          (should comint-last-prompt)
-          (should (markerp (car comint-last-prompt)))
-          (let ((prompt-start (marker-position (car comint-last-prompt))))
-            ;; Call ensure-process
-            (crush--ensure-process)
-            ;; Process mark should be at the prompt start position
-            (let ((proc (get-buffer-process buf)))
-              (should proc)
-              (should (= (process-mark proc) prompt-start))
-              (delete-process proc)))))
-    (crush-test--cleanup)))
-
-;;; 67. Phase 6: crush--insert-before-prompt uses comint-last-prompt
+;;; 67. Phase 6: crush--insert-before-prompt uses crush--prompt-start-marker
 
 (ert-deftest crush-test/insert-before-prompt-works-without-prompt-start ()
-  "crush--insert-before-prompt should insert before comint-last-prompt.
-Works even when crush-prompt-start is nil, using comint-last-prompt instead."
+  "crush--insert-before-prompt should insert before crush--prompt-start-marker."
   (let ((crush-buffer-name "*crush-test*"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            ;; Get prompt start position from comint-last-prompt
-            (should comint-last-prompt)
-            (let ((prompt-start (marker-position (car comint-last-prompt))))
-              ;; Insert content before prompt
+            (should crush--prompt-start-marker)
+            (let ((prompt-start (marker-position crush--prompt-start-marker)))
               (crush--insert-before-prompt buf "INSERTED CONTENT" nil nil)
-              ;; Content should be before the prompt
               (goto-char (point-min))
               (should (search-forward "INSERTED CONTENT" nil t))
-              ;; The prompt should still be after the inserted content
               (should (search-forward "crush> " nil t))
-              ;; Prompt start should have advanced past inserted content
-              (should (> (marker-position (car comint-last-prompt)) prompt-start)))))
+              (should (> (marker-position crush--prompt-start-marker) prompt-start)))))
       (crush-test--cleanup))))
 
-;;; 68. Phase 6: crush-send-input uses comint-last-prompt
+;;; 68. Phase 6: crush-send-input uses crush--input-start-marker
 
 (ert-deftest crush-test/send-input-works-without-prompt-start ()
-  "crush-send-input should extract input using comint-last-prompt.
-When crush-prompt-start is nil and there is text before the prompt,
-the extracted prompt in stdin should not include the preceding text
+  "crush-send-input should extract input using crush--input-start-marker.
+The extracted prompt in stdin should not include preceding text
 or the crush> prompt marker."
   (let ((result (crush-test--with-mock
                  (lambda ()
@@ -1893,11 +1717,10 @@ or the crush> prompt marker."
     ;; It should NOT contain the "crush> " prompt marker
     (should-not (string-match-p "crush> " result))))
 
-;;; 69. Phase 6: crush--after-change uses comint-last-prompt
+;;; 69. Phase 6: crush--after-change uses crush--prompt-start-marker
 
 (ert-deftest crush-test/after-change-tags-without-prompt-start ()
-  "crush--after-change should tag input with prompt-id using comint-last-prompt.
-Works even when crush-prompt-start is nil."
+  "crush--after-change should tag input with prompt-id using crush--prompt-start-marker."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1920,49 +1743,9 @@ Works even when crush-prompt-start is nil."
   "crush--make-prompt-marker should not be defined."
   (should-not (fboundp 'crush--make-prompt-marker)))
 
-;;; 71. Phase 6: crush-clear-buffer uses comint prompt insertion
+;;; 71. Phase 6: crush-clear-buffer uses comint prompt insertion (DELETED in Phase 4: replaced by clear-buffer-prompt-has-crush-properties)
 
-(ert-deftest crush-test/clear-buffer-prompt-has-field-properties ()
-  "After crush-clear-buffer, the new prompt should have comint field properties."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (call-interactively #'crush-clear-buffer)
-          (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
-          ;; Prompt should have field property (comint field-based)
-          (should (get-text-property (match-beginning 0) 'field))
-          ;; Prompt should have comint-highlight-prompt face
-          (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
-                      'comint-highlight-prompt))))
-    (crush-test--cleanup)))
-
-;;; 72. Phase 6: crush-interrupt uses comint prompt insertion
-
-(ert-deftest crush-test/interrupt-prompt-has-field-properties ()
-  "After crush-interrupt, the new prompt should have comint field properties."
-  (let ((crush-buffer-name "*crush-test*"))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            ;; Set up a running crush process
-            (setq-local crush-process (make-process
-                                       :name "crush-test-fake"
-                                       :buffer buf
-                                       :command '("sleep" "30")
-                                       :connection-type 'pipe
-                                       :noquery t))
-            (call-interactively #'crush-interrupt)
-            ;; Find the LAST crush> prompt (the one inserted by interrupt)
-            (goto-char (point-max))
-            (should (search-backward "crush> " nil t))
-            ;; Prompt should have field property (comint field-based)
-            (should (get-text-property (match-beginning 0) 'field))
-            ;; Prompt should have comint-highlight-prompt face
-            (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
-                        'comint-highlight-prompt))
-            (should (null crush-process))))
-      (crush-test--cleanup))))
+;;; 72. Phase 6: crush-interrupt uses comint prompt insertion (DELETED in Phase 4: no field property)
 
 ;;; 73. Bug fix: org fontification creates syntax overlays in crush buffer
 
@@ -1976,7 +1759,7 @@ back to the crush buffer."
         (with-current-buffer buf
           (insert "#+begin_src text :file test.el\n(code)\n#+end_src")
           (crush--fontify-as-org (point-min) (point-max))
-          ;; Should have MORE than just the base overlay — org syntax
+          ;; Should have MORE than just the base overlay -- org syntax
           ;; elements (e.g. org-block, org-meta-line) should have overlays
           (let ((overlays (overlays-in (point-min) (point-max))))
             ;; At least 2 overlays: base face + at least one syntax overlay
@@ -2010,6 +1793,7 @@ The overlays must persist in the crush buffer across prompt cycles."
                    (cl-remove-if-not
                     (lambda (ov)
                       (and (overlay-get ov 'crush-overlay)
+                           (not (overlay-get ov 'read-only))
                            (eq (get-text-property
                                 (overlay-start ov) 'crush-region-type) 'org)))
                     (overlays-in (point-min) (point-max)))))
@@ -2022,7 +1806,7 @@ The overlays must persist in the crush buffer across prompt cycles."
                                  :buffer buf
                                  :command '("sh" "-c" "echo 'response'")
                                  :connection-type 'pipe
-                                 :filter #'comint-output-filter
+                                 :filter #'crush--output-filter
                                  :sentinel #'ignore
                                  :noquery t)))
                 (set-marker (process-mark mock-proc) (point-max))
@@ -2034,6 +1818,7 @@ The overlays must persist in the crush buffer across prompt cycles."
                       (lambda (ov)
                         (and (overlay-buffer ov)
                              (overlay-get ov 'crush-overlay)
+                             (not (overlay-get ov 'read-only))
                              (eq (get-text-property
                                   (overlay-start ov) 'crush-region-type) 'org)))
                       (overlays-in (point-min) (point-max)))))
@@ -2044,29 +1829,28 @@ The overlays must persist in the crush buffer across prompt cycles."
 
 (ert-deftest crush-test/insert-before-prompt-keeps-prompt-marker ()
   "Inserting an attachment before the prompt should not move
-comint-last-prompt start marker backward. The marker must advance
+crush--prompt-start-marker backward. The marker must advance
 past inserted text so comint-send-input's delete-region only
 deletes the prompt+input, not the attachment."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          ;; comint-last-prompt start should be at point-min initially
-          (should (= (marker-position (car comint-last-prompt)) (point-min)))
+          (should (= (marker-position crush--prompt-start-marker) (point-min)))
           ;; Insert an attachment before the prompt
           (crush--insert-before-prompt
            buf
            "#+begin_src text :file test.el\n(code)\n#+end_src"
            "attach-1" crush--prompt-id)
-          ;; comint-last-prompt start should now point to the prompt,
+          ;; crush--prompt-start-marker should now point to the prompt,
           ;; not to the beginning of the attachment
-          (goto-char (marker-position (car comint-last-prompt)))
+          (goto-char (marker-position crush--prompt-start-marker))
           (should (search-forward "crush> " nil t))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/org-overlays-survive-send-input ()
   "Org attachment overlays should survive comint-send-input.
 The overlays must not be destroyed by delete-region in comint-send-input,
-which happens when comint-last-prompt start marker is wrong."
+which happens when crush--prompt-start-marker is wrong."
   (skip-unless (require 'org nil t))
   (let ((crush-buffer-name "*crush-test*"))
     (crush-test--cleanup)
@@ -2106,6 +1890,851 @@ which happens when comint-last-prompt start marker is wrong."
                     (accept-process-output crush-process 1))))))
           (when (file-exists-p cap) (delete-file cap)))
       (crush-test--cleanup))))
+
+;;; Backend abstraction tests
+
+(ert-deftest crush-test/backend-is-run-by-default ()
+  "crush--backend should be a crush-run-backend by default."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should crush--backend)
+          (should (crush-backend-p crush--backend))
+          (should (crush-run-backend-p crush--backend))
+          (should (eq (crush-backend-type crush--backend) 'run))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/backend-has-buffer ()
+  "crush--backend should have its buffer set."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (eq (crush-backend-buffer crush--backend) buf))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/backend-has-program ()
+  "crush-run-backend should have the program path set."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (string= (crush-run-backend-program crush--backend) crush-program))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/backend-active-p-when-no-process ()
+  "crush-backend-active-p should return nil when no process is running."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should-not (crush-backend-active-p crush--backend))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/backend-active-p-when-process-running ()
+  "crush-backend-active-p should return non-nil when a process is running."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local crush-process (make-process
+                                     :name "crush-test-fake"
+                                     :buffer buf
+                                     :command '("sleep" "30")
+                                     :connection-type 'pipe
+                                     :noquery t))
+          (should (crush-backend-active-p crush--backend))
+          (interrupt-process crush-process)
+          (setq-local crush-process nil)))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/backend-send-prompt-spawns-process ()
+  "crush-backend-send-prompt should spawn a crush process via the backend."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((result (crush-test--with-mock
+                       (lambda ()
+                         (let ((buf (crush-test--fresh-buffer)))
+                           (with-current-buffer buf
+                             (goto-char (point-max))
+                             (insert "test via backend")
+                             (call-interactively #'crush-send-input)
+                             (accept-process-output crush-process 2)))))))
+          (should (string-match-p "test via backend" result)))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/backend-send-prompt-with-context ()
+  "crush-backend-send-prompt should send context via stdin when attachments exist."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((result (crush-test--with-mock
+                       (lambda ()
+                         (let ((buf (crush-test--fresh-buffer)))
+                           (with-current-buffer buf
+                             (goto-char (point-min))
+                             (let ((start (point))
+                                   (inhibit-read-only t))
+                               (insert "#+begin_src text :file foo.el :lines 1-3\n(foo)\n#+end_src\n\n")
+                               (add-text-properties
+                                start (point)
+                                (list 'crush-attachment-id "test-attach-id"
+                                      'crush-prompt-id crush--prompt-id
+                                      'crush-region-type 'org)))
+                             (goto-char (point-max))
+                             (insert "explain this code")
+                             (call-interactively #'crush-send-input)
+                             (accept-process-output crush-process 2)))))))
+          (should (string-match-p "STDIN:" result))
+          (should (string-match-p "explain this code" result))
+          (should (string-match-p "#\\+begin_src text :file foo.el" result)))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/backend-interrupt-stops-process ()
+  "crush-backend-interrupt should stop the running process."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local crush-process (make-process
+                                     :name "crush-test-fake"
+                                     :buffer buf
+                                     :command '("sleep" "30")
+                                     :connection-type 'pipe
+                                     :noquery t))
+          (should (crush-backend-active-p crush--backend))
+          (crush-backend-interrupt crush--backend)
+          (should-not (crush-backend-active-p crush--backend))
+          (setq-local crush-process nil)))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/backend-cleanup-kills-process ()
+  "crush-backend-cleanup should kill any running process."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local crush-process (make-process
+                                     :name "crush-test-fake"
+                                     :buffer buf
+                                     :command '("sleep" "30")
+                                     :connection-type 'pipe
+                                     :noquery t))
+          (should (crush-backend-active-p crush--backend))
+          (crush-backend-cleanup crush--backend)
+          (should-not (crush-backend-active-p crush--backend))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/client-backend-struct ()
+  "crush-client-backend should be a crush-backend struct."
+  (let ((backend (crush-make-client-backend
+                  :buffer (current-buffer)
+                  :working-directory "/tmp"
+                  :host nil)))
+    (should (crush-backend-p backend))
+    (should (crush-client-backend-p backend))
+    (should (eq (crush-backend-type backend) 'client))))
+
+(ert-deftest crush-test/client-backend-active-p-no-sse ()
+  "crush-backend-active-p should return nil when no SSE process."
+  (let ((backend (crush-make-client-backend
+                  :buffer (current-buffer)
+                  :working-directory "/tmp"
+                  :host nil)))
+    (should-not (crush-backend-active-p backend))))
+
+(ert-deftest crush-test/client-backend-send-prompt-errors ()
+  "crush-backend-send-prompt should error for client backend (not yet implemented)."
+  (let ((backend (crush-make-client-backend
+                  :buffer (current-buffer)
+                  :working-directory "/tmp"
+                  :host nil)))
+    (should-error (crush-backend-send-prompt backend "test" :context nil :session-id nil))))
+
+(ert-deftest crush-test/backend-grant-permission-noop-for-run ()
+  "crush-backend-grant-permission should be a no-op for run backend."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (null (crush-backend-grant-permission crush--backend "perm-id" 'allow)))))
+    (crush-test--cleanup)))
+
+;;; Phase 0: Parallel markers
+
+(ert-deftest crush-test/prompt-start-marker-set-on-init ()
+  "crush--prompt-start-marker should be set after buffer init."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should crush--prompt-start-marker)
+          (should (markerp crush--prompt-start-marker))))
+    (crush-test--cleanup)))
+
+;;; Phase 0 tracking tests (DELETED in Phase 4: no comint-last-prompt to track)
+
+(ert-deftest crush-test/input-start-marker-set-on-init ()
+  "crush--input-start-marker should be set after buffer init."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should crush--input-start-marker)
+          (should (markerp crush--input-start-marker))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/prompt-start-marker-insertion-type ()
+  "crush--prompt-start-marker should have insertion-type t (advances on insert before)."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (markerp crush--prompt-start-marker))
+          (should (marker-insertion-type crush--prompt-start-marker))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/crush-prompt-face-defined ()
+  "crush-prompt-face should be defined."
+  (should (facep 'crush-prompt-face)))
+
+;;; Phase 2: Custom output filter
+
+(ert-deftest crush-test/output-filter-inserts-at-mark ()
+  "crush--output-filter should insert text at the process mark position."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (let* ((mark-pos (point))
+                 (proc (make-process
+                        :name "crush-test"
+                        :buffer buf
+                        :command '("true")
+                        :connection-type 'pipe
+                        :noquery t))
+                 (inhibit-read-only t))
+            (set-marker (process-mark proc) mark-pos)
+            (crush--output-filter proc "hello world\n")
+            (goto-char mark-pos)
+            (should (search-forward "hello world" nil t))
+            (should (> (process-mark proc) mark-pos))
+            (delete-process proc))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/output-filter-advances-process-mark ()
+  "crush--output-filter should advance the process mark past inserted text."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (let* ((mark-pos (point))
+                 (proc (make-process
+                        :name "crush-test"
+                        :buffer buf
+                        :command '("true")
+                        :connection-type 'pipe
+                        :noquery t))
+                 (inhibit-read-only t))
+            (set-marker (process-mark proc) mark-pos)
+            (crush--output-filter proc "abc")
+            (should (= (process-mark proc) (+ mark-pos 3)))
+            (crush--output-filter proc "xyz")
+            (should (= (process-mark proc) (+ mark-pos 6)))
+            (delete-process proc))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/output-filter-logs-to-debug ()
+  "crush--output-filter should log output to *crush-debug* when debug mode is on."
+  (unwind-protect
+      (let ((crush-debug-mode t)
+            (buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let* ((proc (make-process
+                        :name "crush-test"
+                        :buffer buf
+                        :command '("true")
+                        :connection-type 'pipe
+                        :noquery t))
+                 (inhibit-read-only t))
+            (set-marker (process-mark proc) (point-max))
+            (crush--output-filter proc "test output\n")
+            (delete-process proc)))
+        (with-current-buffer "*crush-debug*"
+          (goto-char (point-min))
+          (should (search-forward "output" nil t))
+          (should (search-forward "test output" nil t))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/output-filter-no-field-property ()
+  "crush--output-filter should NOT set field=output on inserted text."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (let* ((mark-pos (point))
+                 (proc (make-process
+                        :name "crush-test"
+                        :buffer buf
+                        :command '("true")
+                        :connection-type 'pipe
+                        :noquery t))
+                 (inhibit-read-only t))
+            (set-marker (process-mark proc) mark-pos)
+            (crush--output-filter proc "response text\n")
+            (should-not (get-text-property (+ mark-pos 1) 'field))
+            (delete-process proc))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/output-filter-handles-dead-buffer ()
+  "crush--output-filter should not error when process buffer is dead."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let* ((proc (make-process
+                        :name "crush-test"
+                        :buffer buf
+                        :command '("true")
+                        :connection-type 'pipe
+                        :noquery t))
+                 (inhibit-read-only t))
+            (set-marker (process-mark proc) (point-max))
+            (kill-buffer buf)
+            (should-not (crush--output-filter proc "should not error\n"))
+            (delete-process proc))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/suppress-false-prompt-removed ()
+  "crush--suppress-false-prompt should not be defined after Phase 2."
+  (should-not (fboundp 'crush--suppress-false-prompt)))
+
+;;; Phase 3: Custom input ring
+
+(ert-deftest crush-test/custom-input-ring-initialized ()
+  "crush--input-ring should be a ring in crush-mode."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (boundp 'crush--input-ring))
+          (should (ring-p crush--input-ring))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/custom-input-ring-add ()
+  "crush--input-ring-add should add input to the ring."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq crush--input-ring (make-ring crush-input-ring-size))
+          (crush--input-ring-add "first prompt")
+          (should (= (ring-length crush--input-ring) 1))
+          (should (string= "first prompt" (ring-ref crush--input-ring 0)))
+          (crush--input-ring-add "second prompt")
+          (should (= (ring-length crush--input-ring) 2))
+          (should (string= "second prompt" (ring-ref crush--input-ring 0)))
+          (should (string= "first prompt" (ring-ref crush--input-ring 1)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/custom-input-ring-add-skips-duplicate ()
+  "crush--input-ring-add should not add consecutive duplicate entries."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq crush--input-ring (make-ring crush-input-ring-size))
+          (crush--input-ring-add "same prompt")
+          (should (= (ring-length crush--input-ring) 1))
+          (crush--input-ring-add "same prompt")
+          (should (= (ring-length crush--input-ring) 1))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/custom-input-ring-add-skips-empty ()
+  "crush--input-ring-add should not add empty strings."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq crush--input-ring (make-ring crush-input-ring-size))
+          (crush--input-ring-add "")
+          (should (= (ring-length crush--input-ring) 0))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/custom-input-ring-read-from-file ()
+  "crush--input-ring-read should read history from file."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer))
+            (tmpfile (make-temp-file "crush-ring-test")))
+        (with-temp-buffer
+          (insert "line one\nline two\nline three\n")
+          (write-region (point-min) (point-max) tmpfile nil 'quiet))
+        (with-current-buffer buf
+          (setq crush--input-ring (make-ring crush-input-ring-size))
+          (let ((crush--input-ring-file-name tmpfile))
+            (crush--input-ring-read))
+          (should (= (ring-length crush--input-ring) 3))
+          (should (string= "line three" (ring-ref crush--input-ring 0)))
+          (should (string= "line two" (ring-ref crush--input-ring 1)))
+          (should (string= "line one" (ring-ref crush--input-ring 2))))
+        (when (file-exists-p tmpfile) (delete-file tmpfile)))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/custom-input-ring-write-to-file ()
+  "crush--input-ring-write should write history to file."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer))
+            (tmpfile (make-temp-file "crush-ring-test")))
+        (with-current-buffer buf
+          (setq crush--input-ring (make-ring crush-input-ring-size))
+          (crush--input-ring-add "alpha")
+          (crush--input-ring-add "beta")
+          (let ((crush--input-ring-file-name tmpfile))
+            (crush--input-ring-write))
+          (with-temp-buffer
+            (insert-file-contents tmpfile)
+            (goto-char (point-min))
+            (should (search-forward "beta" nil t))
+            (should (search-forward "alpha" nil t))))
+        (when (file-exists-p tmpfile) (delete-file tmpfile)))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/send-input-adds-to-custom-ring ()
+  "crush-send-input should add prompt to crush--input-ring."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "history test")
+          (let ((real-make-process (symbol-function #'make-process)))
+            (cl-letf (((symbol-function #'make-process)
+                       (lambda (&rest _)
+                         (let ((proc (funcall real-make-process
+                                              :name "crush-fake"
+                                              :buffer (current-buffer)
+                                              :command '("true")
+                                              :connection-type 'pipe
+                                              :noquery t)))
+                           (set-process-query-on-exit-flag proc nil)
+                           proc))))
+              (call-interactively #'crush-send-input)))
+          (should (> (ring-length crush--input-ring) 0))
+          (should (string-match-p "history test"
+                                  (ring-ref crush--input-ring 0)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/no-placeholder-process ()
+  "crush-mode should not require a placeholder process for input."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should-not (get-buffer-process (current-buffer)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/ensure-process-removed ()
+  "crush--ensure-process should not be defined after Phase 3."
+  (should-not (fboundp 'crush--ensure-process)))
+
+(ert-deftest crush-test/input-sender-removed ()
+  "crush--input-sender should not be defined after Phase 3."
+  (should-not (fboundp 'crush--input-sender)))
+
+(ert-deftest crush-test/input-previous-inserts-from-ring ()
+  "M-p should insert previous input from crush--input-ring."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (crush--input-ring-add "old prompt one")
+          (crush--input-ring-add "old prompt two")
+          (setq-local crush--input-ring-index 0)
+          (goto-char (point-max))
+          (crush--input-previous)
+          (should (string= "old prompt two"
+                           (buffer-substring-no-properties
+                            (marker-position crush--input-start-marker)
+                            (line-end-position))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/input-next-inserts-from-ring ()
+  "M-n should insert next (more recent) input from crush--input-ring."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq crush--input-ring (make-ring crush-input-ring-size))
+          (crush--input-ring-add "old prompt one")
+          (crush--input-ring-add "old prompt two")
+          (setq-local crush--input-ring-index 1)
+          (goto-char (point-max))
+          (crush--input-next)
+          (should (string= "old prompt two"
+                           (buffer-substring-no-properties
+                            (marker-position crush--input-start-marker)
+                            (line-end-position))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/input-ring-file-name-default ()
+  "crush--input-ring-file-name should default to a file in user-emacs-directory."
+  (should (string= crush--input-ring-file-name
+                   (expand-file-name "crush-history" user-emacs-directory))))
+
+;;; Phase 4: Sever comint-mode, switch to text-mode
+
+(ert-deftest crush-test/mode-parent-is-text-mode ()
+  "crush-mode should derive from text-mode, not comint-mode."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (eq major-mode 'crush-mode))
+          (should (derived-mode-p 'text-mode))
+          (should-not (derived-mode-p 'comint-mode))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/no-comint-last-prompt ()
+  "comint-last-prompt should not be set in crush-mode."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should-not (bound-and-true-p comint-last-prompt))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/no-field-property-on-prompt ()
+  "The prompt should NOT have field property (comint removed)."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))
+          (should-not (get-text-property (1- (point)) 'field))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/prompt-has-crush-prompt-face ()
+  "The prompt text should have crush-prompt-face."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))
+          (should (eq (get-text-property (1- (point)) 'font-lock-face)
+                      'crush-prompt-face))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/prompt-is-read-only ()
+  "The prompt text should be read-only (via overlay)."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))
+          (should (get-char-property (1- (point)) 'read-only))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/clear-buffer-prompt-has-crush-properties ()
+  "After crush-clear-buffer, the new prompt should have crush properties."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (call-interactively #'crush-clear-buffer)
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))
+          (should (get-char-property (match-beginning 0) 'read-only))
+          (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
+                      'crush-prompt-face))
+          (should-not (get-text-property (match-beginning 0) 'field))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/no-comint-in-crush-source ()
+  "crush.el source should not contain (require 'comint)."
+  (with-temp-buffer
+    (insert-file-contents (locate-library "crush.el"))
+    (goto-char (point-min))
+    (should-not (search-forward "(require 'comint)" nil t))))
+
+;;; Phase 5: crush-chat-mode minor mode
+
+(ert-deftest crush-test/chat-mode-is-defined ()
+  "crush-chat-mode should be defined as a minor mode."
+  (should (boundp 'crush-chat-mode))
+  (should (fboundp 'crush-chat-mode)))
+
+(ert-deftest crush-test/chat-mode-enabled-in-crush-buffer ()
+  "crush-chat-mode should be enabled in crush buffers."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should crush-chat-mode)))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/chat-mode-has-keymap ()
+  "crush-chat-mode-map should have the expected keybindings."
+  (let ((map (symbol-value 'crush-chat-mode-map)))
+    (should (keymapp map))
+    (should (eq (lookup-key map (kbd "RET")) #'crush-send-input))
+    (should (eq (lookup-key map (kbd "C-c C-c")) #'crush-interrupt))
+    (should (eq (lookup-key map (kbd "C-c C-k")) #'crush-clear-buffer))
+    (should (eq (lookup-key map (kbd "C-c C-s")) #'crush-new-session))
+    (should (eq (lookup-key map (kbd "C-c C-i")) #'crush-insert-selection))
+    (should (eq (lookup-key map (kbd "M-p")) #'crush--input-previous))
+    (should (eq (lookup-key map (kbd "M-n")) #'crush--input-next))))
+
+(ert-deftest crush-test/chat-mode-ret-binds-send-input ()
+  "RET in a crush buffer should resolve to crush-send-input via minor mode."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (eq (key-binding (kbd "RET")) #'crush-send-input))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/chat-mode-adds-after-change-hook ()
+  "crush-chat-mode should add crush--after-change to after-change-functions."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (memq #'crush--after-change after-change-functions))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/chat-mode-adds-post-command-hook ()
+  "crush-chat-mode should add crush--update-header-line to post-command-hook."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (memq #'crush--update-header-line post-command-hook))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/chat-mode-disable-removes-hooks ()
+  "Disabling crush-chat-mode should remove its hooks."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (crush-chat-mode -1)
+          (should-not (memq #'crush--after-change after-change-functions))
+          (should-not (memq #'crush--update-header-line post-command-hook))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/crush-mode-does-not-add-hooks ()
+  "crush-mode should not add after-change-functions or post-command-hook directly.
+Those hooks are managed by crush-chat-mode."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (crush-chat-mode -1)
+          (should-not (memq #'crush--after-change after-change-functions))
+          (should-not (memq #'crush--update-header-line post-command-hook))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/crush-mode-map-is-empty ()
+  "crush-mode-map should have no custom keybindings (moved to crush-chat-mode-map).
+Parent keymap bindings (from text-mode) may still be present."
+  (let ((map crush-mode-map))
+    (should (keymapp map))
+    (should-not (lookup-key map [crush-send-input]))
+    (should-not (lookup-key map [crush-interrupt]))
+    (should-not (lookup-key map [crush-clear-buffer]))
+    (should-not (lookup-key map [crush-new-session]))
+    (should-not (lookup-key map [crush-insert-selection]))
+    (should-not (lookup-key map [crush--input-previous]))
+    (should-not (lookup-key map [crush--input-next]))))
+
+;;; Phase 6: Backend abstraction cleanup
+
+(ert-deftest crush-test/build-command-removed ()
+  "crush--build-command should not be defined (folded into run backend)."
+  (should-not (fboundp 'crush--build-command)))
+
+(ert-deftest crush-test/send-input-always-uses-backend ()
+  "crush-send-input should always use crush--backend (never nil)."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should crush--backend)))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/backend-send-prompt-receives-continue-p ()
+  "crush-backend-send-prompt should receive :continue-p keyword."
+  (let ((received-continue-p nil))
+    (cl-letf (((symbol-function #'crush-backend-send-prompt)
+               (lambda (_backend _prompt &rest _keys)
+                 (setq received-continue-p
+                       (plist-get _keys :continue-p))
+                 (make-process :name "crush-fake"
+                               :buffer (current-buffer)
+                               :command '("true")
+                               :connection-type 'pipe
+                               :noquery t))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (setq-local crush--continue t)
+              (goto-char (point-max))
+              (insert "test continue-p")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should received-continue-p)))
+
+(ert-deftest crush-test/backend-send-prompt-continue-p-nil-when-no-continue ()
+  "crush-backend-send-prompt :continue-p should be nil when crush--continue is nil."
+  (let ((received-continue-p 'unset))
+    (cl-letf (((symbol-function #'crush-backend-send-prompt)
+               (lambda (_backend _prompt &rest _keys)
+                 (setq received-continue-p
+                       (plist-get _keys :continue-p))
+                 (make-process :name "crush-fake"
+                               :buffer (current-buffer)
+                               :command '("true")
+                               :connection-type 'pipe
+                               :noquery t))))
+      (unwind-protect
+          (let ((buf (crush-test--fresh-buffer)))
+            (with-current-buffer buf
+              (setq-local crush--continue nil)
+              (goto-char (point-max))
+              (insert "test no continue")
+              (call-interactively #'crush-send-input)))
+        (crush-test--cleanup)))
+    (should-not received-continue-p)))
+
+(ert-deftest crush-test/send-input-no-dead-else-branch ()
+  "crush-send-input should not have a fallback path when backend is nil.
+The else branch in crush-send-input is dead code since crush--backend
+is always set after crush--init-buffer."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should crush--backend)
+          (should (crush-run-backend-p crush--backend))))
+    (crush-test--cleanup)))
+
+;;; Phase 8: Optional markdown-mode base
+
+(ert-deftest crush-test/parent-mode-is-text-or-markdown ()
+  "crush--parent-mode should be either text-mode or markdown-mode."
+  (should (memq crush--parent-mode '(text-mode markdown-mode))))
+
+(ert-deftest crush-test/mode-derives-from-parent-mode ()
+  "crush-mode should derive from crush--parent-mode."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (derived-mode-p crush--parent-mode))))
+    (crush-test--cleanup)))
+
+;;; Overlay-based read-only prompt
+
+(ert-deftest crush-test/can-type-after-prompt ()
+  "User should be able to type after the prompt without text-read-only error."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (should-not (get-char-property (point) 'read-only))
+          (insert-and-inherit "hello")
+          (goto-char (point-min))
+          (should (search-forward "hello" nil t))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/prompt-is-read-only-via-overlay ()
+  "The prompt text should be read-only via an overlay, not text properties.
+Backspacing into the prompt should be blocked."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))
+          (goto-char (match-beginning 0))
+          (should (get-char-property (point) 'read-only))
+          (should-not (get-text-property (point) 'read-only))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/previous-content-is-read-only ()
+  "After a response cycle, previous content should be read-only via overlay."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "test")
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (let* ((mock-proc (make-process
+                             :name "crush-mock"
+                             :buffer buf
+                             :command '("sh" "-c" "echo response")
+                             :connection-type 'pipe
+                             :filter #'crush--output-filter
+                             :sentinel #'ignore
+                             :noquery t)))
+            (set-marker (process-mark mock-proc) (point-max))
+            (accept-process-output mock-proc 2)
+            (crush--process-sentinel mock-proc "finished\n"))
+          (goto-char (point-min))
+          (should (search-forward "response" nil t))
+          (should (get-char-property (match-beginning 0) 'read-only))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/input-area-is-editable ()
+  "After a response cycle, the new input area should be editable."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "test")
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (let* ((mock-proc (make-process
+                             :name "crush-mock"
+                             :buffer buf
+                             :command '("sh" "-c" "echo response")
+                             :connection-type 'pipe
+                             :filter #'crush--output-filter
+                             :sentinel #'ignore
+                             :noquery t)))
+            (set-marker (process-mark mock-proc) (point-max))
+            (accept-process-output mock-proc 2)
+            (crush--process-sentinel mock-proc "finished\n"))
+          (goto-char (point-max))
+          (should-not (get-char-property (point) 'read-only))
+          (insert-and-inherit "new input")
+          (goto-char (point-min))
+          (should (search-forward "new input" nil t))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/read-only-overlay-tagged ()
+  "Read-only overlays should be tagged with crush-overlay for cleanup."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((overlays (overlays-in (point-min) (point-max))))
+            (should (cl-some (lambda (ov)
+                               (and (overlay-get ov 'read-only)
+                                    (overlay-get ov 'crush-overlay)))
+                             overlays)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/clear-buffer-removes-read-only-overlays ()
+  "crush-clear-buffer should allow typing after the new prompt."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (call-interactively #'crush-clear-buffer)
+          (goto-char (point-max))
+          (should-not (get-char-property (point) 'read-only))
+          (insert-and-inherit "hello")
+          (goto-char (point-min))
+          (should (search-forward "hello" nil t))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/read-only-survives-font-lock ()
+  "Prompt read-only and input editability should survive font-lock refontification."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "test")
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (let* ((mock-proc (make-process
+                             :name "crush-mock"
+                             :buffer buf
+                             :command '("sh" "-c" "echo response")
+                             :connection-type 'pipe
+                             :filter #'crush--output-filter
+                             :sentinel #'ignore
+                             :noquery t)))
+            (set-marker (process-mark mock-proc) (point-max))
+            (accept-process-output mock-proc 2)
+            (crush--process-sentinel mock-proc "finished\n"))
+          (font-lock-fontify-buffer)
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))
+          (should (get-char-property (match-beginning 0) 'read-only))
+          (goto-char (point-max))
+          (should-not (get-char-property (point) 'read-only))))
+    (crush-test--cleanup)))
 
 (provide 'crush-test)
 ;;; crush-test.el ends here

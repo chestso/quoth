@@ -226,11 +226,11 @@ Text properties can be accessed directly:
 
 ## Fontification
 
-Response text is fontified as markdown using `markdown-mode` (if installed), with native syntax highlighting for fenced code blocks. Attachment blocks are fontified as org using `org-mode` (if installed). Both use a temp-buffer technique with overlay-based faces that survive `jit-lock` refontification.
+Response text is highlighted by `markdown-mode` (if installed), using its native syntax highlighting and fenced-code support — no overlays are added for responses. When `markdown-mode` is unavailable and the buffer falls back to `text-mode`, the `crush-response-face` is applied to responses so they stay visually distinct.
 
-When the respective major mode is not available, a configurable fallback face is applied:
+Attachment blocks are fontified as org using `org-mode` (if installed), via a temp-buffer technique with overlay-based faces that survive `jit-lock` refontification. When org is unavailable, the `crush-org-face` fallback is applied:
 
-- `crush-response-face` — background face for response text (gray20 dark / gray90 light)
+- `crush-response-face` — background face for response text in the text-mode fallback (gray20 dark / gray90 light)
 - `crush-org-face` — background face for attachment blocks (gray15 dark / gray95 light)
 
 Disable fontification with:

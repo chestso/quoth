@@ -76,6 +76,7 @@ It operates in two ways:
 ### Phase 2: Polish
 
 - [ ] Error handling and retry
+- [x] Backend abstraction (crush-backend, crush-run-backend, crush-client-backend)
 - [ ] Client/server mode for structured output (SSE event stream)
 - [ ] Permission request handling via client/server mode
 - [ ] Tool call visibility in responses

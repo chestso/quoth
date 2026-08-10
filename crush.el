@@ -52,10 +52,11 @@
 
 ;;; Code:
 
-(require 'comint)
 (require 'subr-x)
 (require 'project)
 (require 'seq)
+(require 'cl-lib)
+(require 'ring)
 
 (declare-function markdown-mode "markdown-mode" ())
 (declare-function org-mode "org" ())
@@ -77,6 +78,11 @@
   '((((background dark)) :background "gray15")
     (((background light)) :background "gray95"))
   "Face for Crush org attachment blocks."
+  :group 'crush)
+
+(defface crush-prompt-face
+  '((t :inherit font-lock-keyword-face))
+  "Face for the crush> prompt marker."
   :group 'crush)
 
 (defcustom crush-program "crush"
@@ -110,7 +116,9 @@ Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
 
 (defcustom crush-fontify-responses t
   "When non-nil, fontify response text using markdown-mode.
-When nil, only the fallback face is applied."
+When markdown-mode is available as the parent mode, native font-lock
+handles highlighting.  When nil, or when markdown-mode is unavailable,
+the fallback `crush-response-face' is applied to responses."
   :type 'boolean
   :group 'crush)
 
@@ -123,6 +131,13 @@ When nil, only the fallback face is applied."
 (defcustom crush-debug-mode t
   "When non-nil, log commands, input, and output to a *crush-debug* buffer."
   :type 'boolean
+  :group 'crush)
+
+(defcustom crush-backend-type 'run
+  "Type of crush backend to use.
+`run' uses the standalone `crush run' mode (per-process).
+`client' uses the client/server HTTP+SSE mode."
+  :type '(choice (const run) (const client))
   :group 'crush)
 
 ;;; Buffer-local state
@@ -156,40 +171,208 @@ Set when prompt is sent, used by sentinel to tag response text.
 Buffer-local.")
 
 (defvar crush--pending-context nil
-  "Context text stashed before `comint-send-input' clears the input area.
-Used by `crush--input-sender' to send context via stdin.
+  "Context text stashed for stdin delivery.
 Buffer-local.")
 
 (defvar crush-process nil
   "The currently running Crush process, if any.
 Buffer-local.")
 
+(defvar crush--prompt-start-marker nil
+  "Marker at the start of the `crush> ' prompt text.
+Buffer-local.")
+
+(defvar crush--input-start-marker nil
+  "Marker at the start of user input area (after prompt text).
+Buffer-local.")
+
+(defvar crush--backend nil
+  "The active crush backend for this buffer.
+Buffer-local.")
+
+(defvar crush--input-ring nil
+  "Ring of previously entered prompts.
+Buffer-local.")
+
+(defvar crush--input-ring-index 0
+  "Current position in `crush--input-ring' for M-p/M-n navigation.
+Buffer-local.")
+
+(defcustom crush-input-ring-size 32
+  "Maximum number of prompts stored in the input ring."
+  :type 'integer
+  :group 'crush)
+
+(defvar crush--input-ring-file-name
+  (expand-file-name "crush-history" user-emacs-directory)
+  "File where input history is persisted.")
+
+;;; Backend abstraction
+
+(cl-defstruct (crush-backend
+               (:constructor nil)
+               (:copier nil))
+  "Base structure for a crush backend."
+  buffer
+  working-directory
+  (type nil))
+
+(cl-defstruct (crush-run-backend
+               (:include crush-backend (type 'run))
+               (:constructor nil)
+               (:constructor crush-make-run-backend
+			     (&key buffer working-directory program args model
+				   &aux (type 'run)))
+               (:copier nil))
+  "Standalone crush run backend."
+  program
+  args
+  model)
+
+(cl-defstruct (crush-client-backend
+               (:include crush-backend (type 'client))
+               (:constructor nil)
+               (:constructor crush-make-client-backend
+			     (&key buffer working-directory host
+				   &aux (type 'client)))
+               (:copier nil))
+  "Client/server crush backend."
+  host
+  (workspace-id nil)
+  (client-id nil)
+  (sse-process nil))
+
+(cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p)
+  "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.")
+
+(cl-defgeneric crush-backend-interrupt (backend)
+  "Interrupt the currently running operation on BACKEND.")
+
+(cl-defgeneric crush-backend-active-p (backend)
+  "Return non-nil if BACKEND has an active operation.")
+
+(cl-defgeneric crush-backend-cleanup (backend)
+  "Clean up any resources held by BACKEND.")
+
+(cl-defgeneric crush-backend-grant-permission (backend permission-id action)
+  "Respond to a permission request on BACKEND.
+ACTION is `allow', `allow-session', or `deny'.")
+
+(cl-defmethod crush-backend-send-prompt
+  ((backend crush-run-backend) prompt &key context session-id continue-p)
+  "Send PROMPT via `crush run' as a new process."
+  (with-current-buffer (crush-backend-buffer backend)
+    (let* ((has-context (and context (not (string-empty-p context))))
+           (base-args (append
+                       (list (crush-run-backend-program backend) "run" "--quiet")
+                       (crush-run-backend-args backend)
+                       (when (crush-run-backend-model backend)
+                         (list "--model" (crush-run-backend-model backend)))))
+           (session-args (append
+                          base-args
+                          (when session-id
+                            (list "--session" session-id))
+                          (when (and continue-p (not session-id))
+                            (list "--continue"))))
+           (args (if has-context session-args
+                   (append session-args (list prompt))))
+           (real-proc (make-process
+                       :name "crush"
+                       :buffer (current-buffer)
+                       :command args
+                       :connection-type 'pipe
+                       :filter #'crush--output-filter
+                       :sentinel #'crush--process-sentinel
+                       :stderr (get-buffer-create "*crush-errors*")
+                       :noquery t)))
+      (crush--debug-log 'command (format "%s" args))
+      (crush--debug-log 'input (format "%S (context: %s)"
+                                       prompt (if has-context "yes" "none")))
+      (set-marker (process-mark real-proc) (point-max))
+      (setq-local crush-process real-proc)
+      (setq-local crush--continue t)
+      (setq-local crush--response-start (point-marker))
+      (when (process-live-p real-proc)
+        (when has-context
+          (process-send-string real-proc context))
+        ;; Always close stdin with EOF. `crush run' reads all of stdin
+        ;; before processing (CRUSH-SPEC), so keeping the pipe open would
+        ;; block the process indefinitely even when the prompt is a CLI arg.
+        (process-send-eof real-proc))
+      real-proc)))
+
+(cl-defmethod crush-backend-interrupt ((backend crush-run-backend))
+  "Interrupt the crush run process."
+  (with-current-buffer (crush-backend-buffer backend)
+    (when crush-process
+      (interrupt-process crush-process)
+      (setq-local crush-process nil))))
+
+(cl-defmethod crush-backend-active-p ((backend crush-run-backend))
+  "Return non-nil if a crush run process is live."
+  (with-current-buffer (crush-backend-buffer backend)
+    (and crush-process (process-live-p crush-process))))
+
+(cl-defmethod crush-backend-cleanup ((backend crush-run-backend))
+  "Kill any running process for this backend."
+  (with-current-buffer (crush-backend-buffer backend)
+    (when (and crush-process (process-live-p crush-process))
+      (delete-process crush-process))
+    (setq-local crush-process nil)))
+
+(cl-defmethod crush-backend-grant-permission ((_backend crush-run-backend) _permission-id _action)
+  "No-op for run backend: permissions are auto-approved."
+  nil)
+
+(cl-defmethod crush-backend-send-prompt
+  ((_backend crush-client-backend) _prompt &key _context _session-id)
+  "Send PROMPT via client/server HTTP API."
+  (error "Client/server backend not yet implemented"))
+
+(cl-defmethod crush-backend-interrupt ((_backend crush-client-backend))
+  "Interrupt the client/server operation."
+  (error "Client/server backend not yet implemented"))
+
+(cl-defmethod crush-backend-active-p ((backend crush-client-backend))
+  "Return non-nil if an SSE stream is active."
+  (and (crush-client-backend-sse-process backend)
+       (process-live-p (crush-client-backend-sse-process backend))))
+
+(cl-defmethod crush-backend-cleanup ((backend crush-client-backend))
+  "Clean up SSE process."
+  (when (crush-client-backend-sse-process backend)
+    (delete-process (crush-client-backend-sse-process backend))
+    (setf (crush-client-backend-sse-process backend) nil)))
+
+(cl-defmethod crush-backend-grant-permission ((_backend crush-client-backend) _permission-id _action)
+  "Grant permission via client/server HTTP API."
+  (error "Client/server backend not yet implemented"))
+
 ;;; Major mode
 
-(defvar crush-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'crush-send-input)
-    (define-key map (kbd "C-c C-c") #'crush-interrupt)
-    (define-key map (kbd "C-c C-k") #'crush-clear-buffer)
-    (define-key map (kbd "C-c C-s") #'crush-new-session)
-    (define-key map (kbd "C-c C-i") #'crush-insert-selection)
-    map)
-  "Keymap for `crush-mode'.")
+(defvar crush--parent-mode
+  (if (require 'markdown-mode nil t)
+      'markdown-mode
+    'text-mode)
+  "Parent mode for `crush-mode'.
+Uses `markdown-mode' if available, otherwise `text-mode'.")
 
-(define-derived-mode crush-mode comint-mode "Crush"
-  "Major mode for interacting with the Crush CLI.
+(defvar crush-mode-map (make-sparse-keymap)
+  "Keymap for `crush-mode'.
+Keybindings are provided by `crush-chat-mode' minor mode.")
 
-A dedicated buffer that sends structured prompts to the Crush CLI
-and receives streamed responses.  Use `crush' to start a session.
+(define-derived-mode crush-mode text-mode "Crush"
+  "Major mode for Crush CLI interaction buffers.
+
+Parent mode is `markdown-mode' if available, otherwise `text-mode'.
+The interactive chat behavior is provided by `crush-chat-mode'
+which is enabled automatically when creating a crush buffer via `crush'.
 
 \\{crush-mode-map}"
   :group 'crush
-  (setq-local comint-prompt-read-only t)
-  (setq-local comint-scroll-to-bottom-on-input t)
-  (setq-local comint-use-prompt-regexp nil)
-  (setq-local comint-input-sender #'crush--input-sender)
-  (setq-local comint-input-ring-file-name
-              (expand-file-name "crush-history" user-emacs-directory))
+  (when (and (eq crush--parent-mode 'markdown-mode)
+             (fboundp 'markdown-mode))
+    (markdown-mode))
   (setq-local crush-process nil)
   (setq-local crush--continue nil)
   (setq-local crush--session nil)
@@ -197,10 +380,42 @@ and receives streamed responses.  Use `crush' to start a session.
   (setq-local crush--attachments nil)
   (setq-local crush--response-start nil)
   (setq-local crush--pending-context nil)
-  (crush--update-header-line)
-  (add-hook 'comint-output-filter-functions #'crush--suppress-false-prompt nil t)
-  (add-hook 'after-change-functions #'crush--after-change nil t)
-  (add-hook 'post-command-hook #'crush--update-header-line nil t))
+  (setq-local crush--backend nil)
+  (setq-local crush--prompt-start-marker nil)
+  (setq-local crush--input-start-marker nil)
+  (setq-local crush--input-ring nil)
+  (setq-local crush--input-ring-index 0))
+
+;;; Chat minor mode
+
+(defvar crush-chat-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'crush-send-input)
+    (define-key map (kbd "C-c C-c") #'crush-interrupt)
+    (define-key map (kbd "C-c C-k") #'crush-clear-buffer)
+    (define-key map (kbd "C-c C-s") #'crush-new-session)
+    (define-key map (kbd "C-c C-i") #'crush-insert-selection)
+    (define-key map (kbd "M-p") #'crush--input-previous)
+    (define-key map (kbd "M-n") #'crush--input-next)
+    map)
+  "Keymap for `crush-chat-mode'.")
+
+(define-minor-mode crush-chat-mode
+  "Minor mode for interactive Crush chat in a buffer.
+
+When enabled, provides keybindings for sending prompts,
+interrupting, clearing, and session management.
+
+\\{crush-chat-mode-map}"
+  :lighter " Chat"
+  :group 'crush
+  :keymap crush-chat-mode-map
+  (if crush-chat-mode
+      (progn
+        (add-hook 'after-change-functions #'crush--after-change nil t)
+        (add-hook 'post-command-hook #'crush--update-header-line nil t))
+    (remove-hook 'after-change-functions #'crush--after-change t)
+    (remove-hook 'post-command-hook #'crush--update-header-line t)))
 
 ;;; Internal helpers
 
@@ -221,6 +436,69 @@ Only logs when `crush-debug-mode' is non-nil."
           (format-time-string "%Y%m%d-%H%M%S")
           (substring (md5 (format "%s%s" (random) (current-time))) 0 8)))
 
+(defun crush--input-ring-read ()
+  "Read input history from `crush--input-ring-file-name'."
+  (setq crush--input-ring (make-ring crush-input-ring-size))
+  (when (file-readable-p crush--input-ring-file-name)
+    (let ((lines nil))
+      (with-temp-buffer
+        (insert-file-contents crush--input-ring-file-name)
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let ((line (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            (unless (string-empty-p line)
+              (push line lines))
+            (forward-line 1))))
+      (dolist (line (nreverse lines))
+        (ring-insert crush--input-ring line)))))
+
+(defun crush--input-ring-write ()
+  "Write input history to `crush--input-ring-file-name'."
+  (when (and crush--input-ring (ring-p crush--input-ring))
+    (let ((ring crush--input-ring)
+          (file crush--input-ring-file-name))
+      (with-temp-buffer
+        (dotimes (i (ring-length ring))
+          (insert (ring-ref ring i) "\n"))
+        (write-region (point-min) (point-max) file nil 'quiet)))))
+
+(defun crush--input-ring-add (input)
+  "Add INPUT to the input ring, skipping duplicates."
+  (when (and crush--input-ring (ring-p crush--input-ring)
+             (not (string-empty-p input)))
+    (unless (and (> (ring-length crush--input-ring) 0)
+                 (string= input (ring-ref crush--input-ring 0)))
+      (ring-insert crush--input-ring input))))
+
+(defun crush--input-previous ()
+  "Insert the previous input from the input ring."
+  (interactive)
+  (when (and crush--input-ring (ring-p crush--input-ring)
+             (> (ring-length crush--input-ring) 0))
+    (let ((input-start (marker-position crush--input-start-marker)))
+      (when input-start
+        (delete-region input-start (line-end-position))
+        (goto-char input-start)
+        (insert (ring-ref crush--input-ring crush--input-ring-index))
+        (setq-local crush--input-ring-index
+                    (min (1+ crush--input-ring-index)
+                         (1- (ring-length crush--input-ring))))))))
+
+(defun crush--input-next ()
+  "Insert the next input from the input ring."
+  (interactive)
+  (when (and crush--input-ring (ring-p crush--input-ring)
+             (> (ring-length crush--input-ring) 0))
+    (let ((input-start (marker-position crush--input-start-marker)))
+      (when input-start
+        (delete-region input-start (line-end-position))
+        (goto-char input-start)
+        (if (<= crush--input-ring-index 0)
+            (setq-local crush--input-ring-index 0)
+          (setq-local crush--input-ring-index (1- crush--input-ring-index))
+          (insert (ring-ref crush--input-ring crush--input-ring-index)))))))
+
 (defun crush--count-attachments-for-prompt (prompt-id)
   "Count attachments for PROMPT-ID in current buffer."
   (length (crush-get-attachments-for-prompt prompt-id)))
@@ -237,25 +515,13 @@ Only logs when `crush-debug-mode' is non-nil."
                             'face 'bold)))))
 
 (defun crush--after-change (beg end _len)
-  "Tag inserted text with prompt ID if at or after the comint prompt.
+  "Tag inserted text with prompt ID if at or after the prompt marker.
 BEG and END are standard after-change hook arguments."
-  (when (and comint-last-prompt
-             (markerp (car comint-last-prompt))
-             (>= beg (marker-position (car comint-last-prompt))))
+  (when (and crush--prompt-start-marker
+             (markerp crush--prompt-start-marker)
+             (>= beg (marker-position crush--prompt-start-marker)))
     (put-text-property beg end 'crush-prompt-id crush--prompt-id))
   (crush--update-header-line))
-
-(defun crush--build-command ()
-  "Build the Crush CLI command list."
-  (let ((base (append (list crush-program "run" "--quiet")
-                      (when crush-args crush-args)
-                      (when crush-model
-                        (list "--model" crush-model)))))
-    (append base
-            (when crush--session
-              (list "--session" crush--session))
-            (when (and crush--continue (not crush--session))
-              (list "--continue")))))
 
 (defun crush--fontify-region (start end type)
   "Fontify region from START to END based on TYPE.
@@ -267,22 +533,13 @@ TYPE is a symbol: `response', `org', or `separator'."
 
 (defun crush--fontify-as-markdown (start end)
   "Fontify region from START to END as markdown text.
-Uses temp-buffer technique with `markdown-mode' if available."
+When `crush--parent-mode' is `markdown-mode', the buffer is already
+markdown-mode and native font-lock handles highlighting, so no overlays
+are created.  Otherwise (text-mode fallback), apply `crush-response-face'
+as a base overlay so responses stay visually distinct."
   (let ((text (buffer-substring-no-properties start end)))
     (when (and text (not (string-empty-p text)) crush-fontify-responses)
-      (let ((temp-buffer (generate-new-buffer " *crush-md*")))
-        (unwind-protect
-            (with-current-buffer temp-buffer
-              (insert text)
-              ;; Try to activate markdown-mode
-              (when (require 'markdown-mode nil t)
-                (markdown-mode)
-                (font-lock-ensure)))
-          ;; Copy faces back as overlays (in crush buffer, not temp)
-          (when (fboundp 'markdown-mode)
-            (crush--copy-faces-as-overlays start temp-buffer))
-          (kill-buffer temp-buffer))
-        ;; Apply base response face overlay
+      (unless (eq crush--parent-mode 'markdown-mode)
         (let ((ov (make-overlay start end nil t)))
           (overlay-put ov 'face 'crush-response-face)
           (overlay-put ov 'crush-overlay t))))))
@@ -333,23 +590,31 @@ Called from the crush buffer; TEMP-BUFFER is the fontified temp buffer."
         (overlay-put ov 'face (nth 2 region))
         (overlay-put ov 'crush-overlay t)))))
 
+(defun crush--freeze-region (start end)
+  "Make the region from START to END read-only via an overlay.
+The overlay is tagged with `crush-overlay' so `crush-clear-buffer'
+can clean it up.  Uses overlays instead of text properties to
+avoid stickiness issues with font-lock refontification."
+  (when (> end start)
+    (let ((ov (make-overlay start end)))
+      (overlay-put ov 'read-only t)
+      (overlay-put ov 'crush-overlay t))))
+
 (defun crush--insert-prompt ()
-  "Insert the `crush> ' prompt marker with comint field properties."
+  "Insert the `crush> ' prompt marker with crush-specific properties.
+Read-only is enforced via overlays (not text properties) to avoid
+stickiness issues.  Previous content is also frozen read-only."
   (let ((inhibit-read-only t)
         (start (point)))
     (insert "crush> ")
     (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
-    (add-text-properties
-     start (point)
-     '(field prompt
-	     front-sticky (field)
-	     rear-nonsticky (field read-only font-lock-face)
-	     read-only t
-	     font-lock-face comint-highlight-prompt))
-    (let ((start-marker (copy-marker start)))
-      (set-marker-insertion-type start-marker t)
-      (setq comint-last-prompt
-            (cons start-marker (point-marker))))))
+    (put-text-property start (point) 'font-lock-face 'crush-prompt-face)
+    (crush--freeze-region start (point))
+    (crush--freeze-region (point-min) start)
+    (setq-local crush--prompt-start-marker (copy-marker start))
+    (set-marker-insertion-type crush--prompt-start-marker t)
+    (setq-local crush--input-start-marker (point-marker))
+    (set-marker-insertion-type crush--input-start-marker nil)))
 
 (defun crush-get-prompt-at-point ()
   "Return the prompt ID at or before point, or nil if not found."
@@ -394,29 +659,38 @@ Each element is (START END ATTACHMENT-ID)."
       ;; Generate prompt ID BEFORE inserting marker
       (setq-local crush--prompt-id (crush--generate-id))
       (crush-mode)
+      (crush-chat-mode 1)
+      (crush--update-header-line)
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (erase-buffer)
         (crush--insert-prompt))
       (setq-local crush--attachments nil)
-      (comint-read-input-ring)
+      (crush--input-ring-read)
       (setq-local default-directory
                   (file-name-as-directory
                    (or crush-working-directory
                        (when-let ((proj (project-current)))
                          (project-root proj))
-                       default-directory))))))
+                       default-directory)))
+      (setq-local crush--backend
+                  (crush-make-run-backend
+                   :buffer buf
+                   :working-directory default-directory
+                   :program crush-program
+                   :args crush-args
+                   :model crush-model)))))
 
 (defun crush--insert-before-prompt (buf formatted &optional attachment-id prompt-id)
   "Insert FORMATTED content into BUF before the `crush> ' prompt line.
-Uses `comint-last-prompt' to find the prompt position.
+Uses `crush--prompt-start-marker' to find the prompt position.
 If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties."
   (with-current-buffer buf
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t))
-      (if (and comint-last-prompt
-               (markerp (car comint-last-prompt)))
-          (let ((prompt-pos (marker-position (car comint-last-prompt)))
+      (if (and crush--prompt-start-marker
+               (markerp crush--prompt-start-marker))
+          (let ((prompt-pos (marker-position crush--prompt-start-marker))
                 (start nil))
             (save-excursion
               (goto-char prompt-pos)
@@ -426,9 +700,7 @@ If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties."
               (when (and attachment-id prompt-id)
                 (put-text-property start (point) 'crush-attachment-id attachment-id)
                 (put-text-property start (point) 'crush-prompt-id prompt-id))
-              ;; Tag as org region type
               (put-text-property start (point) 'crush-region-type 'org)
-              ;; Fontify as org
               (crush--fontify-region start (point) 'org)))
         (let ((start nil))
           (save-excursion
@@ -438,9 +710,7 @@ If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties."
             (when (and attachment-id prompt-id)
               (put-text-property start (point) 'crush-attachment-id attachment-id)
               (put-text-property start (point) 'crush-prompt-id prompt-id))
-            ;; Tag as org region type
             (put-text-property start (point) 'crush-region-type 'org)
-            ;; Fontify as org
             (crush--fontify-region start (point) 'org)))))))
 
 (defun crush--format-selection (file start end)
@@ -463,20 +733,17 @@ FILE is the file path, START and END are the line numbers."
     (format "#+begin_src text :file %s :lines %d-%d\n%s\n#+end_src"
             relative-file start-line end-line selected-text)))
 
-(defun crush--suppress-false-prompt (str)
-  "Suppress false prompt detection by `comint-output-filter'.
-Comint treats the last line of output as a prompt.  Crush responses
-end with text, not a prompt.  This function clears the false prompt.
-STR is the output string from `comint-output-filter'."
-  (crush--debug-log 'output (format "%S" str))
-  (when comint-last-prompt
-    (let ((inhibit-read-only t))
-      (font-lock--remove-face-from-text-property
-       (car comint-last-prompt)
-       (cdr comint-last-prompt)
-       'font-lock-face
-       'comint-highlight-prompt))
-    (setq comint-last-prompt nil)))
+(defun crush--output-filter (proc string)
+  "Insert STRING from PROC into the crush buffer at the process mark."
+  (crush--debug-log 'output (format "%S" string))
+  (when (buffer-live-p (process-buffer proc))
+    (with-current-buffer (process-buffer proc)
+      (let ((inhibit-read-only t)
+            (mark (process-mark proc)))
+        (save-excursion
+          (goto-char mark)
+          (insert string)
+          (set-marker mark (point)))))))
 
 (defun crush--process-sentinel (process event)
   "Sentinel for PROCESS that handles completion and interruption for EVENT."
@@ -505,72 +772,23 @@ STR is the output string from `comint-output-filter'."
         (setq-local crush-process nil)
         (setq-local crush--response-start nil)
         (setq-local crush--attachments nil)
-        (comint-write-input-ring)
+        (crush--input-ring-write)
         (crush--update-header-line)
         (goto-char (point-max))))))
 
 ;;; Major mode commands
-
-(defun crush--ensure-process ()
-  "Ensure a placeholder process exists for comint with an up-to-date mark.
-In Model A, the real crush process exits after each response.
-This creates a sleeping placeholder so `get-buffer-process' returns non-nil.
-The process mark is synced to the start of the last comint prompt so
-`comint-send-input' reads only the current prompt, not stale text from
-previous exchanges."
-  (let ((mark-pos (or (when (and comint-last-prompt
-                                 (markerp (car comint-last-prompt)))
-                        (marker-position (car comint-last-prompt)))
-                      (point-max))))
-    (if-let ((proc (get-buffer-process (current-buffer))))
-        (set-marker (process-mark proc) mark-pos)
-      (let ((proc (start-process "crush-placeholder" (current-buffer)
-                                 "sleep" "3600")))
-        (set-marker (process-mark proc) mark-pos)
-        (set-process-query-on-exit-flag proc nil)
-        (set-process-filter proc #'comint-output-filter)))))
-
-(defun crush--input-sender (_proc input)
-  "Send INPUT to Crush as a new process.
-_PROC is the placeholder process; it stays alive to satisfy comint."
-  (let* ((has-context (and crush--pending-context
-                           (not (string-empty-p crush--pending-context))))
-         (args (if has-context
-                   (crush--build-command)
-                 (append (crush--build-command) (list input))))
-         (real-proc (make-process
-                     :name "crush"
-                     :buffer (current-buffer)
-                     :command args
-                     :connection-type 'pipe
-                     :filter #'comint-output-filter
-                     :sentinel #'crush--process-sentinel
-                     :stderr (get-buffer-create "*crush-errors*")
-                     :noquery t)))
-    (crush--debug-log 'command (format "%s" args))
-    (crush--debug-log 'input (format "%S (context: %s)"
-                                     input (if has-context "yes" "none")))
-    (set-marker (process-mark real-proc) (point-max))
-    (setq-local crush-process real-proc)
-    (setq-local crush--continue t)
-    (setq-local crush--response-start (point-marker))
-    (when (process-live-p real-proc)
-      (when has-context
-        (process-send-string real-proc crush--pending-context)
-        (setq-local crush--pending-context nil))
-      (process-send-eof real-proc))))
 
 (defun crush-send-input ()
   "Send the current prompt to the Crush CLI."
   (interactive)
   (when (and crush-process (process-live-p crush-process))
     (user-error "Crush is still running; interrupt with C-c C-c"))
-  (let* ((prompt-pos (if (and comint-last-prompt
-                              (markerp (cdr comint-last-prompt)))
-                         (marker-position (cdr comint-last-prompt))
-                       (point-min)))
+  (let* ((input-start (or (when (and crush--input-start-marker
+                                     (markerp crush--input-start-marker))
+                            (marker-position crush--input-start-marker))
+                          (point-min)))
          (input (buffer-substring-no-properties
-                 prompt-pos (line-end-position)))
+                 input-start (line-end-position)))
          (prompt (string-trim input))
          (context (string-trim
                    (mapconcat
@@ -580,42 +798,54 @@ _PROC is the placeholder process; it stays alive to satisfy comint."
                     (crush-get-attachments-for-prompt crush--prompt-id)
                     "\n\n")))
          (has-context (not (string-empty-p context)))
-         (stdin-text (if has-context
-                         (concat
-                          "The following org-mode source blocks contain code context"
-                          " from the user's editor. Each block has a :file header"
-                          " indicating the source file and optional :lines for the"
-                          " line range. Use this context to answer the prompt.\n\n"
-                          context "\n\n" prompt "\n")
-                       nil)))
+         (stdin-text (when has-context
+                       (concat
+			"The following org-mode source blocks contain code context"
+			" from the user's editor. Each block has a :file header"
+			" indicating the source file and optional :lines for the"
+			" line range. Use this context to answer the prompt.\n\n"
+			context "\n\n" prompt "\n"))))
     (when (string-empty-p prompt)
       (user-error "No prompt to send"))
-    ;; Stash context for the sender
-    (setq-local crush--pending-context stdin-text)
-    ;; Ensure comint has a process to send to
-    (crush--ensure-process)
-    ;; Let comint handle input insertion, history, and field management.
-    ;; The response separator and response-start marker are set by
-    ;; `crush--input-sender' so they land before the process mark.
-    (comint-send-input)
+    (crush--input-ring-add prompt)
+    (goto-char (line-end-position))
+    (newline)
+    (setq-local crush--response-start (point-marker))
+    (setq-local crush--input-ring-index 0)
+    (let ((has-stdin (and stdin-text (not (string-empty-p stdin-text)))))
+      (crush-backend-send-prompt crush--backend prompt
+                                 :context (when has-stdin stdin-text)
+                                 :session-id crush--session
+                                 :continue-p crush--continue))
     (setq-local crush--attachments nil)
     (goto-char (point-max))))
 
 (defun crush-interrupt ()
   "Interrupt the currently running Crush process."
   (interactive)
-  (when crush-process
-    (interrupt-process crush-process)
-    (setq-local crush-process nil)
-    (let ((inhibit-read-only t))
-      (save-excursion
+  (if (and crush--backend (crush-backend-active-p crush--backend))
+      (progn
+        (crush-backend-interrupt crush--backend)
+        (setq-local crush-process nil)
+        (let ((inhibit-read-only t))
+          (save-excursion
+            (goto-char (point-max))
+            (newline)
+            (crush--insert-prompt)))
         (goto-char (point-max))
-        (newline)
-        (crush--insert-prompt)))
-    (goto-char (point-max))
-    (message "Crush process interrupted"))
-  (unless crush-process
-    (message "No crush process running")))
+        (message "Crush process interrupted"))
+    (when crush-process
+      (interrupt-process crush-process)
+      (setq-local crush-process nil)
+      (let ((inhibit-read-only t))
+        (save-excursion
+          (goto-char (point-max))
+          (newline)
+          (crush--insert-prompt)))
+      (goto-char (point-max))
+      (message "Crush process interrupted"))
+    (unless crush-process
+      (message "No crush process running"))))
 
 (defun crush-clear-buffer ()
   "Clear the Crush buffer output and start a fresh session."
