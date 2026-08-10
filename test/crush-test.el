@@ -826,6 +826,23 @@ process never exits and the buffer hangs after hitting RET."
 
 ;;; 21. Attachments have attachment-id and prompt-id properties
 
+(ert-deftest crush-test/init-buffer-is-idempotent ()
+  "Calling crush--init-buffer on an initialized crush buffer should not
+regenerate the prompt ID or clobber existing state.
+Regression: with markdown-mode as the parent, major-mode is markdown-mode
+(not crush-mode), so the old 'eq major-mode' guard failed to detect an
+already-initialized buffer and re-initialized it."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((id1 crush--prompt-id)
+                  (marker1 crush--prompt-start-marker))
+              (crush--init-buffer buf)
+              (should (string= id1 crush--prompt-id))
+              (should (eq marker1 crush--prompt-start-marker)))))
+      (crush-test--cleanup))))
+
 (ert-deftest crush-test/attachment-has-properties ()
   "Inserted attachments should have crush-attachment-id and crush-prompt-id properties."
   (let ((crush-buffer-name "*crush-test*"))
@@ -942,7 +959,9 @@ process never exits and the buffer hangs after hitting RET."
 ;;; 25. Sentinel applies response face
 
 (ert-deftest crush-test/sentinel-applies-response-face ()
-  "Sentinel should apply crush-response-face to response text via overlay."
+  "Sentinel should visually style the response text.
+When the parent is text-mode, a crush-response-face overlay is applied;
+when markdown-mode, native font-lock styles markdown constructs."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -952,54 +971,71 @@ process never exits and the buffer hangs after hitting RET."
             (insert "test prompt")
             ;; Set response-start marker
             (setq-local crush--response-start (point-marker))
-            (insert "response text\n")
+            (insert "**bold response** text\n")
             ;; Run sentinel
             (crush--process-sentinel (make-process :name "test" :buffer buf :command '("true") :connection-type 'pipe :noquery t) "finished\n")
-            ;; Check response text has face via overlay
+            ;; Visual styling applied to the response text
             (goto-char (point-min))
-            (should (search-forward "response text" nil t))
-            (let ((face (get-char-property (- (point) 5) 'face)))
-              (should (eq face 'crush-response-face))))))
+            (should (search-forward "bold" nil t))
+            (let ((pos (1- (point))))
+              (if (eq crush--parent-mode 'markdown-mode)
+                  (progn
+                    (font-lock-fontify-buffer)
+                    (goto-char (point-min))
+                    (should (search-forward "bold" nil t))
+                    ;; Native markdown font-lock provides a face here.
+                    (let ((f (get-char-property (1- (point)) 'face)))
+                      (should f)
+                      (should-not (eq f 'crush-response-face))))
+                (should (eq (get-char-property pos 'face) 'crush-response-face)))))))
     (crush-test--cleanup)))
 
 ;;; 26. Integration: real process produces response with face
 
 (ert-deftest crush-test/integration-response-has-face ()
-  "Full integration: sending prompt and receiving response should apply face."
+  "Full integration: sending prompt and receiving response should be styled."
   (let ((crush-buffer-name "*crush-test*"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            (let ((prompt-id crush--prompt-id))
-              ;; Insert prompt (simulating user typing)
-              (goto-char (point-max))
-              (insert "hello")
-              ;; Simulate what crush-send-input does before starting process
-              (goto-char (point-max))
-              (newline)
-              ;; Mark where response will start
-              (setq-local crush--response-start (point-marker))
-              ;; Use mock process with actual filter to output response
-              (let* ((mock-proc (make-process
-                                 :name "crush-mock"
-                                 :buffer buf
-                                 :command '("sh" "-c" "echo 'response text'")
-                                 :connection-type 'pipe
-                                 :filter #'crush--output-filter
-				 :sentinel #'ignore
-                                 :noquery t)))
-                (set-marker (process-mark mock-proc) (point-max))
-                ;; Let process complete
-                (accept-process-output mock-proc 2)
-                ;; Run sentinel to apply faces
-                (crush--process-sentinel mock-proc "finished\n"))
-              ;; Check response text has face via overlay
+            ;; Insert prompt (simulating user typing)
+            (goto-char (point-max))
+            (insert "hello")
+            ;; Simulate what crush-send-input does before starting process
+            (goto-char (point-max))
+            (newline)
+            ;; Mark where response will start
+            (setq-local crush--response-start (point-marker))
+            ;; Use mock process with actual filter to output response
+            (let* ((mock-proc (make-process
+                               :name "crush-mock"
+                               :buffer buf
+                               :command '("sh" "-c" "echo '**bold** text'")
+                               :connection-type 'pipe
+                               :filter #'crush--output-filter
+                               :sentinel #'ignore
+                               :noquery t)))
+              (set-marker (process-mark mock-proc) (point-max))
+              ;; Let process complete
+              (accept-process-output mock-proc 2)
+              ;; Run sentinel to apply faces
+              (crush--process-sentinel mock-proc "finished\n"))
+            ;; Response text should be present and styled
+            (goto-char (point-min))
+            (should (search-forward "bold" nil t))
+            (cond
+             ((eq crush--parent-mode 'markdown-mode)
+              (font-lock-fontify-buffer)
               (goto-char (point-min))
-              (should (search-forward "response text" nil t))
-              (let* ((pos (- (point) 5))
+              (should (search-forward "bold" nil t))
+              (let ((face (get-char-property (1- (point)) 'face)))
+                (should face)
+                (should-not (eq face 'crush-response-face))))
+             (t
+              (let* ((pos (1- (point)))
                      (face (get-char-property pos 'face)))
                 (should face)
-                (should (eq face 'crush-response-face))))))
+                (should (eq face 'crush-response-face)))))))
       (crush-test--cleanup))))
 
 ;;; 27. Integration: empty response still applies face
@@ -1065,9 +1101,9 @@ process never exits and the buffer hangs after hitting RET."
 ;;; 29. Overlays survive font-lock fontification
 
 (ert-deftest crush-test/overlays-survive-font-lock ()
-  "Response face overlays must survive font-lock fontification.
-This is the core bug: text properties get stripped by font-lock,
-but overlays persist."
+  "Response styling must survive font-lock fontification.
+In text-mode the crush-response-face overlay persists; in markdown-mode
+native font-lock keeps styling the response constructs."
   (let ((crush-buffer-name "*crush-test*"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -1081,7 +1117,7 @@ but overlays persist."
             (let* ((mock-proc (make-process
                                :name "crush-mock"
                                :buffer buf
-                               :command '("sh" "-c" "echo 'response text'")
+                               :command '("sh" "-c" "echo '**bold** text'")
                                :connection-type 'pipe
                                :filter #'crush--output-filter
                                :sentinel #'ignore
@@ -1089,21 +1125,23 @@ but overlays persist."
               (set-marker (process-mark mock-proc) (point-max))
               (accept-process-output mock-proc 2)
               (crush--process-sentinel mock-proc "finished\n"))
-            ;; Verify overlay exists before font-lock
+            ;; Styling present before font-lock
             (goto-char (point-min))
-            (should (search-forward "response text" nil t))
-            (let ((pos (- (point) 5)))
-              (should (get-char-property pos 'face))
-              (should (eq (get-char-property pos 'face) 'crush-response-face)))
+            (should (search-forward "bold" nil t))
+            (when (eq crush--parent-mode 'text-mode)
+              (let ((pos (1- (point))))
+                (should (get-char-property pos 'face))
+                (should (eq (get-char-property pos 'face) 'crush-response-face))))
             ;; Now run font-lock fontify (simulates interactive Emacs)
             (font-lock-fontify-buffer)
-            ;; Overlay must survive font-lock
+            ;; Styling must survive font-lock
             (goto-char (point-min))
-            (should (search-forward "response text" nil t))
-            (let* ((pos (- (point) 5))
+            (should (search-forward "bold" nil t))
+            (let* ((pos (1- (point)))
                    (face (get-char-property pos 'face)))
               (should face)
-              (should (eq face 'crush-response-face)))))
+              (when (eq crush--parent-mode 'text-mode)
+                (should (eq face 'crush-response-face))))))
       (crush-test--cleanup))))
 
 ;;; 30. Region type tagging: prompt (removed - comint handles via fields)
@@ -1255,20 +1293,6 @@ and no face overlays are created by crush."
                                    overlays)))))
       (crush-test--cleanup))))
 
-(ert-deftest crush-test/fontify-markdown-applies-base-face ()
-  "Fontifying markdown should apply crush-response-face as base overlay."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (insert "plain text")
-          (crush--fontify-as-markdown (point-min) (point-max))
-          ;; Should have at least one overlay with crush-response-face
-          (let ((overlays (overlays-in (point-min) (point-max))))
-            (should (cl-some (lambda (ov)
-                               (eq (overlay-get ov 'face) 'crush-response-face))
-                             overlays)))))
-    (crush-test--cleanup)))
-
 (ert-deftest crush-test/fontify-markdown-empty-region ()
   "Fontifying empty region should not crash."
   (unwind-protect
@@ -1368,7 +1392,9 @@ crush-response-face overlay SHOULD be applied so responses stay distinct."
 ;;; 40. Integration: sentinel calls fontification
 
 (ert-deftest crush-test/sentinel-fontifies-response ()
-  "Sentinel should fontify the response text."
+  "Sentinel should visually style the response text.
+In text-mode a crush-overlay-tagged overlay is created; in markdown-mode
+native font-lock styles the markdown constructs on the response."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1389,11 +1415,23 @@ crush-response-face overlay SHOULD be applied so responses stay distinct."
             (set-marker (process-mark mock-proc) (point-max))
             (accept-process-output mock-proc 2)
             (crush--process-sentinel mock-proc "finished\n"))
-          ;; Response should have overlays from fontification
+          ;; Response text is present
           (goto-char (point-min))
           (should (search-forward "bold" nil t))
-          (let ((overlays (overlays-in (- (point) 4) (point))))
-            (should (cl-some (lambda (ov) (overlay-get ov 'crush-overlay)) overlays)))))
+          (cond
+           ((eq crush--parent-mode 'text-mode)
+            ;; Overlay fontification applies a crush-overlay-tagged overlay.
+            (let ((overlays (overlays-in (- (point) 4) (point))))
+              (should (cl-some (lambda (ov) (overlay-get ov 'crush-overlay))
+                               overlays))))
+           (t
+            ;; Native markdown font-lock styles the bold construct.
+            (font-lock-fontify-buffer)
+            (goto-char (point-min))
+            (should (search-forward "bold" nil t))
+            (let ((face (get-char-property (1- (point)) 'face)))
+              (should face)
+              (should-not (eq face 'crush-response-face)))))))
     (crush-test--cleanup)))
 
 ;;; 41. Integration: attachment insertion calls fontification
@@ -2202,7 +2240,7 @@ which happens when crush--prompt-start-marker is wrong."
 ;;; Phase 3: Custom input ring
 
 (ert-deftest crush-test/custom-input-ring-initialized ()
-  "crush--input-ring should be a ring in crush-mode."
+  "crush--input-ring should be a ring in a crush buffer."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2310,7 +2348,7 @@ which happens when crush--prompt-start-marker is wrong."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/no-placeholder-process ()
-  "crush-mode should not require a placeholder process for input."
+  "The crush buffer should not require a placeholder process for input."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2366,13 +2404,16 @@ which happens when crush--prompt-start-marker is wrong."
 ;;; Phase 4: Sever comint-mode, switch to text-mode
 
 (ert-deftest crush-test/mode-parent-is-text-mode ()
-  "crush-mode should derive from text-mode, not comint-mode."
+  "The crush buffer's major mode should be the parent mode (text-mode or
+markdown-mode), deriving from text-mode and never comint-mode.
+There is no separate `crush-mode' major mode."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (eq major-mode 'crush-mode))
+          (should (eq major-mode crush--parent-mode))
           (should (derived-mode-p 'text-mode))
-          (should-not (derived-mode-p 'comint-mode))))
+          (should-not (derived-mode-p 'comint-mode))
+          (should-not (fboundp 'crush-mode))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/no-comint-last-prompt ()
@@ -2496,29 +2537,12 @@ which happens when crush--prompt-start-marker is wrong."
           (should-not (memq #'crush--update-header-line post-command-hook))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/crush-mode-does-not-add-hooks ()
-  "crush-mode should not add after-change-functions or post-command-hook directly.
-Those hooks are managed by crush-chat-mode."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (crush-chat-mode -1)
-          (should-not (memq #'crush--after-change after-change-functions))
-          (should-not (memq #'crush--update-header-line post-command-hook))))
-    (crush-test--cleanup)))
-
-(ert-deftest crush-test/crush-mode-map-is-empty ()
-  "crush-mode-map should have no custom keybindings (moved to crush-chat-mode-map).
-Parent keymap bindings (from text-mode) may still be present."
-  (let ((map crush-mode-map))
-    (should (keymapp map))
-    (should-not (lookup-key map [crush-send-input]))
-    (should-not (lookup-key map [crush-interrupt]))
-    (should-not (lookup-key map [crush-clear-buffer]))
-    (should-not (lookup-key map [crush-new-session]))
-    (should-not (lookup-key map [crush-insert-selection]))
-    (should-not (lookup-key map [crush--input-previous]))
-    (should-not (lookup-key map [crush--input-next]))))
+(ert-deftest crush-test/crush-mode-removed ()
+  "The phantom `crush-mode' major mode and its keymap should not exist.
+The crush buffer's major mode is the parent (markdown-mode/text-mode),
+and all keybindings live in `crush-chat-mode'."
+  (should-not (fboundp 'crush-mode))
+  (should-not (boundp 'crush-mode-map)))
 
 ;;; Phase 6: Backend abstraction cleanup
 
@@ -2596,7 +2620,7 @@ is always set after crush--init-buffer."
   (should (memq crush--parent-mode '(text-mode markdown-mode))))
 
 (ert-deftest crush-test/mode-derives-from-parent-mode ()
-  "crush-mode should derive from crush--parent-mode."
+  "The crush buffer major mode should derive from crush--parent-mode."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2823,7 +2847,40 @@ fail to enforce read-only."
             (should (get-text-property (point) 'read-only))
             (should-error (insert-and-inherit "X") :type 'text-read-only)
             (goto-char (point-max))
-            (should-not (get-char-property (point) 'read-only))))
+            (should-not (get-char-property (point) 'read-only))
+            ;; Crash regression: after markdown fontify, typing in the
+            ;; input area must still work (font-lock must not leak the
+            ;; prompt's read-only into new input). Insert twice.
+            (insert-and-inherit "a")
+            (insert-and-inherit "b")
+            (goto-char (point-min))
+            (should (search-forward "ab" nil t))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/type-at-fresh-prompt-after-markdown-font-lock ()
+  "Typing at a fresh prompt must work after markdown refontification.
+Regression: when markdown-mode fontifies the buffer, it strips
+`rear-nonsticky' from the read-only prompt text.  Without it, text typed
+right after the prompt inherits `read-only' and Emacs signals
+\"Text is read-only\" on the very first insertion."
+  (skip-unless (require 'markdown-mode nil t))
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            ;; Fontify without any prior input, as jit-lock does during
+            ;; redisplay.  This strips rear-nonsticky from the prompt.
+            (font-lock-fontify-buffer)
+            (goto-char (point-max))
+            (should-not (get-char-property (point) 'read-only))
+            (insert-and-inherit "hello")
+            (insert-and-inherit " world")
+            (goto-char (point-min))
+            (should (search-forward "hello world" nil t))
+            ;; The prompt itself must still be read-only and frozen.
+            (goto-char (point-min))
+            (should (get-char-property (point) 'read-only))
+            (should-error (insert-and-inherit "X") :type 'text-read-only)))
       (crush-test--cleanup))))
 
 (provide 'crush-test)

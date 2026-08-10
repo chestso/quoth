@@ -69,7 +69,7 @@ When non-nil (default), log commands, input, output, and sentinel events to a `*
 
 ## Usage
 
-### Crush buffer (major mode)
+### Crush buffer (chat mode)
 
 - `M-x crush` — open the crush interaction buffer
 - Type a prompt and press `RET` to send it to the Crush CLI

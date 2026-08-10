@@ -160,6 +160,12 @@ Buffer-local.")
 Generated when prompt marker is created, used when prompt is sent.
 Buffer-local.")
 
+(defvar crush--initialized nil
+  "Non-nil once a crush buffer has been initialized.
+Used to make `crush--init-buffer' idempotent regardless of the active
+parent mode (which may be `markdown-mode' or `text-mode').
+Buffer-local.")
+
 (defvar crush--attachments nil
   "List of attachments for current pending prompt.
 Each attachment is a plist: (:id <uuid> :prompt-id <uuid> :content <string>).
@@ -354,37 +360,8 @@ ACTION is `allow', `allow-session', or `deny'.")
   (if (require 'markdown-mode nil t)
       'markdown-mode
     'text-mode)
-  "Parent mode for `crush-mode'.
+  "Parent mode for the crush buffer.
 Uses `markdown-mode' if available, otherwise `text-mode'.")
-
-(defvar crush-mode-map (make-sparse-keymap)
-  "Keymap for `crush-mode'.
-Keybindings are provided by `crush-chat-mode' minor mode.")
-
-(define-derived-mode crush-mode text-mode "Crush"
-  "Major mode for Crush CLI interaction buffers.
-
-Parent mode is `markdown-mode' if available, otherwise `text-mode'.
-The interactive chat behavior is provided by `crush-chat-mode'
-which is enabled automatically when creating a crush buffer via `crush'.
-
-\\{crush-mode-map}"
-  :group 'crush
-  (when (and (eq crush--parent-mode 'markdown-mode)
-             (fboundp 'markdown-mode))
-    (markdown-mode))
-  (setq-local crush-process nil)
-  (setq-local crush--continue nil)
-  (setq-local crush--session nil)
-  (setq-local crush--prompt-id (crush--generate-id))
-  (setq-local crush--attachments nil)
-  (setq-local crush--response-start nil)
-  (setq-local crush--pending-context nil)
-  (setq-local crush--backend nil)
-  (setq-local crush--prompt-start-marker nil)
-  (setq-local crush--input-start-marker nil)
-  (setq-local crush--input-ring nil)
-  (setq-local crush--input-ring-index 0))
 
 ;;; Chat minor mode
 
@@ -413,9 +390,11 @@ interrupting, clearing, and session management.
   (if crush-chat-mode
       (progn
         (add-hook 'after-change-functions #'crush--after-change nil t)
-        (add-hook 'post-command-hook #'crush--update-header-line nil t))
+        (add-hook 'post-command-hook #'crush--update-header-line nil t)
+        (add-hook 'post-command-hook #'crush--reassert-read-only-boundaries nil t))
     (remove-hook 'after-change-functions #'crush--after-change t)
-    (remove-hook 'post-command-hook #'crush--update-header-line t)))
+    (remove-hook 'post-command-hook #'crush--update-header-line t)
+    (remove-hook 'post-command-hook #'crush--reassert-read-only-boundaries t)))
 
 ;;; Internal helpers
 
@@ -595,9 +574,13 @@ Called from the crush buffer; TEMP-BUFFER is the fontified temp buffer."
 The `read-only' property blocks both insertion into and deletion of the
 covered text.  `front-sticky' and `rear-nonsticky' keep the freeze from
 leaking: text typed just before the region stays read-only, and text typed
-just after it stays editable.
-Modification hooks are suppressed while applying so other buffer metadata
-(like prompt IDs) is not re-tagged by `crush--after-change'."
+just after it stays editable.  `rear-nonsticky' must stay on the last
+read-only char, otherwise inserting right after it fails with
+\"Text is read-only\" because the new text inherits `read-only'.
+`crush--install-font-lock-guard' keeps `rear-nonsticky' intact across
+font-lock refontification.
+Modification hooks are suppressed while applying so other buffer
+metadata (like prompt IDs) is not re-tagged by `crush--after-change'."
   (when (> end start)
     (let ((inhibit-modification-hooks t))
       (add-text-properties
@@ -605,6 +588,28 @@ Modification hooks are suppressed while applying so other buffer metadata
        '(read-only t
 		   front-sticky (read-only)
 		   rear-nonsticky (read-only))))))
+
+(defun crush--reassert-read-only-boundaries (&rest _)
+  "Re-assert `rear-nonsticky' on all read-only text.
+font-lock (e.g. markdown-mode) includes `rear-nonsticky' in its managed
+properties and strips it whenever it writes `font-lock-face' over a
+region.  Without `rear-nonsticky', text typed just after a read-only char
+inherits `read-only' and Emacs refuses the insertion (\"Text is
+read-only\").  This restores the boundary on every read-only position.
+Runs in `post-command-hook' so any `rear-nonsticky' stripped by a
+completed command (including font-lock refontification) is restored
+before the next user input.
+Accepts optional hook arguments so it can also be used as a change hook."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t)
+        (pos (point-min)))
+    (while (< pos (point-max))
+      (when (get-text-property pos 'read-only)
+        (add-text-properties
+         pos (1+ pos)
+         '(rear-nonsticky (read-only font-lock-face))))
+      (setq pos (or (next-single-property-change pos 'read-only nil (point-max))
+                    (point-max))))))
 
 (defun crush--insert-prompt ()
   "Insert the `crush> ' prompt marker with crush-specific properties.
@@ -664,20 +669,61 @@ Each element is (START END ATTACHMENT-ID)."
                       (point-max)))))
     (nreverse prompts)))
 
+(defun crush--install-font-lock-guard (&optional enable)
+  "Protect read-only boundaries from font-lock in the current buffer.
+markdown-mode (and other modes) include `rear-nonsticky' in
+`font-lock-extra-managed-props', so font-lock strips it from read-only
+prompts and frozen responses during refontification.  Without
+`rear-nonsticky', text typed just after a read-only char inherits
+`read-only' and Emacs refuses the insertion (\"Text is read-only\"),
+making the input area uneditable.
+ENABLE non-nil (or omitted) installs a buffer-local
+`font-lock-unfontify-region-function' that skips `rear-nonsticky' when
+unfontifying.  ENABLE nil restores the default."
+  (if (called-interactively-p 'any)
+      (setq enable (not (local-variable-p 'font-lock-unfontify-region-function))))
+  (if enable
+      (setq-local font-lock-unfontify-region-function
+                  (lambda (beg end)
+                    (let ((props (remove 'rear-nonsticky
+                                         (append font-lock-extra-managed-props
+                                                 '(face font-lock-multiline)))))
+                      (remove-list-of-text-properties beg end props))))
+    (kill-local-variable 'font-lock-unfontify-region-function)))
+
 (defun crush--init-buffer (buf)
   "Initialize BUF as a crush buffer if not already initialized."
   (with-current-buffer buf
-    (unless (eq major-mode 'crush-mode)
-      ;; Generate prompt ID BEFORE inserting marker
+    (unless crush--initialized
+      ;; Establish the buffer's major mode directly (markdown-mode or
+      ;; text-mode). There is no separate crush-mode major mode.
+      (funcall (symbol-function
+                (if (and (memq crush--parent-mode '(markdown-mode text-mode))
+                         (fboundp crush--parent-mode))
+                    crush--parent-mode
+                  'text-mode)))
+      ;; Initialize crush state AFTER mode setup, since the mode may have
+      ;; run kill-all-local-variables.
+      ;; Generate prompt ID BEFORE inserting the marker.
       (setq-local crush--prompt-id (crush--generate-id))
-      (crush-mode)
+      (setq-local crush-process nil)
+      (setq-local crush--continue nil)
+      (setq-local crush--session nil)
+      (setq-local crush--attachments nil)
+      (setq-local crush--response-start nil)
+      (setq-local crush--pending-context nil)
+      (setq-local crush--backend nil)
+      (setq-local crush--prompt-start-marker nil)
+      (setq-local crush--input-start-marker nil)
+      (setq-local crush--input-ring nil)
+      (setq-local crush--input-ring-index 0)
       (crush-chat-mode 1)
+      (crush--install-font-lock-guard t)
       (crush--update-header-line)
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (erase-buffer)
         (crush--insert-prompt))
-      (setq-local crush--attachments nil)
       (crush--input-ring-read)
       (setq-local default-directory
                   (file-name-as-directory
@@ -691,7 +737,10 @@ Each element is (START END ATTACHMENT-ID)."
                    :working-directory default-directory
                    :program crush-program
                    :args crush-args
-                   :model crush-model)))))
+                   :model crush-model))
+      ;; Mark initialized only after mode setup so the flag is not wiped
+      ;; by the parent mode (which calls kill-all-local-variables).
+      (setq-local crush--initialized t))))
 
 (defun crush--insert-before-prompt (buf formatted &optional attachment-id prompt-id)
   "Insert FORMATTED content into BUF before the `crush> ' prompt line.
