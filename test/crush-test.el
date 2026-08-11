@@ -484,24 +484,26 @@ process never exits and the buffer hangs after hitting RET."
                  (lambda ()
                    (let ((buf (crush-test--fresh-buffer)))
                      (with-current-buffer buf
-                       ;; Simulate an inserted org block before the prompt
+                       ;; Simulate an inserted attachment before the prompt
                        (goto-char (point-min))
                        (let ((start (point))
                              (inhibit-read-only t))
-                         (insert "#+begin_src text :file foo.el :lines 1-3\n(foo)\n#+end_src\n\n")
+                         (insert "**Attachment: foo.el (lines 1-3)**\n\n```emacs-lisp\n(foo)\n```\n\n")
                          (add-text-properties
                           start (point)
                           (list 'crush-attachment-id "test-attach-id"
                                 'crush-prompt-id crush--prompt-id
-                                'crush-region-type 'org)))
+                                'crush-region-type 'attachment
+                                'crush-filename "foo.el"
+                                'crush-lines "1-3")))
                        (goto-char (point-max))
                        (insert "explain this code")
                        (call-interactively #'crush-send-input)
                        (accept-process-output crush-process 2)))))))
     (should (string-match-p "STDIN:" result))
     (should (string-match-p "explain this code" result))
-    (should (string-match-p "#\\+begin_src text :file foo.el" result))
-    (should (string-match-p "org-mode source blocks" result))))
+    (should (string-match-p "\\*\\*Attachment: foo.el" result))
+    (should (string-match-p "markdown fenced code blocks" result))))
 
 (ert-deftest crush-test/mock-sends-continue-flag ()
   "After first prompt, --continue should be passed on subsequent prompts."
@@ -931,219 +933,6 @@ already-initialized buffer and re-initialized it."
                 (should (member second-id all-prompts)))))))
     (crush-test--cleanup)))
 
-;;; 24. Response text has response face
-
-(ert-deftest crush-test/response-has-response-face ()
-  "Response text should have crush-response-face applied via overlay."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (let ((prompt-id crush--prompt-id))
-            ;; Simulate a response manually
-            (goto-char (point-max))
-            (let ((response-start (point)))
-              (insert "response text\n")
-              ;; Tag and apply face like sentinel does
-              (put-text-property response-start (point) 'crush-response-to prompt-id)
-              (let ((ov (make-overlay response-start (point) nil t)))
-                (overlay-put ov 'face 'crush-response-face)
-                (overlay-put ov 'crush-overlay t))
-              (crush--insert-prompt))
-            ;; Check response text has face via overlay
-            (goto-char (point-min))
-            (should (search-forward "response text" nil t))
-            (let ((face (get-char-property (- (point) 5) 'face)))
-              (should (eq face 'crush-response-face))))))
-    (crush-test--cleanup)))
-
-;;; 25. Sentinel applies response face
-
-(ert-deftest crush-test/sentinel-applies-response-face ()
-  "Sentinel should visually style the response text.
-When the parent is text-mode, a crush-response-face overlay is applied;
-when markdown-mode, native font-lock styles markdown constructs."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (let ((prompt-id crush--prompt-id))
-            ;; Simulate sending a prompt
-            (goto-char (point-max))
-            (insert "test prompt")
-            ;; Set response-start marker
-            (setq-local crush--response-start (point-marker))
-            (insert "**bold response** text\n")
-            ;; Run sentinel
-            (crush--process-sentinel (make-process :name "test" :buffer buf :command '("true") :connection-type 'pipe :noquery t) "finished\n")
-            ;; Visual styling applied to the response text
-            (goto-char (point-min))
-            (should (search-forward "bold" nil t))
-            (let ((pos (1- (point))))
-              (if (eq crush--parent-mode 'markdown-mode)
-                  (progn
-                    (font-lock-fontify-buffer)
-                    (goto-char (point-min))
-                    (should (search-forward "bold" nil t))
-                    ;; Native markdown font-lock provides a face here.
-                    (let ((f (get-char-property (1- (point)) 'face)))
-                      (should f)
-                      (should-not (eq f 'crush-response-face))))
-                (should (eq (get-char-property pos 'face) 'crush-response-face)))))))
-    (crush-test--cleanup)))
-
-;;; 26. Integration: real process produces response with face
-
-(ert-deftest crush-test/integration-response-has-face ()
-  "Full integration: sending prompt and receiving response should be styled."
-  (let ((crush-buffer-name "*crush-test*"))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            ;; Insert prompt (simulating user typing)
-            (goto-char (point-max))
-            (insert "hello")
-            ;; Simulate what crush-send-input does before starting process
-            (goto-char (point-max))
-            (newline)
-            ;; Mark where response will start
-            (setq-local crush--response-start (point-marker))
-            ;; Use mock process with actual filter to output response
-            (let* ((mock-proc (make-process
-                               :name "crush-mock"
-                               :buffer buf
-                               :command '("sh" "-c" "echo '**bold** text'")
-                               :connection-type 'pipe
-                               :filter #'crush--output-filter
-                               :sentinel #'ignore
-                               :noquery t)))
-              (set-marker (process-mark mock-proc) (point-max))
-              ;; Let process complete
-              (accept-process-output mock-proc 2)
-              ;; Run sentinel to apply faces
-              (crush--process-sentinel mock-proc "finished\n"))
-            ;; Response text should be present and styled
-            (goto-char (point-min))
-            (should (search-forward "bold" nil t))
-            (cond
-             ((eq crush--parent-mode 'markdown-mode)
-              (font-lock-fontify-buffer)
-              (goto-char (point-min))
-              (should (search-forward "bold" nil t))
-              (let ((face (get-char-property (1- (point)) 'face)))
-                (should face)
-                (should-not (eq face 'crush-response-face))))
-             (t
-              (let* ((pos (1- (point)))
-                     (face (get-char-property pos 'face)))
-                (should face)
-                (should (eq face 'crush-response-face)))))))
-      (crush-test--cleanup))))
-
-;;; 27. Integration: empty response still applies face
-
-(ert-deftest crush-test/integration-empty-response ()
-  "Even empty response should not crash when applying face."
-  (let ((crush-buffer-name "*crush-test*"))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            ;; Setup buffer
-            (goto-char (point-max))
-            (newline)
-            (setq-local crush--response-start (point-marker))
-            ;; Create process with no output
-            (let* ((mock-proc (make-process
-                               :name "crush-mock"
-                               :buffer buf
-                               :command '("sh" "-c" "true")
-                               :connection-type 'pipe
-                               :filter #'crush--output-filter
-                               :sentinel #'ignore
-                               :noquery t)))
-              (set-marker (process-mark mock-proc) (point-max))
-              (accept-process-output mock-proc 2)
-	      ;; Should not error on empty response
-	      (crush--process-sentinel mock-proc "finished\n"))
-	    ;; Check buffer still has a new prompt
-	    (goto-char (point-min))
-	    (should (search-forward "crush> " nil t))))
-      (crush-test--cleanup))))
-
-;;; 28. Integration: interrupted response still inserts new prompt
-
-(ert-deftest crush-test/integration-interrupted-response ()
-  "Interrupted response should still insert new prompt."
-  (let ((crush-buffer-name "*crush-test*"))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            ;; Setup buffer
-            (goto-char (point-max))
-            (newline)
-            (setq-local crush--response-start (point-marker))
-            ;; Create process that gets interrupted
-            (let* ((mock-proc (make-process
-                               :name "crush-mock"
-                               :buffer buf
-                               :command '("sh" "-c" "echo 'partial'; sleep 10")
-                               :connection-type 'pipe
-                               :filter #'crush--output-filter
-                               :sentinel #'ignore
-                               :noquery t)))
-              (set-marker (process-mark mock-proc) (point-max))
-              (accept-process-output mock-proc 0.5)
-              ;; Simulate interrupt
-              (crush--process-sentinel mock-proc "interrupt\n"))
-            ;; Check buffer has new prompt
-            (goto-char (point-min))
-            (should (search-forward "crush> " nil t))))
-      (crush-test--cleanup))))
-
-;;; 29. Overlays survive font-lock fontification
-
-(ert-deftest crush-test/overlays-survive-font-lock ()
-  "Response styling must survive font-lock fontification.
-In text-mode the crush-response-face overlay persists; in markdown-mode
-native font-lock keeps styling the response constructs."
-  (let ((crush-buffer-name "*crush-test*"))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            ;; Simulate a complete response cycle
-            (goto-char (point-max))
-            (insert "test")
-            (goto-char (point-max))
-            (newline)
-            (setq-local crush--response-start (point-marker))
-            (let* ((mock-proc (make-process
-                               :name "crush-mock"
-                               :buffer buf
-                               :command '("sh" "-c" "echo '**bold** text'")
-                               :connection-type 'pipe
-                               :filter #'crush--output-filter
-                               :sentinel #'ignore
-                               :noquery t)))
-              (set-marker (process-mark mock-proc) (point-max))
-              (accept-process-output mock-proc 2)
-              (crush--process-sentinel mock-proc "finished\n"))
-            ;; Styling present before font-lock
-            (goto-char (point-min))
-            (should (search-forward "bold" nil t))
-            (when (eq crush--parent-mode 'text-mode)
-              (let ((pos (1- (point))))
-                (should (get-char-property pos 'face))
-                (should (eq (get-char-property pos 'face) 'crush-response-face))))
-            ;; Now run font-lock fontify (simulates interactive Emacs)
-            (font-lock-fontify-buffer)
-            ;; Styling must survive font-lock
-            (goto-char (point-min))
-            (should (search-forward "bold" nil t))
-            (let* ((pos (1- (point)))
-                   (face (get-char-property pos 'face)))
-              (should face)
-              (when (eq crush--parent-mode 'text-mode)
-                (should (eq face 'crush-response-face))))))
-      (crush-test--cleanup))))
-
 ;;; 30. Region type tagging: prompt (removed - comint handles via fields)
 
 ;;; 31. Region type tagging: input (removed - comint handles via fields)
@@ -1175,14 +964,18 @@ native font-lock keeps styling the response constructs."
           ;; Check that response text has crush-region-type 'response
           (goto-char (point-min))
           (should (search-forward "response text" nil t))
+          ;; Sentinel must not create any crush overlays anymore.
+          (let ((overlays (cl-remove-if-not (lambda (ov) (overlay-get ov 'crush-overlay))
+                                            (overlays-in (point-min) (point-max)))))
+            (should-not overlays))
           (let ((region-type (get-text-property (- (point) 5) 'crush-region-type)))
             (should (eq region-type 'response)))))
     (crush-test--cleanup)))
 
-;;; 33. Region type tagging: org (attachment)
+;;; 33. Region type tagging: attachment
 
-(ert-deftest crush-test/attachment-region-tagged-as-org ()
-  "Attachment blocks should be tagged with crush-region-type 'org."
+(ert-deftest crush-test/attachment-region-tagged-as-attachment ()
+  "Attachment blocks should be tagged with crush-region-type 'attachment."
   (let ((crush-buffer-name "*crush-test*"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -1192,11 +985,11 @@ native font-lock keeps styling the response constructs."
               (insert "selected code\n")
               (setq-local buffer-file-name "/test/file.el")
               (crush-insert-selection (point-min) (point-max)))
-            ;; Check that the org block has crush-region-type 'org
+            ;; Check that the attachment has crush-region-type 'attachment
             (goto-char (point-min))
-            (should (search-forward "#+begin_src" nil t))
+            (should (search-forward "Attachment:" nil t))
             (let ((region-type (get-text-property (match-beginning 0) 'crush-region-type)))
-              (should (eq region-type 'org)))))
+              (should (eq region-type 'attachment)))))
       (crush-test--cleanup))))
 
 ;;; 34. Region type tagging: separator (removed - separators no longer inserted)
@@ -1205,200 +998,126 @@ native font-lock keeps styling the response constructs."
 
 ;;; 36. Region type tagging: separator (removed - separators no longer inserted)
 
-;;; 37. Fontification dispatcher: crush--fontify-region
+;;; 37. Attachment formatting: markdown fenced blocks
 
-(ert-deftest crush-test/fontify-region-dispatches-to-markdown ()
-  "crush--fontify-region should call crush--fontify-as-markdown for 'response type."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (called nil))
+(ert-deftest crush-test/format-selection-emits-fenced-block ()
+  "crush--format-selection should emit a markdown fenced code block
+with an Attachment header line."
+  (let ((buf (crush-test--fresh-buffer)))
+    (unwind-protect
         (with-current-buffer buf
-          (insert "test response")
-          (cl-letf (((symbol-function #'crush--fontify-as-markdown)
-                     (lambda (_start _end) (setq called t))))
-            (crush--fontify-region (point-min) (point-max) 'response)
-            (should called))))
-    (crush-test--cleanup)))
+          (let ((formatted (crush--format-selection "src/file.el" (point-min) (point-max))))
+            (should (string-match-p "\\*\\*Attachment: src/file.el (lines 1-1)\\*\\*" formatted))
+            (should (string-match-p "```emacs-lisp" formatted))
+            (should (string-match-p "```" formatted))))
+      (crush-test--cleanup))))
 
-(ert-deftest crush-test/fontify-region-dispatches-to-org ()
-  "crush--fontify-region should call crush--fontify-as-org for 'org type."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (called nil))
+(ert-deftest crush-test/format-selection-uses-relative-path ()
+  "Attachment paths must be relative to the project root (or default-directory)."
+  (let ((buf (crush-test--fresh-buffer))
+        (crush-working-directory "/tmp/proj"))
+    (unwind-protect
         (with-current-buffer buf
-          (insert "#+begin_src\ntest\n#+end_src")
-          (cl-letf (((symbol-function #'crush--fontify-as-org)
-                     (lambda (_start _end) (setq called t))))
-            (crush--fontify-region (point-min) (point-max) 'org)
-            (should called))))
-    (crush-test--cleanup)))
+          (setq-local default-directory "/tmp/proj/")
+          (let ((formatted (crush--format-selection "/tmp/proj/src/file.el" 1 5)))
+            (should (string-match-p "src/file.el" formatted))
+            (should-not (string-match-p "/tmp/proj/src" formatted))))
+      (crush-test--cleanup))))
 
-(ert-deftest crush-test/fontify-region-noop-for-prompt ()
-  "crush--fontify-region should do nothing for 'prompt type.
-The prompt region type has been removed in Phase 7; comint handles
-prompt fontification via comint-highlight-prompt face. This test
-verifies it still doesn't error when called with 'prompt (for
-backward compatibility) but the type is never set in the buffer."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+(ert-deftest crush-test/format-selection-no-file ()
+  "crush--format-selection without a file should use (no file)."
+  (let ((buf (crush-test--fresh-buffer)))
+    (unwind-protect
         (with-current-buffer buf
-          (insert "crush> ")
-          ;; Should not error or call anything
-          (crush--fontify-region (point-min) (point-max) 'prompt)
-          (should t)))
-    (crush-test--cleanup)))
+          (let ((formatted (crush--format-selection nil 1 5)))
+            (should (string-match-p "(no file)" formatted))))
+      (crush-test--cleanup))))
 
-(ert-deftest crush-test/fontify-region-noop-for-input ()
-  "crush--fontify-region should do nothing for 'input type.
-The input region type has been removed in Phase 7; comint handles
-input via field properties. This test verifies it still doesn't error
-when called with 'input (for backward compatibility) but the type is
-never set in the buffer."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+;;; 37b. Attachment language from extension
+
+(ert-deftest crush-test/lang-from-extension ()
+  "crush--lang-from-extension should map extensions to markdown languages."
+  (let ((buf (crush-test--fresh-buffer)))
+    (unwind-protect
         (with-current-buffer buf
-          (insert "user input")
-          ;; Should not error or call anything
-          (crush--fontify-region (point-min) (point-max) 'input)
-          (should t)))
-    (crush-test--cleanup)))
+          (should (string= (crush--lang-from-extension "file.el") "emacs-lisp"))
+          (should (string= (crush--lang-from-extension "file.go") "go"))
+          (should (string= (crush--lang-from-extension "foo.unknown")
+                           "text")))
+      (crush-test--cleanup))))
 
-(ert-deftest crush-test/fontify-region-noop-for-separator ()
-  "crush--fontify-region should do nothing for 'separator type."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (insert "---------- separator ----------")
-          ;; Should not error or call anything
-          (crush--fontify-region (point-min) (point-max) 'separator)
-          (should t)))
-    (crush-test--cleanup)))
+;;; 38. Attachment text properties
 
-;;; 38. Fontification: crush--fontify-as-markdown
-
-(ert-deftest crush-test/fontify-markdown-creates-overlays ()
-  "Fontifying markdown text should NOT create face overlays in markdown parent.
-When the buffer is markdown-mode, native font-lock provides highlighting
-and no face overlays are created by crush."
-  (skip-unless (require 'markdown-mode nil t))
-  (let ((crush--parent-mode 'markdown-mode))
+(ert-deftest crush-test/attachment-has-filename-lines-properties ()
+  "Inserted attachments should carry crush-filename and crush-lines
+on the header line, relative to the project root."
+  (let ((crush-buffer-name "*crush-test*"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            (insert "**bold text** and `inline code`")
-            (crush--fontify-as-markdown (point-min) (point-max))
-            ;; No face overlays should be created in markdown parent
-            (let ((overlays (overlays-in (point-min) (point-max))))
-              (should-not (cl-some (lambda (ov) (overlay-get ov 'face))
-                                   overlays)))))
+            (with-temp-buffer
+              (insert "selected code\n")
+              (setq-local buffer-file-name
+                          (expand-file-name "src/file.el" default-directory))
+              (crush-insert-selection (point-min) (point-max)))
+            (goto-char (point-min))
+            (should (search-forward "Attachment:" nil t))
+            (should (string= (get-text-property (match-beginning 0) 'crush-filename) "src/file.el"))
+            (should (string= (get-text-property (match-beginning 0) 'crush-lines) "1-2"))))
       (crush-test--cleanup))))
 
-(ert-deftest crush-test/fontify-markdown-empty-region ()
-  "Fontifying empty region should not crash."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          ;; Empty region
-          (crush--fontify-as-markdown (point-min) (point-min))
-          (should t)))
-    (crush-test--cleanup)))
+;;; 39. Filepath attachment (link form)
 
-(ert-deftest crush-test/fontify-markdown-overlays-tagged ()
-  "Fontification overlays should be tagged with crush-overlay property."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (insert "text")
-          (crush--fontify-as-markdown (point-min) (point-max))
-          (let ((overlays (overlays-in (point-min) (point-max))))
-            (dolist (ov overlays)
-              (when (overlay-get ov 'face)
-                (should (overlay-get ov 'crush-overlay)))))))
-    (crush-test--cleanup)))
-
-;;; 38b. Fontification: markdown parent relies on native font-lock
-;;;        (no fallback face, no overlay fontification)
-
-(ert-deftest crush-test/fontify-markdown-no-overlay-in-markdown-parent ()
-  "When the buffer is markdown-mode, response fontification should NOT
-create any crush overlays. Native markdown font-lock handles highlighting,
-and the fallback face overlay must not be applied."
-  (let ((crush--parent-mode 'markdown-mode))
+(ert-deftest crush-test/insert-filepath-emits-link ()
+  "crush-insert-filepath should insert a markdown link attachment
+with crush-region-type 'attachment and a project-root-relative path."
+  (let ((crush-buffer-name "*crush-test*"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            (insert "**bold** and `code`")
-            (crush--fontify-as-markdown (point-min) (point-max))
-            ;; No face overlays should be created in the response region
-            (let ((overlays (overlays-in (point-min) (point-max))))
-              (should-not (cl-some (lambda (ov) (overlay-get ov 'face))
-                                   overlays)))))
+          (let ((project-root default-directory))
+            (with-current-buffer buf
+              (with-temp-buffer
+                (setq-local buffer-file-name (expand-file-name "file.go" project-root))
+                (crush-insert-filepath))
+              (goto-char (point-min))
+              (should (search-forward "[file.go](file.go)" nil t))
+              (let ((region-type (get-text-property (match-beginning 0) 'crush-region-type)))
+                (should (eq region-type 'attachment)))
+              (should (string= (get-text-property (match-beginning 0) 'crush-filename) "file.go")))))
       (crush-test--cleanup))))
 
-(ert-deftest crush-test/fontify-markdown-keeps-face-in-text-fallback ()
-  "When the buffer is text-mode (no markdown-mode), the fallback
-crush-response-face overlay SHOULD be applied so responses stay distinct."
-  (let ((crush--parent-mode 'text-mode))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            (insert "plain response text")
-            (crush--fontify-as-markdown (point-min) (point-max))
-            (let ((overlays (overlays-in (point-min) (point-max))))
-              (should (cl-some (lambda (ov)
-                                 (eq (overlay-get ov 'face) 'crush-response-face))
-                               overlays)))))
-      (crush-test--cleanup))))
+;;; 39b. Fontification machinery removed
 
-;;; 39. Fontification: crush--fontify-as-org
+(ert-deftest crush-test/fontify-functions-removed ()
+  "The org/markdown fontification helpers should no longer be defined."
+  (should-not (fboundp 'crush--fontify-region))
+  (should-not (fboundp 'crush--fontify-as-markdown))
+  (should-not (fboundp 'crush--fontify-as-org))
+  (should-not (fboundp 'crush--copy-faces-as-overlays)))
 
-(ert-deftest crush-test/fontify-org-creates-overlays ()
-  "Fontifying org text should create overlays for syntax elements."
-  (skip-unless (require 'org nil t))
+(ert-deftest crush-test/fontify-faces-removed ()
+  "The fontification faces and defcustoms should no longer exist."
+  (should-not (boundp 'crush-response-face))
+  (should-not (boundp 'crush-org-face))
+  (should-not (boundp 'crush-fontify-responses))
+  (should-not (boundp 'crush-fontify-attachments)))
+
+(ert-deftest crush-test/no-crush-overlays-in-buffer ()
+  "No crush overlay should be created anywhere (markdown font-lock replaces it)."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (insert "#+begin_src text :file test.el\n(code)\n#+end_src")
-          (crush--fontify-as-org (point-min) (point-max))
-          ;; Should have overlays with crush-overlay property
-          (let ((overlays (overlays-in (point-min) (point-max))))
-            (should (cl-some (lambda (ov) (overlay-get ov 'crush-overlay)) overlays)))))
+          (should-not (cl-some (lambda (ov) (overlay-get ov 'crush-overlay))
+                               (overlays-in (point-min) (point-max))))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/fontify-org-applies-base-face ()
-  "Fontifying org should apply crush-org-face as base overlay."
+;;; 39c. Integration: sentinel no longer fontifies
+
+(ert-deftest crush-test/sentinel-no-longer-fontifies ()
+  "Sentinel should tag the response but create no overlays."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (insert "#+begin_src\ntext\n#+end_src")
-          (crush--fontify-as-org (point-min) (point-max))
-          ;; Should have at least one overlay with crush-org-face
-          (let ((overlays (overlays-in (point-min) (point-max))))
-            (should (cl-some (lambda (ov)
-                               (eq (overlay-get ov 'face) 'crush-org-face))
-                             overlays)))))
-    (crush-test--cleanup)))
-
-(ert-deftest crush-test/fontify-org-empty-region ()
-  "Fontifying empty org region should not crash."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          ;; Empty region
-          (crush--fontify-as-org (point-min) (point-min))
-          (should t)))
-    (crush-test--cleanup)))
-
-;;; 40. Integration: sentinel calls fontification
-
-(ert-deftest crush-test/sentinel-fontifies-response ()
-  "Sentinel should visually style the response text.
-In text-mode a crush-overlay-tagged overlay is created; in markdown-mode
-native font-lock styles the markdown constructs on the response."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          ;; Simulate sending a prompt
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
@@ -1415,50 +1134,19 @@ native font-lock styles the markdown constructs on the response."
             (set-marker (process-mark mock-proc) (point-max))
             (accept-process-output mock-proc 2)
             (crush--process-sentinel mock-proc "finished\n"))
-          ;; Response text is present
           (goto-char (point-min))
           (should (search-forward "bold" nil t))
-          (cond
-           ((eq crush--parent-mode 'text-mode)
-            ;; Overlay fontification applies a crush-overlay-tagged overlay.
-            (let ((overlays (overlays-in (- (point) 4) (point))))
-              (should (cl-some (lambda (ov) (overlay-get ov 'crush-overlay))
-                               overlays))))
-           (t
-            ;; Native markdown font-lock styles the bold construct.
-            (font-lock-fontify-buffer)
-            (goto-char (point-min))
-            (should (search-forward "bold" nil t))
-            (let ((face (get-char-property (1- (point)) 'face)))
-              (should face)
-              (should-not (eq face 'crush-response-face)))))))
+          ;; No crush overlays anywhere after the sentinel
+          (should-not (cl-some (lambda (ov) (overlay-get ov 'crush-overlay))
+                               (overlays-in (point-min) (point-max))))
+          ;; The response is still tagged
+          (should (eq (get-text-property (match-beginning 0) 'crush-region-type) 'response))))
     (crush-test--cleanup)))
 
-;;; 41. Integration: attachment insertion calls fontification
-
-(ert-deftest crush-test/insert-selection-fontifies-org ()
-  "Inserting selection should fontify the org block."
-  (let ((crush-buffer-name "*crush-test*"))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            ;; Insert selection from temp buffer
-            (with-temp-buffer
-              (insert "selected code\n")
-              (setq-local buffer-file-name "/test/file.el")
-              (crush-insert-selection (point-min) (point-max)))
-            ;; Org block should have overlays from fontification
-            (goto-char (point-min))
-            (should (search-forward "#+begin_src" nil t))
-            (let ((overlays (overlays-in (match-beginning 0) (match-end 0))))
-              (should (cl-some (lambda (ov) (overlay-get ov 'crush-overlay)) overlays)))))
-      (crush-test--cleanup))))
-
-;;; 42. Integration: crush-clear-buffer removes overlays
+;;; 40. Integration: crush-clear-buffer removes overlays
 
 (ert-deftest crush-test/clear-buffer-removes-overlays ()
-  "crush-clear-buffer should remove old crush-overlay tagged overlays.
-New overlays created by the fresh prompt are expected to remain."
+  "crush-clear-buffer should remove old crush-overlay tagged overlays."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1474,6 +1162,25 @@ New overlays created by the fresh prompt are expected to remain."
                                       (eq (overlay-get ov 'face) 'highlight)))
                                (overlays-in (point-min) (point-max))))))
     (crush-test--cleanup)))
+
+;;; 41. Integration: attachment insertion does not fontify
+
+(ert-deftest crush-test/insert-selection-creates-no-overlays ()
+  "Inserting a selection should not create crush overlays."
+  (let ((crush-buffer-name "*crush-test*"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (with-temp-buffer
+              (insert "selected code\n")
+              (setq-local buffer-file-name "/test/file.el")
+              (crush-insert-selection (point-min) (point-max)))
+            (goto-char (point-min))
+            (should (search-forward "Attachment:" nil t))
+            ;; No crush overlays from attachment insertion
+            (should-not (cl-some (lambda (ov) (overlay-get ov 'crush-overlay))
+                                 (overlays-in (point-min) (point-max))))))
+      (crush-test--cleanup))))
 
 ;;; 44. Phase 1: comint-output-filter-functions hook runs (DELETED in Phase 2)
 
@@ -1534,7 +1241,7 @@ New overlays created by the fresh prompt are expected to remain."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/org-region-type-still-set ()
-  "Attachment blocks should still have crush-region-type=org."
+  "Attachment blocks should have crush-region-type=attachment."
   (let ((crush-buffer-name "*crush-test*"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -1544,8 +1251,8 @@ New overlays created by the fresh prompt are expected to remain."
               (setq-local buffer-file-name "/test/file.el")
               (crush-insert-selection (point-min) (point-max)))
             (goto-char (point-min))
-            (should (search-forward "#+begin_src" nil t))
-            (should (eq (get-text-property (match-beginning 0) 'crush-region-type) 'org))))
+            (should (search-forward "Attachment:" nil t))
+            (should (eq (get-text-property (match-beginning 0) 'crush-region-type) 'attachment))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/separator-region-type-removed ()
@@ -1745,7 +1452,7 @@ or the crush> prompt marker."
                        ;; Add an attachment via the real function
                        (crush--insert-before-prompt
                         buf
-                        "#+begin_src text :file foo.el :lines 1-3\n(foo)\n#+end_src"
+                        "**Attachment: foo.el (lines 1-3)**\n\n```emacs-lisp\n(foo)\n```"
                         "test-attach-id" crush--prompt-id)
                        (goto-char (point-max))
                        (insert "hello world")
@@ -1786,150 +1493,6 @@ or the crush> prompt marker."
 ;;; 71. Phase 6: crush-clear-buffer uses comint prompt insertion (DELETED in Phase 4: replaced by clear-buffer-prompt-has-crush-properties)
 
 ;;; 72. Phase 6: crush-interrupt uses comint prompt insertion (DELETED in Phase 4: no field property)
-
-;;; 73. Bug fix: org fontification creates syntax overlays in crush buffer
-
-(ert-deftest crush-test/fontify-org-creates-syntax-overlays-in-crush-buffer ()
-  "Fontifying org text should create syntax overlays in the crush buffer,
-not just the base face overlay. The temp-buffer overlays must be copied
-back to the crush buffer."
-  (skip-unless (require 'org nil t))
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (insert "#+begin_src text :file test.el\n(code)\n#+end_src")
-          (crush--fontify-as-org (point-min) (point-max))
-          ;; Should have MORE than just the base overlay -- org syntax
-          ;; elements (e.g. org-block, org-meta-line) should have overlays
-          (let ((overlays (overlays-in (point-min) (point-max))))
-            ;; At least 2 overlays: base face + at least one syntax overlay
-            (should (> (length overlays) 1))
-            ;; At least one overlay should have a face that is NOT crush-org-face
-            (should (cl-some (lambda (ov)
-                               (let ((face (overlay-get ov 'face)))
-                                 (and face
-                                      (not (eq face 'crush-org-face))
-                                      (overlay-get ov 'crush-overlay))))
-                             overlays)))))
-    (crush-test--cleanup)))
-
-;;; 74. Bug fix: org overlays survive sentinel (next prompt)
-
-(ert-deftest crush-test/org-overlays-survive-sentinel ()
-  "Org attachment overlays should survive sentinel inserting a new prompt.
-The overlays must persist in the crush buffer across prompt cycles."
-  (skip-unless (require 'org nil t))
-  (let ((crush-buffer-name "*crush-test*"))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            ;; Insert an attachment via the real function
-            (crush--insert-before-prompt
-             buf
-             "#+begin_src text :file test.el\n(code)\n#+end_src"
-             "attach-1" crush--prompt-id)
-            ;; Count org-region overlays before sentinel
-            (let ((overlays-before
-                   (cl-remove-if-not
-                    (lambda (ov)
-                      (and (overlay-get ov 'crush-overlay)
-                           (not (overlay-get ov 'read-only))
-                           (eq (get-text-property
-                                (overlay-start ov) 'crush-region-type) 'org)))
-                    (overlays-in (point-min) (point-max)))))
-              ;; Simulate a response cycle
-              (goto-char (point-max))
-              (newline)
-              (setq-local crush--response-start (point-marker))
-              (let* ((mock-proc (make-process
-                                 :name "crush-mock"
-                                 :buffer buf
-                                 :command '("sh" "-c" "echo 'response'")
-                                 :connection-type 'pipe
-                                 :filter #'crush--output-filter
-                                 :sentinel #'ignore
-                                 :noquery t)))
-                (set-marker (process-mark mock-proc) (point-max))
-                (accept-process-output mock-proc 2)
-                (crush--process-sentinel mock-proc "finished\n"))
-              ;; Org overlays should still exist after sentinel
-              (let ((overlays-after
-                     (cl-remove-if-not
-                      (lambda (ov)
-                        (and (overlay-buffer ov)
-                             (overlay-get ov 'crush-overlay)
-                             (not (overlay-get ov 'read-only))
-                             (eq (get-text-property
-                                  (overlay-start ov) 'crush-region-type) 'org)))
-                      (overlays-in (point-min) (point-max)))))
-                (should (= (length overlays-after) (length overlays-before)))))))
-      (crush-test--cleanup))))
-
-;;; 75. Bug: org overlays disappear on send-input
-
-(ert-deftest crush-test/insert-before-prompt-keeps-prompt-marker ()
-  "Inserting an attachment before the prompt should not move
-crush--prompt-start-marker backward. The marker must advance
-past inserted text so comint-send-input's delete-region only
-deletes the prompt+input, not the attachment."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (should (= (marker-position crush--prompt-start-marker) (point-min)))
-          ;; Insert an attachment before the prompt
-          (crush--insert-before-prompt
-           buf
-           "#+begin_src text :file test.el\n(code)\n#+end_src"
-           "attach-1" crush--prompt-id)
-          ;; crush--prompt-start-marker should now point to the prompt,
-          ;; not to the beginning of the attachment
-          (goto-char (marker-position crush--prompt-start-marker))
-          (should (search-forward "crush> " nil t))))
-    (crush-test--cleanup)))
-
-(ert-deftest crush-test/org-overlays-survive-send-input ()
-  "Org attachment overlays should survive comint-send-input.
-The overlays must not be destroyed by delete-region in comint-send-input,
-which happens when crush--prompt-start-marker is wrong."
-  (skip-unless (require 'org nil t))
-  (let ((crush-buffer-name "*crush-test*"))
-    (crush-test--cleanup)
-    (dolist (proc (process-list))
-      (when (string-prefix-p "crush" (process-name proc))
-        (delete-process proc)))
-    (unwind-protect
-        (let* ((cap (make-temp-file "crush-cap"))
-               (crush-program (crush-test--mock-program))
-               (process-environment
-                (cons (format "CRUSH_CAPTURE_FILE=%s" cap) process-environment)))
-          (let ((buf (crush-test--fresh-buffer)))
-            (with-current-buffer buf
-              (crush--insert-before-prompt
-               buf
-               "#+begin_src text :file test.el\n(code)\n#+end_src"
-               "attach-1" crush--prompt-id)
-              (let ((count-overlays
-                     (lambda ()
-                       (cl-remove-if-not
-                        (lambda (ov)
-                          (and (overlay-buffer ov)
-                               (overlay-get ov 'crush-overlay)
-                               (eq (get-text-property
-                                    (overlay-start ov) 'crush-region-type) 'org)))
-                        (overlays-in (point-min) (point-max))))))
-                (let ((before (length (funcall count-overlays))))
-                  (should (> before 0))
-                  ;; Type prompt and send
-                  (goto-char (point-max))
-                  (insert "test prompt")
-                  (call-interactively #'crush-send-input)
-                  ;; Overlays should survive comint-send-input
-                  (should (= (length (funcall count-overlays)) before))
-                  (accept-process-output crush-process 3)
-                  (while (and crush-process (process-live-p crush-process))
-                    (accept-process-output crush-process 1))))))
-          (when (file-exists-p cap) (delete-file cap)))
-      (crush-test--cleanup))))
 
 ;;; Backend abstraction tests
 
@@ -2010,19 +1573,21 @@ which happens when crush--prompt-start-marker is wrong."
                              (goto-char (point-min))
                              (let ((start (point))
                                    (inhibit-read-only t))
-                               (insert "#+begin_src text :file foo.el :lines 1-3\n(foo)\n#+end_src\n\n")
+                               (insert "**Attachment: foo.el (lines 1-3)**\n\n```emacs-lisp\n(foo)\n```\n\n")
                                (add-text-properties
                                 start (point)
                                 (list 'crush-attachment-id "test-attach-id"
                                       'crush-prompt-id crush--prompt-id
-                                      'crush-region-type 'org)))
+                                      'crush-region-type 'attachment
+                                      'crush-filename "foo.el"
+                                      'crush-lines "1-3")))
                              (goto-char (point-max))
                              (insert "explain this code")
                              (call-interactively #'crush-send-input)
                              (accept-process-output crush-process 2)))))))
           (should (string-match-p "STDIN:" result))
           (should (string-match-p "explain this code" result))
-          (should (string-match-p "#\\+begin_src text :file foo.el" result)))
+          (should (string-match-p "\\*\\*Attachment: foo.el" result)))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/backend-interrupt-stops-process ()
@@ -2562,9 +2127,9 @@ and all keybindings live in `crush-chat-mode'."
   "crush-backend-send-prompt should receive :continue-p keyword."
   (let ((received-continue-p nil))
     (cl-letf (((symbol-function #'crush-backend-send-prompt)
-               (lambda (_backend _prompt &rest _keys)
+               (lambda (_backend _prompt &rest keys)
                  (setq received-continue-p
-                       (plist-get _keys :continue-p))
+                       (plist-get keys :continue-p))
                  (make-process :name "crush-fake"
                                :buffer (current-buffer)
                                :command '("true")
@@ -2584,9 +2149,9 @@ and all keybindings live in `crush-chat-mode'."
   "crush-backend-send-prompt :continue-p should be nil when crush--continue is nil."
   (let ((received-continue-p 'unset))
     (cl-letf (((symbol-function #'crush-backend-send-prompt)
-               (lambda (_backend _prompt &rest _keys)
+               (lambda (_backend _prompt &rest keys)
                  (setq received-continue-p
-                       (plist-get _keys :continue-p))
+                       (plist-get keys :continue-p))
                  (make-process :name "crush-fake"
                                :buffer (current-buffer)
                                :command '("true")

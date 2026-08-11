@@ -37,8 +37,8 @@
 ;; and receives streamed responses.
 ;;
 ;; In addition to the dedicated chat buffer, any buffer selection can
-;; be used as context.  The selection is formatted as an org-mode
-;; source block with the file path and line numbers, then inserted
+;; be used as context.  The selection is formatted as a markdown fenced
+;; code block with the file path and line numbers, then inserted
 ;; into the crush buffer where the user can add additional context
 ;; about what to do with it.
 ;;
@@ -59,7 +59,6 @@
 (require 'ring)
 
 (declare-function markdown-mode "markdown-mode" ())
-(declare-function org-mode "org" ())
 
 ;;; Configuration
 
@@ -67,18 +66,6 @@
   "Interact with Crush CLI from GNU Emacs."
   :group 'tools
   :prefix "crush-")
-
-(defface crush-response-face
-  '((((background dark)) :background "gray20")
-    (((background light)) :background "gray90"))
-  "Face for Crush response text."
-  :group 'crush)
-
-(defface crush-org-face
-  '((((background dark)) :background "gray15")
-    (((background light)) :background "gray95"))
-  "Face for Crush org attachment blocks."
-  :group 'crush)
 
 (defface crush-prompt-face
   '((t :inherit font-lock-keyword-face))
@@ -112,20 +99,6 @@ otherwise `default-directory'."
 When nil, uses the default model configured in Crush.
 Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
   :type '(choice (const nil) string)
-  :group 'crush)
-
-(defcustom crush-fontify-responses t
-  "When non-nil, fontify response text using markdown-mode.
-When markdown-mode is available as the parent mode, native font-lock
-handles highlighting.  When nil, or when markdown-mode is unavailable,
-the fallback `crush-response-face' is applied to responses."
-  :type 'boolean
-  :group 'crush)
-
-(defcustom crush-fontify-attachments t
-  "When non-nil, fontify attachment blocks using `org-mode'.
-When nil, only the fallback face is applied."
-  :type 'boolean
   :group 'crush)
 
 (defcustom crush-debug-mode t
@@ -201,7 +174,8 @@ Buffer-local.")
 Buffer-local.")
 
 (defvar crush--input-ring-index 0
-  "Current position in `crush--input-ring' for M-p/M-n navigation.
+  "Current position in `crush--input-ring' for previously-entered
+inputs (navigated with `crush--input-previous' / `crush--input-next').
 Buffer-local.")
 
 (defcustom crush-input-ring-size 32
@@ -261,12 +235,13 @@ Buffer-local.")
   "Clean up any resources held by BACKEND.")
 
 (cl-defgeneric crush-backend-grant-permission (backend permission-id action)
-  "Respond to a permission request on BACKEND.
+  "Respond to a permission request on BACKEND identified by PERMISSION-ID.
 ACTION is `allow', `allow-session', or `deny'.")
 
 (cl-defmethod crush-backend-send-prompt
   ((backend crush-run-backend) prompt &key context session-id continue-p)
-  "Send PROMPT via `crush run' as a new process."
+  "Send PROMPT to BACKEND via `crush run' as a new process.
+For CONTEXT, SESSION-ID, and CONTINUE-P, see `crush-backend-send-prompt'."
   (with-current-buffer (crush-backend-buffer backend)
     (let* ((has-context (and context (not (string-empty-p context))))
            (base-args (append
@@ -308,19 +283,19 @@ ACTION is `allow', `allow-session', or `deny'.")
       real-proc)))
 
 (cl-defmethod crush-backend-interrupt ((backend crush-run-backend))
-  "Interrupt the crush run process."
+  "Interrupt the crush run process managed by BACKEND."
   (with-current-buffer (crush-backend-buffer backend)
     (when crush-process
       (interrupt-process crush-process)
       (setq-local crush-process nil))))
 
 (cl-defmethod crush-backend-active-p ((backend crush-run-backend))
-  "Return non-nil if a crush run process is live."
+  "Return non-nil if BACKEND has a live crush run process."
   (with-current-buffer (crush-backend-buffer backend)
     (and crush-process (process-live-p crush-process))))
 
 (cl-defmethod crush-backend-cleanup ((backend crush-run-backend))
-  "Kill any running process for this backend."
+  "Kill any running process for BACKEND."
   (with-current-buffer (crush-backend-buffer backend)
     (when (and crush-process (process-live-p crush-process))
       (delete-process crush-process))
@@ -340,12 +315,12 @@ ACTION is `allow', `allow-session', or `deny'.")
   (error "Client/server backend not yet implemented"))
 
 (cl-defmethod crush-backend-active-p ((backend crush-client-backend))
-  "Return non-nil if an SSE stream is active."
+  "Return non-nil if an SSE stream is active for BACKEND."
   (and (crush-client-backend-sse-process backend)
        (process-live-p (crush-client-backend-sse-process backend))))
 
 (cl-defmethod crush-backend-cleanup ((backend crush-client-backend))
-  "Clean up SSE process."
+  "Clean up the SSE process held by BACKEND."
   (when (crush-client-backend-sse-process backend)
     (delete-process (crush-client-backend-sse-process backend))
     (setf (crush-client-backend-sse-process backend) nil)))
@@ -502,72 +477,47 @@ BEG and END are standard after-change hook arguments."
     (put-text-property beg end 'crush-prompt-id crush--prompt-id))
   (crush--update-header-line))
 
-(defun crush--fontify-region (start end type)
-  "Fontify region from START to END based on TYPE.
-TYPE is a symbol: `response', `org', or `separator'."
-  (pcase type
-    ('response (crush--fontify-as-markdown start end))
-    ('org (crush--fontify-as-org start end))
-    ('separator nil)))
-
-(defun crush--fontify-as-markdown (start end)
-  "Fontify region from START to END as markdown text.
-When `crush--parent-mode' is `markdown-mode', the buffer is already
-markdown-mode and native font-lock handles highlighting, so no overlays
-are created.  Otherwise (text-mode fallback), apply `crush-response-face'
-as a base overlay so responses stay visually distinct."
-  (let ((text (buffer-substring-no-properties start end)))
-    (when (and text (not (string-empty-p text)) crush-fontify-responses)
-      (unless (eq crush--parent-mode 'markdown-mode)
-        (let ((ov (make-overlay start end nil t)))
-          (overlay-put ov 'face 'crush-response-face)
-          (overlay-put ov 'crush-overlay t))))))
-
-(defun crush--fontify-as-org (start end)
-  "Fontify region from START to END as org text.
-Uses temp-buffer technique with `org-mode' if available."
-  (let ((text (buffer-substring-no-properties start end)))
-    (when (and text (not (string-empty-p text)) crush-fontify-attachments)
-      (let ((temp-buffer (generate-new-buffer " *crush-org*")))
-        (unwind-protect
-            (with-current-buffer temp-buffer
-              (insert text)
-              ;; Try to activate org-mode
-              (when (require 'org nil t)
-                (org-mode)
-                (font-lock-ensure)))
-          ;; Copy faces back as overlays (in crush buffer, not temp)
-          (when (fboundp 'org-mode)
-            (crush--copy-faces-as-overlays start temp-buffer))
-          (kill-buffer temp-buffer))
-        ;; Apply base org face overlay
-        (let ((ov (make-overlay start end nil t)))
-          (overlay-put ov 'face 'crush-org-face)
-          (overlay-put ov 'crush-overlay t))))))
-
-(defun crush--copy-faces-as-overlays (buffer-offset temp-buffer)
-  "Copy face properties from TEMP-BUFFER to current buffer as overlays.
-BUFFER-OFFSET is the position offset to map temp buffer positions.
-Called from the crush buffer; TEMP-BUFFER is the fontified temp buffer."
-  (let ((max-pos (with-current-buffer temp-buffer (point-max)))
-        (face-regions nil))
-    (with-current-buffer temp-buffer
-      (let ((pos (point-min))
-            (next nil)
-            (face nil))
-        (while (< pos max-pos)
-          (setq face (get-text-property pos 'face))
-          (setq next (or (next-single-property-change pos 'face nil max-pos)
-                         max-pos))
-          (when (and face (> next pos))
-            (push (list pos next face) face-regions))
-          (setq pos next))))
-    (dolist (region face-regions)
-      (let ((ov (make-overlay (+ buffer-offset (1- (car region)))
-                              (+ buffer-offset (1- (cadr region)))
-                              nil t)))
-        (overlay-put ov 'face (nth 2 region))
-        (overlay-put ov 'crush-overlay t)))))
+(defun crush--lang-from-extension (filename)
+  "Return the markdown language identifier for FILENAME's extension.
+Uses `file-name-extension' so paths and dotfiles resolve; falls back to
+`text' for unknown extensions."
+  (let ((ext (file-name-extension filename)))
+    (pcase ext
+      ("el" "emacs-lisp")
+      ("elc" "emacs-lisp")
+      ("go" "go")
+      ("py" "python")
+      ("js" "javascript")
+      ("jsx" "jsx")
+      ("ts" "typescript")
+      ("tsx" "tsx")
+      ("rs" "rust")
+      ("c" "c")
+      ("h" "c")
+      ("cpp" "cpp")
+      ("cc" "cpp")
+      ("hpp" "cpp")
+      ("sh" "bash")
+      ("zsh" "bash")
+      ("bash" "bash")
+      ("md" "markdown")
+      ("markdown" "markdown")
+      ("json" "json")
+      ("jsonc" "json")
+      ("toml" "toml")
+      ("ya?ml" "yaml")
+      ("css" "css")
+      ("html" "html")
+      ("sql" "sql")
+      ("rb" "ruby")
+      ("java" "java")
+      ("kt" "kotlin")
+      ("swift" "swift")
+      ("php" "php")
+      ("lua" "lua")
+      ("r" "r")
+      ("clj" "clojure")
+      (_ "text"))))
 
 (defun crush--freeze-region (start end)
   "Make the region from START to END read-only via text properties.
@@ -742,10 +692,12 @@ unfontifying.  ENABLE nil restores the default."
       ;; by the parent mode (which calls kill-all-local-variables).
       (setq-local crush--initialized t))))
 
-(defun crush--insert-before-prompt (buf formatted &optional attachment-id prompt-id)
+(defun crush--insert-before-prompt (buf formatted &optional attachment-id prompt-id filename lines)
   "Insert FORMATTED content into BUF before the `crush> ' prompt line.
 Uses `crush--prompt-start-marker' to find the prompt position.
-If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties."
+If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties.
+When FILENAME is provided, tag the region with `crush-filename';
+when LINES is provided, tag it with `crush-lines' (a line range string)."
   (with-current-buffer buf
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t))
@@ -761,8 +713,11 @@ If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties."
               (when (and attachment-id prompt-id)
                 (put-text-property start (point) 'crush-attachment-id attachment-id)
                 (put-text-property start (point) 'crush-prompt-id prompt-id))
-              (put-text-property start (point) 'crush-region-type 'org)
-              (crush--fontify-region start (point) 'org)))
+              (put-text-property start (point) 'crush-region-type 'attachment)
+              (when filename
+                (put-text-property start (point) 'crush-filename filename))
+              (when lines
+                (put-text-property start (point) 'crush-lines lines))))
         (let ((start nil))
           (save-excursion
             (goto-char (point-max))
@@ -771,11 +726,24 @@ If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties."
             (when (and attachment-id prompt-id)
               (put-text-property start (point) 'crush-attachment-id attachment-id)
               (put-text-property start (point) 'crush-prompt-id prompt-id))
-            (put-text-property start (point) 'crush-region-type 'org)
-            (crush--fontify-region start (point) 'org)))))))
+            (put-text-property start (point) 'crush-region-type 'attachment)
+            (when filename
+              (put-text-property start (point) 'crush-filename filename))
+            (when lines
+              (put-text-property start (point) 'crush-lines lines))))))))
+
+(defun crush--relative-file (file)
+  "Return FILE relative to the project root, or `default-directory'
+when not in a project.  FILE may be nil, in which case return nil."
+  (when file
+    (file-relative-name
+     file
+     (or (when-let ((proj (project-current)))
+           (project-root proj))
+         default-directory))))
 
 (defun crush--format-selection (file start end)
-  "Format selection as an `org-mode' source block.
+  "Format the selection as a markdown fenced code block.
 FILE is the file path, START and END are the line numbers."
   (let* ((start-line (save-excursion
 		       (goto-char start)
@@ -784,15 +752,10 @@ FILE is the file path, START and END are the line numbers."
                      (goto-char end)
                      (line-number-at-pos)))
          (selected-text (buffer-substring-no-properties start end))
-         (relative-file (if file
-                            (file-relative-name
-                             file
-                             (or (when-let ((proj (project-current)))
-                                   (project-root proj))
-                                 default-directory))
-                          "(no file)")))
-    (format "#+begin_src text :file %s :lines %d-%d\n%s\n#+end_src"
-            relative-file start-line end-line selected-text)))
+         (relative-file (or (crush--relative-file file) "(no file)"))
+         (lang (crush--lang-from-extension (file-name-nondirectory relative-file))))
+    (format "**Attachment: %s (lines %d-%d)**\n\n```%s\n%s\n```"
+            relative-file start-line end-line lang selected-text)))
 
 (defun crush--output-filter (proc string)
   "Insert STRING from PROC into the crush buffer at the process mark."
@@ -824,9 +787,7 @@ FILE is the file path, START and END are the line numbers."
             ;; Tag response text with prompt ID it answers and region type
             (when (and response-start (> response-end response-start))
 	      (put-text-property response-start response-end 'crush-response-to prompt-id)
-	      (put-text-property response-start response-end 'crush-region-type 'response)
-	      ;; Fontify response text as markdown
-	      (crush--fontify-region response-start response-end 'response)))
+	      (put-text-property response-start response-end 'crush-region-type 'response)))
           ;; Generate new prompt ID BEFORE inserting marker
           (setq-local crush--prompt-id (crush--generate-id))
           (crush--insert-prompt))
@@ -861,10 +822,10 @@ FILE is the file path, START and END are the line numbers."
          (has-context (not (string-empty-p context)))
          (stdin-text (when has-context
                        (concat
-			"The following org-mode source blocks contain code context"
-			" from the user's editor. Each block has a :file header"
-			" indicating the source file and optional :lines for the"
-			" line range. Use this context to answer the prompt.\n\n"
+			"The following markdown fenced code blocks contain code context"
+			" from the user's editor. Each block has a header line indicating"
+			" the source file and optional line range. Paths are relative to"
+			" the project root. Use this context to answer the prompt.\n\n"
 			context "\n\n" prompt "\n"))))
     (when (string-empty-p prompt)
       (user-error "No prompt to send"))
@@ -936,12 +897,17 @@ BEG and END are the bounds of the selection."
   (interactive "r")
   (let* ((file (buffer-file-name))
          (formatted (crush--format-selection file beg end))
+         (relative (crush--relative-file file))
+         (lines (format "%d-%d"
+                        (save-excursion (goto-char beg) (line-number-at-pos))
+                        (save-excursion (goto-char end) (line-number-at-pos))))
          (buf (get-buffer-create crush-buffer-name)))
     (crush--init-buffer buf)
     (with-current-buffer buf
       (let ((attachment-id (crush--generate-id)))
         ;; Insert with text properties
-        (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id)
+        (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id
+                                     relative lines)
         ;; Update header line to show attachment count
         (crush--update-header-line)))
     (switch-to-buffer-other-window buf)))
@@ -957,18 +923,16 @@ BEG and END are the bounds of the selection."
   (let ((file (buffer-file-name)))
     (unless file
       (user-error "Current buffer has no file"))
-    (let* ((relative-file (file-relative-name
-                           file
-                           (or (when-let ((proj (project-current)))
-                                 (project-root proj))
-			       default-directory)))
-           (formatted (format "#+begin_src text :file %s\n#+end_src"
-			      relative-file))
+    (let* ((relative-file (crush--relative-file file))
+           (formatted (if relative-file
+                          (format "[%s](%s)" relative-file relative-file)
+                        ""))
            (buf (get-buffer-create crush-buffer-name)))
       (crush--init-buffer buf)
       (with-current-buffer buf
         (let ((attachment-id (crush--generate-id)))
-          (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id)
+          (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id
+                                       relative-file nil)
           (crush--update-header-line)))
       (switch-to-buffer-other-window buf))))
 

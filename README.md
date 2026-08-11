@@ -4,7 +4,7 @@ A GNU Emacs package for interacting with the [Crush CLI](https://github.com/char
 
 ## Goal
 
-crush.el provides a dedicated Emacs buffer that sends structured prompts to the Crush CLI and receives streamed responses. On top of that, any buffer selection can be used as context: the selection is formatted as an org-mode source block with file path and line numbers, then inserted into the crush buffer before the prompt as an attachment. When sent, the context blocks and prompt are piped to the Crush CLI via stdin.
+crush.el provides a dedicated Emacs buffer that sends structured prompts to the Crush CLI and receives streamed responses. On top of that, any buffer selection can be used as context: the selection is formatted as a markdown fenced code block with the file path and line numbers (relative to the project root), then inserted into the crush buffer before the prompt as an attachment. When sent, the context blocks and prompt are piped to the Crush CLI via stdin.
 
 See [TODO.md](TODO.md) for the full project goal and roadmap.
 
@@ -57,13 +57,11 @@ Additional command-line arguments passed to the Crush CLI:
 (setq crush-args '("--verbose"))
 ```
 
-### crush-fontify-responses
+### Rendering
 
-When non-nil (default), fontify response text. When the parent mode is `markdown-mode`, highlighting is handled by markdown-mode's native font-lock (including fenced code blocks). When the parent mode is `text-mode`, the fallback `crush-response-face` is applied instead. When nil, no fallback face is applied.
+Response text is rendered as markdown. When the parent mode is `markdown-mode` (default when installed), native font-lock provides syntax highlighting including fenced code blocks. When the parent mode is `text-mode` (no markdown-mode), the content is still markdown but without syntax highlighting — crush.el applies no faces of its own.
 
-### crush-fontify-attachments
-
-When non-nil (default), fontify attachment blocks using `org-mode` if available. When nil, only the fallback face is applied.
+Attachment blocks are also markdown fenced code blocks (` ``` <language>`) with a `**Attachment: <relpath> (lines N-M)**` header line, so they are highlighted by markdown-mode alongside responses. Paths are always relative to the project root (or the buffer's `default-directory` when not in a project).
 
 ### crush-backend-type
 
@@ -88,7 +86,7 @@ Each prompt spawns a **new** `crush run` process; there is no persistent process
 
 1. Pressing `RET` spawns `crush run` with the prompt as a CLI argument (or via stdin, when context blocks are attached)
 2. Output is streamed into the buffer by a custom output filter
-3. When the process exits, the sentinel tags, fontifies, and freezes the response, then inserts a new `crush> ` prompt
+3. When the process exits, the sentinel tags and freezes the response, then inserts a new `crush> ` prompt
 
 Session continuity is handled by the Crush CLI's `--continue` flag, not by keeping a process alive.
 
@@ -101,7 +99,7 @@ All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`
 
 ### Chat Buffer Composition
 
-The crush buffer's major mode is the parent mode (`markdown-mode` if available, else `text-mode`); `crush-chat-mode` is a **minor mode** that provides the chat keybindings and hooks. Rendering, prompt tracking, and fontification are all implemented with text properties, markers, and overlays instead of comint.
+The crush buffer's major mode is the parent mode (`markdown-mode` if available, else `text-mode`); `crush-chat-mode` is a **minor mode** that provides the chat keybindings and hooks. Rendering, prompt tracking, and fontification are all implemented with text properties, markers, and markdown native font-lock instead of comint.
 
 ### Read-Only Handling
 
@@ -109,7 +107,7 @@ Prompt text and completed exchanges are made read-only via **text properties** (
 
 ### Metadata
 
-All metadata is stored as **text properties** on buffer content, and faces are applied via **overlays** — not via font-lock's text properties, which would be stripped during refontification.
+All metadata is stored as **text properties** on buffer content; highlighting is left to markdown-mode's native font-lock.
 
 ## Usage
 
@@ -140,8 +138,8 @@ Or enable it automatically in programming modes:
 Keybindings (active when `crush-minor-mode` is enabled):
 
 - `C-c C-c` — open/switch to the crush buffer
-- `C-c C-s` — insert the active region as an org source block
-- `C-c C-b` — insert the entire buffer as an org source block
+- `C-c C-s` — insert the active region as a markdown fenced code block with an attachment header
+- `C-c C-b` — insert the entire buffer as a markdown fenced code block
 - `C-c C-p` — insert the buffer's file path as context
 
 ## Session Management
@@ -214,12 +212,12 @@ Each prompt is assigned a unique ID when the `crush> ` prompt is created, before
 
 ### Text Properties
 
-| Text Region             | Property                                  | Value                                   |
-| ----------------------- | ----------------------------------------- | --------------------------------------- |
-| `crush> ` prompt marker | `crush-prompt-id`                         | Unique ID for the prompt                |
-| User input after prompt | `crush-prompt-id`                         | Same ID as the prompt marker            |
-| Attachment org blocks   | `crush-attachment-id` + `crush-prompt-id` | Unique attachment ID + parent prompt ID |
-| Response text           | `crush-response-to`                       | The prompt ID being answered            |
+| Text Region             | Property                                                                                                       | Value                        |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `crush> ` prompt marker | `crush-prompt-id` + `read-only`                                                                                | Unique ID for the prompt     |
+| User input after prompt | `crush-prompt-id`                                                                                              | Same ID as the prompt marker |
+| Attachment blocks       | `crush-attachment-id` + `crush-prompt-id` + `crush-region-type 'attachment` + `crush-filename` + `crush-lines` | Metadata for the attachment  |
+| Response text           | `crush-response-to` + `crush-region-type 'response`                                                            | The prompt ID being answered |
 
 ### Header Line Display
 
@@ -239,7 +237,7 @@ When you insert context via:
 - `C-c C-b` (`crush-insert-buffer`)
 - `C-c C-p` (`crush-insert-filepath`)
 
-Each attachment is tagged with text properties (`crush-attachment-id` and `crush-prompt-id`) that persist in the buffer.
+Each attachment is tagged with text properties that persist in the buffer: `crush-attachment-id` (unique ID), `crush-prompt-id` (the pending prompt), `crush-region-type` (`attachment`), `crush-filename` (path relative to the project root), and `crush-lines` (line range, when the attachment is a selection block). `crush-insert-filepath` inserts a markdown link `[relpath](relpath)` instead of a code block (no `crush-lines`).
 
 ### History Retrieval Functions
 
@@ -265,24 +263,17 @@ Text properties can be accessed directly:
 ;; Get property at point
 (get-text-property (point) 'crush-prompt-id)
 (get-text-property (point) 'crush-attachment-id)
+(get-text-property (point) 'crush-filename)
+(get-text-property (point) 'crush-lines)
+(get-text-property (point) 'crush-region-type)
 (get-text-property (point) 'crush-response-to)
 ```
 
-## Fontification
+## Rendering
 
-Response text is fontified by `markdown-mode` (if installed), using its native font-lock syntax highlighting and fenced-code support — no overlays are added for responses. When markdown-mode is unavailable and the buffer falls back to `text-mode`, the `crush-response-face` is applied to responses so they stay visually distinct.
+Response text and attachment blocks are rendered as markdown. `markdown-mode` (when installed as the parent mode) provides native font-lock highlighting — including fenced code blocks — for both responses and attachment blocks. When the parent mode is `text-mode` (markdown-mode unavailable), the content is still markdown but no syntax highlighting is applied and crush.el adds no faces of its own.
 
-Attachment blocks are fontified as org using `org-mode` (if installed), via a temp-buffer technique: the text is fontified in a scratch org buffer, and the resulting faces are copied back as overlays, which survive font-lock refontification. When org is unavailable, the `crush-org-face` fallback is applied.
-
-- `crush-response-face` — background face for response text in the text-mode fallback (gray20 dark / gray90 light)
-- `crush-org-face` — background face for attachment blocks (gray15 dark / gray95 light)
-
-Disable fontification with:
-
-```elisp
-(setq crush-fontify-responses nil
-      crush-fontify-attachments nil)
-```
+The language inside attachment fences is derived from the file extension (`el` → `emacs-lisp`, `go` → `go`, `py` → `python`, `ts` → `typescript`, etc., falling back to `text` for unknown extensions).
 
 ## Input History
 

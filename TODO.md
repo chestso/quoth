@@ -8,7 +8,7 @@ It operates in two ways:
 
 1. **Dedicated chat buffer**: A buffer that sends structured prompts to the Crush CLI and receives responses through the CLI. The buffer maintains a single continuous session across prompts (using `crush run --continue`), so follow-up questions keep context.
 
-2. **Selection-as-context**: In any Emacs buffer, a selection can be used as context. When sent, the selection is formatted as an org-mode source block with file path and line numbers, then inserted into the crush buffer. The user can then add additional context about what to do with the selection before sending the prompt.
+2. **Selection-as-context**: In any Emacs buffer, a selection can be used as context. When sent, the selection is formatted as a markdown fenced code block with file path and line numbers, then inserted into the crush buffer. The user can then add additional context about what to do with the selection before sending the prompt.
 
 ## Backend Strategy
 
@@ -22,12 +22,15 @@ crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic
 - **Per-prompt calling**: Each prompt is sent to `crush run` as a separate invocation. The CLI streams the response to stdout and exits.
 - **Session continuity**: The first prompt starts a fresh session. Each subsequent prompt passes `--continue`, which continues the active session in the working directory. `crush-new-session` resets this so the next prompt starts a new session.
 - **Manual session selection**: Setting `crush--session` passes `--session <id>` to continue a specific session by ID.
-- **Context format**: Selections are formatted as org-mode source blocks:
+- **Context format**: Selections are formatted as markdown fenced code blocks with an attachment header line:
 
-```
-#+begin_src text :file src/foo.go :lines 42-58
+````
+**Attachment: src/foo.go (lines 42-58)**
+
+```go
 ...selected code...
-#+end_src
+````
+
 ```
 
 ## Roadmap
@@ -38,7 +41,7 @@ crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic
 - [x] Basic prompt sending via `crush run`
 - [x] Response streaming into the crush buffer
 - [x] Session continuation via `--continue`
-- [x] Selection insertion as org source blocks
+- [x] Selection insertion as markdown fenced code blocks
 - [x] Prompt region management (marker-based prompt tracking)
 - [x] Input locking while process runs
 - [x] Prompt response header in buffer
@@ -80,6 +83,17 @@ The package originally derived from `comint-mode`; it no longer does. Commit `43
 - [x] `crush-fontify-responses` and `crush-fontify-attachments` defcustoms
 - [x] Region type tagging (`response`, `org`)
 
+### Phase 1d: Markdown attachments (complete)
+
+Attachments are now plain markdown rendered by the parent mode; the org temp-buffer fontification machinery, `crush-response-face`/`crush-org-face`, and the `crush-fontify-*` defcustoms were removed.
+
+- [x] Selections formatted as markdown fenced code blocks with `**Attachment: <relpath> (lines N-M)**` header
+- [x] `crush-insert-filepath` inserts a markdown link `[relpath](relpath)`
+- [x] Paths resolved relative to the project root (or `default-directory`)
+- [x] Language derived from file extension (`crush--lang-from-extension`)
+- [x] `crush-region-type` taxonomy reduced to `attachment` / `response`; `crush-filename` / `crush-lines` metadata properties
+- [x] Org fontify functions, faces, and defcustoms removed; `org-mode` dependency dropped
+
 ### Phase 2: Polish
 
 - [ ] Error handling and retry
@@ -112,3 +126,4 @@ The package originally derived from `comint-mode`; it no longer does. Commit `43
 - [CRUSH-SPEC.md](CRUSH-SPEC.md) — Crush CLI protocol (flags, stdin semantics, permission model)
 - [HYPER-API.md](HYPER-API.md) — Charm Hyper gateway HTTP API (auth, chat completions, model catalog)
 - [MIGRATION-DESIGN.md](MIGRATION-DESIGN.md) — design record for the comint-to-text-mode migration
+```
