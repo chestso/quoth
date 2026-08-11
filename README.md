@@ -366,6 +366,8 @@ When `crush-debug-mode` is non-nil (default), commands, input, output, and senti
 (setq crush-debug-mode nil)
 ```
 
+For the hyper backend, each request logs a `request:` line with the URL, model, HTTP status, content type, and whether a token was sent (never the token itself). A non-2xx status is surfaced in the buffer as `[crush-hyper error: HTTP <code> from <url>]` instead of a generic connection error.
+
 ## License
 
 MIT

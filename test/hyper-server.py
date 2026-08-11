@@ -14,6 +14,7 @@ Modes (mirrors of the original elisp server):
   error-http  respond 401 with a JSON error body
   error-event stream an SSE error event then [DONE]
   malformed   stream truncated SSE then close
+  not-found   respond 404 with an HTML error page
 
 The server binds 127.0.0.1 on an ephemeral port, writes the base URL as
 the first line of CAPTURE-FILE, then serves requests.  Only
@@ -146,6 +147,15 @@ def main():
             elif mode == "malformed":
                 conn.sendall(
                     (sse_ok + 'data: {"choices":[{"delta":{"con').encode()
+                )
+            elif mode == "not-found":
+                conn.sendall(
+                    (
+                        "HTTP/1.1 404 Not Found\r\n"
+                        "Content-Type: text/html\r\n"
+                        "Connection: close\r\n\r\n"
+                        "<!doctype html><title>Not Found</title>"
+                    ).encode()
                 )
             else:  # ok-stream, slow
                 conn.sendall(sse_ok.encode())

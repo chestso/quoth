@@ -2767,5 +2767,59 @@ and return the capture output."
              (should (search-forward "crush-hyper error" nil t)))))
       (crush-test--cleanup))))
 
+(ert-deftest crush-test/hyper-wire-404-reports-status ()
+  "An HTML 404 should be reported with its status code."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush-test--with-hyper-server
+           'not-found
+           (lambda (base)
+             (setq-local crush--response-start (point-marker))
+             (let* ((proc (crush--hyper-request
+                           base "tok" (crush--hyper-compose-request "hi" nil "m")
+                           (current-buffer) #'ignore))
+                    (deadline (+ (float-time) 6)))
+               (while (and (process-live-p proc)
+                           (null (process-get proc :crush-finished))
+                           (< (float-time) deadline))
+                 (accept-process-output nil 0.1)
+                 (sit-for 0.02))
+               ;; Check the parsed status before the process is deleted.
+               (let ((status (process-get proc :crush-status)))
+                 (should (= status 404))))
+             (goto-char (point-min))
+             (should (search-forward "crush-hyper error: HTTP 404" nil t)))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-wire-logs-request-without-token ()
+  "The request diagnostic line in *crush-debug* should not contain the token."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush-test--with-hyper-server
+           'ok-stream
+           (lambda (base)
+             (setq-local crush--response-start (point-marker))
+             (let ((proc (crush--hyper-request
+                          base "sk-hyper-supersecret"
+                          (crush--hyper-compose-request "hi" nil "m")
+                          (current-buffer) #'ignore)))
+               (let ((deadline (+ (float-time) 6)))
+                 (while (and (process-live-p proc)
+                             (null (process-get proc :crush-finished))
+                             (< (float-time) deadline))
+                   (accept-process-output nil 0.1)
+                   (sit-for 0.02))))
+             ;; The request diagnostic must be logged without the token.
+             (let ((debug-buf (get-buffer "*crush-debug*")))
+               (should (buffer-live-p debug-buf))
+               (with-current-buffer debug-buf
+                 (goto-char (point-min))
+                 (should (search-forward "request: POST" nil t))
+                 (goto-char (point-min))
+                 (should-not (search-forward "sk-hyper-supersecret" nil t)))))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test)
 ;;; crush-test.el ends here

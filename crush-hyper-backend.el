@@ -298,9 +298,11 @@ callback exactly once."
   "Filter for the curl process PROC receiving SSE chunk STRING.
 Feed the chunk to the SSE parser and insert any content deltas into the
 crush buffer.  The HTTP response head (headers) is not valid SSE and is
-ignored by the parser; errors are surfaced by the sentinel when curl
-exits non-zero."
+ignored by the parser; the status line is parsed for diagnostics, and
+errors are surfaced by the sentinel when curl exits non-zero."
   (crush--debug-log 'output (format "%S" string))
+  (unless (process-get proc :crush-head-parsed)
+    (setq string (crush--hyper-parse-head proc string)))
   (let* ((sse-state (process-get proc :crush-sse))
          (result (crush--hyper-sse-feed sse-state string))
          (deltas (car result))
@@ -311,12 +313,53 @@ exits non-zero."
     (when (plist-get new-state :done)
       (crush--hyper-http-finish proc (plist-get new-state :error)))))
 
+(defun crush--hyper-parse-head (proc string)
+  "Parse the HTTP status line out of the first chunks from PROC.
+Accumulates chunks in `:crush-head' until a double newline, then
+records `:crush-status' and `:crush-content-type', logs a request
+diagnostic line, and returns the remainder of STRING after the head.
+The token is never logged."
+  (let ((head (concat (process-get proc :crush-head) string)))
+    (if (string-match "\r?\n\r?\n" head)
+        (let* ((head-text (substring head 0 (match-beginning 0)))
+               (status (and (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" head-text)
+                            (string-to-number (match-string 1 head-text))))
+               (content-type (and (string-match
+                                   "content-type: *\\([^\r\n]+\\)"
+                                   head-text)
+                                  (downcase (match-string 1 head-text)))))
+          (process-put proc :crush-status status)
+          (process-put proc :crush-content-type content-type)
+          (process-put proc :crush-head-parsed t)
+          (crush--debug-log
+           'request
+           (format "POST %s model=%S status=%s content-type=%s token=%s"
+                   (process-get proc :crush-url)
+                   (process-get proc :crush-model)
+                   (if status (number-to-string status) "?")
+                   (or content-type "?")
+                   (if (process-get proc :crush-token-p) "present" "none")))
+          (substring head (match-end 0)))
+      (progn
+        (process-put proc :crush-head head)
+        ""))))
+
 (defun crush--hyper-curl-sentinel (proc _event)
   "Sentinel for the curl process PROC.
 If the stream did not end with `[DONE]' (e.g. connection dropped or
 HTTP error), finish with an error; otherwise ensure cleanup."
-  (unless (process-get proc :crush-finished)
-    (crush--hyper-http-finish proc "connection closed without [DONE]")))
+  (let ((status (process-get proc :crush-status)))
+    (crush--debug-log
+     'sentinel
+     (format "curl exited; status=%s finished=%S"
+             (if status (number-to-string status) "?")
+             (process-get proc :crush-finished)))
+    (unless (process-get proc :crush-finished)
+      (crush--hyper-http-finish
+       proc
+       (if status
+           (format "HTTP %s from %s" status (process-get proc :crush-url))
+         "connection closed without [DONE]")))))
 
 (defun crush--hyper-request (base-url token body target callback)
   "Send HTTP POST to BASE-URL with TOKEN and JSON BODY via curl.
@@ -327,6 +370,7 @@ process."
          (config (concat
                   (format "url = %s/chat/completions\n" base-url)
                   "request = POST\n"
+                  "include\n"
                   "silent\n"
                   "no-buffer\n"
                   "header = \"Content-Type: application/json\"\n"
@@ -347,12 +391,18 @@ process."
     (process-put proc :crush-sse (crush--hyper-sse-new-state))
     (process-put proc :crush-target target)
     (process-put proc :crush-done-callback callback)
+    ;; Request metadata for `crush--hyper-curl-filter' diagnostics.
+    (process-put proc :crush-url (format "%s/chat/completions" base-url))
+    (process-put proc :crush-model (crush--hyper-alist-get "model" body))
+    (process-put proc :crush-token-p (and token t))
+    (process-put proc :crush-head "")
+    (process-put proc :crush-head-parsed nil)
+    (process-put proc :crush-status nil)
     ;; Config + JSON body over stdin; EOF closes the request.
     (process-send-string proc config)
     (process-send-string proc payload)
     (process-send-eof proc)
     proc))
-
 ;;; Hyper backend methods
 
 (cl-defmethod crush-backend-send-prompt
