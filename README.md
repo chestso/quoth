@@ -57,12 +57,6 @@ Additional command-line arguments passed to the Crush CLI:
 (setq crush-args '("--verbose"))
 ```
 
-### Rendering
-
-Response text is rendered as markdown. When the parent mode is `markdown-mode` (default when installed), native font-lock provides syntax highlighting including fenced code blocks. When the parent mode is `text-mode` (no markdown-mode), the content is still markdown but without syntax highlighting — crush.el applies no faces of its own.
-
-Attachment blocks are also markdown fenced code blocks (` ``` <language>`) with a `**Attachment: <relpath> (lines N-M)**` header line, so they are highlighted by markdown-mode alongside responses. Paths are always relative to the project root (or the buffer's `default-directory` when not in a project).
-
 ### crush-backend-type
 
 Which Crush backend to use:
@@ -89,6 +83,21 @@ Each prompt spawns a **new** `crush run` process; there is no persistent process
 3. When the process exits, the sentinel tags and freezes the response, then inserts a new `crush> ` prompt
 
 Session continuity is handled by the Crush CLI's `--continue` flag, not by keeping a process alive.
+
+### How Context Reaches the Model
+
+`crush run` treats stdin as opaque text: the CLI reads all of it and prepends it verbatim to the prompt, separated by a blank line. It does not parse attachment headers, `(lines N-M)` ranges, fence languages, or links, and it never reads or slices the referenced files.
+
+So the blocks crush.el inserts are plain markdown in the LLM message. The `**Attachment:**` header and line range are hints for the model — it may re-read a specific range with its `view` tool, or just reason over the text it was given.
+
+### Conversation Context Is Managed by Crush
+
+crush.el sends only the current prompt (and any attached context blocks) on each invocation; it keeps no conversation state of its own. Continuity is delegated to the CLI's session store: every prompt is persisted there, and each new invocation tells the CLI which session to resume.
+
+The link between prompts lives entirely in two buffer-local variables:
+
+- `crush--continue` — set to `t` by the run backend immediately after the first prompt is spawned (`crush-backend-send-prompt`). It is passed to the next invocation as `--continue`, which resumes the most recent session for the working directory — in practice, the prior conversation travels along with the new prompt.
+- `crush--session` — a manual session id, passed as `--session <id>`; takes precedence over `--continue` and resumes a specific session instead.
 
 ### Backend Abstraction
 
@@ -273,7 +282,7 @@ Text properties can be accessed directly:
 
 Response text and attachment blocks are rendered as markdown. `markdown-mode` (when installed as the parent mode) provides native font-lock highlighting — including fenced code blocks — for both responses and attachment blocks. When the parent mode is `text-mode` (markdown-mode unavailable), the content is still markdown but no syntax highlighting is applied and crush.el adds no faces of its own.
 
-The language inside attachment fences is derived from the file extension (`el` → `emacs-lisp`, `go` → `go`, `py` → `python`, `ts` → `typescript`, etc., falling back to `text` for unknown extensions).
+The language inside attachment fences is derived from the file extension (`el` → `emacs-lisp`, `go` → `go`, `py` → `python`, `ts` → `typescript`, etc., falling back to `plaintext` for unknown extensions).
 
 ## Input History
 
