@@ -42,6 +42,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'auth-source)
 (require 'crush-backend)
 
 (defcustom crush-hyper-base-url "https://hyper.charm.land/v1"
@@ -52,13 +53,45 @@ environment variable when set."
   :type 'string
   :group 'crush)
 
-(defcustom crush-hyper-token nil
+(defcustom crush-hyper-token #'crush-hyper--token-from-auth-source
   "Bearer access token for the Charm Hyper gateway.
 Tokens are prefixed `sk-hyper-'; get one from the Hyper Dashboard.
-Phase 1 requires the token to be set manually; the OAuth device
-flow is a later phase."
-  :type '(choice (const nil) string)
+
+May be a string, a function of no arguments that returns the token,
+or nil to request without a token.  The default looks the token up in
+`auth-source' (see `crush-hyper--token-from-auth-source')."
+  :type '(choice (function-item crush-hyper--token-from-auth-source)
+                 (const :tag "No token" nil)
+                 string
+                 function)
   :group 'crush)
+
+(defun crush-hyper--token-from-auth-source ()
+  "Return the hyper bearer token from `auth-source'.
+Looks up host `hyper.charm.land' with user `apikey'.  Signals an error
+when no secret is found, with setup instructions."
+  (require 'auth-source)
+  (let* ((found (auth-source-search
+                 :host "hyper.charm.land" :user "apikey"
+                 :require '(:secret)))
+         (secret (and found
+                      (plist-get (car found) :secret))))
+    (if (functionp secret)
+        (funcall secret)
+      (or secret
+          (user-error
+           "No hyper token in auth-source; add `machine hyper.charm.land login apikey password sk-hyper-...' to %s or set `crush-hyper-token'"
+           (or (car auth-sources) "auth-sources"))))))
+
+(defun crush-hyper--resolve-token (token)
+  "Resolve TOKEN to a bearer token string, or nil.
+TOKEN may be nil, a string, or a function of no arguments returning
+either.  Functions are called and the result is resolved recursively."
+  (when token
+    (let ((resolved (if (functionp token) (funcall token) token)))
+      (if (stringp resolved)
+          resolved
+        (crush-hyper--resolve-token resolved)))))
 
 (defcustom crush-hyper-timeout 300
   "Seconds to wait for a hyper request to finish before giving up."
@@ -331,7 +364,8 @@ process."
          (base-url (or (crush-hyper-backend-base-url backend)
                        (getenv "HYPER_URL")
                        crush-hyper-base-url))
-         (token (or (crush-hyper-backend-token backend) crush-hyper-token))
+         (token (crush-hyper--resolve-token
+                 (or (crush-hyper-backend-token backend) crush-hyper-token)))
          (buffer (crush-backend-buffer backend)))
     (with-current-buffer buffer
       (setq-local crush--response-start (point-marker)))

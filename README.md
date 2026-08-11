@@ -76,11 +76,21 @@ Base URL of the Charm Hyper gateway (default `https://hyper.charm.land/v1`). Req
 
 ### crush-hyper-token
 
-Bearer access token for Hyper. Phase 1 requires setting this manually (no OAuth yet):
+Bearer access token for Hyper. Tokens are prefixed `sk-hyper-`; get one from the Hyper Dashboard. The default looks the token up in `auth-source` (gptel-style), so the recommended setup is a line in `~/.authinfo`:
+
+```text
+machine hyper.charm.land login apikey password sk-hyper-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+The value may also be a string (used verbatim) or a function of no arguments returning the token (or another function):
 
 ```elisp
 (setq crush-hyper-token "sk-hyper-xxxxxxxxxxxxxxxxxxxxxxxx")
+;; or
+(setq crush-hyper-token (lambda () (getenv "HYPER_API_KEY")))
 ```
+
+Set it to `nil` to request without a token (useful for local gateways). A missing authinfo entry signals an error with setup instructions rather than silently sending no token.
 
 ### Model selection for hyper
 

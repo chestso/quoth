@@ -117,7 +117,8 @@ Direct HTTP chat-completions against the Charm Hyper gateway, bypassing the CLI.
 
 - [ ] Error handling and retry
 - [ ] Conversation persistence to plain-text files (gptel-style): save `crush-region-type`/`crush-response-to`/attachment bounds as a file-local, recreate properties on open
-- [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (`crush-hyper-token` is currently set manually)
+- [x] Token storage via `auth-source` (`machine hyper.charm.land login apikey password sk-hyper-...`), gptel-style; `crush-hyper-token` accepts string/function/nil
+- [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (tokens currently come from `auth-source` via `crush-hyper-token`)
 - [ ] Session history: `x-session-id` / `x-session-affinity` headers plus an in-buffer history round trip (send prior `[user, assistant]` messages) ([HYPER-API.md §3.1](HYPER-API.md))
 - [ ] Reasoning display: stream `reasoning_content` deltas into a styled region ([HYPER-API.md §3.5](HYPER-API.md))
 - [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection

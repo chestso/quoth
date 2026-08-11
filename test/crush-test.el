@@ -2526,6 +2526,73 @@ right after the prompt inherits `read-only' and Emacs signals
     (should (plist-get (cdr result) :done))
     (should (string= (plist-get (cdr result) :error) "boom"))))
 
+
+
+;;; 92b. Hyper backend: token resolution
+
+;;; `crush-hyper--resolve-token' supports string, function, and nil
+;;; tokens; the default `crush-hyper-token' function reads from
+;;; `auth-source' (like gptel).
+
+(ert-deftest crush-test/hyper-token-resolve-string ()
+  "A string token resolves to itself."
+  (should (string= (crush-hyper--resolve-token "sk-hyper-abc") "sk-hyper-abc")))
+
+(ert-deftest crush-test/hyper-token-resolve-nil ()
+  "A nil token resolves to nil (no authorization header)."
+  (should-not (crush-hyper--resolve-token nil)))
+
+(ert-deftest crush-test/hyper-token-resolve-function ()
+  "A function token is called and its string result used."
+  (let ((calls 0))
+    (should (string= (crush-hyper--resolve-token
+                      (lambda () (setq calls (1+ calls)) "sk-hyper-fn"))
+                     "sk-hyper-fn"))
+    (should (= calls 1))))
+
+(ert-deftest crush-test/hyper-token-resolve-function-returns-function ()
+  "A function returning another function is resolved recursively."
+  (let ((token (lambda () (lambda () "sk-hyper-nested"))))
+    (should (string= (crush-hyper--resolve-token token) "sk-hyper-nested"))))
+
+(ert-deftest crush-test/hyper-token-from-auth-source-found ()
+  "The default lookup returns the authinfo secret for hyper.charm.land."
+  (cl-letf (((symbol-function 'auth-source-search)
+             (lambda (&rest args)
+               (should (string= (plist-get args :host) "hyper.charm.land"))
+               (should (string= (plist-get args :user) "apikey"))
+               (list (list :host "hyper.charm.land" :user "apikey"
+                           :secret "sk-hyper-authinfo")))))
+    (should (string= (crush-hyper--token-from-auth-source)
+                     "sk-hyper-authinfo"))))
+
+(ert-deftest crush-test/hyper-token-from-auth-source-missing ()
+  "Missing authinfo entry signals a setup error, not a silent nil."
+  (cl-letf (((symbol-function 'auth-source-search)
+             (lambda (&rest _args) nil)))
+    (should-error (crush-hyper--token-from-auth-source) :type 'user-error)))
+
+(ert-deftest crush-test/hyper-token-default-reads-authinfo ()
+  "The default `crush-hyper-token' resolves through auth-source."
+  (cl-letf (((symbol-function 'auth-source-search)
+             (lambda (&rest _args)
+               (list (list :secret "sk-hyper-default")))))
+    (let ((crush-hyper-token #'crush-hyper--token-from-auth-source))
+      (should (string= (crush-hyper--resolve-token crush-hyper-token)
+                       "sk-hyper-default")))))
+
+(ert-deftest crush-test/hyper-token-backend-slot-beats-custom ()
+  "A token on the backend struct wins over `crush-hyper-token'."
+  (let ((backend (crush-make-hyper-backend
+                  :buffer (current-buffer)
+                  :base-url "http://127.0.0.1:1"
+                  :token "sk-hyper-slot")))
+    (let ((crush-hyper-token "sk-hyper-custom"))
+      (let ((token (crush-hyper--resolve-token
+                    (or (crush-hyper-backend-token backend)
+                        crush-hyper-token))))
+        (should (string= token "sk-hyper-slot"))))))
+
 ;;; 93. Hyper backend: wire integration via dummy server
 
 ;;; The dummy Hyper gateway is a small Python server
