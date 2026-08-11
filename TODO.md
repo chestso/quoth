@@ -74,7 +74,9 @@ The package originally derived from `comint-mode`; it no longer does. Commit `43
 - [x] Debug logging to `*crush-debug*` buffer
 - [x] Removal-assertion tests (no `(require 'comint)`, no `crush-mode`, no `crush--build-command`, no separator region type)
 
-### Phase 1c: Fontification (complete)
+### Phase 1c: Fontification (complete — superseded by 1d)
+
+The overlay/temp-buffer fontification described here was later removed entirely; see Phase 1d.
 
 - [x] Region-based fontification dispatch (`crush--fontify-region`)
 - [x] Responses: markdown parent mode with native font-lock, `crush-response-face` fallback in text-mode
@@ -85,18 +87,24 @@ The package originally derived from `comint-mode`; it no longer does. Commit `43
 
 ### Phase 1d: Markdown attachments (complete)
 
-Attachments are now plain markdown rendered by the parent mode; the org temp-buffer fontification machinery, `crush-response-face`/`crush-org-face`, and the `crush-fontify-*` defcustoms were removed.
+Attachments are rendered as markdown (fenced blocks with a header line, or links), so the parent mode's font-lock highlights them; the org temp-buffer fontification machinery, `crush-response-face`/`crush-org-face`, and the `crush-fontify-*` defcustoms were removed.
 
-- [x] Selections formatted as markdown fenced code blocks with `**Attachment: <relpath> (lines N-M)**` header
-- [x] `crush-insert-filepath` inserts a markdown link `[relpath](relpath)`
-- [x] Paths resolved relative to the project root (or `default-directory`)
-- [x] Language derived from file extension (`crush--lang-from-extension`)
+- [x] Selections formatted as markdown fenced code blocks with `**Attachment: <relpath> (lines N-M)**` header; `crush-insert-filepath` inserts a link
+- [x] Paths resolved relative to the project root (or `default-directory`); language derived from file extension (`crush--lang-from-extension`, fallback `plaintext`)
 - [x] `crush-region-type` taxonomy reduced to `attachment` / `response`; `crush-filename` / `crush-lines` metadata properties
 - [x] Org fontify functions, faces, and defcustoms removed; `org-mode` dependency dropped
+
+### Phase 1e: Markdown-mode key conflicts (complete)
+
+Chat commands are all reachable via keys that markdown-mode does not bind.
+
+- [x] Moved chat commands under the free `C-c c` prefix (`crush-chat-command-map`): `s` send, `i` interrupt, `k` clear, `n` new session, `a` insert selection
+- [x] `RET` still sends; `M-p`/`M-n` still navigate history; `crush-minor-mode` source-buffer keys unchanged
 
 ### Phase 2: Polish
 
 - [ ] Error handling and retry
+- [ ] Conversation persistence to plain-text files (gptel-style): save `crush-region-type`/`crush-response-to`/attachment bounds as a file-local, recreate properties on open
 - [ ] Direct API backend (`crush-hyper-backend`): HTTP calls to Hyper's chat-completions endpoint ([HYPER-API.md §3](HYPER-API.md)), exposed via a new `crush-backend-type` choice; the `crush-client-backend` stub becomes unused and is removed
 - [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401
 - [ ] SSE streaming of responses ([HYPER-API.md §3.5](HYPER-API.md)): content, `reasoning_content` traces, and `tool_calls` deltas
