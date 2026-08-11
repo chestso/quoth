@@ -300,7 +300,7 @@ Feed the chunk to the SSE parser and insert any content deltas into the
 crush buffer.  The HTTP response head (headers) is not valid SSE and is
 ignored by the parser; the status line is parsed for diagnostics, and
 errors are surfaced by the sentinel when curl exits non-zero."
-  (crush--debug-log 'output (format "%S" string))
+          (crush--debug-log 'output (format "%S" (string-replace "\r" "" string)))
   (unless (process-get proc :crush-head-parsed)
     (setq string (crush--hyper-parse-head proc string)))
   (let* ((sse-state (process-get proc :crush-sse))
