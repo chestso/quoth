@@ -63,7 +63,7 @@ crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic
 
 ### Phase 1b: Comint removal & text-mode migration (complete)
 
-The package originally derived from `comint-mode`; it no longer does. Commit `435d89b` removed the comint backend and subsequent commits finished the migration. See [MIGRATION-DESIGN.md](MIGRATION-DESIGN.md) for the phase-by-phase design record.
+The package originally derived from `comint-mode`; it no longer does. Commit `435d89b` removed the comint backend and subsequent commits finished the migration: the buffer's parent mode is now markdown/text-mode with a custom output filter, marker-based prompt tracking, text-property read-only, and the `crush-chat-mode` minor mode.
 
 - [x] `crush-chat-mode` minor mode (keybindings, hooks) on top of a markdown-mode/text-mode parent
 - [x] Marker-based prompt tracking (`crush--prompt-start-marker`, `crush--input-start-marker`) replacing comint prompt fields
@@ -133,5 +133,4 @@ Chat commands are all reachable via keys that markdown-mode does not bind.
 
 - [CRUSH-SPEC.md](CRUSH-SPEC.md) — Crush CLI protocol (flags, stdin semantics, permission model)
 - [HYPER-API.md](HYPER-API.md) — Charm Hyper gateway HTTP API (auth, chat completions, model catalog)
-- [MIGRATION-DESIGN.md](MIGRATION-DESIGN.md) — design record for the comint-to-text-mode migration
 ```
