@@ -480,7 +480,7 @@ BEG and END are standard after-change hook arguments."
 (defun crush--lang-from-extension (filename)
   "Return the markdown language identifier for FILENAME's extension.
 Uses `file-name-extension' so paths and dotfiles resolve; falls back to
-`text' for unknown extensions."
+`plaintext' for unknown extensions."
   (let ((ext (file-name-extension filename)))
     (pcase ext
       ("el" "emacs-lisp")
@@ -505,7 +505,8 @@ Uses `file-name-extension' so paths and dotfiles resolve; falls back to
       ("json" "json")
       ("jsonc" "json")
       ("toml" "toml")
-      ("ya?ml" "yaml")
+      ("yaml" "yaml")
+      ("yml" "yaml")
       ("css" "css")
       ("html" "html")
       ("sql" "sql")
@@ -517,7 +518,7 @@ Uses `file-name-extension' so paths and dotfiles resolve; falls back to
       ("lua" "lua")
       ("r" "r")
       ("clj" "clojure")
-      (_ "text"))))
+      (_ "plaintext"))))
 
 (defun crush--freeze-region (start end)
   "Make the region from START to END read-only via text properties.

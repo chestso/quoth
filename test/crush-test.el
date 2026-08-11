@@ -1042,8 +1042,10 @@ with an Attachment header line."
         (with-current-buffer buf
           (should (string= (crush--lang-from-extension "file.el") "emacs-lisp"))
           (should (string= (crush--lang-from-extension "file.go") "go"))
+          (should (string= (crush--lang-from-extension "file.yaml") "yaml"))
+          (should (string= (crush--lang-from-extension "file.yml") "yaml"))
           (should (string= (crush--lang-from-extension "foo.unknown")
-                           "text")))
+                           "plaintext")))
       (crush-test--cleanup))))
 
 ;;; 38. Attachment text properties
