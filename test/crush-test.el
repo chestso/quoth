@@ -2059,14 +2059,24 @@ There is no separate `crush-mode' major mode."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/chat-mode-has-keymap ()
-  "crush-chat-mode-map should have the expected keybindings."
-  (let ((map (symbol-value 'crush-chat-mode-map)))
+  "crush-chat-mode-map should have the expected keybindings.
+All commands live under the `C-c c' prefix so they do not conflict
+with markdown-mode's `C-c C-*' bindings."
+  (let ((map (symbol-value 'crush-chat-mode-map))
+        (cmd (symbol-value 'crush-chat-command-map)))
     (should (keymapp map))
     (should (eq (lookup-key map (kbd "RET")) #'crush-send-input))
-    (should (eq (lookup-key map (kbd "C-c C-c")) #'crush-interrupt))
-    (should (eq (lookup-key map (kbd "C-c C-k")) #'crush-clear-buffer))
-    (should (eq (lookup-key map (kbd "C-c C-s")) #'crush-new-session))
-    (should (eq (lookup-key map (kbd "C-c C-i")) #'crush-insert-selection))
+    (should (eq (lookup-key map (kbd "C-c c")) cmd))
+    (should (eq (lookup-key cmd (kbd "s")) #'crush-send-input))
+    (should (eq (lookup-key cmd (kbd "i")) #'crush-interrupt))
+    (should (eq (lookup-key cmd (kbd "k")) #'crush-clear-buffer))
+    (should (eq (lookup-key cmd (kbd "n")) #'crush-new-session))
+    (should (eq (lookup-key cmd (kbd "a")) #'crush-insert-selection))
+    ;; markdown-mode's C-c C-* bindings must not be shadowed.
+    (should-not (lookup-key map (kbd "C-c C-c")))
+    (should-not (lookup-key map (kbd "C-c C-k")))
+    (should-not (lookup-key map (kbd "C-c C-s")))
+    (should-not (lookup-key map (kbd "C-c C-i")))
     (should (eq (lookup-key map (kbd "M-p")) #'crush--input-previous))
     (should (eq (lookup-key map (kbd "M-n")) #'crush--input-next))))
 

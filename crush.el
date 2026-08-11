@@ -340,13 +340,20 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
 
 ;;; Chat minor mode
 
+(defvar crush-chat-command-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "s") #'crush-send-input)
+    (define-key map (kbd "i") #'crush-interrupt)
+    (define-key map (kbd "k") #'crush-clear-buffer)
+    (define-key map (kbd "n") #'crush-new-session)
+    (define-key map (kbd "a") #'crush-insert-selection)
+    map)
+  "Keymap under `C-c c' for crush chat-buffer commands.")
+
 (defvar crush-chat-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'crush-send-input)
-    (define-key map (kbd "C-c C-c") #'crush-interrupt)
-    (define-key map (kbd "C-c C-k") #'crush-clear-buffer)
-    (define-key map (kbd "C-c C-s") #'crush-new-session)
-    (define-key map (kbd "C-c C-i") #'crush-insert-selection)
+    (define-key map (kbd "C-c c") crush-chat-command-map)
     (define-key map (kbd "M-p") #'crush--input-previous)
     (define-key map (kbd "M-n") #'crush--input-next)
     map)
@@ -806,7 +813,7 @@ FILE is the file path, START and END are the line numbers."
   "Send the current prompt to the Crush CLI."
   (interactive)
   (when (and crush-process (process-live-p crush-process))
-    (user-error "Crush is still running; interrupt with C-c C-c"))
+    (user-error "Crush is still running; interrupt with C-c c i"))
   (let* ((input-start (or (when (and crush--input-start-marker
                                      (markerp crush--input-start-marker))
                             (marker-position crush--input-start-marker))

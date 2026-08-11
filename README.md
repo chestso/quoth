@@ -116,10 +116,10 @@ All metadata is stored as **text properties** on buffer content; highlighting is
 - `M-x crush` — open the crush interaction buffer
 - Type a prompt and press `RET` to send it to the Crush CLI
 - `M-p` / `M-n` — navigate input history (previous/next input)
-- `C-c C-c` — interrupt the running crush process
-- `C-c C-k` — clear the crush buffer (also starts a fresh session)
-- `C-c C-s` — start a new session
-- `C-c C-i` — insert the current buffer selection as context into the crush buffer
+- `C-c c i` — interrupt the running crush process
+- `C-c c k` — clear the crush buffer (also starts a fresh session)
+- `C-c c n` — start a new session
+- `C-c c a` — insert the current buffer selection as context into the crush buffer
 
 ### Source buffers (minor mode)
 
@@ -158,8 +158,8 @@ This means:
 
 To start a fresh session:
 
-- `C-c C-s` (`crush-new-session`) — resets `crush--continue` to `nil`, so the next prompt starts a new session
-- `C-c C-k` (`crush-clear-buffer`) — clears the buffer **and** starts a fresh session
+- `C-c c n` (`crush-new-session`) — resets `crush--continue` to `nil`, so the next prompt starts a new session
+- `C-c c k` (`crush-clear-buffer`) — clears the buffer **and** starts a fresh session
 
 ### `--session <id>` (manual)
 
@@ -196,7 +196,7 @@ crush--continue=nil  crush run --quiet "first prompt"
                      ↓ (crush--continue set to t)
 crush--continue=t    crush run --quiet --continue "follow up"
 crush--continue=t    crush run --quiet --continue "another"
-C-c C-s pressed      (crush--continue reset to nil)
+C-c c n pressed      (crush--continue reset to nil)
 crush--continue=nil  crush run --quiet "new session"
 ```
 
@@ -233,7 +233,7 @@ The ID changes based on where your cursor is - if you move to an older prompt or
 
 When you insert context via:
 
-- `C-c C-s` (`crush-insert-selection`)
+- `C-c c a` (`crush-insert-selection`)
 - `C-c C-b` (`crush-insert-buffer`)
 - `C-c C-p` (`crush-insert-filepath`)
 
