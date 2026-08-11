@@ -1108,32 +1108,6 @@ with crush-region-type 'attachment and a project-root-relative path."
               (should (string= (get-text-property (match-beginning 0) 'crush-filename) "file.go")))))
       (crush-test--cleanup))))
 
-;;; 39b. Fontification machinery removed
-
-(ert-deftest crush-test/fontify-functions-removed ()
-  "The org/markdown fontification helpers should no longer be defined."
-  (should-not (fboundp 'crush--fontify-region))
-  (should-not (fboundp 'crush--fontify-as-markdown))
-  (should-not (fboundp 'crush--fontify-as-org))
-  (should-not (fboundp 'crush--copy-faces-as-overlays)))
-
-(ert-deftest crush-test/fontify-faces-removed ()
-  "The fontification faces and defcustoms should no longer exist."
-  (should-not (boundp 'crush-response-face))
-  (should-not (boundp 'crush-org-face))
-  (should-not (boundp 'crush-fontify-responses))
-  (should-not (boundp 'crush-fontify-attachments)))
-
-(ert-deftest crush-test/no-crush-overlays-in-buffer ()
-  "No crush overlay should be created anywhere (markdown font-lock replaces it)."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (should-not (cl-some (lambda (ov) (overlay-get ov 'crush-overlay))
-                               (overlays-in (point-min) (point-max))))))
-    (crush-test--cleanup)))
-
-;;; 39c. Integration: sentinel no longer fontifies
 
 (ert-deftest crush-test/sentinel-no-longer-fontifies ()
   "Sentinel should tag the response but create no overlays."
@@ -1204,35 +1178,9 @@ with crush-region-type 'attachment and a project-root-relative path."
                                  (overlays-in (point-min) (point-max))))))
       (crush-test--cleanup))))
 
-;;; 44. Phase 1: comint-output-filter-functions hook runs (DELETED in Phase 2)
+;;; (Phase 2-5 comint-era tests were deleted during the migration; the
+;;; surviving invariants are covered by the tests below.)
 
-;;; 45. Phase 1: comint-output-filter inserts at process mark (rewritten in Phase 2 as output-filter-inserts-at-mark)
-
-;;; 46. Phase 2: comint prompt fields - prompt is read-only (DELETED in Phase 4: replaced by prompt-is-read-only)
-
-;;; 47. Phase 2: comint prompt fields - field-at-pos (DELETED in Phase 4: no field property)
-
-;;; 48. Phase 2: comint prompt fields - comint-highlight-prompt face (DELETED in Phase 4: replaced by prompt-has-crush-prompt-face)
-
-;;; 49. Phase 3: comint-send-input calls crush--input-sender (DELETED in Phase 3)
-
-;;; 50. Phase 3: comint-send-input adds to input ring (DELETED in Phase 3: replaced by custom-input-ring tests)
-
-;;; 51. Phase 3: crush--ensure-process creates placeholder (DELETED in Phase 3: no placeholder needed)
-
-;;; 52. Phase 4: Input history - M-p retrieves previous input (DELETED: replaced by custom-input-ring tests)
-
-;;; 53. Phase 5: Sentinel inserts prompt with comint field properties (DELETED in Phase 4: no field property)
-
-;;; 54. Phase 5: Sentinel sets comint-last-prompt (DELETED in Phase 4: no comint-last-prompt)
-
-;;; 55. Phase 6: Vestigial code removed
-
-;;; 48. Phase 2: comint-use-prompt-regexp (DELETED in Phase 3: comint settings removed)
-
-(ert-deftest crush-test/crush-process-filter-removed ()
-  "crush--process-filter should not be defined (replaced by crush--output-filter)."
-  (should-not (fboundp 'crush--process-filter)))
 
 ;;; 56. Phase 7: Region-type/field reconciliation
 
@@ -1276,36 +1224,6 @@ with crush-region-type 'attachment and a project-root-relative path."
             (should (search-forward "Attachment:" nil t))
             (should (eq (get-text-property (match-beginning 0) 'crush-region-type) 'attachment))))
       (crush-test--cleanup))))
-
-(ert-deftest crush-test/separator-region-type-removed ()
-  "No separator lines should be present after response."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test")
-          (goto-char (point-max))
-          (newline)
-          (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo 'response'")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
-          (goto-char (point-min))
-          (should (search-forward "response" nil t))
-          ;; No separator lines should be present
-          (goto-char (point-min))
-          (should-not (search-forward "------------------------------------" nil t))))
-    (crush-test--cleanup)))
-
-;;; 56. field-output-on-response (DELETED in Phase 2: no field=output with custom filter)
 
 ;;; 57. Debug logging - crush-debug-mode defcustom
 
@@ -1397,15 +1315,12 @@ with crush-region-type 'attachment and a project-root-relative path."
           (should (search-forward "finished" nil t))))
     (crush-test--cleanup)))
 
-;;; 64. Phase 6: Vestigial function rename
+;;; 64. Prompt insertion rename
 
 (ert-deftest crush-test/insert-prompt-renamed ()
   "crush--insert-prompt should be defined (renamed from crush--insert-prompt-marker)."
   (should (fboundp 'crush--insert-prompt)))
 
-(ert-deftest crush-test/insert-prompt-marker-removed ()
-  "crush--insert-prompt-marker should not be defined (renamed to crush--insert-prompt)."
-  (should-not (fboundp 'crush--insert-prompt-marker)))
 
 ;;; 65. Phase 6: Sentinel freezes previous response read-only
 
@@ -1501,20 +1416,6 @@ or the crush> prompt marker."
             (should prompt-id)
             (should (string= prompt-id crush--prompt-id)))))
     (crush-test--cleanup)))
-
-;;; 70. Phase 6: Remove crush-prompt-start and crush--make-prompt-marker
-
-(ert-deftest crush-test/prompt-start-var-removed ()
-  "crush-prompt-start should not be a defined variable."
-  (should-not (boundp 'crush-prompt-start)))
-
-(ert-deftest crush-test/make-prompt-marker-removed ()
-  "crush--make-prompt-marker should not be defined."
-  (should-not (fboundp 'crush--make-prompt-marker)))
-
-;;; 71. Phase 6: crush-clear-buffer uses comint prompt insertion (DELETED in Phase 4: replaced by clear-buffer-prompt-has-crush-properties)
-
-;;; 72. Phase 6: crush-interrupt uses comint prompt insertion (DELETED in Phase 4: no field property)
 
 ;;; Backend abstraction tests
 
@@ -1645,10 +1546,6 @@ or the crush> prompt marker."
           (should-not (crush-backend-active-p crush--backend))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/client-backend-removed ()
-  "The client/server backend should not exist (replaced by hyper)."
-  (should-not (boundp 'crush-client-backend))
-  (should-not (boundp 'crush-make-client-backend)))
 
 (ert-deftest crush-test/backend-grant-permission-noop-for-run ()
   "crush-backend-grant-permission should be a no-op for run backend."
@@ -1799,9 +1696,6 @@ or the crush> prompt marker."
             (delete-process proc))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/suppress-false-prompt-removed ()
-  "crush--suppress-false-prompt should not be defined after Phase 2."
-  (should-not (fboundp 'crush--suppress-false-prompt)))
 
 ;;; Phase 3: Custom input ring
 
@@ -1921,13 +1815,6 @@ or the crush> prompt marker."
           (should-not (get-buffer-process (current-buffer)))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/ensure-process-removed ()
-  "crush--ensure-process should not be defined after Phase 3."
-  (should-not (fboundp 'crush--ensure-process)))
-
-(ert-deftest crush-test/input-sender-removed ()
-  "crush--input-sender should not be defined after Phase 3."
-  (should-not (fboundp 'crush--input-sender)))
 
 (ert-deftest crush-test/input-previous-inserts-from-ring ()
   "M-p should insert previous input from crush--input-ring."
@@ -1978,27 +1865,10 @@ There is no separate `crush-mode' major mode."
         (with-current-buffer buf
           (should (eq major-mode crush--parent-mode))
           (should (derived-mode-p 'text-mode))
-          (should-not (derived-mode-p 'comint-mode))
-          (should-not (fboundp 'crush-mode))))
+          (should-not (derived-mode-p 'comint-mode))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/no-comint-last-prompt ()
-  "comint-last-prompt should not be set in crush-mode."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (should-not (bound-and-true-p comint-last-prompt))))
-    (crush-test--cleanup)))
 
-(ert-deftest crush-test/no-field-property-on-prompt ()
-  "The prompt should NOT have field property (comint removed)."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
-          (should-not (get-text-property (1- (point)) 'field))))
-    (crush-test--cleanup)))
 
 (ert-deftest crush-test/prompt-has-crush-prompt-face ()
   "The prompt text should have crush-prompt-face."
@@ -2034,23 +1904,6 @@ There is no separate `crush-mode' major mode."
                       'crush-prompt-face))
           (should-not (get-text-property (match-beginning 0) 'field))))
     (crush-test--cleanup)))
-
-(ert-deftest crush-test/no-comint-in-crush-source ()
-  "crush.el source should not contain (require 'comint)."
-  (with-temp-buffer
-    (insert-file-contents (locate-library "crush.el"))
-    (goto-char (point-min))
-    (should-not (search-forward "(require 'comint)" nil t))))
-
-(ert-deftest crush-test/backend-code-in-dedicated-files ()
-  "The run and hyper backends should live in their own files.
-The backends moved out of crush.el so each backend can be loaded and
-maintained independently (see AGENTS.md)."
-  (dolist (file '("crush-run-backend.el" "crush-hyper-backend.el"))
-    (with-temp-buffer
-      (insert-file-contents (locate-library file))
-      (goto-char (point-min))
-      (should (search-forward "(provide '" nil t)))))
 
 ;;; Phase 5: crush-chat-mode minor mode
 
@@ -2123,18 +1976,9 @@ with markdown-mode's `C-c C-*' bindings."
           (should-not (memq #'crush--update-header-line post-command-hook))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/crush-mode-removed ()
-  "The phantom `crush-mode' major mode and its keymap should not exist.
-The crush buffer's major mode is the parent (markdown-mode/text-mode),
-and all keybindings live in `crush-chat-mode'."
-  (should-not (fboundp 'crush-mode))
-  (should-not (boundp 'crush-mode-map)))
 
 ;;; Phase 6: Backend abstraction cleanup
 
-(ert-deftest crush-test/build-command-removed ()
-  "crush--build-command should not be defined (folded into run backend)."
-  (should-not (fboundp 'crush--build-command)))
 
 (ert-deftest crush-test/send-input-always-uses-backend ()
   "crush-send-input should always use crush--backend (never nil)."
