@@ -174,8 +174,8 @@ Buffer-local.")
 Buffer-local.")
 
 (defvar crush--input-ring-index 0
-  "Current position in `crush--input-ring' for previously-entered
-inputs (navigated with `crush--input-previous' / `crush--input-next').
+  "Position in `crush--input-ring' for previously-entered inputs.
+Navigated with `crush--input-previous' / `crush--input-next'.
 Buffer-local.")
 
 (defcustom crush-input-ring-size 32
@@ -733,8 +733,9 @@ when LINES is provided, tag it with `crush-lines' (a line range string)."
               (put-text-property start (point) 'crush-lines lines))))))))
 
 (defun crush--relative-file (file)
-  "Return FILE relative to the project root, or `default-directory'
-when not in a project.  FILE may be nil, in which case return nil."
+  "Return FILE relative to the project root or the default directory.
+Resolves against `project-root' when in a project, otherwise
+`default-directory'.  Returns nil when FILE is nil."
   (when file
     (file-relative-name
      file
