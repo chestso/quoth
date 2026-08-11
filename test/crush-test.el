@@ -1645,31 +1645,10 @@ or the crush> prompt marker."
           (should-not (crush-backend-active-p crush--backend))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/client-backend-struct ()
-  "crush-client-backend should be a crush-backend struct."
-  (let ((backend (crush-make-client-backend
-                  :buffer (current-buffer)
-                  :working-directory "/tmp"
-                  :host nil)))
-    (should (crush-backend-p backend))
-    (should (crush-client-backend-p backend))
-    (should (eq (crush-backend-type backend) 'client))))
-
-(ert-deftest crush-test/client-backend-active-p-no-sse ()
-  "crush-backend-active-p should return nil when no SSE process."
-  (let ((backend (crush-make-client-backend
-                  :buffer (current-buffer)
-                  :working-directory "/tmp"
-                  :host nil)))
-    (should-not (crush-backend-active-p backend))))
-
-(ert-deftest crush-test/client-backend-send-prompt-errors ()
-  "crush-backend-send-prompt should error for client backend (not yet implemented)."
-  (let ((backend (crush-make-client-backend
-                  :buffer (current-buffer)
-                  :working-directory "/tmp"
-                  :host nil)))
-    (should-error (crush-backend-send-prompt backend "test" :context nil :session-id nil))))
+(ert-deftest crush-test/client-backend-removed ()
+  "The client/server backend should not exist (replaced by hyper)."
+  (should-not (boundp 'crush-client-backend))
+  (should-not (boundp 'crush-make-client-backend)))
 
 (ert-deftest crush-test/backend-grant-permission-noop-for-run ()
   "crush-backend-grant-permission should be a no-op for run backend."

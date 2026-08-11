@@ -69,7 +69,6 @@ Which Crush backend to use:
 
 - `run` (default) — standalone `crush run` mode. Each prompt spawns a new process. Fully implemented.
 - `hyper` — direct HTTP access to the Charm Hyper gateway, bypassing the CLI. Streaming chat completions are implemented (see [Hyper backend](#hyper-backend)); OAuth, history, and tool calls are still on the roadmap.
-- `client` — legacy stub, not implemented.
 
 ### crush-hyper-base-url
 
@@ -132,7 +131,6 @@ All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`
 
 - `crush-run-backend` — the default implementation. Spawns `crush run --quiet` per prompt.
 - `crush-hyper-backend` — direct HTTP access to the Charm Hyper gateway, introduced in phase 1 (see [Hyper backend](#hyper-backend)).
-- `crush-client-backend` — legacy stub struct whose methods all error "not yet implemented"; superseded by the hyper backend.
 
 ## Hyper backend
 

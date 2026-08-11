@@ -46,7 +46,7 @@
 ;; all permissions.  Tools like `edit', `write', and `bash' execute
 ;; immediately without prompting for user confirmation.  This is
 ;; functionally equivalent to running `crush --yolo'.  See CRUSH-SPEC.md
-;; for details on permission behavior and alternative client/server mode.
+;; for details on permission behavior.
 ;;
 ;; See TODO.md for the full project goal and roadmap.
 
@@ -105,9 +105,8 @@ Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
 (defcustom crush-backend-type 'run
   "Type of crush backend to use.
 `run' uses the standalone `crush run' mode (per-process).
-`hyper' uses direct HTTP streaming to the Charm Hyper gateway.
-`client' uses the client/server HTTP+SSE mode (stub)."
-  :type '(choice (const run) (const hyper) (const client))
+`hyper' uses direct HTTP streaming to the Charm Hyper gateway."
+  :type '(choice (const run) (const hyper))
   :group 'crush)
 
 (defcustom crush-hyper-base-url "https://hyper.charm.land"
@@ -303,19 +302,6 @@ The root is the project root when in a project, otherwise
   args
   model)
 
-(cl-defstruct (crush-client-backend
-               (:include crush-backend (type 'client))
-               (:constructor nil)
-               (:constructor crush-make-client-backend
-			     (&key buffer working-directory host
-				   &aux (type 'client)))
-               (:copier nil))
-  "Client/server crush backend."
-  host
-  (workspace-id nil)
-  (client-id nil)
-  (sse-process nil))
-
 (cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p)
   "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.")
 
@@ -398,30 +384,6 @@ For CONTEXT, SESSION-ID, and CONTINUE-P, see `crush-backend-send-prompt'."
 (cl-defmethod crush-backend-grant-permission ((_backend crush-run-backend) _permission-id _action)
   "No-op for run backend: permissions are auto-approved."
   nil)
-
-(cl-defmethod crush-backend-send-prompt
-  ((_backend crush-client-backend) _prompt &key _context _session-id)
-  "Send PROMPT via client/server HTTP API."
-  (error "Client/server backend not yet implemented"))
-
-(cl-defmethod crush-backend-interrupt ((_backend crush-client-backend))
-  "Interrupt the client/server operation."
-  (error "Client/server backend not yet implemented"))
-
-(cl-defmethod crush-backend-active-p ((backend crush-client-backend))
-  "Return non-nil if an SSE stream is active for BACKEND."
-  (and (crush-client-backend-sse-process backend)
-       (process-live-p (crush-client-backend-sse-process backend))))
-
-(cl-defmethod crush-backend-cleanup ((backend crush-client-backend))
-  "Clean up the SSE process held by BACKEND."
-  (when (crush-client-backend-sse-process backend)
-    (delete-process (crush-client-backend-sse-process backend))
-    (setf (crush-client-backend-sse-process backend) nil)))
-
-(cl-defmethod crush-backend-grant-permission ((_backend crush-client-backend) _permission-id _action)
-  "Grant permission via client/server HTTP API."
-  (error "Client/server backend not yet implemented"))
 
 ;;; Hyper backend
 

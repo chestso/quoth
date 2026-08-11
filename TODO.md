@@ -15,7 +15,7 @@ It operates in two ways:
 crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic methods over `cl-defstruct` backends):
 
 - **`crush run` CLI backend (`crush-run-backend`)** — implemented. Each prompt spawns a `crush run --quiet` process.
-- **Direct API backend (`crush-hyper-backend`, planned)** — direct HTTP calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), bypassing the CLI entirely. This replaces the earlier client/server CLI design.
+- **Direct API backend (`crush-hyper-backend`, implemented, phase 1)** — direct HTTP calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), bypassing the CLI entirely.
 
 ## Interaction Model
 
