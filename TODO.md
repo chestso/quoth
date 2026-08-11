@@ -120,7 +120,7 @@ Direct HTTP chat-completions against the Charm Hyper gateway, bypassing the CLI.
 - [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (`crush-hyper-token` is currently set manually)
 - [ ] Session history: `x-session-id` / `x-session-affinity` headers plus an in-buffer history round trip (send prior `[user, assistant]` messages) ([HYPER-API.md §3.1](HYPER-API.md))
 - [ ] Reasoning display: stream `reasoning_content` deltas into a styled region ([HYPER-API.md §3.5](HYPER-API.md))
-- [ ] Model catalog from `GET /v1/provider` ([HYPER-API.md §5](HYPER-API.md)): model picker, reasoning-effort selection
+- [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection
 - [ ] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages — plus a permission policy for tool execution (the CLI backend auto-approves; direct mode needs one)
 - [ ] Tool call visibility in responses
 - [ ] Hypercredit display from `usage.remaining.hypercredits`, with `GET /v1/credits` fallback ([HYPER-API.md §4](HYPER-API.md))

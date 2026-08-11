@@ -8,8 +8,19 @@ in Crush.
 
 crush.el consumes this API through the hyper backend (`crush-backend-type
 'hyper`): curl subprocess transport with SSE parsed in the process filter
-(see the transport section in `crush.el` and the integration fixture
-`test/hyper-server.py`).
+(see the transport section in `crush-hyper-backend.el` and the integration
+fixture `test/hyper-server.py`).
+
+> **Endpoint reality check (2026-08).** The live `hyper.charm.land` gateway
+> now serves an **OpenAI-compatible** API under `/v1` (`GET /v1/models`,
+> `POST /v1/chat/completions`), authenticated with `sk-hyper-` tokens from
+> the Hyper Dashboard. The older fantasy-style paths documented below
+> (`/api/v1/fantasy`) return 404 on the public gateway. crush.el targets the
+> `/v1` endpoint: `crush-hyper-base-url` defaults to
+> `https://hyper.charm.land/v1` and requests go to
+> `BASE-URL/chat/completions`. The device-flow auth sections below remain
+> relevant for cases where `$HYPER_URL` points at a gateway that still
+> serves the fantasy API.
 
 Source of truth: [`internal/agent/hyper/`](https://github.com/charmbracelet/crush/tree/main/internal/agent/hyper),
 [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go),

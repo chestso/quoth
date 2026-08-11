@@ -9,3 +9,5 @@
 .DS_Store
 .envrc
 result
+__pycache__/
+*.pyc

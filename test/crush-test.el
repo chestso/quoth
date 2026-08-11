@@ -2627,7 +2627,7 @@ and return the capture output."
            (headers (nth 2 req))
            (body (nth 3 req)))
       (should (string= method "POST"))
-      (should (string= path "/api/v1/fantasy"))
+      (should (string= path "/chat/completions"))
       (should (string= (cdr (assoc "authorization" headers))
                        "Bearer tok-rf"))
       (should (string= (cdr (assoc "content-type" headers))

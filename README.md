@@ -72,14 +72,14 @@ Which Crush backend to use:
 
 ### crush-hyper-base-url
 
-Base URL of the Charm Hyper gateway (default `https://hyper.charm.land`). Overridden by the `HYPER_URL` environment variable when set.
+Base URL of the Charm Hyper gateway (default `https://hyper.charm.land/v1`). Requests go to `BASE-URL/chat/completions` (the OpenAI-compatible endpoint). Overridden by the `HYPER_URL` environment variable when set.
 
 ### crush-hyper-token
 
 Bearer access token for Hyper. Phase 1 requires setting this manually (no OAuth yet):
 
 ```elisp
-(setq crush-hyper-token "your-token")
+(setq crush-hyper-token "sk-hyper-xxxxxxxxxxxxxxxxxxxxxxxx")
 ```
 
 ### Model selection for hyper
@@ -134,7 +134,7 @@ All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`
 
 ## Hyper backend
 
-The hyper backend posts the prompt to Hyper's chat-completions endpoint (`POST {base-url}/api/v1/fantasy`) and streams the response. It **does not** spawn `crush run`, so it does not need the Crush CLI installed — only `curl` (which is used the same way gptel and plz.el use it).
+The hyper backend posts the prompt to Hyper's OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`, base URL defaulting to `https://hyper.charm.land/v1`) and streams the response. It **does not** spawn `crush run`, so it does not need the Crush CLI installed — only `curl` (which is used the same way gptel and plz.el use it).
 
 ### How it works
 

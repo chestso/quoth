@@ -44,14 +44,17 @@
 (require 'json)
 (require 'crush-backend)
 
-(defcustom crush-hyper-base-url "https://hyper.charm.land"
+(defcustom crush-hyper-base-url "https://hyper.charm.land/v1"
   "Base URL of the Charm Hyper gateway.
-Overridden by the HYPER_URL environment variable when set."
+The OpenAI-compatible chat-completions endpoint is
+`BASE-URL/chat/completions'.  Overridden by the HYPER_URL
+environment variable when set."
   :type 'string
   :group 'crush)
 
 (defcustom crush-hyper-token nil
   "Bearer access token for the Charm Hyper gateway.
+Tokens are prefixed `sk-hyper-'; get one from the Hyper Dashboard.
 Phase 1 requires the token to be set manually; the OAuth device
 flow is a later phase."
   :type '(choice (const nil) string)
@@ -289,7 +292,7 @@ is called with no args when the stream finishes.  Returns the curl
 process."
   (let* ((payload (json-encode body))
          (config (concat
-                  (format "url = %s/api/v1/fantasy\n" base-url)
+                  (format "url = %s/chat/completions\n" base-url)
                   "request = POST\n"
                   "silent\n"
                   "no-buffer\n"

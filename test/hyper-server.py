@@ -16,8 +16,10 @@ Modes (mirrors of the original elisp server):
   malformed   stream truncated SSE then close
 
 The server binds 127.0.0.1 on an ephemeral port, writes the base URL as
-the first line of CAPTURE-FILE, then serves requests.  Each request is
-appended to CAPTURE-FILE as:
+the first line of CAPTURE-FILE, then serves requests.  Only
+POST /chat/completions is served (mirrors the real gateway); other
+paths get a 404 JSON error.  Each request is appended to CAPTURE-FILE
+as:
 
   REQUEST <method> <path>
   <header>: <value>
@@ -106,6 +108,18 @@ def main():
                     f.write(f"{k}: {v}\n")
                 f.write(f"BODY {body}\n")
                 f.flush()
+
+            if path != "/chat/completions":
+                conn.sendall(
+                    (
+                        "HTTP/1.1 404 Not Found\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Connection: close\r\n\r\n"
+                        '{"error":"not_found"}'
+                    ).encode()
+                )
+                conn.close()
+                continue
 
             sse_ok = (
                 "HTTP/1.1 200 OK\r\n"
