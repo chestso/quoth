@@ -10,11 +10,11 @@ See [TODO.md](TODO.md) for the full project goal and roadmap.
 
 ## Important: Permission Behavior
 
-This package uses `crush run` mode, which **auto-approves all permissions**. Tools like `edit`, `write`, and `bash` execute immediately without prompting for user confirmation. This is functionally equivalent to running `crush --yolo`.
+This package currently uses `crush run` mode, which **auto-approves all permissions**. Tools like `edit`, `write`, and `bash` execute immediately without prompting for user confirmation. This is functionally equivalent to running `crush --yolo`.
 
-If you need permission prompts, you would need to use client/server mode (not currently implemented in this package). See [CRUSH-SPEC.md](CRUSH-SPEC.md) for details.
+Permission prompts are planned for the direct API backend (not yet implemented). See the [TODO.md](TODO.md) roadmap and [CRUSH-SPEC.md](CRUSH-SPEC.md) for details.
 
-## Installation
+## Installing
 
 Not yet on MELPA. For now, clone and load manually:
 
@@ -24,6 +24,8 @@ Not yet on MELPA. For now, clone and load manually:
   :bind ("C-c c" . crush)
   :hook (prog-mode . crush-minor-mode))
 ```
+
+Requires Emacs 28.1+.
 
 ## Configuration
 
@@ -35,7 +37,7 @@ Set the default model for Crush:
 (setq crush-model "claude-sonnet-4-20250514")
 ```
 
-When set, the model is passed to `crush run --model`. When `nil`, uses Crush's default model.
+When set, the model is passed to `crush run --model`. When `nil` (default), uses Crush's default model.
 
 ### crush-working-directory
 
@@ -57,15 +59,57 @@ Additional command-line arguments passed to the Crush CLI:
 
 ### crush-fontify-responses
 
-When non-nil (default), fontify response text using `markdown-mode` if available, with native syntax highlighting for fenced code blocks. When nil, only the fallback face is applied.
+When non-nil (default), fontify response text. When the parent mode is `markdown-mode`, highlighting is handled by markdown-mode's native font-lock (including fenced code blocks). When the parent mode is `text-mode`, the fallback `crush-response-face` is applied instead. When nil, no fallback face is applied.
 
 ### crush-fontify-attachments
 
 When non-nil (default), fontify attachment blocks using `org-mode` if available. When nil, only the fallback face is applied.
 
+### crush-backend-type
+
+Which Crush backend to use:
+
+```elisp
+(setq crush-backend-type 'run)
+```
+
+- `run` (default) — standalone `crush run` mode. Each prompt spawns a new process. Fully implemented.
+- `hyper` — direct HTTP access to the Charm Hyper gateway (OAuth device flow, SSE streaming, reasoning traces, permission prompts). Planned, not yet implemented. See [HYPER-API.md](HYPER-API.md).
+
 ### crush-debug-mode
 
 When non-nil (default), log commands, input, output, and sentinel events to a `*crush-debug*` buffer. Set to `nil` to disable logging.
+
+## Architecture
+
+### Per-Prompt Process Model
+
+Each prompt spawns a **new** `crush run` process; there is no persistent process:
+
+1. Pressing `RET` spawns `crush run` with the prompt as a CLI argument (or via stdin, when context blocks are attached)
+2. Output is streamed into the buffer by a custom output filter
+3. When the process exits, the sentinel tags, fontifies, and freezes the response, then inserts a new `crush> ` prompt
+
+Session continuity is handled by the Crush CLI's `--continue` flag, not by keeping a process alive.
+
+### Backend Abstraction
+
+All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`) with two structs:
+
+- `crush-run-backend` — the current implementation. Spawns `crush run --quiet` per prompt.
+- `crush-client-backend` — stub struct (`host`, `workspace-id`, `client-id`, `sse-process`) whose methods all error "not yet implemented". The planned replacement is a `crush-hyper-backend` that calls the Charm Hyper chat-completions API directly (see [HYPER-API.md](HYPER-API.md)).
+
+### Chat Buffer Composition
+
+The crush buffer's major mode is the parent mode (`markdown-mode` if available, else `text-mode`); `crush-chat-mode` is a **minor mode** that provides the chat keybindings and hooks. Rendering, prompt tracking, and fontification are all implemented with text properties, markers, and overlays instead of comint.
+
+### Read-Only Handling
+
+Prompt text and completed exchanges are made read-only via **text properties** (`read-only` with `front-sticky`/`rear-nonsticky` boundaries), so the history can't be edited while the current input area stays fully editable. A font-lock guard (`font-lock-unfontify-region-function`) and a `post-command-hook` re-assert the boundaries after markdown-mode refontifies the buffer.
+
+### Metadata
+
+All metadata is stored as **text properties** on buffer content, and faces are applied via **overlays** — not via font-lock's text properties, which would be stripped during refontification.
 
 ## Usage
 
@@ -166,7 +210,7 @@ crush--session="abc123"  crush run --quiet --session abc123 "resume"
 
 ## Prompt IDs and Attachments
 
-Each prompt is assigned a unique ID when the `crush> ` prompt is created, before you type anything. This ID is used to track attachments (context blocks) that belong to that prompt. All metadata is stored as text properties on the buffer content, so it persists across sessions and can be retrieved at any time.
+Each prompt is assigned a unique ID when the `crush> ` prompt is created, before you type anything. This ID is used to track attachments (context blocks) that belong to that prompt. All metadata is stored as text properties on the buffer content, so it persists and can be retrieved at any time.
 
 ### Text Properties
 
@@ -226,9 +270,9 @@ Text properties can be accessed directly:
 
 ## Fontification
 
-Response text is highlighted by `markdown-mode` (if installed), using its native syntax highlighting and fenced-code support — no overlays are added for responses. When `markdown-mode` is unavailable and the buffer falls back to `text-mode`, the `crush-response-face` is applied to responses so they stay visually distinct.
+Response text is fontified by `markdown-mode` (if installed), using its native font-lock syntax highlighting and fenced-code support — no overlays are added for responses. When markdown-mode is unavailable and the buffer falls back to `text-mode`, the `crush-response-face` is applied to responses so they stay visually distinct.
 
-Attachment blocks are fontified as org using `org-mode` (if installed), via a temp-buffer technique with overlay-based faces that survive `jit-lock` refontification. When org is unavailable, the `crush-org-face` fallback is applied:
+Attachment blocks are fontified as org using `org-mode` (if installed), via a temp-buffer technique: the text is fontified in a scratch org buffer, and the resulting faces are copied back as overlays, which survive font-lock refontification. When org is unavailable, the `crush-org-face` fallback is applied.
 
 - `crush-response-face` — background face for response text in the text-mode fallback (gray20 dark / gray90 light)
 - `crush-org-face` — background face for attachment blocks (gray15 dark / gray95 light)
@@ -242,7 +286,7 @@ Disable fontification with:
 
 ## Input History
 
-Input history is managed by comint's built-in `comint-input-ring`. Use `M-p` and `M-n` to navigate previous inputs. History is persisted to `~/.emacs.d/crush-history` and loaded on buffer creation.
+Each prompt you send is stored in a custom input ring (`crush-input-ring-size`, default 32) and persisted to `~/.emacs.d/crush-history`. Use `M-p` and `M-n` to navigate previous inputs; the ring is loaded when the crush buffer is created and written back after each prompt.
 
 ## Stderr Handling
 

@@ -119,11 +119,10 @@ Since `crush run` outputs plain text with no formatting:
 - No parsing or transformation needed
 - Simplest approach, but no rich formatting
 
-**Option 2: Use client/server mode for structured data**
+**Option 2: Direct API access (planned)**
 
-- Subscribe to SSE `message` events
-- Receive structured `parts` array: `TextContent`, `ToolCall`, `ToolResult`, `ReasoningContent`
-- Render each part type appropriately in the UI
+- Call the provider's chat-completions API directly from the client, bypassing the CLI and its per-run session database
+- For Charm Hyper, see [HYPER-API.md](HYPER-API.md): OAuth device flow, SSE streaming with structured `parts` (text, tool calls, reasoning traces), session-affinity headers for prefix caching
 - Enables syntax highlighting, code block detection, tool call visibility
 
 **Option 3: Parse markdown heuristics**
@@ -133,7 +132,7 @@ Since `crush run` outputs plain text with no formatting:
 - Handle headers, lists, bold/italic via markdown parser
 - Fragile — relies on model output conventions
 
-**Recommendation:** For rich presentation (code highlighting, tool visibility, structured layout), use client/server mode. `crush run` is best for simple text streaming where presentation doesn't matter.
+**Recommendation:** For rich presentation (code highlighting, tool visibility, structured layout), use direct API access (HYPER-API.md). `crush run` is best for simple text streaming where presentation doesn't matter.
 
 ### Querying Sessions from CLI
 

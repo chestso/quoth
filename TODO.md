@@ -10,6 +10,13 @@ It operates in two ways:
 
 2. **Selection-as-context**: In any Emacs buffer, a selection can be used as context. When sent, the selection is formatted as an org-mode source block with file path and line numbers, then inserted into the crush buffer. The user can then add additional context about what to do with the selection before sending the prompt.
 
+## Backend Strategy
+
+crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic methods over `cl-defstruct` backends):
+
+- **`crush run` CLI backend (`crush-run-backend`)** — implemented. Each prompt spawns a `crush run --quiet` process.
+- **Direct API backend (`crush-hyper-backend`, planned)** — direct HTTP calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), bypassing the CLI entirely. This replaces the earlier client/server CLI design.
+
 ## Interaction Model
 
 - **Per-prompt calling**: Each prompt is sent to `crush run` as a separate invocation. The CLI streams the response to stdout and exits.
@@ -32,7 +39,7 @@ It operates in two ways:
 - [x] Response streaming into the crush buffer
 - [x] Session continuation via `--continue`
 - [x] Selection insertion as org source blocks
-- [x] Prompt region management (comint field-based prompts)
+- [x] Prompt region management (marker-based prompt tracking)
 - [x] Input locking while process runs
 - [x] Prompt response header in buffer
 - [x] Stderr routing to separate `*crush-errors*` buffer
@@ -51,48 +58,57 @@ It operates in two ways:
 - [x] Manual session selection via `crush--session` (`--session` flag)
 - [x] Permission behavior documentation (auto-approve warning)
 
-### Phase 1b: Comint integration (complete)
+### Phase 1b: Comint removal & text-mode migration (complete)
 
-- [x] `comint-output-filter` as process filter
-- [x] `comint-send-input` for input handling with custom `comint-input-sender`
-- [x] Field-based prompts (`comint-use-prompt-regexp` nil)
-- [x] `comint-highlight-prompt` face on prompts
-- [x] `comint-input-ring` for input history (M-p/M-n, persisted to file)
-- [x] Placeholder process pattern for per-prompt model
-- [x] False-prompt suppression via `comint-output-filter-functions`
-- [x] Prompt and attachment text property tracking
+The package originally derived from `comint-mode`; it no longer does. Commit `435d89b` removed the comint backend and subsequent commits finished the migration. See [MIGRATION-DESIGN.md](MIGRATION-DESIGN.md) for the phase-by-phase design record.
+
+- [x] `crush-chat-mode` minor mode (keybindings, hooks) on top of a markdown-mode/text-mode parent
+- [x] Marker-based prompt tracking (`crush--prompt-start-marker`, `crush--input-start-marker`) replacing comint prompt fields
+- [x] Custom output filter (`crush--output-filter`) inserting at the process mark
+- [x] Custom input ring (M-p/M-n) persisted to `~/.emacs.d/crush-history`
+- [x] Read-only prompt and history via text properties (`rear-nonsticky` boundaries)
+- [x] Font-lock guard and post-command re-assertion so markdown refontification cannot break input editability
 - [x] Debug logging to `*crush-debug*` buffer
+- [x] Removal-assertion tests (no `(require 'comint)`, no `crush-mode`, no `crush--build-command`, no separator region type)
 
 ### Phase 1c: Fontification (complete)
 
 - [x] Region-based fontification dispatch (`crush--fontify-region`)
-- [x] Markdown fontification of responses via temp-buffer technique
-- [x] Org fontification of attachment blocks via temp-buffer technique
+- [x] Responses: markdown parent mode with native font-lock, `crush-response-face` fallback in text-mode
+- [x] Attachments: org fontification via temp-buffer technique
 - [x] Overlay-based faces (survive `jit-lock` refontification)
-- [x] `crush-response-face` and `crush-org-face` fallback faces
 - [x] `crush-fontify-responses` and `crush-fontify-attachments` defcustoms
-- [x] Region type tagging (`response`, `org`, `separator`)
+- [x] Region type tagging (`response`, `org`)
 
 ### Phase 2: Polish
 
 - [ ] Error handling and retry
-- [x] Backend abstraction (crush-backend, crush-run-backend, crush-client-backend)
-- [ ] Client/server mode for structured output (SSE event stream)
-- [ ] Permission request handling via client/server mode
+- [ ] Direct API backend (`crush-hyper-backend`): HTTP calls to Hyper's chat-completions endpoint ([HYPER-API.md §3](HYPER-API.md)), exposed via a new `crush-backend-type` choice; the `crush-client-backend` stub becomes unused and is removed
+- [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401
+- [ ] SSE streaming of responses ([HYPER-API.md §3.5](HYPER-API.md)): content, `reasoning_content` traces, and `tool_calls` deltas
+- [ ] Session affinity headers (`x-session-id` / `x-session-affinity`) for server-side prefix caching ([HYPER-API.md §3.1](HYPER-API.md))
+- [ ] Model catalog from `GET /v1/provider` ([HYPER-API.md §5](HYPER-API.md)): model picker, reasoning-effort selection
+- [ ] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages — plus a permission policy for tool execution (the CLI backend auto-approves; direct mode needs one)
 - [ ] Tool call visibility in responses
+- [ ] Hypercredit display from `usage.remaining.hypercredits`, with `GET /v1/credits` fallback ([HYPER-API.md §4](HYPER-API.md))
 
 ### Phase 3: Integration
 
 - [ ] `use-package` integration
 - [ ] MELPA submission
-- [ ] Project.el integration (auto-detect project root)
+- [x] Project.el integration (auto-detect project root via `project-current`)
 - [ ] Multiple concurrent crush sessions
-- [ ] Keybindings for common operations (switch model, yolo mode, etc.)
+- [ ] Keybindings for common operations (switch model, permission handling, etc.)
 
 ### Phase 4: Advanced
 
 - [ ] MCP server support via Emacs
-- [ ] Tool call display and approval
 - [ ] Diff/patch application from crush responses
 - [ ] Context menu for richer selection formatting
 - [ ] Transient-based command dispatch
+
+## Reference Docs
+
+- [CRUSH-SPEC.md](CRUSH-SPEC.md) — Crush CLI protocol (flags, stdin semantics, permission model)
+- [HYPER-API.md](HYPER-API.md) — Charm Hyper gateway HTTP API (auth, chat completions, model catalog)
+- [MIGRATION-DESIGN.md](MIGRATION-DESIGN.md) — design record for the comint-to-text-mode migration
