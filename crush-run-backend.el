@@ -89,45 +89,6 @@ otherwise `default-directory'."
   :type '(choice (const nil) directory)
   :group 'crush)
 
-(defcustom crush-hyper-base-url "https://hyper.charm.land"
-  "Base URL of the Charm Hyper gateway.
-Overridden by the HYPER_URL environment variable when set."
-  :type 'string
-  :group 'crush)
-
-(defcustom crush-hyper-token nil
-  "Bearer access token for the Charm Hyper gateway.
-Phase 1 requires the token to be set manually; the OAuth device
-flow is a later phase."
-  :type '(choice (const nil) string)
-  :group 'crush)
-
-(defcustom crush-hyper-timeout 300
-  "Seconds to wait for a hyper request to finish before giving up."
-  :type 'number
-  :group 'crush)
-
-(defcustom crush-hyper-max-tokens 64000
-  "Default `max_tokens' for hyper requests."
-  :type 'number
-  :group 'crush)
-
-(defcustom crush-hyper-temperature nil
-  "Sampling temperature for hyper requests; nil means unset."
-  :type '(choice (const nil) number)
-  :group 'crush)
-
-(defcustom crush-hyper-thinking nil
-  "When non-nil, enable Hyper's internal thinking mode."
-  :type 'boolean
-  :group 'crush)
-
-(defcustom crush-hyper-reasoning-effort nil
-  "Reasoning effort for the model; nil means use the model default.
-Values like `low', `medium', `high', `max'."
-  :type '(choice (const nil) string)
-  :group 'crush)
-
 (defcustom crush--continue nil
   "Whether to pass --continue to the Crush CLI.
 When non-nil, the next prompt continues the active session in the folder.
