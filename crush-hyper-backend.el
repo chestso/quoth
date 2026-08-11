@@ -109,13 +109,24 @@ either.  Functions are called and the result is resolved recursively."
   :group 'crush)
 
 (defcustom crush-hyper-thinking nil
-  "When non-nil, enable Hyper's internal thinking mode."
+  "Enable Hyper's chain-of-thought reasoning for each request.
+
+When non-nil, the request body carries `thinking: t' and the model
+emits a `reasoning_content' trace (streamed as reasoning deltas) before
+the final answer.  When nil (default), the model skips reasoning and
+answers directly.  This is the on/off switch; `crush-hyper-reasoning-effort'
+independently controls how deep the reasoning goes when enabled."
   :type 'boolean
   :group 'crush)
 
 (defcustom crush-hyper-reasoning-effort nil
-  "Reasoning effort for the model; nil means use the model default.
-Values like `low', `medium', `high', `max'."
+  "Reasoning depth for the model; nil means use the model default.
+Values like `low', `medium', `high', `max'.
+
+Independent of `crush-hyper-thinking': effort selects how deep the
+reasoning goes, while `thinking' decides whether reasoning happens at
+all.  Setting effort without thinking has no visible effect on models
+that only reason when thinking is enabled."
   :type '(choice (const nil) string)
   :group 'crush)
 

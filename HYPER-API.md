@@ -176,8 +176,8 @@ what enables **server-side prefix/token caching** across turns.
 {
   "model": "qwen3.7-plus",
   "stream": true,
-  "reasoning_effort": "high", // Hyper-specific
-  "thinking": false, // Hyper-specific boolean
+  "reasoning_effort": "high", // how deep reasoning goes (independent of thinking)
+  "thinking": false, // on/off for chain-of-thought; true streams reasoning_content first
   "max_tokens": 64000,
   "temperature": 0.7, // optional
   "tool_choice": "auto", // optional
@@ -192,11 +192,11 @@ what enables **server-side prefix/token caching** across turns.
 
 **Hyper-specific / notable fields:**
 
-| Field              | Meaning                                                                                                                                                |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `reasoning_effort` | Reasoning level for models that support it; defaults come from the model catalog (`default_reasoning_effort`, e.g. `high`, `max`).                     |
-| `thinking`         | Hyper-specific boolean toggling an internal thinking mode (distinct from `reasoning_effort`). Sent as `true`/`false` by Crush on the `hyper` provider. |
-| `extra_body`       | Additional provider-specific fields are merged into the body for openai-compatible providers.                                                          |
+| Field              | Meaning                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reasoning_effort` | Reasoning level for models that support it; defaults come from the model catalog (`default_reasoning_effort`, e.g. `high`, `max`).                                                                                                                                                                                                                                    |
+| `thinking`         | On/off switch for chain-of-thought reasoning (deepseek-style thinking mode). When `true` the model emits a `reasoning_content` trace before the final answer; `false` skips reasoning and answers directly. Equivalent to DeepSeek's `{"thinking": {"type": "enabled"}}`. Independent of `reasoning_effort`. Sent as a bare boolean by Crush on the `hyper` provider. |
+| `extra_body`       | Additional provider-specific fields are merged into the body for openai-compatible providers.                                                                                                                                                                                                                                                                         |
 
 ### 3.3 Tool announcements
 
@@ -289,11 +289,16 @@ Non-streamed response (`choices[0].message`, OpenAI shape):
 ```
 
 **Reasoning content:** models with `can_reason` may return a
-`reasoning_content` field on the assistant message. Crush reads it from the
-raw JSON and surfaces it as a thinking/reasoning trace (streamed via
-reasoning deltas), distinct from the visible `content`. When thinking is
-enabled, some providers require `reasoning_content` present (or empty) on
-assistant tool-call messages in the history.
+`reasoning_content` field on the assistant message. This field carries the
+model's chain-of-thought trace, produced only when `thinking: true` (the
+on/off switch). Crush reads it from the raw JSON and surfaces it as a
+thinking/reasoning trace (streamed via `reasoning_content` deltas before the
+final `content` deltas), distinct from the visible `content`. `reasoning_effort`
+is orthogonal: it selects how deep that reasoning goes, not whether it
+happens. When thinking is enabled, the trace must be echoed back — as
+`reasoning_content` on the assistant message — on any subsequent request that
+carries that turn (including tool-call rounds); some providers require it
+present (or empty) on assistant tool-call messages in the history.
 
 **Tool-call round trip:** the assistant turn with `tool_calls` and
 `finish_reason: "tool_calls"` is persisted and re-sent on the next request,
@@ -385,10 +390,14 @@ Each model entry:
   presented refresh token, an HTTP `401` on an LLM request indicates the
   refresh token is stale/consumed and the client must re-run the device
   flow (`crush auth`).
-- **`thinking` vs `reasoning_effort` are independent knobs.** Hyper accepts a
-  boolean `thinking` field as well as `reasoning_effort`; Crush sets
-  `thinking` from the model config and injects a default `reasoning_effort`
-  for reasoning-capable models.
+- **`thinking` vs `reasoning_effort` are independent knobs.** `thinking`
+  (boolean) is the on/off switch for chain-of-thought reasoning: `true` makes
+  the model emit `reasoning_content` deltas before the answer, `false` skips
+  reasoning entirely. `reasoning_effort` (`low`/`medium`/`high`/`max`) only
+  controls how deep that reasoning goes when enabled. Hyper maps the boolean
+  to the DeepSeek thinking-mode format (`{"thinking": {"type": "enabled"}}`).
+  Crush sets `thinking` from the per-model `think` config and injects a
+  default `reasoning_effort` for reasoning-capable models.
 - **Provider-family quirks.** Because Hyper is openai-compatible, Crush's
   OpenAI/`openaicompat` hooks apply: media tool results are fanned out into
   separate messages (an OpenAI `tool` message cannot carry images/audio), and
