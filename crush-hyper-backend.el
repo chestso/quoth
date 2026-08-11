@@ -114,8 +114,9 @@ either.  Functions are called and the result is resolved recursively."
 When non-nil, the request body carries `thinking: t' and the model
 emits a `reasoning_content' trace (streamed as reasoning deltas) before
 the final answer.  When nil (default), the model skips reasoning and
-answers directly.  This is the on/off switch; `crush-hyper-reasoning-effort'
-independently controls how deep the reasoning goes when enabled."
+answers directly.  This is the master switch: `crush-hyper-reasoning-effort'
+only tunes the depth of that reasoning and is a no-op while thinking is
+disabled."
   :type 'boolean
   :group 'crush)
 
@@ -123,10 +124,10 @@ independently controls how deep the reasoning goes when enabled."
   "Reasoning depth for the model; nil means use the model default.
 Values like `low', `medium', `high', `max'.
 
-Independent of `crush-hyper-thinking': effort selects how deep the
-reasoning goes, while `thinking' decides whether reasoning happens at
-all.  Setting effort without thinking has no visible effect on models
-that only reason when thinking is enabled."
+Gated by `crush-hyper-thinking': effort tunes how deep the chain-of-thought
+reasoning goes, but only when thinking is enabled.  Setting effort while
+`crush-hyper-thinking' is nil has no effect on models whose reasoning is
+switched off."
   :type '(choice (const nil) string)
   :group 'crush)
 
