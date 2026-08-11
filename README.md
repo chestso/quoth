@@ -142,6 +142,21 @@ All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`
 - `crush-run-backend.el` — the default implementation. Spawns `crush run --quiet` per prompt.
 - `crush-hyper-backend.el` — direct HTTP access to the Charm Hyper gateway, introduced in phase 1 (see [Hyper backend](#hyper-backend)).
 
+## Run backend
+
+The run backend (default) drives the **Crush CLI** directly: each prompt spawns a new `crush run` process and streams its stdout into the crush buffer. It requires the `crush` binary on `exec-path` (`crush-program`).
+
+### How it works
+
+1. `crush-backend-send-prompt` builds the command line: `crush run --quiet [--model M] [--session ID | --continue] [prompt]`. `--quiet` suppresses the spinner; stderr goes to the `*crush-errors*` buffer. `--session` takes precedence over `--continue`.
+2. With attachments, the prompt is not a CLI argument — the backend writes `preamble + attachment blocks + prompt` to the process's stdin (the prompt is the last stdin line) and closes it with EOF, because `crush run` reads all of stdin before it starts (see [How Context Reaches the Model](#how-context-reaches-the-model)).
+3. Output is streamed into the buffer by `crush--output-filter` at the process mark; on exit the sentinel runs `crush--finalize-response` — tagging the response, freezing it read-only, and inserting a fresh prompt.
+4. Session continuity is the CLI's job: the backend just sets `crush--continue` after the first prompt (or honors a manual `crush--session`), and the CLI resumes its own SQLite session store on the next invocation (see [Conversation Context Is Managed by Crush](#conversation-context-is-managed-by-crush)).
+
+### Assuming permissions
+
+`crush run` auto-approves every tool permission — functionally `--yolo` (see [Important: Permission Behavior](#important-permission-behavior)). There is no prompt-by-prompt approval in the run backend; `crush-backend-grant-permission` is a no-op.
+
 ## Hyper backend
 
 The hyper backend posts the prompt to Hyper's OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`, base URL defaulting to `https://hyper.charm.land/v1`) and streams the response. It **does not** spawn `crush run`, so it does not need the Crush CLI installed — only `curl` (which is used the same way gptel and plz.el use it).
