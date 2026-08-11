@@ -110,29 +110,29 @@ When non-nil (default), log commands, input, output, and sentinel events to a `*
 
 ## Architecture
 
-## Backend Abstraction
+### Backend Abstraction
 
 All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`). The protocol and shared base struct live in `crush-backend.el`; each backend is a dedicated file:
 
 - `crush-run-backend.el` — the default implementation (see [Run backend](#run-backend)). Spawns `crush run --quiet` per prompt.
 - `crush-hyper-backend.el` — direct HTTP access to the Charm Hyper gateway (see [Hyper backend](#hyper-backend)).
 
-## Run backend
+### Run backend
 
 The run backend (default) drives the **Crush CLI** directly: each prompt spawns a new `crush run` process and streams its stdout into the crush buffer. It requires the `crush` binary on `exec-path` (`crush-program`).
 
-### How it works
+#### How it works
 
 1. `crush-backend-send-prompt` builds the command line: `crush run --quiet [--model M] [--session ID | --continue] [prompt]`. `--quiet` suppresses the spinner; stderr goes to the `*crush-errors*` buffer. `--session` takes precedence over `--continue`.
 2. Output is streamed into the buffer by `crush--output-filter` at the process mark; on exit the sentinel runs `crush--finalize-response` — tagging the response, freezing it read-only, and inserting a fresh `crush> ` prompt. There is no persistent process.
 
-### How context reaches the model
+#### How context reaches the model
 
 `crush run` treats stdin as opaque text: the CLI reads all of it and prepends it verbatim to the prompt, separated by a blank line. It does not parse attachment headers, `(lines N-M)` ranges, fence languages, or links, and it never reads or slices the referenced files. With attachments the backend writes `preamble + attachment blocks + prompt` to the process's stdin (the prompt is the last stdin line) and closes it with EOF, because `crush run` reads all of stdin before it starts.
 
 So the blocks crush.el inserts are plain markdown in the LLM message. The `**Attachment:**` header and line range are hints for the model — it may re-read a specific range with its `view` tool, or just reason over the text it was given.
 
-### Session continuity
+#### Session continuity
 
 crush.el sends only the current prompt (and any attached context blocks) on each invocation; it keeps no conversation state of its own. Continuity is delegated to the CLI's session store: every prompt is persisted there, and each new invocation tells the CLI which session to resume.
 
@@ -141,9 +141,9 @@ The link between prompts lives entirely in two buffer-local variables:
 - `crush--continue` — set to `t` by the run backend immediately after the first prompt is spawned (`crush-backend-send-prompt`). It is passed to the next invocation as `--continue`, which resumes the most recent session for the working directory — in practice, the prior conversation travels along with the new prompt.
 - `crush--session` — a manual session id, passed as `--session <id>`; takes precedence over `--continue` and resumes a specific session instead.
 
-### Session management
+#### Session management
 
-#### `--continue` (automatic)
+##### `--continue` (automatic)
 
 After sending your first prompt, `crush--continue` is set to `t`. All subsequent prompts automatically include `--continue`, which tells Crush to continue the most recent session in the working directory.
 
@@ -158,7 +158,7 @@ To start a fresh session:
 - `C-c c n` (`crush-new-session`) — resets `crush--continue` to `nil`, so the next prompt starts a new session
 - `C-c c k` (`crush-clear-buffer`) — clears the buffer **and** starts a fresh session
 
-#### `--session <id>` (manual)
+##### `--session <id>` (manual)
 
 To continue a specific session by ID, set `crush--session`:
 
@@ -184,7 +184,7 @@ To clear manual session selection and return to automatic `--continue` behavior:
 (setq-local crush--session nil)
 ```
 
-#### Session Flow Example
+##### Session Flow Example
 
 ```
 Buffer state         Command sent
@@ -203,26 +203,26 @@ With manual session ID:
 crush--session="abc123"  crush run --quiet --session abc123 "resume"
 ```
 
-### Assuming permissions
+#### Assuming permissions
 
 `crush run` auto-approves every tool permission — functionally `--yolo` (see [Important: Permission Behavior](#important-permission-behavior)). There is no prompt-by-prompt approval in the run backend; `crush-backend-grant-permission` is a no-op.
 
-## Hyper backend
+### Hyper backend
 
 The hyper backend posts the prompt to Hyper's OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`, base URL defaulting to `https://hyper.charm.land/v1`) and streams the response. It **does not** spawn `crush run`, so it does not need the Crush CLI installed — only `curl` (which is used the same way gptel and plz.el use it).
 
-### How it works
+#### How it works
 
 1. `crush-backend-send-prompt` composes a JSON body (messages array with a minimal system prompt, the user prompt, model, and `stream: t`) via `crush--hyper-compose-request`.
 2. The curl process is spawned with `--config -`: the config (URL, `request = POST`, JSON content-type, bearer auth header, and `data-binary = @-`) plus the JSON body are written to curl's stdin, then EOF. `data-binary = @-` is the **last** config line so curl reads the rest of stdin as the body.
 3. SSE frames are parsed incrementally in the process filter (`crush--hyper-curl-filter` → `crush--hyper-sse-feed`); content deltas are appended to the buffer in order. A final `[DONE]` event, or the process exiting, triggers `crush--finalize-response` — the same tagging/freezing the run backend's sentinel uses.
 4. Each request is stateless: phase 1 sends only the current prompt (no session history), so follow-up prompts start fresh conversations.
 
-### Session continuity
+#### Session continuity
 
 Not yet implemented for hyper: no `x-session-id`/`x-session-affinity` headers and no in-buffer history round trip. Each prompt is a one-shot chat completion. Continuing a conversation is the next phase.
 
-### Current limitations
+#### Current limitations
 
 - Manual token only (`crush-hyper-token`); OAuth device flow is planned.
 - No history, no model catalog, no reasoning-trace display, no tool calls.
