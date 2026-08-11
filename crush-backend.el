@@ -48,6 +48,13 @@
   working-directory
   (type nil))
 
+(defconst crush-context-preamble
+  "The following markdown fenced code blocks contain code context from the
+user's editor. Each block has a header line indicating the source file and
+optional line range. Paths are relative to the project root. Use this context
+to answer the prompt."
+  "Preamble used before attached context by both backends.")
+
 (cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p)
   "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.")
 

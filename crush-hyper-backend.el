@@ -131,13 +131,6 @@ Values like `low', `medium', `high', `max'."
 (defconst crush-hyper-default-model "qwen3.7-plus"
   "Model used when `crush-model' and the backend model are both nil.")
 
-(defconst crush-hyper-context-preamble
-  "The following markdown fenced code blocks contain code context from the
-user's editor. Each block has a header line indicating the source file and
-optional line range. Paths are relative to the project root. Use this context
-to answer the prompt."
-  "Preamble inserted before attached context in the user message.")
-
 (defvar crush-model nil
   "Model to use for hyper requests.
 Defined in `crush-run-backend.el' as a defcustom; shadowed here so
@@ -165,7 +158,7 @@ CONTEXT is optional attachment text; MODEL overrides the configured model.
 The body carries `stream: t' and no tools (phase 1)."
   (let* ((model (or model crush-model crush-hyper-default-model))
          (user-content (if (and context (not (string-empty-p context)))
-                           (concat crush-hyper-context-preamble "\n\n"
+                           (concat crush-context-preamble "\n\n"
                                    context "\n\n" prompt)
                          prompt))
          (body `((model . ,model)

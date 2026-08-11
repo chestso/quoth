@@ -135,6 +135,9 @@ Buffer-local.")
 For CONTEXT, SESSION-ID, and CONTINUE-P, see `crush-backend-send-prompt'."
   (with-current-buffer (crush-backend-buffer backend)
     (let* ((has-context (and context (not (string-empty-p context))))
+           (stdin-text (and has-context
+                            (concat crush-context-preamble "\n\n"
+                                    context "\n\n" prompt "\n")))
            (base-args (append
                        (list (crush-run-backend-program backend) "run" "--quiet")
                        (crush-run-backend-args backend)
@@ -164,8 +167,8 @@ For CONTEXT, SESSION-ID, and CONTINUE-P, see `crush-backend-send-prompt'."
       (setq-local crush--continue t)
       (setq-local crush--response-start (point-marker))
       (when (process-live-p real-proc)
-        (when has-context
-          (process-send-string real-proc context))
+        (when stdin-text
+          (process-send-string real-proc stdin-text))
         ;; Always close stdin with EOF. `crush run' reads all of stdin
         ;; before processing (CRUSH-SPEC), so keeping the pipe open would
         ;; block the process indefinitely even when the prompt is a CLI arg.

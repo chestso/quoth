@@ -713,14 +713,7 @@ stream-completion callback."
                        (car region) (cadr region)))
                     (crush-get-attachments-for-prompt crush--prompt-id)
                     "\n\n")))
-         (has-context (not (string-empty-p context)))
-         (stdin-text (when has-context
-                       (concat
-			"The following markdown fenced code blocks contain code context"
-			" from the user's editor. Each block has a header line indicating"
-			" the source file and optional line range. Paths are relative to"
-			" the project root. Use this context to answer the prompt.\n\n"
-			context "\n\n" prompt "\n"))))
+         (has-context (not (string-empty-p context))))
     (when (string-empty-p prompt)
       (user-error "No prompt to send"))
     (crush--input-ring-add prompt)
@@ -728,11 +721,10 @@ stream-completion callback."
     (newline)
     (setq-local crush--response-start (point-marker))
     (setq-local crush--input-ring-index 0)
-    (let ((has-stdin (and stdin-text (not (string-empty-p stdin-text)))))
-      (crush-backend-send-prompt crush--backend prompt
-                                 :context (when has-stdin stdin-text)
-                                 :session-id crush--session
-                                 :continue-p crush--continue))
+    (crush-backend-send-prompt crush--backend prompt
+                               :context (when has-context context)
+                               :session-id crush--session
+                               :continue-p crush--continue)
     (setq-local crush--attachments nil)
     (goto-char (point-max))))
 
