@@ -4,21 +4,14 @@ This document specifies the **HTTP API of the Charm Hyper gateway** — the
 provider that Crush (and other clients) call to proxy LLM requests. It is
 not the Crush CLI protocol (see `CRUSH-SPEC.md`); it describes Hyper's
 server-side endpoints as consumed by the OpenAI-compatible provider
-in Crush.
+in Crush. The gateway's OpenAI-compatible chat-completions API lives
+under `/v1`; tokens (`sk-hyper-` prefixed) come from the Hyper
+Dashboard.
 
 crush.el consumes this API through the hyper backend (`crush-backend-type
 'hyper`): curl subprocess transport with SSE parsed in the process filter
 (see the transport section in `crush-hyper-backend.el` and the integration
 fixture `test/hyper-server.py`).
-
-> **Endpoint reality check (2026-08).** The live `hyper.charm.land` gateway
-> now serves an **OpenAI-compatible** API under `/v1` (`GET /v1/models`,
-> `POST /v1/chat/completions`), authenticated with `sk-hyper-` tokens from
-> the Hyper Dashboard. crush.el targets the
-> `/v1` endpoint: `crush-hyper-base-url` defaults to
-> `https://hyper.charm.land/v1` and requests go to
-> `BASE-URL/chat/completions`. The device-flow auth sections below remain
-> relevant for cases where `$HYPER_URL` points at a gateway that needs OAuth.
 
 Source of truth: [`internal/agent/hyper/`](https://github.com/charmbracelet/crush/tree/main/internal/agent/hyper),
 [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go),
@@ -28,15 +21,16 @@ and the embedded [`provider.json`](https://github.com/charmbracelet/crush/blob/m
 
 | Field              | Value                                                               |
 | ------------------ | ------------------------------------------------------------------- |
-| Base URL (default) | `https://hyper.charm.land`                                          |
+| Base URL (default) | `https://hyper.charm.land/v1`                                       |
 | Override           | `$HYPER_URL` — when set, Chat + provider endpoints use `$HYPER_URL` |
-| Auth               | `Authorization: Bearer <token>` (except device-flow endpoints)      |
+| Auth               | `Authorization: Bearer sk-hyper-...` (except device-flow endpoints) |
 | Content type       | `application/json`                                                  |
 | User-Agent         | `crush` (device/token/introspect endpoints)                         |
 
-All endpoints below are relative to the base URL. The chat-completions
-endpoint is `$HYPER_URL + "/v1/chat/completions"` when `HYPER_URL`
-is set.
+The chat-completions, credits, and model-catalog endpoints live under
+`{base}` = `https://hyper.charm.land/v1` (or `$HYPER_URL` when set).
+The OAuth device endpoints in §2 are served from the auth service root,
+not under `/v1`.
 
 ---
 
@@ -155,7 +149,7 @@ Response `200` — `IntrospectTokenResponse`:
 ## 3. Chat completions
 
 ```
-POST /v1/chat/completions
+POST {base}/chat/completions
 Authorization: Bearer <access_token>
 ```
 
