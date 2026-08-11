@@ -6,6 +6,11 @@ not the Crush CLI protocol (see `CRUSH-SPEC.md`); it describes Hyper's
 server-side endpoints as consumed by the `charm.land/fantasy` provider layer
 in Crush.
 
+crush.el consumes this API through the hyper backend (`crush-backend-type
+'hyper`): curl subprocess transport with SSE parsed in the process filter
+(see the transport section in `crush.el` and the integration fixture
+`test/hyper-server.py`).
+
 Source of truth: [`internal/agent/hyper/`](https://github.com/charmbracelet/crush/tree/main/internal/agent/hyper),
 [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go),
 and the embedded [`provider.json`](https://github.com/charmbracelet/crush/blob/main/internal/agent/hyper/provider.json).

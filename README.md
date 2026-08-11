@@ -68,7 +68,32 @@ Which Crush backend to use:
 ```
 
 - `run` (default) — standalone `crush run` mode. Each prompt spawns a new process. Fully implemented.
-- `hyper` — direct HTTP access to the Charm Hyper gateway (OAuth device flow, SSE streaming, reasoning traces, permission prompts). Planned, not yet implemented. See [HYPER-API.md](HYPER-API.md).
+- `hyper` — direct HTTP access to the Charm Hyper gateway, bypassing the CLI. Streaming chat completions are implemented (see [Hyper backend](#hyper-backend)); OAuth, history, and tool calls are still on the roadmap.
+- `client` — legacy stub, not implemented.
+
+### crush-hyper-base-url
+
+Base URL of the Charm Hyper gateway (default `https://hyper.charm.land`). Overridden by the `HYPER_URL` environment variable when set.
+
+### crush-hyper-token
+
+Bearer access token for Hyper. Phase 1 requires setting this manually (no OAuth yet):
+
+```elisp
+(setq crush-hyper-token "your-token")
+```
+
+### Model selection for hyper
+
+The hyper backend uses `crush-model` (the shared model defcustom), falling back to the constant `crush-hyper-default-model` (`qwen3.7-plus`). Request-level `max_tokens`, `temperature`, and `thinking`/`reasoning_effort` are controlled by the defcustoms below.
+
+### crush-hyper-timeout / crush-hyper-max-tokens / crush-hyper-temperature
+
+Request tuning: timeout in seconds, `max_tokens` (default 64000), and sampling temperature (nil means unset).
+
+### crush-hyper-thinking / crush-hyper-reasoning-effort
+
+When `crush-hyper-thinking` is non-nil, Hyper's internal thinking mode is enabled. `crush-hyper-reasoning-effort` selects the reasoning level (`low`, `medium`, `high`, `max`); nil uses the model default.
 
 ### crush-debug-mode
 
@@ -103,10 +128,33 @@ The link between prompts lives entirely in two buffer-local variables:
 
 ### Backend Abstraction
 
-All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`) with two structs:
+All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`):
 
-- `crush-run-backend` — the current implementation. Spawns `crush run --quiet` per prompt.
-- `crush-client-backend` — stub struct (`host`, `workspace-id`, `client-id`, `sse-process`) whose methods all error "not yet implemented". The planned replacement is a `crush-hyper-backend` that calls the Charm Hyper chat-completions API directly (see [HYPER-API.md](HYPER-API.md)).
+- `crush-run-backend` — the default implementation. Spawns `crush run --quiet` per prompt.
+- `crush-hyper-backend` — direct HTTP access to the Charm Hyper gateway, introduced in phase 1 (see [Hyper backend](#hyper-backend)).
+- `crush-client-backend` — legacy stub struct whose methods all error "not yet implemented"; superseded by the hyper backend.
+
+## Hyper backend
+
+The hyper backend posts the prompt to Hyper's chat-completions endpoint (`POST {base-url}/api/v1/fantasy`) and streams the response. It **does not** spawn `crush run`, so it does not need the Crush CLI installed — only `curl` (which is used the same way gptel and plz.el use it).
+
+### How it works
+
+1. `crush-backend-send-prompt` composes a JSON body (messages array with a minimal system prompt, the user prompt, model, and `stream: t`) via `crush--hyper-compose-request`.
+2. The curl process is spawned with `--config -`: the config (URL, `request = POST`, JSON content-type, bearer auth header, and `data-binary = @-`) plus the JSON body are written to curl's stdin, then EOF. `data-binary = @-` is the **last** config line so curl reads the rest of stdin as the body.
+3. SSE frames are parsed incrementally in the process filter (`crush--hyper-curl-filter` → `crush--hyper-sse-feed`); content deltas are appended to the buffer in order. A final `[DONE]` event, or the process exiting, triggers `crush--finalize-response` — the same tagging/freezing the run backend's sentinel uses.
+4. Each request is stateless: phase 1 sends only the current prompt (no session history), so follow-up prompts start fresh conversations.
+
+### Session continuity
+
+Not yet implemented for hyper: no `x-session-id`/`x-session-affinity` headers and no in-buffer history round trip. Each prompt is a one-shot chat completion. Continuing a conversation is the next phase.
+
+### Current limitations
+
+- Manual token only (`crush-hyper-token`); OAuth device flow is planned.
+- No history, no model catalog, no reasoning-trace display, no tool calls.
+- Interrupt is a stub and `crush-process` stays nil during hyper requests, so `crush-send-input`'s "still running" guard doesn't block; avoid typing another prompt mid-stream.
+- `crush-backend-grant-permission` is a no-op (phase 1 has no tool execution to authorize).
 
 ### Chat Buffer Composition
 

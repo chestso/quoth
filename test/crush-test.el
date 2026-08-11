@@ -2577,5 +2577,295 @@ right after the prompt inherits `read-only' and Emacs signals
     (should (equal (alist-get "/tmp/x/foo/" crush--root-buffer-alist nil nil #'equal)
                    "*crush:foo*"))))
 
+;;; 91. Hyper backend: request composition
+
+(ert-deftest crush-test/hyper-compose-no-context ()
+  "Without context, messages should be system + user with just the prompt."
+  (let ((crush-model nil))
+    (let* ((req (crush--hyper-compose-request "Hello" nil "qwen3.7-plus"))
+           (msgs (alist-get 'messages req)))
+      (should (string= (alist-get 'model req) "qwen3.7-plus"))
+      (should (eq (alist-get 'stream req) t))
+      (should (= (length msgs) 2))
+      (should (string= (crush--hyper-alist-get "role" (nth 0 msgs)) "system"))
+      (should (string= (crush--hyper-alist-get "role" (nth 1 msgs)) "user"))
+      (should (string= (crush--hyper-alist-get "content" (nth 1 msgs)) "Hello"))
+      (should-not (assq 'tools req)))))
+
+(ert-deftest crush-test/hyper-compose-with-context-merges-preamble ()
+  "With context, the user message should carry preamble + context + prompt."
+  (let* ((req (crush--hyper-compose-request "Do the thing" "**Attachment: foo**" "m"))
+         (user-content (crush--hyper-alist-get "content"
+                                               (nth 1 (alist-get 'messages req)))))
+    (should (string-match-p "The following markdown fenced code blocks" user-content))
+    (should (string-match-p "\\*\\*Attachment: foo\\*\\*" user-content))
+    (should (string-match-p "Do the thing$" user-content))))
+
+(ert-deftest crush-test/hyper-compose-respects-defcustoms ()
+  "Model, max-tokens, temperature, thinking, reasoning-effort should land in body."
+  (let ((crush-model "my-model")
+        (crush-hyper-max-tokens 1234)
+        (crush-hyper-temperature 0.5)
+        (crush-hyper-thinking t)
+        (crush-hyper-reasoning-effort "high"))
+    (let ((req (crush--hyper-compose-request "P" nil nil)))
+      (should (string= (alist-get 'model req) "my-model"))
+      (should (= (alist-get 'max_tokens req) 1234))
+      (should (= (alist-get 'temperature req) 0.5))
+      (should (eq (alist-get 'thinking req) t))
+      (should (string= (alist-get 'reasoning_effort req) "high")))))
+
+(ert-deftest crush-test/hyper-compose-model-default ()
+  "When no model is set, the catalog default should be used."
+  (let ((crush-model nil))
+    (should (string= (alist-get 'model (crush--hyper-compose-request "P" nil nil))
+                     "qwen3.7-plus"))))
+
+(ert-deftest crush-test/hyper-compose-no-tools-in-phase1 ()
+  "Phase 1 should not announce any tools."
+  (let ((req (crush--hyper-compose-request "P" nil "m")))
+    (should-not (assq 'tools req))
+    (should-not (assq 'tool_choice req))))
+
+;;; 92. Hyper backend: SSE parser
+
+(defun crush-test--sse-state ()
+  "Return a fresh, empty SSE parser state."
+  (list :pending "" :done nil))
+
+(ert-deftest crush-test/sse-parser-single-delta ()
+  "A single data event should yield its content delta."
+  (let* ((result (crush--hyper-sse-feed
+                  (crush-test--sse-state)
+                  "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"))
+         (deltas (car result)))
+    (should (equal deltas '("Hello")))
+    (should-not (plist-get (cdr result) :done))))
+
+(ert-deftest crush-test/sse-parser-multiple-events-per-chunk ()
+  "A chunk with several events should yield several deltas."
+  (let* ((chunk (concat
+                 "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n"
+                 "data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n"
+                 "data: [DONE]\n\n"))
+         (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
+    (should (equal (car result) '("one" "two")))
+    (should (plist-get (cdr result) :done)))
+
+  (ert-deftest crush-test/sse-parser-chunk-split-mid-line ()
+    "Events split across chunk boundaries should still parse."
+    (let* ((state (crush-test--sse-state))
+           (r1 (crush--hyper-sse-feed state "data: {\"choices\":[{\"delta\":{\"con"))
+           (r2 (crush--hyper-sse-feed (cdr r1) "tent\":\"abc\"}}]}\n\n"))
+           (r3 (crush--hyper-sse-feed (cdr r2) "data: [DONE]\n\n")))
+      (should (equal (car r1) nil))
+      (should (equal (car r2) '("abc")))
+      (should (plist-get (cdr r3) :done)))))
+
+(ert-deftest crush-test/sse-parser-crlf ()
+  "CRLF line endings should be handled."
+  (let* ((result (crush--hyper-sse-feed
+                  (crush-test--sse-state)
+                  "data: {\"choices\":[{\"delta\":{\"content\":\"CR\"}}]}\r\n\r\n")))
+    (should (equal (car result) '("CR")))))
+
+(ert-deftest crush-test/sse-parser-multiline-data-payload ()
+  "A data payload spanning several data: lines should be joined."
+  (let* ((chunk (concat "data: {\"choices\":[{\"delta\":{\"content\":\"line"
+                        "\"}}]}\n"
+                        "data: {\"choices\":[{\"delta\":{\"content\":\" two\"}}]}\n\n"))
+         (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
+    (should (equal (car result) '("line" " two")))))
+
+(ert-deftest crush-test/sse-parser-reasoning-only-delta-no-content ()
+  "A delta with only reasoning_content should not emit content."
+  (let* ((chunk (concat
+                 "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n"
+                 "data: {\"choices\":[{\"delta\":{\"content\":\"seen\"}}]}\n\n"))
+         (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
+    (should (equal (car result) '("seen")))))
+
+(ert-deftest crush-test/sse-parser-error-payload ()
+  "An error data payload should set done and surface the message."
+  (let* ((result (crush--hyper-sse-feed
+                  (crush-test--sse-state)
+                  "data: {\"error\":\"boom\"}\n\n")))
+    (should (plist-get (cdr result) :done))
+    (should (string= (plist-get (cdr result) :error) "boom"))))
+
+;;; 93. Hyper backend: wire integration via dummy server
+
+;;; The dummy Hyper gateway is a small Python server
+;;; (test/hyper-server.py), started as a subprocess per test, that
+;;; captures every request to a file and streams SSE responses.  This is
+;;; the same philosophy as `test/mock-crush.sh' for the CLI.
+
+(defun crush-test--hyper-cap-file ()
+  "Return a fresh capture-file path for the hyper dummy server."
+  (make-temp-file "crush-hyper-capture"))
+
+(defun crush-test--read-hyper-capture (file)
+  "Read the dummy server capture FILE, returning (BASE-URL . REQUESTS)."
+  (let ((base nil)
+        (requests nil))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (let ((first-line (buffer-substring-no-properties
+                         (point) (line-end-position))))
+        (setq base (if (string-prefix-p "http" first-line) first-line nil)))
+      (goto-char (point-min))
+      (while (re-search-forward "^REQUEST \\([^ ]+\\) \\([^ ]+\\)$" nil t)
+        (let ((method (match-string 1))
+              (path (match-string 2))
+              (headers nil)
+              (body nil))
+          (forward-line 1)
+          ;; Collect headers until BODY.
+          (while (and (not (eobp))
+                      (not (looking-at "^BODY ")))
+            (when (looking-at "^\\([^: ]+\\): \\(.*\\)$")
+              (push (cons (downcase (match-string 1)) (match-string 2))
+                    headers))
+            (forward-line 1))
+          (when (looking-at "^BODY \\(.*\\)$")
+            (setq body (match-string 1)))
+          (push (list method path headers body) requests))))
+    (list base (nreverse requests))))
+
+(defun crush-test--hyper-server-program ()
+  "Return path to the dummy hyper server script."
+  (expand-file-name "hyper-server.py"
+                    (file-name-directory (locate-library "crush-test"))))
+
+(defun crush-test--with-hyper-server (mode body-fn)
+  "Start a dummy hyper server in MODE, call BODY-FN with its BASE-URL,
+and return the capture output."
+  (let* ((cap (crush-test--hyper-cap-file))
+         (proc (make-process
+                :name "crush-hyper-test"
+                :command (list (crush-test--hyper-server-program)
+                               cap (symbol-name mode))
+                :noquery t))
+         (base nil)
+         (deadline (+ (float-time) 5)))
+    (unwind-protect
+        (progn
+          ;; Wait for the server to write its base URL.
+          (while (and (null base) (< (float-time) deadline))
+            (accept-process-output nil 0.1)
+            (when (file-exists-p cap)
+              (with-temp-buffer
+                (insert-file-contents cap)
+                (goto-char (point-min))
+                (let ((l (buffer-substring-no-properties
+                          (point) (line-end-position))))
+                  (when (string-prefix-p "http" l)
+                    (setq base l))))))
+          (unless base
+            (error "hyper dummy server failed to start"))
+          (funcall body-fn base)
+          (crush-test--read-hyper-capture cap))
+      (when proc (delete-process proc))
+      (when (file-exists-p cap) (delete-file cap)))))
+
+(ert-deftest crush-test/hyper-wire-captures-request-body ()
+  "The dummy server should capture the composed JSON request body."
+  (let* ((result (crush-test--with-hyper-server
+                  'ok-stream
+                  (lambda (base)
+                    (let ((proc (crush--hyper-request
+                                 base "tok-rf"
+                                 (crush--hyper-compose-request "hi" nil "m")
+                                 (current-buffer) #'ignore)))
+                      (let ((deadline (+ (float-time) 6)))
+                        (while (and (process-live-p proc)
+                                    (null (process-get proc :crush-finished))
+                                    (< (float-time) deadline))
+                          (accept-process-output nil 0.1)))
+                      nil))))
+         (base (nth 0 result))
+         (requests (nth 1 result)))
+    (should base)
+    (should (= (length requests) 1))
+    (let* ((req (car requests))
+           (method (nth 0 req))
+           (path (nth 1 req))
+           (headers (nth 2 req))
+           (body (nth 3 req)))
+      (should (string= method "POST"))
+      (should (string= path "/api/v1/fantasy"))
+      (should (string= (cdr (assoc "authorization" headers))
+                       "Bearer tok-rf"))
+      (should (string= (cdr (assoc "content-type" headers))
+                       "application/json"))
+      (let ((decoded (json-read-from-string body)))
+        (should (string= (crush--hyper-alist-get "model" decoded) "m"))
+        (should (eq (crush--hyper-alist-get "stream" decoded) t))))))
+
+(ert-deftest crush-test/hyper-wire-streams-deltas-into-buffer ()
+  "The transport should insert streamed deltas into the crush buffer."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((old-prompt-id crush--prompt-id))
+            (crush-test--with-hyper-server
+             'ok-stream
+             (lambda (base)
+               (save-excursion (goto-char (point-max)) (newline))
+               (setq-local crush--response-start (point-marker))
+               (let ((buf (current-buffer)))
+                 (let ((proc (crush--hyper-request
+                              base "tok" (crush--hyper-compose-request "hi" nil "m")
+                              buf
+                              (lambda ()
+                                (when (buffer-live-p buf)
+                                  (with-current-buffer buf
+                                    (crush--finalize-response)))))))
+                   (let ((deadline (+ (float-time) 6)))
+                     (while (and (process-live-p proc)
+                                 (null (process-get proc :crush-finished))
+                                 (< (float-time) deadline))
+                       (accept-process-output nil 0.1)
+                       (sit-for 0.02)))))
+               ;; Streamed content landed in the buffer.
+               (goto-char (point-min))
+               (should (search-forward "mock response!" nil t))
+               ;; The [DONE] event finalized the response: tagged text
+               ;; (crush-response-to) and a fresh prompt.
+               (search-backward "mock response!")
+               (let* ((resp-start (point))
+                      (resp-end (+ resp-start (length "mock response!"))))
+                 (should (eq (get-text-property resp-start 'crush-region-type)
+                             'response))
+                 (should (string= (get-text-property resp-end 'crush-response-to)
+                                  old-prompt-id)))
+               (goto-char (point-max))
+               (search-backward "crush> ")
+               (should (not (string= crush--prompt-id old-prompt-id)))))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-wire-error-http-surfaces ()
+  "A non-200 status should surface an error instead of streaming."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush-test--with-hyper-server
+           'error-http
+           (lambda (base)
+             (setq-local crush--response-start (point-marker))
+             (let ((proc (crush--hyper-request
+                          base "tok" (crush--hyper-compose-request "hi" nil "m")
+                          (current-buffer) #'ignore)))
+               (let ((deadline (+ (float-time) 6)))
+                 (while (and (process-live-p proc)
+                             (null (process-get proc :crush-finished))
+                             (< (float-time) deadline))
+                   (accept-process-output nil 0.1)
+                   (sit-for 0.02))))
+             (goto-char (point-min))
+             (should (search-forward "crush-hyper error" nil t)))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test)
 ;;; crush-test.el ends here

@@ -102,18 +102,29 @@ Chat commands are all reachable via keys that markdown-mode does not bind.
 - [x] Moved chat commands under the free `C-c c` prefix (`crush-chat-command-map`): `s` send, `i` interrupt, `k` clear, `n` new session, `a` insert selection
 - [x] `RET` still sends; `M-p`/`M-n` still navigate history; `crush-minor-mode` source-buffer keys unchanged
 
+### Phase 1f: Hyper backend phase 1 (complete)
+
+Direct HTTP chat-completions against the Charm Hyper gateway, bypassing the CLI.
+
+- [x] `crush-hyper-backend` struct + `crush-backend-type` `hyper` choice
+- [x] Request composition (`crush--hyper-compose-request`): messages array, model, `stream: t`, max tokens, temperature, thinking/reasoning-effort options, no tools yet
+- [x] SSE streaming via curl subprocess (gptel/plz pattern): config + body over stdin, `data-binary = @-`, deltas parsed in the process filter
+- [x] Response finalization shared with the run backend (`crush--finalize-response`): tag region, fresh prompt, state reset
+- [x] Dummy server fixture (`test/hyper-server.py`) mirroring `mock-crush.sh`: capture-file philosophy, per-mode responses (ok-stream/slow/error-http/error-event/malformed)
+- [x] Wire integration tests: request capture, delta streaming + finalize, HTTP error surfacing
+
 ### Phase 2: Polish
 
 - [ ] Error handling and retry
 - [ ] Conversation persistence to plain-text files (gptel-style): save `crush-region-type`/`crush-response-to`/attachment bounds as a file-local, recreate properties on open
-- [ ] Direct API backend (`crush-hyper-backend`): HTTP calls to Hyper's chat-completions endpoint ([HYPER-API.md §3](HYPER-API.md)), exposed via a new `crush-backend-type` choice; the `crush-client-backend` stub becomes unused and is removed
-- [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401
-- [ ] SSE streaming of responses ([HYPER-API.md §3.5](HYPER-API.md)): content, `reasoning_content` traces, and `tool_calls` deltas
-- [ ] Session affinity headers (`x-session-id` / `x-session-affinity`) for server-side prefix caching ([HYPER-API.md §3.1](HYPER-API.md))
+- [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (`crush-hyper-token` is currently set manually)
+- [ ] Session history: `x-session-id` / `x-session-affinity` headers plus an in-buffer history round trip (send prior `[user, assistant]` messages) ([HYPER-API.md §3.1](HYPER-API.md))
+- [ ] Reasoning display: stream `reasoning_content` deltas into a styled region ([HYPER-API.md §3.5](HYPER-API.md))
 - [ ] Model catalog from `GET /v1/provider` ([HYPER-API.md §5](HYPER-API.md)): model picker, reasoning-effort selection
 - [ ] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages — plus a permission policy for tool execution (the CLI backend auto-approves; direct mode needs one)
 - [ ] Tool call visibility in responses
 - [ ] Hypercredit display from `usage.remaining.hypercredits`, with `GET /v1/credits` fallback ([HYPER-API.md §4](HYPER-API.md))
+- [ ] Interrupt support for in-flight hyper requests (`crush-backend-interrupt` is currently a cleanup stub; `crush-process` stays nil so `crush-send-input`'s still-running guard does not block)
 
 ### Phase 3: Integration
 
