@@ -6,6 +6,8 @@ A GNU Emacs package for interacting with the [Crush CLI](https://github.com/char
 
 crush.el provides a dedicated Emacs buffer that sends structured prompts to the Crush CLI and receives streamed responses. On top of that, any buffer selection can be used as context: the selection is formatted as a markdown fenced code block with the file path and line numbers (relative to the project root), then inserted into the crush buffer before the prompt as an attachment. When sent, the context blocks and prompt are piped to the Crush CLI via stdin.
 
+Each project gets its own crush buffer (see [Per-Project Buffers](#per-project-buffers)), so work in different projects stays isolated.
+
 See [TODO.md](TODO.md) for the full project goal and roadmap.
 
 ## Important: Permission Behavior
@@ -122,13 +124,21 @@ All metadata is stored as **text properties** on buffer content; highlighting is
 
 ### Crush buffer (chat mode)
 
-- `M-x crush` — open the crush interaction buffer
+- `M-x crush` — open the crush interaction buffer for the current project (or directory); each project gets its own buffer, named after the project root (e.g. `*crush:crush.el*`)
 - Type a prompt and press `RET` to send it to the Crush CLI
 - `M-p` / `M-n` — navigate input history (previous/next input)
 - `C-c c i` — interrupt the running crush process
 - `C-c c k` — clear the crush buffer (also starts a fresh session)
 - `C-c c n` — start a new session
 - `C-c c a` — insert the current buffer selection as context into the crush buffer
+
+### Per-Project Buffers
+
+Each project (or directory, when not in a project) is bound to its own crush buffer:
+
+- Buffer names are derived from the project root, e.g. `*crush:myproject*`. When two distinct roots share a basename, a numeric suffix keeps them separate: `*crush:myproject(2)*`.
+- `M-x crush` and the `crush-minor-mode` commands (`C-c C-s`, `C-c C-b`, `C-c C-p`, `C-c C-c`) always target the buffer for the current buffer's project or directory, so context and prompts never leak between projects.
+- Follow-up prompts in a project's buffer continue that project's session (`--continue`), because Crush tracks sessions per working directory; the input history ring is also per project buffer.
 
 ### Source buffers (minor mode)
 
