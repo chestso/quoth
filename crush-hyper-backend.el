@@ -300,7 +300,7 @@ Feed the chunk to the SSE parser and insert any content deltas into the
 crush buffer.  The HTTP response head (headers) is not valid SSE and is
 ignored by the parser; the status line is parsed for diagnostics, and
 errors are surfaced by the sentinel when curl exits non-zero."
-          (crush--debug-log 'output (format "%S" (string-replace "\r" "" string)))
+  (crush--debug-log 'output (format "%S" (string-replace "\r" "" string)))
   (unless (process-get proc :crush-head-parsed)
     (setq string (crush--hyper-parse-head proc string)))
   (let* ((sse-state (process-get proc :crush-sse))
@@ -332,7 +332,7 @@ The token is never logged."
           (process-put proc :crush-content-type content-type)
           (process-put proc :crush-head-parsed t)
           (crush--debug-log
-           'request
+           'response
            (format "POST %s model=%S status=%s content-type=%s token=%s"
                    (process-get proc :crush-url)
                    (process-get proc :crush-model)
@@ -398,6 +398,12 @@ process."
     (process-put proc :crush-head "")
     (process-put proc :crush-head-parsed nil)
     (process-put proc :crush-status nil)
+    (crush--debug-log
+     'request
+     (format "POST %s model=%S token=%s"
+             (process-get proc :crush-url)
+             (process-get proc :crush-model)
+             (if (process-get proc :crush-token-p) "present" "none")))
     ;; Config + JSON body over stdin; EOF closes the request.
     (process-send-string proc config)
     (process-send-string proc payload)

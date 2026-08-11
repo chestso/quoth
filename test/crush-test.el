@@ -2818,6 +2818,8 @@ and return the capture output."
                  (goto-char (point-min))
                  (should (search-forward "request: POST" nil t))
                  (goto-char (point-min))
+                 (should (search-forward "response: POST" nil t))
+                 (goto-char (point-min))
                  (should-not (search-forward "sk-hyper-supersecret" nil t)))))))
       (crush-test--cleanup))))
 
