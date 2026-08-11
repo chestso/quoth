@@ -141,6 +141,68 @@ The link between prompts lives entirely in two buffer-local variables:
 - `crush--continue` — set to `t` by the run backend immediately after the first prompt is spawned (`crush-backend-send-prompt`). It is passed to the next invocation as `--continue`, which resumes the most recent session for the working directory — in practice, the prior conversation travels along with the new prompt.
 - `crush--session` — a manual session id, passed as `--session <id>`; takes precedence over `--continue` and resumes a specific session instead.
 
+### Session management
+
+### `--continue` (automatic)
+
+After sending your first prompt, `crush--continue` is set to `t`. All subsequent prompts automatically include `--continue`, which tells Crush to continue the most recent session in the working directory.
+
+This means:
+
+- The first prompt starts a new session
+- All follow-up prompts in the same buffer continue that session
+- The session persists across Emacs restarts (stored in Crush's database)
+
+To start a fresh session:
+
+- `C-c c n` (`crush-new-session`) — resets `crush--continue` to `nil`, so the next prompt starts a new session
+- `C-c c k` (`crush-clear-buffer`) — clears the buffer **and** starts a fresh session
+
+### `--session <id>` (manual)
+
+To continue a specific session by ID, set `crush--session`:
+
+```elisp
+(setq-local crush--session "abc123")
+```
+
+This passes `--session abc123` to Crush, which:
+
+- Takes precedence over `--continue`
+- Allows resuming a specific session from your history
+- Session IDs can be: full UUID, full XXH3 hash, or hash prefix
+
+To list available sessions:
+
+```bash
+crush session list --json
+```
+
+To clear manual session selection and return to automatic `--continue` behavior:
+
+```elisp
+(setq-local crush--session nil)
+```
+
+### Session Flow Example
+
+```
+Buffer state         Command sent
+----------------     --------------------------
+crush--continue=nil  crush run --quiet "first prompt"
+                     ↓ (crush--continue set to t)
+crush--continue=t    crush run --quiet --continue "follow up"
+crush--continue=t    crush run --quiet --continue "another"
+C-c c n pressed      (crush--continue reset to nil)
+crush--continue=nil  crush run --quiet "new session"
+```
+
+With manual session ID:
+
+```
+crush--session="abc123"  crush run --quiet --session abc123 "resume"
+```
+
 ### Assuming permissions
 
 `crush run` auto-approves every tool permission — functionally `--yolo` (see [Important: Permission Behavior](#important-permission-behavior)). There is no prompt-by-prompt approval in the run backend; `crush-backend-grant-permission` is a no-op.
@@ -219,70 +281,6 @@ Keybindings (active when `crush-minor-mode` is enabled):
 - `C-c C-s` — insert the active region as a markdown fenced code block with an attachment header
 - `C-c C-b` — insert the entire buffer as a markdown fenced code block
 - `C-c C-p` — insert the buffer's file path as context
-
-## Session Management
-
-Crush maintains session state per working directory. The crush.el package manages this through two flags:
-
-### `--continue` (automatic)
-
-After sending your first prompt, `crush--continue` is set to `t`. All subsequent prompts automatically include `--continue`, which tells Crush to continue the most recent session in the working directory.
-
-This means:
-
-- The first prompt starts a new session
-- All follow-up prompts in the same buffer continue that session
-- The session persists across Emacs restarts (stored in Crush's database)
-
-To start a fresh session:
-
-- `C-c c n` (`crush-new-session`) — resets `crush--continue` to `nil`, so the next prompt starts a new session
-- `C-c c k` (`crush-clear-buffer`) — clears the buffer **and** starts a fresh session
-
-### `--session <id>` (manual)
-
-To continue a specific session by ID, set `crush--session`:
-
-```elisp
-(setq-local crush--session "abc123")
-```
-
-This passes `--session abc123` to Crush, which:
-
-- Takes precedence over `--continue`
-- Allows resuming a specific session from your history
-- Session IDs can be: full UUID, full XXH3 hash, or hash prefix
-
-To list available sessions:
-
-```bash
-crush session list --json
-```
-
-To clear manual session selection and return to automatic `--continue` behavior:
-
-```elisp
-(setq-local crush--session nil)
-```
-
-### Session Flow Example
-
-```
-Buffer state         Command sent
-----------------     --------------------------
-crush--continue=nil  crush run --quiet "first prompt"
-                     ↓ (crush--continue set to t)
-crush--continue=t    crush run --quiet --continue "follow up"
-crush--continue=t    crush run --quiet --continue "another"
-C-c c n pressed      (crush--continue reset to nil)
-crush--continue=nil  crush run --quiet "new session"
-```
-
-With manual session ID:
-
-```
-crush--session="abc123"  crush run --quiet --session abc123 "resume"
-```
 
 ## Prompt IDs and Attachments
 
