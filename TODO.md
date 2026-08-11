@@ -32,8 +32,6 @@ crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic
 ...selected code...
 ````
 
-```
-
 ## Roadmap
 
 ### Phase 1: Core (complete)
@@ -146,4 +144,3 @@ Direct HTTP chat-completions against the Charm Hyper gateway, bypassing the CLI.
 
 - [CRUSH-SPEC.md](CRUSH-SPEC.md) — Crush CLI protocol (flags, stdin semantics, permission model)
 - [HYPER-API.md](HYPER-API.md) — Charm Hyper gateway HTTP API (auth, chat completions, model catalog)
-```
