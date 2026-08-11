@@ -3,7 +3,7 @@
 This document specifies the **HTTP API of the Charm Hyper gateway** — the
 provider that Crush (and other clients) call to proxy LLM requests. It is
 not the Crush CLI protocol (see `CRUSH-SPEC.md`); it describes Hyper's
-server-side endpoints as consumed by the `charm.land/fantasy` provider layer
+server-side endpoints as consumed by the OpenAI-compatible provider
 in Crush.
 
 crush.el consumes this API through the hyper backend (`crush-backend-type
@@ -14,13 +14,11 @@ fixture `test/hyper-server.py`).
 > **Endpoint reality check (2026-08).** The live `hyper.charm.land` gateway
 > now serves an **OpenAI-compatible** API under `/v1` (`GET /v1/models`,
 > `POST /v1/chat/completions`), authenticated with `sk-hyper-` tokens from
-> the Hyper Dashboard. The older fantasy-style paths documented below
-> (`/api/v1/fantasy`) return 404 on the public gateway. crush.el targets the
+> the Hyper Dashboard. crush.el targets the
 > `/v1` endpoint: `crush-hyper-base-url` defaults to
 > `https://hyper.charm.land/v1` and requests go to
 > `BASE-URL/chat/completions`. The device-flow auth sections below remain
-> relevant for cases where `$HYPER_URL` points at a gateway that still
-> serves the fantasy API.
+> relevant for cases where `$HYPER_URL` points at a gateway that needs OAuth.
 
 Source of truth: [`internal/agent/hyper/`](https://github.com/charmbracelet/crush/tree/main/internal/agent/hyper),
 [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go),
@@ -37,7 +35,7 @@ and the embedded [`provider.json`](https://github.com/charmbracelet/crush/blob/m
 | User-Agent         | `crush` (device/token/introspect endpoints)                         |
 
 All endpoints below are relative to the base URL. The chat-completions
-endpoint is overridable to `$HYPER_URL + "/api/v1/fantasy"` when `HYPER_URL`
+endpoint is `$HYPER_URL + "/v1/chat/completions"` when `HYPER_URL`
 is set.
 
 ---
@@ -157,12 +155,12 @@ Response `200` — `IntrospectTokenResponse`:
 ## 3. Chat completions
 
 ```
-POST /api/v1/fantasy
+POST /v1/chat/completions
 Authorization: Bearer <access_token>
 ```
 
-Hyper exposes a mostly **OpenAI Chat Completions** wire format with a few
-Hyper-specific fields. This is the endpoint Crush's `fantasy` layer targets.
+Hyper exposes the **OpenAI Chat Completions** wire format with a few
+Hyper-specific fields. This is the endpoint crush.el targets.
 
 ### 3.1 Headers
 
@@ -273,7 +271,7 @@ Tool results use `role: "tool"` with `tool_call_id`:
 {
   "role": "tool",
   "tool_call_id": "call_abc123",
-  "content": "language_model_hooks.go:531: case fantasy.MessageRoleTool:...",
+  "content": "language_model_hooks.go:531: case openai.MessageRoleTool:...",
 }
 ```
 
@@ -350,7 +348,7 @@ Top-level shape:
 {
   "name": "Charm Hyper",
   "id": "hyper",
-  "api_endpoint": "https://hyper.charm.land/api/v1/fantasy",
+  "api_endpoint": "https://hyper.charm.land/v1/chat/completions",
   "type": "hyper",
   "default_large_model_id": "qwen3.7-plus",
   "default_small_model_id": "deepseek-v4-flash-0731",
@@ -411,4 +409,4 @@ Each model entry:
 - OAuth device flow: [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go)
 - Provider/chat request assembly: [`internal/agent/coordinator.go`](https://github.com/charmbracelet/crush/blob/main/internal/agent/coordinator.go)
 - Session affinity & caching: [`internal/agent/agent.go`](https://github.com/charmbracelet/crush/blob/main/internal/agent/agent.go)
-- Provider abstraction: `charm.land/fantasy` (`providers/openaicompat`, `providers/openai`)
+- Provider abstraction: `providers/openaicompat`, `providers/openai` (OpenAI-compatible)
