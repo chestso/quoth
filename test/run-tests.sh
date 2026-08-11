@@ -12,7 +12,9 @@ if [ -n "$MD_DIR" ]; then
 fi
 
 echo "=== Byte-compile ==="
-emacs --batch -L . -f batch-byte-compile crush.el 2>&1 | grep -v "site-start" || true
+for f in crush.el crush-run-backend.el crush-hyper-backend.el; do
+	emacs --batch -L . -f batch-byte-compile "$f" 2>&1 | grep -v "site-start" || true
+done
 
 echo "=== ERT tests ==="
 emacs --batch -L . -L test $MD_L \

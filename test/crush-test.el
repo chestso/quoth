@@ -2042,6 +2042,16 @@ There is no separate `crush-mode' major mode."
     (goto-char (point-min))
     (should-not (search-forward "(require 'comint)" nil t))))
 
+(ert-deftest crush-test/backend-code-in-dedicated-files ()
+  "The run and hyper backends should live in their own files.
+The backends moved out of crush.el so each backend can be loaded and
+maintained independently (see AGENTS.md)."
+  (dolist (file '("crush-run-backend.el" "crush-hyper-backend.el"))
+    (with-temp-buffer
+      (insert-file-contents (locate-library file))
+      (goto-char (point-min))
+      (should (search-forward "(provide '" nil t)))))
+
 ;;; Phase 5: crush-chat-mode minor mode
 
 (ert-deftest crush-test/chat-mode-is-defined ()

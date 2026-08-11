@@ -12,10 +12,10 @@ It operates in two ways:
 
 ## Backend Strategy
 
-crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic methods over `cl-defstruct` backends):
+crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic methods over `cl-defstruct` backends). The protocol and shared base struct live in `crush-backend.el`; each backend is a dedicated, self-contained file:
 
-- **`crush run` CLI backend (`crush-run-backend`)** — implemented. Each prompt spawns a `crush run --quiet` process.
-- **Direct API backend (`crush-hyper-backend`, implemented, phase 1)** — direct HTTP calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), bypassing the CLI entirely.
+- **`crush run` CLI backend (`crush-run-backend.el`)** — implemented. Each prompt spawns a `crush run --quiet` process.
+- **Direct API backend (`crush-hyper-backend.el`, implemented, phase 1)** — direct HTTP calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), bypassing the CLI entirely.
 
 ## Interaction Model
 

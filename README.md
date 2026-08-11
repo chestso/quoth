@@ -27,7 +27,7 @@ Not yet on MELPA. For now, clone and load manually:
   :hook (prog-mode . crush-minor-mode))
 ```
 
-Requires Emacs 28.1+.
+Requires Emacs 28.1+. The package spans several files (`crush.el` plus `crush-backend.el`, `crush-run-backend.el`, `crush-hyper-backend.el`), so point `load-path` at the package directory. For manual `require`s, load `crush` last to get the full file set loaded.
 
 ## Configuration
 
@@ -127,10 +127,10 @@ The link between prompts lives entirely in two buffer-local variables:
 
 ### Backend Abstraction
 
-All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`):
+All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`). The protocol and shared base struct live in `crush-backend.el`; each backend is a dedicated file:
 
-- `crush-run-backend` — the default implementation. Spawns `crush run --quiet` per prompt.
-- `crush-hyper-backend` — direct HTTP access to the Charm Hyper gateway, introduced in phase 1 (see [Hyper backend](#hyper-backend)).
+- `crush-run-backend.el` — the default implementation. Spawns `crush run --quiet` per prompt.
+- `crush-hyper-backend.el` — direct HTTP access to the Charm Hyper gateway, introduced in phase 1 (see [Hyper backend](#hyper-backend)).
 
 ## Hyper backend
 

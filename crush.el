@@ -59,8 +59,6 @@
 (require 'ring)
 (require 'json)
 
-(declare-function markdown-mode "markdown-mode" ())
-
 ;;; Configuration
 
 (defgroup crush nil
@@ -73,95 +71,12 @@
   "Face for the crush> prompt marker."
   :group 'crush)
 
-(defcustom crush-program "crush"
-  "Path to the Crush CLI executable."
-  :type 'file
-  :group 'crush)
-
-(defcustom crush-args nil
-  "Additional command-line arguments passed to the Crush CLI."
-  :type '(repeat string)
-  :group 'crush)
-
-(defcustom crush-working-directory nil
-  "Working directory for the Crush CLI.
-When nil, uses the project root if `project-current' is non-nil,
-otherwise `default-directory'."
-  :type '(choice (const nil) directory)
-  :group 'crush)
-
-(defcustom crush-model nil
-  "Model to use for the Crush CLI.
-When nil, uses the default model configured in Crush.
-Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
-  :type '(choice (const nil) string)
-  :group 'crush)
-
-(defcustom crush-debug-mode t
-  "When non-nil, log commands, input, and output to a *crush-debug* buffer."
-  :type 'boolean
-  :group 'crush)
-
-(defcustom crush-backend-type 'run
-  "Type of crush backend to use.
-`run' uses the standalone `crush run' mode (per-process).
-`hyper' uses direct HTTP streaming to the Charm Hyper gateway."
-  :type '(choice (const run) (const hyper))
-  :group 'crush)
-
-(defcustom crush-hyper-base-url "https://hyper.charm.land"
-  "Base URL of the Charm Hyper gateway.
-Overridden by the HYPER_URL environment variable when set."
-  :type 'string
-  :group 'crush)
-
-(defcustom crush-hyper-token nil
-  "Bearer access token for the Charm Hyper gateway.
-Phase 1 requires the token to be set manually; the OAuth device
-flow is a later phase."
-  :type '(choice (const nil) string)
-  :group 'crush)
-
-(defcustom crush-hyper-timeout 300
-  "Seconds to wait for a hyper request to finish before giving up."
-  :type 'number
-  :group 'crush)
-
-(defcustom crush-hyper-max-tokens 64000
-  "Default `max_tokens' for hyper requests."
-  :type 'number
-  :group 'crush)
-
-(defcustom crush-hyper-temperature nil
-  "Sampling temperature for hyper requests; nil means unset."
-  :type '(choice (const nil) number)
-  :group 'crush)
-
-(defcustom crush-hyper-thinking nil
-  "When non-nil, enable Hyper's internal thinking mode."
-  :type 'boolean
-  :group 'crush)
-
-(defcustom crush-hyper-reasoning-effort nil
-  "Reasoning effort for the model; nil means use the model default.
-Values like `low', `medium', `high', `max'."
-  :type '(choice (const nil) string)
-  :group 'crush)
-
 ;;; Buffer-local state
 
-(defvar crush--continue nil
-  "Whether to pass --continue to the Crush CLI.
-When non-nil, the next prompt continues the active session in the folder.
-Set to nil by `crush-new-session' and `crush-clear-buffer' so the next
-prompt starts a fresh session.
-Buffer-local.")
-
-(defvar crush--session nil
-  "Session ID to pass to the Crush CLI via --session.
-When non-nil, continues a specific session by ID.
-Takes precedence over `crush--continue'.
-Buffer-local.")
+;;; `crush--continue', `crush--session', `crush--response-start',
+;;; `crush--pending-context', `crush-process', and `crush--backend' are
+;;; defined in `crush-run-backend.el' (they are shared with the hyper
+;;; backend).
 
 (defvar crush--prompt-id nil
   "Unique ID for the current pending prompt.
@@ -179,29 +94,12 @@ Buffer-local.")
 Each attachment is a plist: (:id <uuid> :prompt-id <uuid> :content <string>).
 Buffer-local.")
 
-(defvar crush--response-start nil
-  "Marker for where response text starts.
-Set when prompt is sent, used by sentinel to tag response text.
-Buffer-local.")
-
-(defvar crush--pending-context nil
-  "Context text stashed for stdin delivery.
-Buffer-local.")
-
-(defvar crush-process nil
-  "The currently running Crush process, if any.
-Buffer-local.")
-
 (defvar crush--prompt-start-marker nil
   "Marker at the start of the `crush> ' prompt text.
 Buffer-local.")
 
 (defvar crush--input-start-marker nil
   "Marker at the start of user input area (after prompt text).
-Buffer-local.")
-
-(defvar crush--backend nil
-  "The active crush backend for this buffer.
 Buffer-local.")
 
 (defvar crush--project-root nil
@@ -218,14 +116,28 @@ Buffer-local.")
 Navigated with `crush--input-previous' / `crush--input-next'.
 Buffer-local.")
 
-(defcustom crush-input-ring-size 32
-  "Maximum number of prompts stored in the input ring."
-  :type 'integer
-  :group 'crush)
-
 (defvar crush--input-ring-file-name
   (expand-file-name "crush-history" user-emacs-directory)
   "File where input history is persisted.")
+
+;;; Backend abstraction
+
+;;; The `crush-backend' base struct and the `crush-backend-*' protocol
+;;; live in `crush-backend.el'; the concrete backends in
+;;; `crush-run-backend.el' (the `crush run' CLI) and
+;;; `crush-hyper-backend.el' (direct HTTP to the Charm Hyper gateway).
+
+(require 'crush-backend)
+(require 'crush-run-backend)
+(require 'crush-hyper-backend)
+
+(defvar crush--backend nil
+  "The active crush backend for this buffer.
+Defined in `crush-run-backend.el' as a buffer-local variable; shadowed
+here so the compiler knows the free references in `crush-send-input'
+and `crush-interrupt' are buffer-local variables.")
+
+(declare-function markdown-mode "markdown-mode" ())
 
 ;;; Buffer naming
 
@@ -279,378 +191,6 @@ The root is the project root when in a project, otherwise
          (buf (get-buffer-create name)))
     (crush--init-buffer buf)
     buf))
-
-;;; Backend abstraction
-
-(cl-defstruct (crush-backend
-               (:constructor nil)
-               (:copier nil))
-  "Base structure for a crush backend."
-  buffer
-  working-directory
-  (type nil))
-
-(cl-defstruct (crush-run-backend
-               (:include crush-backend (type 'run))
-               (:constructor nil)
-               (:constructor crush-make-run-backend
-			     (&key buffer working-directory program args model
-				   &aux (type 'run)))
-               (:copier nil))
-  "Standalone crush run backend."
-  program
-  args
-  model)
-
-(cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p)
-  "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.")
-
-(cl-defgeneric crush-backend-interrupt (backend)
-  "Interrupt the currently running operation on BACKEND.")
-
-(cl-defgeneric crush-backend-active-p (backend)
-  "Return non-nil if BACKEND has an active operation.")
-
-(cl-defgeneric crush-backend-cleanup (backend)
-  "Clean up any resources held by BACKEND.")
-
-(cl-defgeneric crush-backend-grant-permission (backend permission-id action)
-  "Respond to a permission request on BACKEND identified by PERMISSION-ID.
-ACTION is `allow', `allow-session', or `deny'.")
-
-(cl-defmethod crush-backend-send-prompt
-  ((backend crush-run-backend) prompt &key context session-id continue-p)
-  "Send PROMPT to BACKEND via `crush run' as a new process.
-For CONTEXT, SESSION-ID, and CONTINUE-P, see `crush-backend-send-prompt'."
-  (with-current-buffer (crush-backend-buffer backend)
-    (let* ((has-context (and context (not (string-empty-p context))))
-           (base-args (append
-                       (list (crush-run-backend-program backend) "run" "--quiet")
-                       (crush-run-backend-args backend)
-                       (when (crush-run-backend-model backend)
-                         (list "--model" (crush-run-backend-model backend)))))
-           (session-args (append
-                          base-args
-                          (when session-id
-                            (list "--session" session-id))
-                          (when (and continue-p (not session-id))
-                            (list "--continue"))))
-           (args (if has-context session-args
-                   (append session-args (list prompt))))
-           (real-proc (make-process
-                       :name "crush"
-                       :buffer (current-buffer)
-                       :command args
-                       :connection-type 'pipe
-                       :filter #'crush--output-filter
-                       :sentinel #'crush--process-sentinel
-                       :stderr (get-buffer-create "*crush-errors*")
-                       :noquery t)))
-      (crush--debug-log 'command (format "%s" args))
-      (crush--debug-log 'input (format "%S (context: %s)"
-                                       prompt (if has-context "yes" "none")))
-      (set-marker (process-mark real-proc) (point-max))
-      (setq-local crush-process real-proc)
-      (setq-local crush--continue t)
-      (setq-local crush--response-start (point-marker))
-      (when (process-live-p real-proc)
-        (when has-context
-          (process-send-string real-proc context))
-        ;; Always close stdin with EOF. `crush run' reads all of stdin
-        ;; before processing (CRUSH-SPEC), so keeping the pipe open would
-        ;; block the process indefinitely even when the prompt is a CLI arg.
-        (process-send-eof real-proc))
-      real-proc)))
-
-(cl-defmethod crush-backend-interrupt ((backend crush-run-backend))
-  "Interrupt the crush run process managed by BACKEND."
-  (with-current-buffer (crush-backend-buffer backend)
-    (when crush-process
-      (interrupt-process crush-process)
-      (setq-local crush-process nil))))
-
-(cl-defmethod crush-backend-active-p ((backend crush-run-backend))
-  "Return non-nil if BACKEND has a live crush run process."
-  (with-current-buffer (crush-backend-buffer backend)
-    (and crush-process (process-live-p crush-process))))
-
-(cl-defmethod crush-backend-cleanup ((backend crush-run-backend))
-  "Kill any running process for BACKEND."
-  (with-current-buffer (crush-backend-buffer backend)
-    (when (and crush-process (process-live-p crush-process))
-      (delete-process crush-process))
-    (setq-local crush-process nil)))
-
-(cl-defmethod crush-backend-grant-permission ((_backend crush-run-backend) _permission-id _action)
-  "No-op for run backend: permissions are auto-approved."
-  nil)
-
-;;; Hyper backend
-
-(cl-defstruct (crush-hyper-backend
-               (:include crush-backend (type 'hyper))
-               (:constructor nil)
-               (:constructor crush-make-hyper-backend
-                             (&key buffer working-directory base-url token model
-                                   &aux (type 'hyper)))
-               (:copier nil))
-  "Backend that talks to the Charm Hyper gateway via HTTP+SSE."
-  base-url
-  token
-  model)
-
-(defconst crush-hyper-system-prompt
-  "You are a helpful assistant.  You answer concisely and correctly."
-  "System prompt sent with every phase-1 hyper request.")
-
-(defconst crush-hyper-default-model "qwen3.7-plus"
-  "Model used when `crush-model' and the backend model are both nil.")
-
-(defconst crush-hyper-context-preamble
-  "The following markdown fenced code blocks contain code context from the
-user's editor. Each block has a header line indicating the source file and
-optional line range. Paths are relative to the project root. Use this context
-to answer the prompt."
-  "Preamble inserted before attached context in the user message.")
-
-(defun crush--hyper-compose-request (prompt context model)
-  "Compose a chat-completions request alist for PROMPT.
-CONTEXT is optional attachment text; MODEL overrides the configured model.
-The body carries `stream: t' and no tools (phase 1)."
-  (let* ((model (or model crush-model crush-hyper-default-model))
-         (user-content (if (and context (not (string-empty-p context)))
-                           (concat crush-hyper-context-preamble "\n\n"
-                                   context "\n\n" prompt)
-                         prompt))
-         (body `((model . ,model)
-                 (stream . t)
-                 (messages . ,(list (list '(role . "system")
-                                          (cons 'content crush-hyper-system-prompt))
-                                    (list '(role . "user")
-                                          (cons 'content user-content)))))))
-    (when crush-hyper-max-tokens
-      (setq body (cons (cons 'max_tokens crush-hyper-max-tokens) body)))
-    (when crush-hyper-temperature
-      (setq body (cons (cons 'temperature crush-hyper-temperature) body)))
-    (when crush-hyper-thinking
-      (setq body (cons '(thinking . t) body)))
-    (when crush-hyper-reasoning-effort
-      (setq body (append body
-                         `((reasoning_effort . ,crush-hyper-reasoning-effort)))))
-    body))
-
-(defun crush--hyper-sse-new-state ()
-  "Return a fresh SSE parser state plist."
-  (list :pending "" :done nil :error nil))
-
-(defun crush--hyper-sse-feed (state chunk)
-  "Feed CHUNK into SSE parser STATE and return (DELTAS . NEW-STATE).
-Each delta is the text content of a `choices[0].delta.content' field.
-Sets `:done' when `[DONE]' or an error payload is seen; the `:pending'
-buffer keeps partial events across chunk boundaries."
-  (let ((pending (concat (plist-get state :pending) chunk))
-        (done (plist-get state :done))
-        (error (plist-get state :error))
-        (deltas nil))
-    ;; Normalize CRLF, then split into events.  An event is one or more
-    ;; lines followed by a blank line (\"\\n\\n\").  A trailing fragment
-    ;; with no blank line yet stays pending.
-    (let* ((text (replace-regexp-in-string "\r\n" "\n" pending))
-           (complete-p (string-suffix-p "\n\n" text))
-           (events (mapcar (lambda (b) (split-string b "\n" t))
-                           (split-string (if complete-p
-                                             (substring text 0 -2)
-                                           text)
-                                         "\n\n" t))))
-      ;; When incomplete the last element is an unterminated fragment.
-      (setq pending (if complete-p
-                        ""
-                      (string-join (car (last events)) "\n")))
-      (unless complete-p
-        (setq events (nreverse (cdr (nreverse events)))))
-      (unless done
-        (dolist (event events)
-          (let ((data-lines (seq-filter
-                             (lambda (l) (string-prefix-p "data:" l))
-                             event)))
-            ;; Each data: line is an independent payload (OpenAI/Hyper
-            ;; never splits a JSON event across lines).
-            (dolist (data-line data-lines)
-              (let ((payload (string-trim (substring data-line 5))))
-                (cond
-                 ((string= payload "[DONE]")
-                  (setq done t))
-                 ((string-prefix-p "{" payload)
-                  (let ((obj (ignore-errors (json-read-from-string payload))))
-                    (if (and obj (crush--hyper-alist-get "error" obj))
-                        (progn
-                          (setq done t)
-                          (setq error (crush--hyper-alist-get "error" obj)))
-                      (let ((content (crush--hyper-sse-extract-content obj)))
-                        (when content
-                          (push content deltas))))))))))))
-      (cons (nreverse deltas)
-            (list :pending pending :done done :error error)))))
-
-(defun crush--hyper-alist-get (key alist)
-  "Return the value for KEY in ALIST, handling symbol or string keys."
-  (or (cdr (assoc key alist))
-      (cdr (assoc (if (stringp key) (intern key) (symbol-name key)) alist))))
-
-(defun crush--hyper-sse-extract-content (obj)
-  "Return the content delta from SSE JSON object OBJ, or nil."
-  (when obj
-    (let* ((raw-choices (crush--hyper-alist-get "choices" obj))
-           (first-choice (if (vectorp raw-choices)
-                             (and (> (length raw-choices) 0)
-                                  (aref raw-choices 0))
-                           (car-safe raw-choices)))
-           (delta (and first-choice
-                       (crush--hyper-alist-get "delta" first-choice)))
-           (content (and delta
-                         (crush--hyper-alist-get "content" delta))))
-      (when (stringp content)
-        content))))
-
-;;; Hyper transport
-
-;;; The transport shells out to curl (like gptel and plz.el): curl is a
-;;; mature HTTP client with reliable TLS, proxies, and streaming, and its
-;;; subprocess filter gives us SSE chunks as they arrive without fighting
-;;; url.el or raw sockets.  Request config and body go to curl via stdin.
-
-(defcustom crush-hyper-curl-program "curl"
-  "Path to the curl executable used by the hyper backend."
-  :type 'string
-  :group 'crush)
-
-(defun crush--hyper-insert-delta (proc delta)
-  "Insert DELTA text into the crush buffer served by PROC.
-Appends at the end of the buffer (the growing response area) so
-streamed deltas stay in order.  `crush--response-start' is not touched;
-it continues to mark the start of the response for
-`crush--finalize-response'."
-  (let ((target (process-get proc :crush-target)))
-    (when (buffer-live-p target)
-      (with-current-buffer target
-        (let ((inhibit-read-only t)
-              (inhibit-modification-hooks t))
-          (save-excursion
-            (goto-char (point-max))
-            (insert delta)))))))
-
-(defun crush--hyper-http-finish (proc error)
-  "Finalize the curl request on PROC with optional ERROR.
-Inserts an error line when ERROR is non-nil and runs the finalize
-callback exactly once."
-  (unless (process-get proc :crush-finished)
-    (process-put proc :crush-finished t)
-    (when error
-      (crush--hyper-insert-delta proc (format "
-[crush-hyper error: %s]" error)))
-    (let ((finish (process-get proc :crush-done-callback)))
-      (when finish (funcall finish)))
-    (when (process-live-p proc)
-      (delete-process proc))))
-
-(defun crush--hyper-curl-filter (proc string)
-  "Filter for the curl process PROC receiving SSE chunk STRING.
-Feed the chunk to the SSE parser and insert any content deltas into the
-crush buffer.  The HTTP response head (headers) is not valid SSE and is
-ignored by the parser; errors are surfaced by the sentinel when curl
-exits non-zero."
-  (crush--debug-log 'output (format "%S" string))
-  (let* ((sse-state (process-get proc :crush-sse))
-         (result (crush--hyper-sse-feed sse-state string))
-         (deltas (car result))
-         (new-state (cdr result)))
-    (dolist (delta deltas)
-      (crush--hyper-insert-delta proc delta))
-    (process-put proc :crush-sse (plist-get new-state :sse))
-    (when (plist-get new-state :done)
-      (crush--hyper-http-finish proc (plist-get new-state :error)))))
-
-(defun crush--hyper-curl-sentinel (proc _event)
-  "Sentinel for the curl process PROC.
-If the stream did not end with `[DONE]' (e.g. connection dropped or
-HTTP error), finish with an error; otherwise ensure cleanup."
-  (unless (process-get proc :crush-finished)
-    (crush--hyper-http-finish proc "connection closed without [DONE]")))
-
-(defun crush--hyper-request (base-url token body target callback)
-  "Send HTTP POST to BASE-URL with TOKEN and JSON BODY via curl.
-TARGET is the crush buffer to insert streamed content into; CALLBACK
-is called with no args when the stream finishes.  Returns the curl
-process."
-  (let* ((payload (json-encode body))
-         (config (concat
-                  (format "url = %s/api/v1/fantasy\n" base-url)
-                  "request = POST\n"
-                  "silent\n"
-                  "no-buffer\n"
-                  "header = \"Content-Type: application/json\"\n"
-                  (when token
-                    (format "header = \"Authorization: Bearer %s\"\n" token))
-                  "data-binary = @-\n"))
-         (buf (get-buffer-create " *crush-hyper*"))
-         (proc (make-process
-                :name "crush-hyper"
-                :buffer buf
-                :command (list crush-hyper-curl-program
-                               "--config" "-")
-                :connection-type 'pipe
-                :noquery t
-                :filter #'crush--hyper-curl-filter
-                :sentinel #'crush--hyper-curl-sentinel
-                :stderr (get-buffer-create "*crush-errors*"))))
-    (process-put proc :crush-sse (crush--hyper-sse-new-state))
-    (process-put proc :crush-target target)
-    (process-put proc :crush-done-callback callback)
-    ;; Config + JSON body over stdin; EOF closes the request.
-    (process-send-string proc config)
-    (process-send-string proc payload)
-    (process-send-eof proc)
-    proc))
-
-;;; Hyper backend methods
-
-(cl-defmethod crush-backend-send-prompt
-  ((backend crush-hyper-backend) prompt &key context session-id continue-p)
-  "Send PROMPT to BACKEND via a direct HTTP+SSE request to Hyper."
-  (ignore session-id continue-p)
-  (let* ((body (crush--hyper-compose-request
-                prompt context (crush-hyper-backend-model backend)))
-         (base-url (or (crush-hyper-backend-base-url backend)
-                       (getenv "HYPER_URL")
-                       crush-hyper-base-url))
-         (token (or (crush-hyper-backend-token backend) crush-hyper-token))
-         (buffer (crush-backend-buffer backend)))
-    (with-current-buffer buffer
-      (setq-local crush--response-start (point-marker)))
-    (crush--hyper-request
-     base-url token body buffer
-     (lambda ()
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (crush--finalize-response)))))
-    (with-current-buffer buffer
-      (setq-local crush-process nil))))
-
-(cl-defmethod crush-backend-interrupt ((backend crush-hyper-backend))
-  "Interrupt the hyper request for BACKEND."
-  (crush-backend-cleanup backend))
-
-(cl-defmethod crush-backend-active-p ((_backend crush-hyper-backend))
-  "Return non-nil while a hyper request is in flight for BACKEND."
-  nil)
-
-(cl-defmethod crush-backend-cleanup ((_backend crush-hyper-backend))
-  "Clean up any hyper request resources; phase 1 has none to kill."
-  nil)
-
-(cl-defmethod crush-backend-grant-permission ((_backend crush-hyper-backend) _permission-id _action)
-  "No permissions are issued in phase 1."
-  nil)
 
 ;;; Major mode
 
@@ -1015,12 +555,19 @@ unfontifying.  ENABLE nil restores the default."
       (setq-local crush--project-root
                   (crush--canonical-root default-directory))
       (setq-local crush--backend
-                  (crush-make-run-backend
-                   :buffer buf
-                   :working-directory default-directory
-                   :program crush-program
-                   :args crush-args
-                   :model crush-model))
+                  (pcase crush-backend-type
+                    (`hyper (crush-make-hyper-backend
+                             :buffer buf
+                             :working-directory default-directory
+                             :base-url crush-hyper-base-url
+                             :token crush-hyper-token
+                             :model crush-model))
+                    (_ (crush-make-run-backend
+                        :buffer buf
+                        :working-directory default-directory
+                        :program crush-program
+                        :args crush-args
+                        :model crush-model))))
       ;; Mark initialized only after mode setup so the flag is not wiped
       ;; by the parent mode (which calls kill-all-local-variables).
       (setq-local crush--initialized t))))
