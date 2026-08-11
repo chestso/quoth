@@ -82,11 +82,6 @@
   :type '(repeat string)
   :group 'crush)
 
-(defcustom crush-buffer-name "*crush*"
-  "Name of the dedicated Crush interaction buffer."
-  :type 'string
-  :group 'crush)
-
 (defcustom crush-working-directory nil
   "Working directory for the Crush CLI.
 When nil, uses the project root if `project-current' is non-nil,
@@ -169,6 +164,11 @@ Buffer-local.")
   "The active crush backend for this buffer.
 Buffer-local.")
 
+(defvar crush--project-root nil
+  "Canonical project root (or `default-directory') this buffer serves.
+Set at initialization; determines the buffer name and the working
+directory for the Crush CLI.  Buffer-local.")
+
 (defvar crush--input-ring nil
   "Ring of previously entered prompts.
 Buffer-local.")
@@ -186,6 +186,59 @@ Buffer-local.")
 (defvar crush--input-ring-file-name
   (expand-file-name "crush-history" user-emacs-directory)
   "File where input history is persisted.")
+
+;;; Buffer naming
+
+(defvar crush--root-buffer-alist nil
+  "Alist mapping canonical project root directories to crush buffer names.
+Each entry is (ROOT . NAME) where ROOT is an absolute directory path
+with a trailing slash.  Entries survive buffer kills so that re-opening
+a root keeps its original buffer name, including any collision suffix.")
+
+(defun crush--canonical-root (root)
+  "Return ROOT as a canonical absolute directory path with trailing slash."
+  (file-name-as-directory (expand-file-name root)))
+
+(defun crush--buffer-name-for-root (root)
+  "Return a stable, unique crush buffer name for project/directory ROOT.
+The name is based on the basename of ROOT, e.g. \"*crush:foo*\".  When
+another distinct root already resolved to that name, an incrementing
+suffix is appended: \"*crush:foo(2)*\", \"*crush:foo(3)*\", and so on.
+The mapping is recorded in `crush--root-buffer-alist' so the same ROOT
+always resolves to the same name."
+  (let* ((canonical (crush--canonical-root root))
+         (existing (cdr (assoc canonical crush--root-buffer-alist))))
+    (if existing
+        existing
+      (let* ((base (file-name-nondirectory
+                    (directory-file-name canonical)))
+             (base (if (string-empty-p base) "root" base))
+             (name (format "*crush:%s*" base))
+             (counter 2))
+        (while (member name (mapcar #'cdr crush--root-buffer-alist))
+          (setq name (format "*crush:%s(%d)*" base counter))
+          (setq counter (1+ counter)))
+        (push (cons canonical name) crush--root-buffer-alist)
+        name))))
+
+(defun crush--current-root ()
+  "Return the canonical project root for the current buffer, if any.
+Returns the `project-root' when the current buffer is inside a project,
+otherwise `default-directory'.  Both as canonical directory paths."
+  (let ((proj (project-current)))
+    (crush--canonical-root
+     (or (when proj (project-root proj))
+         default-directory))))
+
+(defun crush--current-crush-buffer ()
+  "Return the crush buffer associated with the current context.
+The root is the project root when in a project, otherwise
+`default-directory'.  Creates and initializes the buffer if needed."
+  (let* ((root (crush--current-root))
+         (name (crush--buffer-name-for-root root))
+         (buf (get-buffer-create name)))
+    (crush--init-buffer buf)
+    buf))
 
 ;;; Backend abstraction
 
@@ -689,6 +742,8 @@ unfontifying.  ENABLE nil restores the default."
                        (when-let ((proj (project-current)))
                          (project-root proj))
                        default-directory)))
+      (setq-local crush--project-root
+                  (crush--canonical-root default-directory))
       (setq-local crush--backend
                   (crush-make-run-backend
                    :buffer buf
@@ -910,8 +965,7 @@ BEG and END are the bounds of the selection."
          (lines (format "%d-%d"
                         (save-excursion (goto-char beg) (line-number-at-pos))
                         (save-excursion (goto-char end) (line-number-at-pos))))
-         (buf (get-buffer-create crush-buffer-name)))
-    (crush--init-buffer buf)
+         (buf (crush--current-crush-buffer)))
     (with-current-buffer buf
       (let ((attachment-id (crush--generate-id)))
         ;; Insert with text properties
@@ -936,8 +990,7 @@ BEG and END are the bounds of the selection."
            (formatted (if relative-file
                           (format "[%s](%s)" relative-file relative-file)
                         ""))
-           (buf (get-buffer-create crush-buffer-name)))
-      (crush--init-buffer buf)
+           (buf (crush--current-crush-buffer)))
       (with-current-buffer buf
         (let ((attachment-id (crush--generate-id)))
           (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id
@@ -952,8 +1005,7 @@ BEG and END are the bounds of the selection."
   "Start an interactive Crush session.
 Creates a buffer if none exists, switches to it, and prepares it for input."
   (interactive)
-  (let ((buf (get-buffer-create crush-buffer-name)))
-    (crush--init-buffer buf)
+  (let ((buf (crush--current-crush-buffer)))
     (switch-to-buffer-other-window buf)))
 
 ;;; Minor mode

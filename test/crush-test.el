@@ -7,17 +7,36 @@
 
 ;;; Helper
 
+(defconst crush-test--root
+  (expand-file-name "crush-test" temporary-file-directory)
+  "Root directory used by tests to derive a deterministic crush buffer name.")
+
+(defun crush-test--buffer-name ()
+  "Return the deterministic crush buffer name for `crush-test--root'."
+  (let ((crush--root-buffer-alist nil))
+    (crush--buffer-name-for-root crush-test--root)))
+
 (defun crush-test--fresh-buffer ()
-  "Create a fresh crush test buffer and return it."
-  (let ((crush-buffer-name "*crush-test*"))
-    (when (get-buffer crush-buffer-name)
-      (kill-buffer crush-buffer-name))
-    (crush)
-    (get-buffer crush-buffer-name)))
+  "Create a fresh crush test buffer and return it.
+The buffer is bound to `crush-test--root' and deterministically named."
+  (let ((name (crush-test--buffer-name)))
+    (when (get-buffer name)
+      (kill-buffer name))
+    (cl-letf (((symbol-function 'project-current) (lambda (&optional dir) nil)))
+      (let ((default-directory crush-test--root))
+        (crush)))
+    (get-buffer (crush-test--buffer-name))))
+
+(defun crush-test--kill-crush-buffer ()
+  "Kill any test crush buffer bound to `crush-test--root'."
+  (let ((name (crush-test--buffer-name)))
+    (when (get-buffer name)
+      (kill-buffer name))))
 
 (defun crush-test--cleanup ()
   "Kill test buffers."
-  (dolist (name '("*crush-test*" "*crush-errors*" "*crush-debug*"))
+  (crush-test--kill-crush-buffer)
+  (dolist (name '("*crush-errors*" "*crush-debug*"))
     (when (get-buffer name)
       (kill-buffer name))))
 
@@ -47,7 +66,8 @@
 (ert-deftest crush-test/default-directory-uses-default-when-no-project ()
   "When no project and no custom dir, uses `default-directory'."
   (let ((crush-working-directory nil)
-        (expected-dir (file-truename default-directory)))
+        (default-directory crush-test--root)
+        (expected-dir (file-name-as-directory (file-truename crush-test--root))))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -181,7 +201,7 @@
 
 (ert-deftest crush-test/insert-selection-works-while-process-running ()
   "`crush-insert-selection' should work even when `crush-process' is non-nil."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -298,13 +318,13 @@
 
 (ert-deftest crush-test/insert-buffer-inserts-entire-buffer ()
   "crush-insert-buffer should insert the entire buffer as an org source block."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
           (insert "line one\nline two\nline three\n")
           (setq-local buffer-file-name "/fake/path/src/foo.el")
           (crush-insert-buffer)
-          (with-current-buffer crush-buffer-name
+          (with-current-buffer (crush-test--buffer-name)
             (goto-char (point-min))
             ;; File path appears before content in the org block
             (should (search-forward "src/foo.el" nil t))
@@ -314,24 +334,24 @@
 
 (ert-deftest crush-test/insert-buffer-no-file-shows-no-file ()
   "crush-insert-buffer should show (no file) when buffer has no file."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
           (insert "content\n")
           (setq-local buffer-file-name nil)
           (crush-insert-buffer)
-          (with-current-buffer crush-buffer-name
+          (with-current-buffer (crush-test--buffer-name)
             (goto-char (point-min))
             (should (search-forward "(no file)" nil t))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/insert-buffer-works-while-process-running ()
   "crush-insert-buffer should work even when a crush process is running."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (progn
           (crush-test--fresh-buffer)
-          (with-current-buffer "*crush-test*"
+          (with-current-buffer (crush-test--buffer-name)
             (setq-local crush-process (make-process
                                        :name "crush-test-fake"
                                        :buffer (current-buffer)
@@ -341,7 +361,7 @@
           (with-temp-buffer
             (insert "buffer content\n")
             (crush-insert-buffer))
-          (with-current-buffer "*crush-test*"
+          (with-current-buffer (crush-test--buffer-name)
             (goto-char (point-min))
             (should (search-forward "buffer content" nil t))
             (when (process-live-p crush-process)
@@ -353,20 +373,20 @@
 
 (ert-deftest crush-test/insert-filepath-inserts-path ()
   "crush-insert-filepath should insert the file path as context."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
           (insert "some code\n")
           (setq-local buffer-file-name "/fake/path/src/bar.el")
           (crush-insert-filepath)
-          (with-current-buffer crush-buffer-name
+          (with-current-buffer (crush-test--buffer-name)
             (goto-char (point-min))
             (should (search-forward "/fake/path/src/bar.el" nil t))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/insert-filepath-no-file-errors ()
   "crush-insert-filepath should error when buffer has no file."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
           (insert "some code\n")
@@ -376,7 +396,7 @@
 
 (ert-deftest crush-test/insert-filepath-uses-relative-path ()
   "crush-insert-filepath should use a path relative to project root."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
           (insert "code\n")
@@ -385,7 +405,7 @@
                       (expand-file-name "test/crush-mode-test.el"
                                         default-directory))
           (crush-insert-filepath)
-          (with-current-buffer crush-buffer-name
+          (with-current-buffer (crush-test--buffer-name)
             (goto-char (point-min))
             ;; Should contain a relative path, not absolute
             (should (search-forward "test/crush-mode-test.el" nil t))))
@@ -395,7 +415,7 @@
 
 (ert-deftest crush-test/insert-selection-via-minor-mode-key ()
   "crush-insert-selection should be callable via the minor mode keybinding."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
           (insert "selected text\n")
@@ -408,7 +428,7 @@
             (should (eq binding #'crush-insert-selection)))
           ;; Call the command directly
           (call-interactively #'crush-insert-selection)
-          (with-current-buffer crush-buffer-name
+          (with-current-buffer (crush-test--buffer-name)
             (goto-char (point-min))
             (should (search-forward "selected" nil t)))
           (crush-minor-mode -1))
@@ -426,7 +446,7 @@
 Returns the contents of the capture file after BODY completes."
   (let* ((cap (make-temp-file "crush-test-capture"))
          (crush-program (crush-test--mock-program))
-         (crush-buffer-name "*crush-test*")
+         (default-directory crush-test--root)
          (process-environment (cons (format "CRUSH_CAPTURE_FILE=%s" cap)
                                     process-environment)))
     (unwind-protect
@@ -458,7 +478,7 @@ Returns the contents of the capture file after BODY completes."
 Regression test: `crush run' reads all of stdin before processing, so stdin
 must be closed with EOF even when the prompt is a CLI arg. Otherwise the
 process never exits and the buffer hangs after hitting RET."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (crush-test--with-mock
          (lambda ()
@@ -739,7 +759,7 @@ process never exits and the buffer hangs after hitting RET."
 
   (ert-deftest crush-test/insert-selection-records-attachment ()
     "Inserting selection should record attachment with prompt ID."
-    (let ((crush-buffer-name "*crush-test*"))
+    (let ((default-directory crush-test--root))
       (unwind-protect
           (let ((buf (crush-test--fresh-buffer)))
             (with-current-buffer buf
@@ -834,7 +854,7 @@ regenerate the prompt ID or clobber existing state.
 Regression: with markdown-mode as the parent, major-mode is markdown-mode
 (not crush-mode), so the old 'eq major-mode' guard failed to detect an
 already-initialized buffer and re-initialized it."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -847,7 +867,7 @@ already-initialized buffer and re-initialized it."
 
 (ert-deftest crush-test/attachment-has-properties ()
   "Inserted attachments should have crush-attachment-id and crush-prompt-id properties."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -976,7 +996,7 @@ already-initialized buffer and re-initialized it."
 
 (ert-deftest crush-test/attachment-region-tagged-as-attachment ()
   "Attachment blocks should be tagged with crush-region-type 'attachment."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -1053,7 +1073,7 @@ with an Attachment header line."
 (ert-deftest crush-test/attachment-has-filename-lines-properties ()
   "Inserted attachments should carry crush-filename and crush-lines
 on the header line, relative to the project root."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -1073,7 +1093,7 @@ on the header line, relative to the project root."
 (ert-deftest crush-test/insert-filepath-emits-link ()
   "crush-insert-filepath should insert a markdown link attachment
 with crush-region-type 'attachment and a project-root-relative path."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (let ((project-root default-directory))
@@ -1169,7 +1189,7 @@ with crush-region-type 'attachment and a project-root-relative path."
 
 (ert-deftest crush-test/insert-selection-creates-no-overlays ()
   "Inserting a selection should not create crush overlays."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -1244,7 +1264,7 @@ with crush-region-type 'attachment and a project-root-relative path."
 
 (ert-deftest crush-test/org-region-type-still-set ()
   "Attachment blocks should have crush-region-type=attachment."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -1393,7 +1413,7 @@ with crush-region-type 'attachment and a project-root-relative path."
   "Sentinel should freeze the previous response read-only.
 After the sentinel inserts the next prompt, the prior response becomes
 read-only previous content, blocking edits and insertions."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -1428,7 +1448,7 @@ read-only previous content, blocking edits and insertions."
 
 (ert-deftest crush-test/insert-before-prompt-works-without-prompt-start ()
   "crush--insert-before-prompt should insert before crush--prompt-start-marker."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -1551,7 +1571,7 @@ or the crush> prompt marker."
 
 (ert-deftest crush-test/backend-send-prompt-spawns-process ()
   "crush-backend-send-prompt should spawn a crush process via the backend."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((result (crush-test--with-mock
                        (lambda ()
@@ -1566,7 +1586,7 @@ or the crush> prompt marker."
 
 (ert-deftest crush-test/backend-send-prompt-with-context ()
   "crush-backend-send-prompt should send context via stdin when attachments exist."
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((result (crush-test--with-mock
                        (lambda ()
@@ -2397,7 +2417,7 @@ Backspacing into the prompt should be blocked."
 This mirrors the user session where markdown fontification could previously
 fail to enforce read-only."
   (skip-unless (require 'markdown-mode nil t))
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -2441,7 +2461,7 @@ Regression: when markdown-mode fontifies the buffer, it strips
 right after the prompt inherits `read-only' and Emacs signals
 \"Text is read-only\" on the very first insertion."
   (skip-unless (require 'markdown-mode nil t))
-  (let ((crush-buffer-name "*crush-test*"))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
@@ -2459,6 +2479,103 @@ right after the prompt inherits `read-only' and Emacs signals
             (should (get-char-property (point) 'read-only))
             (should-error (insert-and-inherit "X") :type 'text-read-only)))
       (crush-test--cleanup))))
+
+;;; 90. Per-project buffer naming
+
+(defun crush-test--cleanup-registry ()
+  "Purge `crush--root-buffer-alist' and kill the buffers it names."
+  (dolist (entry crush--root-buffer-alist)
+    (when (get-buffer (cdr entry))
+      (kill-buffer (cdr entry))))
+  (setq crush--root-buffer-alist nil))
+
+(ert-deftest crush-test/current-buffer-uses-default-directory-root ()
+  "`crush--current-crush-buffer' should use `default-directory' as root."
+  (unwind-protect
+      (let* ((root (expand-file-name "crush-test-x" temporary-file-directory))
+             (buf (with-temp-buffer
+                    (setq default-directory root)
+                    (crush--current-crush-buffer))))
+        (should (buffer-live-p buf))
+        (with-current-buffer buf
+          (should (string= (crush--canonical-root crush--project-root)
+                           (crush--canonical-root root)))))
+    (crush-test--cleanup-registry)))
+
+(ert-deftest crush-test/current-buffer-uses-project-root ()
+  "`crush--current-crush-buffer' should prefer the project root."
+  (cl-letf (((symbol-function 'project-current)
+             (lambda (&optional dir)
+               (list 'vc 'Git "/tmp/crush-proj-root/"))))
+    (unwind-protect
+        (let* ((root (expand-file-name "crush-test-x" temporary-file-directory))
+               (buf (with-temp-buffer
+                      (setq default-directory root)
+                      (crush--current-crush-buffer))))
+          (should (buffer-live-p buf))
+          (with-current-buffer buf
+            (should (string= (crush--canonical-root crush--project-root)
+                             (crush--canonical-root
+                              "/tmp/crush-proj-root/")))))
+      (crush-test--cleanup-registry))))
+
+(ert-deftest crush-test/current-buffer-reuses-existing-buffer ()
+  "Resolving the same root twice should return the same buffer."
+  (unwind-protect
+      (let* ((root (expand-file-name "crush-test-x" temporary-file-directory))
+             (buf1 (with-temp-buffer
+                     (setq default-directory root)
+                     (crush--current-crush-buffer)))
+             (buf2 (with-temp-buffer
+                     (setq default-directory root)
+                     (crush--current-crush-buffer))))
+        (should (eq buf1 buf2)))
+    (crush-test--cleanup-registry)))
+
+(ert-deftest crush-test/buffer-name-uses-root-basename ()
+  "`crush--buffer-name-for-root' should use the root directory's basename."
+  (should (string= (crush--buffer-name-for-root "/tmp/foo/") "*crush:foo*"))
+  (should (string= (crush--buffer-name-for-root "~/x/y/") "*crush:y*")))
+
+(ert-deftest crush-test/buffer-name-same-basename-distinct-roots-collide ()
+  "Two roots with the same basename should get distinct buffer names."
+  (let ((crush--root-buffer-alist nil))
+    (should (string= (crush--buffer-name-for-root "/tmp/foo/") "*crush:foo*"))
+    (should (string= (crush--buffer-name-for-root "/tmp/bar/foo/") "*crush:foo(2)*"))))
+
+(ert-deftest crush-test/buffer-name-stable-per-root ()
+  "Re-resolving a root should return the same name (no growing suffix)."
+  (let ((crush--root-buffer-alist nil))
+    (crush--buffer-name-for-root "/tmp/foo/")
+    (should (string= (crush--buffer-name-for-root "/tmp/bar/foo/") "*crush:foo(2)*"))
+    ;; Resolving either root again must not change the mapping.
+    (should (string= (crush--buffer-name-for-root "/tmp/foo/") "*crush:foo*"))
+    (should (string= (crush--buffer-name-for-root "/tmp/bar/foo/") "*crush:foo(2)*"))))
+
+(ert-deftest crush-test/buffer-name-trailing-slash-canonicalized ()
+  "Roots differing only in trailing slash should map to the same name."
+  (let ((crush--root-buffer-alist nil))
+    (should (string= (crush--buffer-name-for-root "/tmp/foo") "*crush:foo*"))
+    (should (string= (crush--buffer-name-for-root "/tmp/foo/") "*crush:foo*"))))
+
+(ert-deftest crush-test/buffer-name-root-slash-fallback ()
+  "The root \"/\" has no basename and should get a fallback name."
+  (should (string= (crush--buffer-name-for-root "/") "*crush:root*")))
+
+(ert-deftest crush-test/buffer-name-three-way-collision ()
+  "Three roots with the same basename should be suffixed 2 and 3."
+  (let ((crush--root-buffer-alist nil))
+    (should (string= (crush--buffer-name-for-root "/a/foo/") "*crush:foo*"))
+    (should (string= (crush--buffer-name-for-root "/b/foo/") "*crush:foo(2)*"))
+    (should (string= (crush--buffer-name-for-root "/c/foo/") "*crush:foo(3)*"))))
+
+(ert-deftest crush-test/buffer-name-fresh-registry-registers-root ()
+  "Resolving a root should register it in `crush--root-buffer-alist'."
+  (let ((crush--root-buffer-alist nil))
+    (crush--buffer-name-for-root "/tmp/x/foo/")
+    (should (assoc "/tmp/x/foo/" crush--root-buffer-alist))
+    (should (equal (alist-get "/tmp/x/foo/" crush--root-buffer-alist nil nil #'equal)
+                   "*crush:foo*"))))
 
 (provide 'crush-test)
 ;;; crush-test.el ends here

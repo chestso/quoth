@@ -20,6 +20,7 @@ crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic
 ## Interaction Model
 
 - **Per-prompt calling**: Each prompt is sent to `crush run` as a separate invocation. The CLI streams the response to stdout and exits.
+- **Per-root buffers**: Each project (or directory when none) gets its own crush buffer, named after the root's basename (`*crush:name*`, suffix `(2)` on collisions). `crush-minor-mode` commands always target the buffer for the source buffer's project or directory.
 - **Session continuity**: The first prompt starts a fresh session. Each subsequent prompt passes `--continue`, which continues the active session in the working directory. `crush-new-session` resets this so the next prompt starts a new session.
 - **Manual session selection**: Setting `crush--session` passes `--session <id>` to continue a specific session by ID.
 - **Context format**: Selections are formatted as markdown fenced code blocks with an attachment header line:
