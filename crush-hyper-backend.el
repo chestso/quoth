@@ -400,10 +400,11 @@ process."
     (process-put proc :crush-status nil)
     (crush--debug-log
      'request
-     (format "POST %s model=%S token=%s"
+     (format "POST %s model=%S token=%s body=%S"
              (process-get proc :crush-url)
              (process-get proc :crush-model)
-             (if (process-get proc :crush-token-p) "present" "none")))
+             (if (process-get proc :crush-token-p) "present" "none")
+             (json-encode body)))
     ;; Config + JSON body over stdin; EOF closes the request.
     (process-send-string proc config)
     (process-send-string proc payload)

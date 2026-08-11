@@ -2817,6 +2817,7 @@ and return the capture output."
                (with-current-buffer debug-buf
                  (goto-char (point-min))
                  (should (search-forward "request: POST" nil t))
+                 (should (search-forward "body=" nil t))
                  (goto-char (point-min))
                  (should (search-forward "response: POST" nil t))
                  (goto-char (point-min))
