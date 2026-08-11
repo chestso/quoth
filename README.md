@@ -143,7 +143,7 @@ The link between prompts lives entirely in two buffer-local variables:
 
 ### Session management
 
-### `--continue` (automatic)
+#### `--continue` (automatic)
 
 After sending your first prompt, `crush--continue` is set to `t`. All subsequent prompts automatically include `--continue`, which tells Crush to continue the most recent session in the working directory.
 
@@ -158,7 +158,7 @@ To start a fresh session:
 - `C-c c n` (`crush-new-session`) — resets `crush--continue` to `nil`, so the next prompt starts a new session
 - `C-c c k` (`crush-clear-buffer`) — clears the buffer **and** starts a fresh session
 
-### `--session <id>` (manual)
+#### `--session <id>` (manual)
 
 To continue a specific session by ID, set `crush--session`:
 
@@ -184,7 +184,7 @@ To clear manual session selection and return to automatic `--continue` behavior:
 (setq-local crush--session nil)
 ```
 
-### Session Flow Example
+#### Session Flow Example
 
 ```
 Buffer state         Command sent
