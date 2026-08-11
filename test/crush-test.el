@@ -2526,6 +2526,61 @@ right after the prompt inherits `read-only' and Emacs signals
     (should (plist-get (cdr result) :done))
     (should (string= (plist-get (cdr result) :error) "boom"))))
 
+;;; 92c. Hyper transport: filter state persistence and curl config
+
+(ert-deftest crush-test/hyper-transport-filter-persists-split-events ()
+  "A JSON SSE event split across filter chunks must fully stream.
+Regression test: the filter previously persisted the non-existent
+`:sse' key of the parser state, dropping the `:pending' fragment between
+chunks and silently discarding any event split across them."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((target (current-buffer))
+                (proc (make-pipe-process :name "crush-hyper-test-filter"
+                                         :noquery t
+                                         :coding 'binary)))
+            (process-put proc :crush-sse (crush--hyper-sse-new-state))
+            (process-put proc :crush-target target)
+            (process-put proc :crush-done-callback #'ignore)
+            (process-put proc :crush-head "")
+            (process-put proc :crush-head-parsed nil)
+            (process-put proc :crush-status nil)
+            (process-put proc :crush-url "http://test/chat/completions")
+            (process-put proc :crush-model "m")
+            (process-put proc :crush-token-p nil)
+            ;; Chunk 1: HTTP head plus the first half of a JSON SSE event.
+            (crush--hyper-curl-filter
+             proc "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: {\"choices\":[{\"delta\":{\"con")
+            ;; Chunk 2: the rest of the event plus [DONE].  With the bug
+            ;; this chunk's `:pending' was lost, so \"hi\" never streamed.
+            (crush--hyper-curl-filter
+             proc "tent\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
+            (with-current-buffer target
+              (goto-char (point-min))
+              (should (search-forward "hi" nil t)))
+            (when (process-live-p proc) (delete-process proc))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-transport-timeout-in-curl-config ()
+  "`crush-hyper-timeout' should reach the curl config as max-time."
+  (let ((received nil)
+        (proc (make-pipe-process :name "crush-hyper-test-cap" :noquery t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _args) proc))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p string) (push string received)))
+                  ((symbol-function 'process-send-eof) #'ignore))
+          (let ((crush-hyper-timeout 45))
+            (crush--hyper-request
+             "http://127.0.0.1:1" "tok"
+             (crush--hyper-compose-request "hi" nil "m")
+             (current-buffer) #'ignore)))
+      (delete-process proc))
+    (should (string-match-p "max-time = 45"
+                            (mapconcat #'identity (nreverse received) "\n")))))
+
 
 
 ;;; 92b. Hyper backend: token resolution

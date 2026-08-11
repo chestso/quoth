@@ -290,6 +290,8 @@ it continues to mark the start of the response for
 Inserts an error line when ERROR is non-nil and runs the finalize
 callback exactly once."
   (unless (process-get proc :crush-finished)
+    ;; Mark finished first so a sentinel racing the [DONE] filter path
+    ;; cannot double-finalize.
     (process-put proc :crush-finished t)
     (when error
       (crush--hyper-insert-delta proc (format "
@@ -314,7 +316,10 @@ errors are surfaced by the sentinel when curl exits non-zero."
          (new-state (cdr result)))
     (dolist (delta deltas)
       (crush--hyper-insert-delta proc delta))
-    (process-put proc :crush-sse (plist-get new-state :sse))
+    ;; Persist the full parser state: the state plist has no :sse key,
+    ;; and dropping the `:pending' fragment would lose any SSE event
+    ;; split across process-filter chunks.
+    (process-put proc :crush-sse new-state)
     (when (plist-get new-state :done)
       (crush--hyper-http-finish proc (plist-get new-state :error)))))
 
@@ -378,6 +383,7 @@ process."
                   "include\n"
                   "silent\n"
                   "no-buffer\n"
+                  (format "max-time = %s\n" (or crush-hyper-timeout 300))
                   "header = \"Content-Type: application/json\"\n"
                   (when token
                     (format "header = \"Authorization: Bearer %s\"\n" token))
