@@ -72,11 +72,13 @@
   :group 'crush)
 
 (defface crush-reasoning-face
-  '((t :background "#262600"))
+  '((t :background "#262600" :extend t))
   "Face for streamed chain-of-thought reasoning text.
 Applied via an overlay (not a text property) so markdown-mode
 refontification cannot strip it.  The dark yellow is the visual
-result of yellow at ~15% opacity over black."
+result of yellow at ~15% opacity over black.  `:extend t' paints
+the background across the full window width on every line the
+reasoning covers."
   :group 'crush)
 
 ;;; Buffer-local state

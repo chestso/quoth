@@ -39,6 +39,21 @@
                          (overlay-start ov) (overlay-end ov))
                         "think"))))))
 
+(ert-deftest crush-test/reasoning-stream-moves-cursor ()
+  "Point should follow the reasoning stream to the insertion point."
+  (crush-test--with-reasoning-process
+   (lambda (proc)
+     ;; Move point away from the insertion area first, as a user might
+     ;; when scrolling up to read earlier conversation.
+     (goto-char (point-min))
+     (crush--hyper-insert-delta proc "think" 'reasoning)
+     (should (= (point) (point-max)))
+     (crush--hyper-insert-delta proc " harder" 'reasoning)
+     (should (= (point) (point-max)))
+     (should (string= (buffer-substring-no-properties
+                       (- (point) (length " harder")) (point))
+                      " harder")))))
+
 (ert-deftest crush-test/hyper-reasoning-overlay-grows-with-deltas ()
   "Subsequent reasoning deltas extend the overlay."
   (crush-test--with-reasoning-process
