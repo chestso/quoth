@@ -39,20 +39,21 @@
                          (overlay-start ov) (overlay-end ov))
                         "think"))))))
 
-(ert-deftest crush-test/reasoning-stream-moves-cursor ()
-  "Point should follow the reasoning stream to the insertion point."
+(ert-deftest crush-test/reasoning-stream-keeps-cursor ()
+  "Streamed reasoning should not move the user's point.
+Reasoning always appends at point-max, but the cursor stays where
+the user put it (e.g. when scrolling up to read earlier history)."
   (crush-test--with-reasoning-process
    (lambda (proc)
-     ;; Move point away from the insertion area first, as a user might
-     ;; when scrolling up to read earlier conversation.
      (goto-char (point-min))
      (crush--hyper-insert-delta proc "think" 'reasoning)
-     (should (= (point) (point-max)))
+     (should (= (point) (point-min)))
      (crush--hyper-insert-delta proc " harder" 'reasoning)
-     (should (= (point) (point-max)))
-     (should (string= (buffer-substring-no-properties
-                       (- (point) (length " harder")) (point))
-                      " harder")))))
+     (should (= (point) (point-min)))
+     ;; The reasoning text did append at the end of the buffer.
+     (save-excursion
+       (goto-char (point-max))
+       (should (search-backward "think harder" nil t))))))
 
 (ert-deftest crush-test/hyper-reasoning-overlay-grows-with-deltas ()
   "Subsequent reasoning deltas extend the overlay."
