@@ -18,5 +18,5 @@ done
 
 echo "=== ERT tests ==="
 emacs --batch -L . -L test $MD_L \
-	--eval "(progn (require 'crush) (require 'crush-test) \
+	--eval "(progn (setq load-prefer-newer t) (require 'crush) (require 'crush-test) \
               (ert-run-tests-batch-and-exit))" 2>&1 | grep -v "site-start" || true
