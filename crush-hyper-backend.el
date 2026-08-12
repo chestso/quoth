@@ -151,6 +151,9 @@ is a variable.")
 
 (declare-function crush--debug-log "crush.el" (category message))
 (declare-function crush--finalize-response "crush.el" ())
+(declare-function crush--reasoning-start-region "crush.el" ())
+(declare-function crush--reasoning-extend-overlay "crush.el" ())
+(declare-function crush--reasoning-stop "crush.el" ())
 
 (cl-defstruct (crush-hyper-backend
                (:include crush-backend (type 'hyper))
@@ -196,9 +199,10 @@ The body carries `stream: t' and no tools (phase 1)."
 
 (defun crush--hyper-sse-feed (state chunk)
   "Feed CHUNK into SSE parser STATE and return (DELTAS . NEW-STATE).
-Each delta is the text content of a `choices[0].delta.content' field.
-Sets `:done' when `[DONE]' or an error payload is seen; the `:pending'
-buffer keeps partial events across chunk boundaries."
+Each delta is a (KIND . TEXT) cons, where KIND is `content' or
+`reasoning'; see `crush--hyper-sse-extract-deltas'.  Sets `:done'
+when `[DONE]' or an error payload is seen; the `:pending' buffer
+keeps partial events across chunk boundaries."
   (let ((pending (concat (plist-get state :pending) chunk))
         (done (plist-get state :done))
         (error (plist-get state :error))
@@ -237,10 +241,9 @@ buffer keeps partial events across chunk boundaries."
                         (progn
                           (setq done t)
                           (setq error (crush--hyper-alist-get "error" obj)))
-                      (let ((content (crush--hyper-sse-extract-content obj)))
-                        (when content
-                          (push content deltas))))))))))))
-      (cons (nreverse deltas)
+                      (setq deltas (nconc deltas
+                                          (crush--hyper-sse-extract-deltas obj))))))))))))
+      (cons deltas
             (list :pending pending :done done :error error)))))
 
 (defun crush--hyper-alist-get (key alist)
@@ -248,8 +251,12 @@ buffer keeps partial events across chunk boundaries."
   (or (cdr (assoc key alist))
       (cdr (assoc (if (stringp key) (intern key) (symbol-name key)) alist))))
 
-(defun crush--hyper-sse-extract-content (obj)
-  "Return the content delta from SSE JSON object OBJ, or nil."
+(defun crush--hyper-sse-extract-deltas (obj)
+  "Return typed deltas from SSE JSON object OBJ.
+A delta is a cons (KIND . TEXT) where KIND is `content' or
+`reasoning'.  `content' carries `choices[0].delta.content';
+`reasoning' carries `choices[0].delta.reasoning_content'.  Returns
+nil when OBJ is nil or carries no delta text."
   (when obj
     (let* ((raw-choices (crush--hyper-alist-get "choices" obj))
            (first-choice (if (vectorp raw-choices)
@@ -259,9 +266,14 @@ buffer keeps partial events across chunk boundaries."
            (delta (and first-choice
                        (crush--hyper-alist-get "delta" first-choice)))
            (content (and delta
-                         (crush--hyper-alist-get "content" delta))))
-      (when (stringp content)
-        content))))
+                         (crush--hyper-alist-get "content" delta)))
+           (reasoning (and delta
+                           (crush--hyper-alist-get "reasoning_content" delta))))
+      (delq nil
+            (list (when (stringp content)
+                    (cons 'content content))
+                  (when (stringp reasoning)
+                    (cons 'reasoning reasoning)))))))
 
 ;;; Hyper transport
 
@@ -270,12 +282,16 @@ buffer keeps partial events across chunk boundaries."
 ;;; subprocess filter gives us SSE chunks as they arrive without fighting
 ;;; url.el or raw sockets.  Request config and body go to curl via stdin.
 
-(defun crush--hyper-insert-delta (proc delta)
-  "Insert DELTA text into the crush buffer served by PROC.
-Appends at the end of the buffer (the growing response area) so
-streamed deltas stay in order.  `crush--response-start' is not touched;
-it continues to mark the start of the response for
-`crush--finalize-response'."
+(defun crush--hyper-insert-delta (proc delta kind)
+  "Insert DELTA text of KIND into the crush buffer served by PROC.
+KIND is `content' or `reasoning'.  Both append at the end of the
+buffer (the growing response area) so streamed deltas stay in
+order.  `crush--response-start' is not touched; it continues to
+mark the start of the response for `crush--finalize-response'.
+
+Reasoning deltas additionally drive the reasoning overlay: the
+first one opens the region, subsequent ones extend it, and the
+first content delta freezes it."
   (let ((target (process-get proc :crush-target)))
     (when (buffer-live-p target)
       (with-current-buffer target
@@ -283,7 +299,16 @@ it continues to mark the start of the response for
               (inhibit-modification-hooks t))
           (save-excursion
             (goto-char (point-max))
-            (insert delta)))))))
+            (pcase kind
+              ('reasoning
+               (crush--reasoning-start-region)
+               (crush--reasoning-extend-overlay))
+              ('content
+               (crush--reasoning-stop)))
+            (insert delta)
+            (pcase kind
+              ('reasoning
+               (crush--reasoning-extend-overlay)))))))))
 
 (defun crush--hyper-http-finish (proc error)
   "Finalize the curl request on PROC with optional ERROR.
@@ -295,7 +320,7 @@ callback exactly once."
     (process-put proc :crush-finished t)
     (when error
       (crush--hyper-insert-delta proc (format "
-[crush-hyper error: %s]" error)))
+[crush-hyper error: %s]" error) 'content))
     (let ((finish (process-get proc :crush-done-callback)))
       (when finish (funcall finish)))
     (when (process-live-p proc)
@@ -315,7 +340,7 @@ errors are surfaced by the sentinel when curl exits non-zero."
          (deltas (car result))
          (new-state (cdr result)))
     (dolist (delta deltas)
-      (crush--hyper-insert-delta proc delta))
+      (crush--hyper-insert-delta proc (cdr delta) (car delta)))
     ;; Persist the full parser state: the state plist has no :sse key,
     ;; and dropping the `:pending' fragment would lose any SSE event
     ;; split across process-filter chunks.

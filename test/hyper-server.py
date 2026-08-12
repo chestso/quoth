@@ -15,6 +15,7 @@ Modes (mirrors of the original elisp server):
   error-event stream an SSE error event then [DONE]
   malformed   stream truncated SSE then close
   not-found   respond 404 with an HTML error page
+  reasoning   stream reasoning_content deltas, then content, then [DONE]
 
 The server binds 127.0.0.1 on an ephemeral port, writes the base URL as
 the first line of CAPTURE-FILE, then serves requests.  Only
@@ -44,6 +45,10 @@ def sse(payload):
 
 def content_frame(delta):
     return sse(json.dumps({"choices": [{"delta": {"content": delta}}]}))
+
+
+def reasoning_frame(delta):
+    return sse(json.dumps({"choices": [{"delta": {"reasoning_content": delta}}]}))
 
 
 def main():
@@ -157,6 +162,12 @@ def main():
                         "<!doctype html><title>Not Found</title>"
                     ).encode()
                 )
+            elif mode == "reasoning":
+                conn.sendall(sse_ok.encode())
+                conn.sendall(reasoning_frame("mock think ").encode())
+                conn.sendall(reasoning_frame("harder").encode())
+                conn.sendall(content_frame("answer").encode())
+                conn.sendall(sse("[DONE]").encode())
             else:  # ok-stream, slow
                 conn.sendall(sse_ok.encode())
                 for d in deltas:

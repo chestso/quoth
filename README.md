@@ -104,6 +104,8 @@ Request tuning: timeout in seconds, `max_tokens` (default 64000), and sampling t
 
 When `crush-hyper-thinking` is non-nil, Hyper's internal thinking mode is enabled. `crush-hyper-reasoning-effort` selects the reasoning level (`low`, `medium`, `high`, `max`); nil uses the model default.
 
+Reasoning ("chain-of-thought") text streams into the buffer as it is received, tagged as a reasoning region and highlighted with a light-yellow background (`crush-reasoning-face`). It is displayed unfenced and visually distinct from the final answer.
+
 ### crush-debug-mode
 
 When non-nil (default), log commands, input, output, and sentinel events to a `*crush-debug*` buffer. Set to `nil` to disable logging.
@@ -225,7 +227,7 @@ Not yet implemented for hyper: no `x-session-id`/`x-session-affinity` headers an
 #### Current limitations
 
 - Manual token only (`crush-hyper-token`); OAuth device flow is planned.
-- No history, no model catalog, no reasoning-trace display, no tool calls.
+- No history, no model catalog, no tool calls.
 - Interrupt is a stub and `crush-process` stays nil during hyper requests, so `crush-send-input`'s "still running" guard doesn't block; avoid typing another prompt mid-stream.
 - `crush-backend-grant-permission` is a no-op (phase 1 has no tool execution to authorize).
 

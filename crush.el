@@ -71,6 +71,14 @@
   "Face for the crush> prompt marker."
   :group 'crush)
 
+(defface crush-reasoning-face
+  '((t :background "#262600"))
+  "Face for streamed chain-of-thought reasoning text.
+Applied via an overlay (not a text property) so markdown-mode
+refontification cannot strip it.  The dark yellow is the visual
+result of yellow at ~15% opacity over black."
+  :group 'crush)
+
 ;;; Buffer-local state
 
 ;;; `crush--continue', `crush--session', `crush--response-start',
@@ -97,6 +105,21 @@ Buffer-local.")
 (defvar crush--prompt-start-marker nil
   "Marker at the start of the `crush> ' prompt text.
 Buffer-local.")
+
+(defvar crush--reasoning-start nil
+  "Marker at the start of the current reasoning region, or nil.
+Set by the hyper backend on the first reasoning delta streamed for
+the current prompt.  Buffer-local.")
+
+(defvar crush--reasoning-end nil
+  "Marker at the end of the reasoning region, or nil.
+Set on the first content delta (reasoning stops where the answer
+begins).  Buffer-local.")
+
+(defvar crush--reasoning-overlay nil
+  "Overlay highlighting the current reasoning region, or nil.
+Carries `crush-reasoning-face' and the `crush-overlay' property so
+`crush-clear-buffer' removes it.  Buffer-local.")
 
 (defvar crush--input-start-marker nil
   "Marker at the start of user input area (after prompt text).
@@ -650,6 +673,95 @@ FILE is the file path, START and END are the line numbers."
           (insert string)
           (set-marker mark (point)))))))
 
+(defun crush--reasoning-start-region ()
+  "Start a reasoning region at point-max if none is active.
+Creates the reasoning overlay and the start marker on the first
+reasoning delta streamed for the current prompt.  Returns the
+overlay.  Inert (returns nil) once content has started."
+  (unless (or crush--reasoning-overlay
+              (markerp crush--reasoning-end))
+    (let ((pos (point)))
+      (setq-local crush--reasoning-start (copy-marker pos nil))
+      (setq-local crush--reasoning-overlay
+                  (make-overlay pos pos nil t))
+      (overlay-put crush--reasoning-overlay 'crush-overlay t)
+      (overlay-put crush--reasoning-overlay 'face 'crush-reasoning-face)
+      crush--reasoning-overlay)))
+
+(defun crush--reasoning-extend-overlay ()
+  "Extend the reasoning overlay to point-max.
+Inert when no reasoning region is active or content already started."
+  (when (overlayp crush--reasoning-overlay)
+    (move-overlay crush--reasoning-overlay
+                  (overlay-start crush--reasoning-overlay)
+                  (point-max))))
+
+(defun crush--reasoning-stop ()
+  "Freeze the reasoning region, marking where the answer begins.
+Sets `crush--reasoning-end' at point-max (before the content delta
+is appended), stops moving the overlay, and inserts two newlines
+before the answer so the content is visually separated from the
+reasoning.  Inert when no reasoning is active or it already ended."
+  (when (and (overlayp crush--reasoning-overlay)
+             (not (markerp crush--reasoning-end)))
+    (setq-local crush--reasoning-end (copy-marker (point) nil))
+    (move-overlay crush--reasoning-overlay
+                  (overlay-start crush--reasoning-overlay)
+                  (marker-position crush--reasoning-end))
+    (insert "\n\n")))
+
+(defun crush--reasoning-region ()
+  "Return (START . END) of the reasoning region, or nil.
+Uses `crush--reasoning-end' when content began, else falls back to
+the end of the response (point-max) for reasoning-only streams."
+  (when (markerp crush--reasoning-start)
+    (let ((start (marker-position crush--reasoning-start))
+          (end (if (markerp crush--reasoning-end)
+                   (marker-position crush--reasoning-end)
+                 (point-max))))
+      (when (> end start)
+        (cons start end)))))
+
+(defun crush--reasoning-reset ()
+  "Reset per-prompt reasoning state after finalize or interrupt.
+The overlay itself is left in place; `crush-clear-buffer' removes
+it.  Markers are invalidated."
+  (when (markerp crush--reasoning-start)
+    (set-marker crush--reasoning-start nil))
+  (when (markerp crush--reasoning-end)
+    (set-marker crush--reasoning-end nil))
+  (setq-local crush--reasoning-start nil)
+  (setq-local crush--reasoning-end nil)
+  (setq-local crush--reasoning-overlay nil))
+
+(defun crush--tag-response-region (response-start response-end prompt-id)
+  "Tag the response and reasoning regions from RESPONSE-START to RESPONSE-END.
+PROMPT-ID is applied to both regions.  Applies `crush-prompt-id',
+`crush-response-to' and `crush-region-type' (`response', with the
+reasoning sub-span retagged `reasoning').  Shared by
+`crush--finalize-response' and `crush-interrupt'."
+  (when (and response-start (> response-end response-start))
+    (put-text-property response-start response-end
+                       'crush-prompt-id prompt-id)
+    (put-text-property response-start response-end
+                       'crush-response-to prompt-id)
+    (put-text-property response-start response-end
+                       'crush-region-type 'response)
+    ;; Reasoning is a sub-region of the response: tag it over the
+    ;; response tags so lookup by region type sees `reasoning'
+    ;; first for the CoT span.
+    (let ((reasoning-region (crush--reasoning-region)))
+      (when reasoning-region
+        (let ((rs (car reasoning-region))
+              (re (cdr reasoning-region)))
+          (when (and (>= rs response-start) (<= re response-end))
+            (put-text-property rs re
+                               'crush-prompt-id prompt-id)
+            (put-text-property rs re
+                               'crush-response-to prompt-id)
+            (put-text-property rs re
+                               'crush-region-type 'reasoning)))))))
+
 (defun crush--finalize-response ()
   "Finalize the current response in the current crush buffer.
 Tags the response text, inserts a fresh prompt, and resets per-prompt
@@ -667,13 +779,8 @@ stream-completion callback."
         ;; Tag the full response text with the prompt ID it answers and
         ;; region type.  Deltas were inserted with modification hooks
         ;; suppressed, so this is the only tagging the response gets.
-        (when (and response-start (> response-end response-start))
-          (put-text-property response-start response-end
-                             'crush-prompt-id prompt-id)
-          (put-text-property response-start response-end
-                             'crush-response-to prompt-id)
-          (put-text-property response-start response-end
-                             'crush-region-type 'response)))
+        (crush--tag-response-region response-start response-end prompt-id)
+        (crush--reasoning-reset))
       ;; Generate new prompt ID BEFORE inserting marker
       (setq-local crush--prompt-id (crush--generate-id))
       (crush--insert-prompt))
@@ -739,6 +846,12 @@ stream-completion callback."
           (save-excursion
             (goto-char (point-max))
             (newline)
+            ;; Tag the partial response (including any streamed
+            ;; reasoning) up to the interrupt point.
+            (let ((response-start (when (markerp crush--response-start)
+                                    (marker-position crush--response-start))))
+              (crush--tag-response-region response-start (point) crush--prompt-id)
+              (crush--reasoning-reset))
             (crush--insert-prompt)))
         (goto-char (point-max))
         (message "Crush process interrupted"))
@@ -749,6 +862,10 @@ stream-completion callback."
         (save-excursion
           (goto-char (point-max))
           (newline)
+          (let ((response-start (when (markerp crush--response-start)
+                                  (marker-position crush--response-start))))
+            (crush--tag-response-region response-start (point) crush--prompt-id)
+            (crush--reasoning-reset))
           (crush--insert-prompt)))
       (goto-char (point-max))
       (message "Crush process interrupted"))
@@ -763,6 +880,7 @@ stream-completion callback."
   (dolist (ov (overlays-in (point-min) (point-max)))
     (when (overlay-get ov 'crush-overlay)
       (delete-overlay ov)))
+  (crush--reasoning-reset)
   (let ((inhibit-read-only t))
     (erase-buffer)
     (crush--insert-prompt)))

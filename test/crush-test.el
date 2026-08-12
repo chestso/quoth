@@ -1,4 +1,4 @@
-;;; crush-test.el --- Tests for crush  -*- lexical-binding: t; -*-
+;;; rush-test.el --- Tests for crush  -*- lexical-binding: t; -*-
 
 (require 'ert)
 (require 'cl-lib)
@@ -2472,7 +2472,7 @@ right after the prompt inherits `read-only' and Emacs signals
                   (crush-test--sse-state)
                   "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"))
          (deltas (car result)))
-    (should (equal deltas '("Hello")))
+    (should (equal deltas '((content . "Hello"))))
     (should-not (plist-get (cdr result) :done))))
 
 (ert-deftest crush-test/sse-parser-multiple-events-per-chunk ()
@@ -2482,25 +2482,25 @@ right after the prompt inherits `read-only' and Emacs signals
                  "data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n"
                  "data: [DONE]\n\n"))
          (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
-    (should (equal (car result) '("one" "two")))
-    (should (plist-get (cdr result) :done)))
+    (should (equal (car result) '((content . "one") (content . "two"))))
+    (should (plist-get (cdr result) :done))))
 
-  (ert-deftest crush-test/sse-parser-chunk-split-mid-line ()
-    "Events split across chunk boundaries should still parse."
-    (let* ((state (crush-test--sse-state))
-           (r1 (crush--hyper-sse-feed state "data: {\"choices\":[{\"delta\":{\"con"))
-           (r2 (crush--hyper-sse-feed (cdr r1) "tent\":\"abc\"}}]}\n\n"))
-           (r3 (crush--hyper-sse-feed (cdr r2) "data: [DONE]\n\n")))
-      (should (equal (car r1) nil))
-      (should (equal (car r2) '("abc")))
-      (should (plist-get (cdr r3) :done)))))
+(ert-deftest crush-test/sse-parser-chunk-split-mid-line ()
+  "Events split across chunk boundaries should still parse."
+  (let* ((state (crush-test--sse-state))
+         (r1 (crush--hyper-sse-feed state "data: {\"choices\":[{\"delta\":{\"con"))
+         (r2 (crush--hyper-sse-feed (cdr r1) "tent\":\"abc\"}}]}\n\n"))
+         (r3 (crush--hyper-sse-feed (cdr r2) "data: [DONE]\n\n")))
+    (should (equal (car r1) nil))
+    (should (equal (car r2) '((content . "abc"))))
+    (should (plist-get (cdr r3) :done))))
 
 (ert-deftest crush-test/sse-parser-crlf ()
   "CRLF line endings should be handled."
   (let* ((result (crush--hyper-sse-feed
                   (crush-test--sse-state)
                   "data: {\"choices\":[{\"delta\":{\"content\":\"CR\"}}]}\r\n\r\n")))
-    (should (equal (car result) '("CR")))))
+    (should (equal (car result) '((content . "CR"))))))
 
 (ert-deftest crush-test/sse-parser-multiline-data-payload ()
   "A data payload spanning several data: lines should be joined."
@@ -2508,15 +2508,26 @@ right after the prompt inherits `read-only' and Emacs signals
                         "\"}}]}\n"
                         "data: {\"choices\":[{\"delta\":{\"content\":\" two\"}}]}\n\n"))
          (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
-    (should (equal (car result) '("line" " two")))))
+    (should (equal (car result) '((content . "line") (content . " two"))))))
 
-(ert-deftest crush-test/sse-parser-reasoning-only-delta-no-content ()
-  "A delta with only reasoning_content should not emit content."
+(ert-deftest crush-test/sse-parser-reasoning-delta ()
+  "A reasoning_content delta should yield a reasoning-typed delta."
+  (let* ((result (crush--hyper-sse-feed
+                  (crush-test--sse-state)
+                  "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n")))
+    (should (equal (car result) '((reasoning . "think"))))
+    (should-not (plist-get (cdr result) :done))))
+
+(ert-deftest crush-test/sse-parser-reasoning-then-content ()
+  "Reasoning deltas and content deltas should be typed distinctly.
+Both arrive in the same stream; the caller must be able to tell
+which region each delta belongs to."
   (let* ((chunk (concat
                  "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n"
                  "data: {\"choices\":[{\"delta\":{\"content\":\"seen\"}}]}\n\n"))
          (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
-    (should (equal (car result) '("seen")))))
+    (should (equal (car result)
+                   '((reasoning . "think") (content . "seen"))))))
 
 (ert-deftest crush-test/sse-parser-error-payload ()
   "An error data payload should set done and surface the message."
@@ -2581,7 +2592,205 @@ chunks and silently discarding any event split across them."
     (should (string-match-p "max-time = 45"
                             (mapconcat #'identity (nreverse received) "\n")))))
 
+;;; 92a2. Hyper transport: reasoning overlay lifecycle
 
+(defun crush-test--with-reasoning-process (thunk)
+  "Run THUNK with a fake hyper pipe process targeting a fresh crush buffer."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((proc (make-pipe-process :name "crush-hyper-test-reason"
+                                         :noquery t
+                                         :coding 'binary)))
+            (process-put proc :crush-target (current-buffer))
+            (unwind-protect
+                (funcall thunk proc)
+              (delete-process proc)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/hyper-reasoning-overlay-created-on-first-delta ()
+  "A reasoning delta creates a yellow overlay tagged crush-overlay."
+  (crush-test--with-reasoning-process
+   (lambda (proc)
+     (crush--hyper-insert-delta proc "think" 'reasoning)
+     (let ((ov (car (overlays-in (point-min) (point-max)))))
+       (should (overlayp ov))
+       (should (eq (overlay-get ov 'face) 'crush-reasoning-face))
+       (should (overlay-get ov 'crush-overlay))
+       (should (string= (buffer-substring-no-properties
+                         (overlay-start ov) (overlay-end ov))
+                        "think"))))))
+
+(ert-deftest crush-test/hyper-reasoning-overlay-grows-with-deltas ()
+  "Subsequent reasoning deltas extend the overlay."
+  (crush-test--with-reasoning-process
+   (lambda (proc)
+     (crush--hyper-insert-delta proc "think" 'reasoning)
+     (crush--hyper-insert-delta proc " harder" 'reasoning)
+     (let ((ov (car (overlays-in (point-min) (point-max)))))
+       (should (overlayp ov))
+       (should (string= (buffer-substring-no-properties
+                         (overlay-start ov) (overlay-end ov))
+                        "think harder"))))))
+
+(ert-deftest crush-test/hyper-content-delta-freezes-reasoning-overlay ()
+  "First content delta freezes the reasoning overlay."
+  (crush-test--with-reasoning-process
+   (lambda (proc)
+     (crush--hyper-insert-delta proc "think" 'reasoning)
+     (crush--hyper-insert-delta proc " hard" 'reasoning)
+     (crush--hyper-insert-delta proc "answer" 'content)
+     (let ((ov (car (overlays-in (point-min) (point-max)))))
+       (should (overlayp ov))
+       (should (string= (buffer-substring-no-properties
+                         (overlay-start ov) (overlay-end ov))
+                        "think hard"))))))
+
+(ert-deftest crush-test/content-delta-inserts-blank-separator ()
+  "The first content delta after reasoning adds two newlines before it."
+  (crush-test--with-reasoning-process
+   (lambda (proc)
+     (crush--hyper-insert-delta proc "think" 'reasoning)
+     (crush--hyper-insert-delta proc "answer" 'content)
+     (goto-char (point-min))
+     (search-forward "answer")
+     (let ((answer-start (match-beginning 0)))
+       (should (string= (buffer-substring (- answer-start 2) answer-start)
+                        "\n\n"))))))
+
+(ert-deftest crush-test/hyper-content-only-no-reasoning-state ()
+  "Content-only stream leaves reasoning state nil."
+  (crush-test--with-reasoning-process
+   (lambda (proc)
+     (crush--hyper-insert-delta proc "answer" 'content)
+     (should-not (overlays-in (point-min) (point-max)))
+     (should-not crush--reasoning-start)
+     (should-not crush--reasoning-overlay))))
+
+;;; 92a3. Finalize: reasoning region tagging
+
+(defun crush-test--finalize-with-reasoning (insert-fn)
+  "Run INSERT-FN in a fresh crush buffer, finalize, then return it.
+INSERT-FN receives the process; the buffer has a response region
+open (`crush--response-start' at point-max after a newline)."
+  (let ((default-directory crush-test--root)
+        result)
+    (unwind-protect
+        (setq result (with-current-buffer (crush-test--fresh-buffer)
+                       (save-excursion (goto-char (point-max)) (newline))
+                       (setq-local crush--response-start (point-marker))
+                       (let ((proc (make-pipe-process :name "crush-hyper-test-fin"
+                                                      :noquery t
+                                                      :coding 'binary)))
+                         (process-put proc :crush-target (current-buffer))
+                         (unwind-protect
+                             (progn
+                               (funcall insert-fn proc)
+                               (crush--finalize-response))
+                           (delete-process proc)))
+                       (current-buffer)))
+      (unless result (crush-test--cleanup)))
+    result))
+
+(ert-deftest crush-test/finalize-tags-reasoning-region ()
+  "Reasoning text should be tagged `crush-region-type' reasoning."
+  (let ((expected-id nil))
+    (let ((buf (crush-test--finalize-with-reasoning
+		(lambda (proc)
+                  (setq expected-id crush--prompt-id)
+                  (crush--hyper-insert-delta proc "think hard" 'reasoning)
+                  (crush--hyper-insert-delta proc "answer" 'content)))))
+      (with-current-buffer buf
+        (let ((start (save-excursion
+                       (goto-char (point-min))
+                       (search-forward "think")
+                       (match-beginning 0)))
+              (end (save-excursion
+                     (goto-char (point-min))
+                     (search-forward "hard")
+                     (point))))
+          (should (eq (get-text-property start 'crush-region-type) 'reasoning))
+          (should (eq (get-text-property (1- end) 'crush-region-type) 'reasoning))
+          (should (string= (get-text-property start 'crush-prompt-id)
+                           expected-id))))
+      (crush-test--kill-crush-buffer))))
+
+(ert-deftest crush-test/finalize-tags-response-around-reasoning ()
+  "The response region should cover the whole answer including reasoning."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (proc)
+                (crush--hyper-insert-delta proc "think" 'reasoning)
+                (crush--hyper-insert-delta proc "answer" 'content)))))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char (point-min))
+        (search-forward "answer")
+        (let ((end (point)))
+          (should (eq (get-text-property (1- end) 'crush-region-type) 'response)))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/finalize-resets-reasoning-state ()
+  "Finalize should reset reasoning markers even with no content."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (proc)
+                (crush--hyper-insert-delta proc "think" 'reasoning)))))
+    (with-current-buffer buf
+      (should-not crush--reasoning-start)
+      (should-not crush--reasoning-end)
+      (should-not crush--reasoning-overlay))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/interrupt-tags-reasoning-region ()
+  "crush-interrupt should tag streamed reasoning up to the interrupt."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (save-excursion (goto-char (point-max)) (newline))
+          (setq-local crush--response-start (point-marker))
+          (let ((proc (make-pipe-process :name "crush-hyper-test-int"
+                                         :noquery t
+                                         :coding 'binary)))
+            (process-put proc :crush-target (current-buffer))
+            (unwind-protect
+                (progn
+                  (crush--hyper-insert-delta proc "think hard" 'reasoning)
+                  ;; Simulate an active backend so crush-interrupt
+                  ;; calls the backend interrupt path.
+                  (setq-local crush--backend
+                              (crush-make-hyper-backend
+                               :buffer (current-buffer)
+                               :working-directory default-directory))
+                  (cl-letf (((symbol-function 'crush-backend-interrupt)
+                             (lambda (_b) nil))
+                            ((symbol-function 'crush-backend-active-p)
+                             (lambda (_b) t)))
+                    (crush-interrupt)))
+              (delete-process proc)))
+          (let ((start (save-excursion
+                         (goto-char (point-min))
+                         (search-forward "think")
+                         (match-beginning 0))))
+            (should (eq (get-text-property start 'crush-region-type) 'reasoning))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/clear-buffer-removes-reasoning-overlay ()
+  "crush-clear-buffer should delete the reasoning overlay."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((proc (make-pipe-process :name "crush-hyper-test-clr"
+                                         :noquery t
+                                         :coding 'binary)))
+            (process-put proc :crush-target (current-buffer))
+            (unwind-protect
+                (progn
+                  (crush--hyper-insert-delta proc "think" 'reasoning)
+                  (should (overlays-in (point-min) (point-max)))
+                  (crush-clear-buffer)
+                  (should-not (overlays-in (point-min) (point-max)))
+                  (should-not crush--reasoning-overlay))
+              (delete-process proc))))
+      (crush-test--cleanup))))
 
 ;;; 92b. Hyper backend: token resolution
 
@@ -2798,6 +3007,66 @@ and return the capture output."
                (goto-char (point-max))
                (search-backward "crush> ")
                (should (not (string= crush--prompt-id old-prompt-id)))))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-wire-reasoning-stream-highlights-cot ()
+  "A reasoning_content stream should be highlighted and tagged."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((old-prompt-id crush--prompt-id))
+            (crush-test--with-hyper-server
+             'reasoning
+             (lambda (base)
+               (save-excursion (goto-char (point-max)) (newline))
+               (setq-local crush--response-start (point-marker))
+               (let ((buf (current-buffer)))
+                 (let ((proc (crush--hyper-request
+                              base "tok" (crush--hyper-compose-request "hi" nil "m")
+                              buf
+                              (lambda ()
+                                (when (buffer-live-p buf)
+                                  (with-current-buffer buf
+                                    (crush--finalize-response)))))))
+                   (let ((deadline (+ (float-time) 6)))
+                     (while (and (process-live-p proc)
+                                 (null (process-get proc :crush-finished))
+                                 (< (float-time) deadline))
+                       (accept-process-output nil 0.1)
+                       (sit-for 0.02)))))
+               ;; Wait until the streamed text actually landed: the
+               ;; process loop can exit the instant :crush-finished is
+               ;; set, before the finalize callback's insertion is
+               ;; flushed and visible.
+               (let ((deadline (+ (float-time) 6)))
+                 (while (and (< (float-time) deadline)
+                             (not (save-excursion
+                                    (goto-char (point-min))
+                                    (search-forward "mock think harder" nil t))))
+                   (accept-process-output nil 0.1)
+                   (sit-for 0.02)))
+               (goto-char (point-min))
+               (should (search-forward "mock think harder" nil t))
+               (search-backward "mock")
+               (let ((rs (point)))
+                 (search-forward "harder")
+                 (should (eq (get-text-property rs 'crush-region-type)
+                             'reasoning)))
+               ;; The answer after it is tagged response.
+               (search-forward "answer")
+               (let ((as (point)))
+                 (should (eq (get-text-property (- as 6) 'crush-region-type)
+                             'response)))
+               ;; An overlay with the reasoning face covers the CoT.
+               (let ((found nil))
+                 (dolist (ov (overlays-in (point-min) (point-max)))
+                   (when (and (eq (overlay-get ov 'face) 'crush-reasoning-face)
+                              (overlay-get ov 'crush-overlay))
+                     (setq found ov)))
+                 (should (overlayp found))
+                 (should (string= (buffer-substring-no-properties
+                                   (overlay-start found) (overlay-end found))
+                                  "mock think harder")))))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-wire-error-http-surfaces ()
