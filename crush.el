@@ -235,12 +235,14 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
     (define-key map (kbd "k") #'crush-clear-buffer)
     (define-key map (kbd "n") #'crush-new-session)
     (define-key map (kbd "a") #'crush-insert-selection)
+    (define-key map (kbd "r") #'crush-reasoning-toggle)
     map)
   "Keymap under `C-c c' for crush chat-buffer commands.")
 
 (defvar crush-chat-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'crush-send-input)
+    (define-key map (kbd "TAB") #'crush--reasoning-tab)
     (define-key map (kbd "C-c c") crush-chat-command-map)
     (define-key map (kbd "M-p") #'crush--input-previous)
     (define-key map (kbd "M-n") #'crush--input-next)
@@ -529,12 +531,19 @@ unfontifying.  ENABLE nil restores the default."
   (if (called-interactively-p 'any)
       (setq enable (not (local-variable-p 'font-lock-unfontify-region-function))))
   (if enable
-      (setq-local font-lock-unfontify-region-function
-                  (lambda (beg end)
-                    (let ((props (remove 'rear-nonsticky
-                                         (append font-lock-extra-managed-props
-                                                 '(face font-lock-multiline)))))
-                      (remove-list-of-text-properties beg end props))))
+      (progn
+        ;; Keep the reasoning fold marker's keymap and fold mark through
+        ;; refontification: font-lock otherwise strips arbitrary text
+        ;; properties (same failure mode as `rear-nonsticky').  Both are
+        ;; removed from the strip list so unfontify preserves them.
+        (setq-local font-lock-unfontify-region-function
+                    (lambda (beg end)
+                      (let ((props (remove 'rear-nonsticky
+                                           (remove 'keymap
+                                                   (remove 'crush-fold-mark
+                                                           (append font-lock-extra-managed-props
+                                                                   '(face font-lock-multiline)))))))
+                        (remove-list-of-text-properties beg end props)))))
     (kill-local-variable 'font-lock-unfontify-region-function)))
 
 (defun crush--init-buffer (buf)
@@ -712,6 +721,153 @@ reasoning.  Inert when no reasoning is active or it already ended."
                   (marker-position crush--reasoning-end))
     (insert "\n\n")))
 
+(defvar crush--reasoning-fold-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "TAB") #'crush-reasoning-toggle)
+    (define-key map (kbd "RET") #'crush-reasoning-toggle)
+    (define-key map [mouse-1] #'crush-reasoning-toggle)
+    map)
+  "Keymap on the reasoning collapse marker.
+TAB / RET (and mouse-1 on GUIs, ignored harmlessly in TUI) toggle
+`crush-reasoning-toggle'.")
+
+(defun crush--reasoning-install-fold (region)
+  "Install the reasoning fold on REGION (START . END) of current buffer.
+Snaps the reasoning region to whole lines and auto-collapses it: a
+marker line `... reasoning (N lines, M chars)' becomes real buffer
+text carrying the toggle keymap and `crush-fold-mark', and the
+reasoning body below it is hidden by an `invisible' overlay.  A
+marker overlay paints the marker line with `crush-reasoning-face'
+so the collapsed state keeps the reasoning background (font-lock
+strips text-property faces, so the face must live on an overlay).
+Markers keep the region shift-immune when the marker line is
+inserted.  Real marker text makes the cursor land on it and lets
+TAB work through native key dispatch.  Returns the body overlay."
+  (let* ((start (car region))
+         (end (cdr region))
+         (start-m (copy-marker start))
+         (end-m (copy-marker end t))
+         (ov (car (cl-remove-if-not
+                   (lambda (o) (overlay-get o 'crush-overlay))
+                   (overlays-in start end)))))
+    (when (and (overlayp ov) (> end start))
+      ;; Snap to whole lines so collapsing leaves a clean single
+      ;; blank separation instead of dangling partial lines.
+      (save-excursion
+        (goto-char start-m)
+        (beginning-of-line)
+        (set-marker start-m (point))
+        (goto-char end-m)
+        (end-of-line)
+        (set-marker end-m (point)))
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t)
+            body-start)
+        (save-excursion
+          (goto-char start-m)
+          (let* ((nlines (count-lines start-m end-m))
+                 (chars (- (marker-position end-m) (marker-position start-m)))
+                 (marker (propertize
+                          (format "... reasoning (%d lines, %d chars)"
+                                  nlines chars)
+                          'keymap crush--reasoning-fold-keymap
+                          'crush-fold-mark t)))
+            (insert marker)
+            (setq body-start (point))))
+        ;; Paint the marker line with the reasoning face via an
+        ;; overlay (font-lock would strip a text-property face).
+        (let ((mark-ov (make-overlay start-m body-start nil t)))
+          (overlay-put mark-ov 'crush-overlay t)
+          (overlay-put mark-ov 'face 'crush-reasoning-face))
+        (move-overlay ov body-start end-m)
+        (overlay-put ov 'crush-fold-state 'collapsed)
+        (overlay-put ov 'invisible t))
+      (set-marker start-m nil)
+      (set-marker end-m nil)
+      ov)))
+
+(defun crush-reasoning-toggle ()
+  "Toggle the reasoning fold at point.
+When point is on a reasoning fold marker (real text), expand it;
+when inside an expanded reasoning region, collapse it; when inside
+a collapsed (hidden) region, expand it.  Otherwise signal a
+message.  Triggered by TAB / RET on the marker (real text keymap),
+by `C-c c r', or directly."
+  (interactive)
+  (if (get-text-property (point) 'crush-fold-mark)
+      ;; On the marker text: the body overlay starts right after it.
+      (let ((ov (car (cl-remove-if-not
+                      (lambda (o) (overlay-get o 'crush-fold-state))
+                      (overlays-in (point) (1+ (line-end-position)))))))
+        (when (overlayp ov)
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
+            (delete-region (line-beginning-position) (overlay-start ov)))
+          ;; Remove the marker-line face overlay.
+          (dolist (mo (overlays-in (line-beginning-position) (point)))
+            (when (overlay-get mo 'crush-overlay)
+              (delete-overlay mo)))
+          (overlay-put ov 'crush-fold-state 'expanded)
+          (overlay-put ov 'invisible nil)
+          (message "Reasoning expanded")))
+    (let ((ov (cl-find-if
+               (lambda (o) (overlay-get o 'crush-fold-state))
+               (overlays-at (point)))))
+      (if (not (overlayp ov))
+          (message "No reasoning fold at point")
+        (if (eq (overlay-get ov 'crush-fold-state) 'collapsed)
+            ;; Point inside the hidden body: expand.
+            (progn
+              (overlay-put ov 'crush-fold-state 'expanded)
+              (overlay-put ov 'invisible nil)
+              (message "Reasoning expanded"))
+          ;; Collapse: hide the body behind a marker line.
+          (let* ((start (overlay-start ov))
+                 (end (overlay-end ov))
+                 (start-m (copy-marker start))
+                 (end-m (copy-marker end t))
+                 (nlines (count-lines start end))
+                 (chars (- end start))
+                 (marker (propertize
+                          (format "... reasoning (%d lines, %d chars)"
+                                  nlines chars)
+                          'keymap crush--reasoning-fold-keymap
+                          'crush-fold-mark t))
+                 body-start)
+            (let ((inhibit-read-only t)
+                  (inhibit-modification-hooks t))
+              (save-excursion
+                (goto-char start-m)
+                (insert marker)
+                (setq body-start (point)))
+              ;; Paint the marker line with the reasoning face via an
+              ;; overlay (font-lock would strip a text-property face).
+              (let ((mark-ov (make-overlay start-m body-start nil t)))
+                (overlay-put mark-ov 'crush-overlay t)
+                (overlay-put mark-ov 'face 'crush-reasoning-face))
+              (move-overlay ov body-start end-m)
+              (overlay-put ov 'crush-fold-state 'collapsed)
+              (overlay-put ov 'invisible t))
+            (set-marker start-m nil)
+            (set-marker end-m nil)
+            (message "Reasoning collapsed")))))))
+
+(defun crush--reasoning-tab ()
+  "Handle TAB in crush chat buffers.
+Toggles the reasoning fold when point is on a fold marker (or the
+fold's overlay); otherwise falls back to the major mode's or global
+TAB binding."
+  (interactive)
+  (if (or (get-text-property (point) 'crush-fold-mark)
+          (cl-find-if
+           (lambda (o) (overlay-get o 'crush-fold-state))
+           (overlays-at (point))))
+      (crush-reasoning-toggle)
+    (let ((fallback (or (lookup-key (current-local-map) (kbd "TAB"))
+                        (lookup-key (current-global-map) (kbd "TAB")))))
+      (when (commandp fallback)
+        (call-interactively fallback)))))
+
 (defun crush--reasoning-region ()
   "Return (START . END) of the reasoning region, or nil.
 Uses `crush--reasoning-end' when content began, else falls back to
@@ -782,6 +938,10 @@ stream-completion callback."
         ;; region type.  Deltas were inserted with modification hooks
         ;; suppressed, so this is the only tagging the response gets.
         (crush--tag-response-region response-start response-end prompt-id)
+        ;; Auto-collapse streamed reasoning behind its fold marker
+        ;; while the markers are still live.
+        (when-let* ((region (crush--reasoning-region)))
+          (crush--reasoning-install-fold region))
         (crush--reasoning-reset))
       ;; Generate new prompt ID BEFORE inserting marker
       (setq-local crush--prompt-id (crush--generate-id))
@@ -853,6 +1013,8 @@ stream-completion callback."
             (let ((response-start (when (markerp crush--response-start)
                                     (marker-position crush--response-start))))
               (crush--tag-response-region response-start (point) crush--prompt-id)
+              (when-let* ((region (crush--reasoning-region)))
+                (crush--reasoning-install-fold region))
               (crush--reasoning-reset))
             (crush--insert-prompt)))
         (goto-char (point-max))
@@ -867,6 +1029,8 @@ stream-completion callback."
           (let ((response-start (when (markerp crush--response-start)
                                   (marker-position crush--response-start))))
             (crush--tag-response-region response-start (point) crush--prompt-id)
+            (when-let* ((region (crush--reasoning-region)))
+              (crush--reasoning-install-fold region))
             (crush--reasoning-reset))
           (crush--insert-prompt)))
       (goto-char (point-max))

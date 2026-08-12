@@ -104,7 +104,7 @@ Request tuning: timeout in seconds, `max_tokens` (default 64000), and sampling t
 
 When `crush-hyper-thinking` is non-nil, Hyper's internal thinking mode is enabled. `crush-hyper-reasoning-effort` selects the reasoning level (`low`, `medium`, `high`, `max`); nil uses the model default.
 
-Reasoning ("chain-of-thought") text streams into the buffer as it is received, tagged as a reasoning region and highlighted with a light-yellow background (`crush-reasoning-face`). It is displayed unfenced and visually distinct from the final answer.
+Reasoning ("chain-of-thought") text streams into the buffer as it is received, tagged as a reasoning region and highlighted with a background derived from the theme's `region` face (so markdown text colors stay visible). When the response finishes, the reasoning is auto-collapsed behind a dim `... reasoning (N lines, M chars)` marker; press `TAB` or `C-c c r` to expand or re-collapse it. Works identically in GUI and terminal frames.
 
 ### crush-debug-mode
 
@@ -250,10 +250,12 @@ All metadata is stored as **text properties** on buffer content; highlighting is
 - `M-x crush` — open the crush interaction buffer for the current project (or directory); each project gets its own buffer, named after the project root (e.g. `*crush:crush.el*`)
 - Type a prompt and press `RET` to send it to the Crush CLI
 - `M-p` / `M-n` — navigate input history (previous/next input)
+- `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point; otherwise normal TAB
 - `C-c c i` — interrupt the running crush process
 - `C-c c k` — clear the crush buffer (also starts a fresh session)
 - `C-c c n` — start a new session
 - `C-c c a` — insert the current buffer selection as context into the crush buffer
+- `C-c c r` — expand/collapse the reasoning fold at point
 
 ### Per-Project Buffers
 

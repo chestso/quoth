@@ -437,14 +437,24 @@ and return the capture output."
                ;; Wait until the streamed text actually landed: the
                ;; process loop can exit the instant :crush-finished is
                ;; set, before the finalize callback's insertion is
-               ;; flushed and visible.
+               ;; flushed and visible.  Finalize auto-collapses the
+               ;; reasoning, so expand the fold to inspect the body.
                (let ((deadline (+ (float-time) 6)))
                  (while (and (< (float-time) deadline)
                              (not (save-excursion
                                     (goto-char (point-min))
-                                    (search-forward "mock think harder" nil t))))
+                                    (cl-some (lambda (o)
+                                               (overlay-get o 'crush-fold-state))
+                                             (overlays-in (point-min) (point-max))))))
                    (accept-process-output nil 0.1)
                    (sit-for 0.02)))
+               (let ((ov (cl-some (lambda (o)
+                                    (overlay-get o 'crush-fold-state))
+                                  (overlays-in (point-min) (point-max)))))
+                 (when (and (overlayp ov)
+                            (eq (overlay-get ov 'crush-fold-state) 'collapsed))
+                   (goto-char (overlay-start ov))
+                   (crush-reasoning-toggle)))
                (goto-char (point-min))
                (should (search-forward "mock think harder" nil t))
                (search-backward "mock")
