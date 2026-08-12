@@ -22,4 +22,8 @@ echo "=== Formatting Shell ==="
 find . -name "*.sh" -not -path "./.git/*" -print0 |
 	xargs -0 shfmt -w 2>&1 | sed 's/^/  /' || true
 
+echo "=== Formatting Python ==="
+find . -name "*.py" -not -path "./.git/*" -print0 |
+	xargs -0 black 2>&1 | sed 's/^/  /' || true
+
 echo "=== Done ==="

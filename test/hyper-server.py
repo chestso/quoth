@@ -150,9 +150,7 @@ def main():
                     ).encode()
                 )
             elif mode == "malformed":
-                conn.sendall(
-                    (sse_ok + 'data: {"choices":[{"delta":{"con').encode()
-                )
+                conn.sendall((sse_ok + 'data: {"choices":[{"delta":{"con').encode())
             elif mode == "not-found":
                 conn.sendall(
                     (
