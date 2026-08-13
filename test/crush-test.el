@@ -18,12 +18,15 @@
 
 (defun crush-test--fresh-buffer ()
   "Create a fresh crush test buffer and return it.
-The buffer is bound to `crush-test--root' and deterministically named."
+The buffer is bound to `crush-test--root' and deterministically named.
+Initializes with the `run' backend (pinned for the run/buffer/mock
+tests; the global default is `hyper')."
   (let ((name (crush-test--buffer-name)))
     (when (get-buffer name)
       (kill-buffer name))
     (cl-letf (((symbol-function 'project-current) (lambda (&optional dir) nil)))
-      (let ((default-directory crush-test--root))
+      (let ((default-directory crush-test--root)
+            (crush-backend-type 'run))
         (crush)))
     (get-buffer (crush-test--buffer-name))))
 

@@ -1,10 +1,12 @@
 # crush.el
 
-A GNU Emacs package for interacting with the [Crush CLI](https://github.com/charmbracelet/crush).
+A GNU Emacs package for chatting with AI providers directly from an Emacs buffer.
 
 ## Goal
 
-crush.el provides a dedicated Emacs buffer that sends structured prompts to the Crush CLI and receives streamed responses. On top of that, any buffer selection can be used as context: the selection is formatted as a markdown fenced code block with the file path and line numbers (relative to the project root), then inserted into the crush buffer before the prompt as an attachment. When sent, the context blocks and prompt are piped to the Crush CLI via stdin.
+crush.el's primary mode of operation is **direct provider interaction**: it talks to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE (no separate CLI binary needed). A dedicated Emacs buffer sends prompts and streams the model's response, including chain-of-thought reasoning. On top of that, any buffer selection can be used as context: the selection is formatted as a markdown fenced code block with the file path and line numbers (relative to the project root), then inserted into the crush buffer before the prompt as an attachment.
+
+A compatibility backend drives the [Crush CLI](https://github.com/charmbracelet/crush) (`crush run`) for users who prefer it; it is not required for the default provider mode.
 
 Each project gets its own crush buffer (see [Per-Project Buffers](#per-project-buffers)), so work in different projects stays isolated.
 
@@ -12,9 +14,9 @@ See [TODO.md](TODO.md) for the full project goal and roadmap.
 
 ## Important: Permission Behavior
 
-This package currently uses `crush run` mode, which **auto-approves all permissions**. Tools like `edit`, `write`, and `bash` execute immediately without prompting for user confirmation. This is functionally equivalent to running `crush --yolo`.
+The default **hyper** backend (direct provider interaction) does not execute local tools, so no permissions are issued. The optional `crush run` backend, however, **auto-approves all permissions**: tools like `edit`, `write`, and `bash` execute immediately without prompting for user confirmation. This is functionally equivalent to running `crush --yolo`.
 
-Permission prompts are planned for the direct API backend (not yet implemented). See the [TODO.md](TODO.md) roadmap and [CRUSH-SPEC.md](CRUSH-SPEC.md) for details.
+Permission prompts for tool execution in direct mode are on the roadmap. See the [TODO.md](TODO.md) roadmap for details.
 
 ## Installing
 
@@ -27,7 +29,7 @@ Not yet on MELPA. For now, clone and load manually:
   :hook (prog-mode . crush-minor-mode))
 ```
 
-Requires Emacs 28.1+. The package spans several files (`crush.el` plus `crush-backend.el`, `crush-run-backend.el`, `crush-hyper-backend.el`), so point `load-path` at the package directory. For manual `require`s, load `crush` last to get the full file set loaded.
+Requires Emacs 28.1+. The package spans several files (`crush.el` plus `crush-backend.el`, `crush-stream.el`, `crush-run-backend.el`, `crush-hyper-backend.el`), so point `load-path` at the package directory. For manual `require`s, load `crush` last to get the full file set loaded. The default hyper backend requires only `curl`; the optional `run` backend requires the `crush` binary.
 
 ## Configuration
 
@@ -39,11 +41,11 @@ Set the default model for Crush:
 (setq crush-model "claude-sonnet-4-20250514")
 ```
 
-When set, the model is passed to `crush run --model` (run backend) or used as the hyper request model (hyper backend). When `nil` (default), each backend falls back to its own default (the CLI's configured model, or `crush-hyper-default-model` for hyper).
+When set, the model is used as the hyper request model (default backend) or passed to `crush run --model` (run backend). When `nil` (default), each backend falls back to its own default (`crush-hyper-default-model` for hyper, or the CLI's configured model).
 
 ### crush-working-directory
 
-Set the working directory for the Crush CLI:
+Set the working directory used by crush (resolves selections relative to it):
 
 ```elisp
 (setq crush-working-directory "/path/to/project")
@@ -53,7 +55,7 @@ When `nil` (default), uses the project root if available, otherwise `default-dir
 
 ### crush-args
 
-Additional command-line arguments passed to the Crush CLI:
+Additional command-line arguments passed to the Crush CLI (run backend only):
 
 ```elisp
 (setq crush-args '("--verbose"))
@@ -61,14 +63,14 @@ Additional command-line arguments passed to the Crush CLI:
 
 ### crush-backend-type
 
-Which Crush backend to use:
+Which crush backend to use:
 
 ```elisp
-(setq crush-backend-type 'run)
+(setq crush-backend-type 'hyper)
 ```
 
-- `run` (default) — standalone `crush run` mode. Each prompt spawns a new process. Fully implemented.
-- `hyper` — direct HTTP access to the Charm Hyper gateway, bypassing the CLI. Streaming chat completions are implemented (see [Hyper backend](#hyper-backend)); OAuth, history, and tool calls are still on the roadmap.
+- `hyper` (default) — direct HTTP access to the Charm Hyper gateway, bypassing the CLI entirely; the package's primary mode of operation (see [Hyper backend](#hyper-backend)). Requires only `curl`. OAuth, history, and tool calls are still on the roadmap.
+- `run` — standalone `crush run` mode (compatibility with the Crush CLI). Each prompt spawns a new process. Fully implemented.
 
 ### crush-hyper-base-url
 
@@ -114,19 +116,40 @@ When non-nil (default), log commands, input, output, and sentinel events to a `*
 
 ### Backend Abstraction
 
-All CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`). The protocol and shared base struct live in `crush-backend.el`; each backend is a dedicated file:
+All provider/CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`). The protocol and shared base struct live in `crush-backend.el`; each backend is a dedicated, buffer-unaware file:
 
-- `crush-run-backend.el` — the default implementation (see [Run backend](#run-backend)). Spawns `crush run --quiet` per prompt.
-- `crush-hyper-backend.el` — direct HTTP access to the Charm Hyper gateway (see [Hyper backend](#hyper-backend)).
+- `crush-hyper-backend.el` — the default implementation: direct HTTP access to the Charm Hyper gateway (see [Hyper backend](#hyper-backend)).
+- `crush-run-backend.el` — the compatibility CLI backend (see [Run backend](#run-backend)). Spawns `crush run --quiet` per prompt.
+
+### Hyper backend
+
+The hyper backend (default) is crush.el's **primary mode of operation**: it posts the prompt to Hyper's OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`, base URL defaulting to `https://hyper.charm.land/v1`) and streams the response directly. It does **not** spawn `crush run`, so it does not need the Crush CLI installed — only `curl` (which is used the same way gptel and plz.el use it).
+
+#### How it works
+
+1. `crush-backend-send-prompt` composes the request body (`crush--hyper-compose-request`: messages array with a minimal system prompt, the user prompt, model, and `stream: t`) and fires a `curl --config -` subprocess; the config (URL, `request = POST`, JSON content-type, bearer auth header, and `data-binary = @-`) plus the JSON body go to curl over stdin. `data-binary = @-` is the **last** config line so curl reads the rest of stdin as the body.
+2. SSE frames are parsed incrementally in the process filter (`crush--hyper-curl-filter` → `crush--hyper-sse-feed`); content deltas are emitted to the facade's `:on-delta` callback (`crush-facade--append-delta`), which appends them in order and drives the reasoning overlay.
+3. A final `[DONE]` event, or the process exiting, runs the injected completion (`crush-facade--finalize`), which tags the response, freezes it, and inserts a fresh `crush> ` prompt. Stream errors surface through `:on-error` into a clickable error pane.
+
+#### Session continuity
+
+For phase 1 the hyper backend is stateless: each prompt is a single request with the full context. Session history (sending prior `[user, assistant]` messages via `x-session-id`) is on the roadmap ([TODO.md](TODO.md)).
+
+#### Current limitations
+
+- Manual token only (`crush-hyper-token`); OAuth device flow is planned.
+- No history, no model catalog, no tool calls.
+- Interrupt is a stub; the "still running" guard does not block during hyper requests, so avoid typing another prompt mid-stream.
+- `crush-backend-grant-permission` is a no-op (no tool execution to authorize yet).
 
 ### Run backend
 
-The run backend (default) drives the **Crush CLI** directly: each prompt spawns a new `crush run` process and streams its stdout into the crush buffer. It requires the `crush` binary on `exec-path` (`crush-program`).
+The run backend (compatibility, `crush-backend-type 'run`) drives the **Crush CLI** instead: each prompt spawns a new `crush run` process and streams its stdout into the crush buffer. It requires the `crush` binary on `exec-path` (`crush-program`).
 
 #### How it works
 
 1. `crush-backend-send-prompt` builds the command line: `crush run --quiet [--model M] [--session ID | --continue] [prompt]`. `--quiet` suppresses the spinner; stderr goes to the `*crush-errors*` buffer. `--session` takes precedence over `--continue`.
-2. Output is streamed into the buffer by `crush--output-filter` at the process mark; on exit the sentinel runs `crush--finalize-response` — tagging the response, freezing it read-only, and inserting a fresh `crush> ` prompt. There is no persistent process.
+2. Output is streamed into the buffer by `crush--output-filter` at the process mark; on exit the sentinel runs the facade's completion — tagging the response, freezing it read-only, and inserting a fresh `crush> ` prompt. There is no persistent process.
 
 #### How context reaches the model
 
@@ -136,7 +159,7 @@ So the blocks crush.el inserts are plain markdown in the LLM message. The `**Att
 
 #### Session continuity
 
-crush.el sends only the current prompt (and any attached context blocks) on each invocation; it keeps no conversation state of its own. Continuity is delegated to the CLI's session store: every prompt is persisted there, and each new invocation tells the CLI which session to resume.
+The run backend sends only the current prompt (and any attached context blocks) on each invocation; it keeps no conversation state of its own. Continuity is delegated to the CLI's session store: every prompt is persisted there, and each new invocation tells the CLI which session to resume.
 
 The link between prompts lives entirely in two buffer-local variables:
 
@@ -209,28 +232,6 @@ crush--session="abc123"  crush run --quiet --session abc123 "resume"
 
 `crush run` auto-approves every tool permission — functionally `--yolo` (see [Important: Permission Behavior](#important-permission-behavior)). There is no prompt-by-prompt approval in the run backend; `crush-backend-grant-permission` is a no-op.
 
-### Hyper backend
-
-The hyper backend posts the prompt to Hyper's OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`, base URL defaulting to `https://hyper.charm.land/v1`) and streams the response. It **does not** spawn `crush run`, so it does not need the Crush CLI installed — only `curl` (which is used the same way gptel and plz.el use it).
-
-#### How it works
-
-1. `crush-backend-send-prompt` composes a JSON body (messages array with a minimal system prompt, the user prompt, model, and `stream: t`) via `crush--hyper-compose-request`.
-2. The curl process is spawned with `--config -`: the config (URL, `request = POST`, JSON content-type, bearer auth header, and `data-binary = @-`) plus the JSON body are written to curl's stdin, then EOF. `data-binary = @-` is the **last** config line so curl reads the rest of stdin as the body.
-3. SSE frames are parsed incrementally in the process filter (`crush--hyper-curl-filter` → `crush--hyper-sse-feed`); content deltas are appended to the buffer in order. A final `[DONE]` event, or the process exiting, triggers `crush--finalize-response` — the same tagging/freezing the run backend's sentinel uses.
-4. Each request is stateless: phase 1 sends only the current prompt (no session history), so follow-up prompts start fresh conversations.
-
-#### Session continuity
-
-Not yet implemented for hyper: no `x-session-id`/`x-session-affinity` headers and no in-buffer history round trip. Each prompt is a one-shot chat completion. Continuing a conversation is the next phase.
-
-#### Current limitations
-
-- Manual token only (`crush-hyper-token`); OAuth device flow is planned.
-- No history, no model catalog, no tool calls.
-- Interrupt is a stub and `crush-process` stays nil during hyper requests, so `crush-send-input`'s "still running" guard doesn't block; avoid typing another prompt mid-stream.
-- `crush-backend-grant-permission` is a no-op (phase 1 has no tool execution to authorize).
-
 ### Chat Buffer Composition
 
 The crush buffer's major mode is the parent mode (`markdown-mode` if available, else `text-mode`); `crush-chat-mode` is a **minor mode** that provides the chat keybindings and hooks. Rendering, prompt tracking, and fontification are all implemented with text properties, markers, and markdown native font-lock instead of comint.
@@ -248,7 +249,7 @@ All metadata is stored as **text properties** on buffer content; highlighting is
 ### Crush buffer (chat mode)
 
 - `M-x crush` — open the crush interaction buffer for the current project (or directory); each project gets its own buffer, named after the project root (e.g. `*crush:crush.el*`)
-- Type a prompt and press `RET` to send it to the Crush CLI
+- Type a prompt and press `RET` to send it to the active backend (provider or CLI)
 - `M-p` / `M-n` — navigate input history (previous/next input)
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point; otherwise normal TAB
 - `C-c c i` — interrupt the running crush process
@@ -365,7 +366,7 @@ Stderr from Crush is routed to a separate `*crush-errors*` buffer to keep the ma
 
 ## Debug Logging
 
-When `crush-debug-mode` is non-nil (default), commands, input, output, and sentinel events are logged to a `*crush-debug*` buffer. This is useful for diagnosing issues with the Crush CLI integration. Disable with:
+When `crush-debug-mode` is non-nil (default), commands, input, output, and sentinel events are logged to a `*crush-debug*` buffer. This is useful for diagnosing issues with the backend integration. Disable with:
 
 ```elisp
 (setq crush-debug-mode nil)

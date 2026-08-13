@@ -469,7 +469,8 @@ or the errors buffer: backends are buffer-unaware by design."
       (should-not (string-match-p term src)))))
 
 (ert-deftest crush-test/backend-is-run-by-default ()
-  "crush-active-backend should be a crush-run-backend by default."
+  "crush-active-backend should be a crush-run-backend in the test
+harness (which pins `crush-backend-type' to `run')."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -478,6 +479,11 @@ or the errors buffer: backends are buffer-unaware by design."
           (should (crush-run-backend-p crush-active-backend))
           (should (eq (crush-backend-type crush-active-backend) 'run))))
     (crush-test--cleanup)))
+
+(ert-deftest crush-test/backend-type-defaults-to-hyper ()
+  "The package default backend is `hyper' (direct provider interaction
+is the primary goal; the CLI `run' backend is the compatibility path)."
+  (should (eq crush-backend-type 'hyper)))
 
 (ert-deftest crush-test/backend-has-buffer ()
   "crush-active-backend should have its buffer set."

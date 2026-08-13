@@ -41,10 +41,12 @@
 (require 'cl-lib)
 (require 'crush-backend)
 
-(defcustom crush-backend-type 'run
+(defcustom crush-backend-type 'hyper
   "Type of crush backend to use.
-`run' uses the standalone `crush run' mode (per-process).
-`hyper' uses direct HTTP streaming to the Charm Hyper gateway."
+`hyper' (default) talks to AI providers directly over HTTP (the Charm
+Hyper gateway), the package's primary mode of operation.
+`run' uses the standalone `crush run' mode (per-process), provided for
+compatibility with the Crush CLI."
   :type '(choice (const run) (const hyper))
   :group 'crush)
 

@@ -2,27 +2,30 @@
 
 ## Goal
 
-crush.el is a GNU Emacs package for interacting with the [Crush CLI](https://github.com/charmbracelet/crush).
+crush.el is a GNU Emacs package for **direct provider interaction**: chatting with AI models over HTTP from an Emacs buffer, without a separate CLI binary. The primary backend talks to the [Charm Hyper gateway](HYPER-API.md) via streaming chat completions.
 
 It operates in two ways:
 
-1. **Dedicated chat buffer**: A buffer that sends structured prompts to the Crush CLI and receives responses through the CLI. The buffer maintains a single continuous session across prompts (using `crush run --continue`), so follow-up questions keep context.
+1. **Dedicated chat buffer**: A buffer that sends structured prompts to the provider (hyper) and receives streamed responses, including chain-of-thought reasoning. The hyper backend is stateless per prompt (session history is on the roadmap).
 
 2. **Selection-as-context**: In any Emacs buffer, a selection can be used as context. When sent, the selection is formatted as a markdown fenced code block with file path and line numbers, then inserted into the crush buffer. The user can then add additional context about what to do with the selection before sending the prompt.
 
+A **compatibility backend** drives the [Crush CLI](https://github.com/charmbracelet/crush) (`crush run`) for users who prefer it; it is not the primary path and is not required for the package's main use case.
+
 ## Backend Strategy
 
-crush.el talks to Crush through a backend abstraction (`crush-backend-*` generic methods over `cl-defstruct` backends). The protocol and shared base struct live in `crush-backend.el`; each backend is a dedicated, self-contained file:
+crush.el talks to providers through a backend abstraction (`crush-backend-*` generic methods over `cl-defstruct` backends). The protocol and shared base struct live in `crush-backend.el`; each backend is a dedicated, self-contained, **buffer-unaware** file:
 
-- **`crush run` CLI backend (`crush-run-backend.el`)** — implemented. Each prompt spawns a `crush run --quiet` process.
-- **Direct API backend (`crush-hyper-backend.el`, implemented, phase 1)** — direct HTTP calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), bypassing the CLI entirely.
+- **Direct API backend (`crush-hyper-backend.el`, default, phase 1)** — direct HTTP calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), streaming chat completions. This is the **primary** backend.
+- **`crush run` CLI backend (`crush-run-backend.el`, compatibility)** — each prompt spawns a `crush run --quiet` process.
 
 ## Interaction Model
 
-- **Per-prompt calling**: Each prompt is sent to `crush run` as a separate invocation. The CLI streams the response to stdout and exits.
+- **Per-prompt calling (hyper)**: Each prompt is a single streaming chat completion against the provider. The hyper backend keeps no conversation state of its own; history round trips are roadmap work.
+- **Per-prompt calling (run)**: Each prompt is sent to `crush run` as a separate invocation. The CLI streams the response to stdout and exits.
 - **Per-root buffers**: Each project (or directory when none) gets its own crush buffer, named after the root's basename (`*crush:name*`, suffix `(2)` on collisions). `crush-minor-mode` commands always target the buffer for the source buffer's project or directory.
-- **Session continuity**: The first prompt starts a fresh session. Each subsequent prompt passes `--continue`, which continues the active session in the working directory. `crush-new-session` resets this so the next prompt starts a new session.
-- **Manual session selection**: Setting `crush--session` passes `--session <id>` to continue a specific session by ID.
+- **Session continuity (run)**: The first prompt starts a fresh session. Each subsequent prompt passes `--continue`, which continues the active session in the working directory. `crush-new-session` resets this so the next prompt starts a new session.
+- **Manual session selection (run)**: Setting `crush--session` passes `--session <id>` to continue a specific session by ID.
 - **Context format**: Selections are formatted as markdown fenced code blocks with an attachment header line:
 
 ````
@@ -100,30 +103,30 @@ Chat commands are all reachable via keys that markdown-mode does not bind.
 - [x] Moved chat commands under the free `C-c c` prefix (`crush-chat-command-map`): `s` send, `i` interrupt, `k` clear, `n` new session, `a` insert selection
 - [x] `RET` still sends; `M-p`/`M-n` still navigate history; `crush-minor-mode` source-buffer keys unchanged
 
-### Phase 1f: Hyper backend phase 1 (complete)
+### Phase 1f: Hyper backend phase 1 — primary path (complete)
 
-Direct HTTP chat-completions against the Charm Hyper gateway, bypassing the CLI.
+Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is crush.el's primary mode of operation; the CLI backend is compatibility.
 
-- [x] `crush-hyper-backend` struct + `crush-backend-type` `hyper` choice
+- [x] `crush-hyper-backend` struct + `crush-backend-type` `hyper` choice (now the default)
 - [x] Request composition (`crush--hyper-compose-request`): messages array, model, `stream: t`, max tokens, temperature, thinking/reasoning-effort options, no tools yet
 - [x] SSE streaming via curl subprocess (gptel/plz pattern): config + body over stdin, `data-binary = @-`, deltas parsed in the process filter
-- [x] Response finalization shared with the run backend (`crush--finalize-response`): tag region, fresh prompt, state reset
-- [x] Dummy server fixture (`test/hyper-server.py`) mirroring `mock-crush.sh`: capture-file philosophy, per-mode responses (ok-stream/slow/error-http/error-event/malformed)
-- [x] Wire integration tests: request capture, delta streaming + finalize, HTTP error surfacing
+- [x] Response finalization via the facade (`crush-facade--finalize`): tag region, fresh prompt, state reset (buffer-unaware backend emits deltas/errors through callbacks)
+- [x] Reasoning display: `reasoning_content` deltas streamed into a styled, collapsible region (overlay + fold marker)
+- [x] Dummy server fixture (`test/hyper-server.py`) mirroring `mock-crush.sh`: capture-file philosophy, per-mode responses (ok-stream/slow/error-http/error-event/malformed/not-found/reasoning)
+- [x] Wire integration tests: request capture, delta streaming + finalize, HTTP error surfacing, reasoning highlighting
 
-### Phase 2: Polish
+### Phase 2: Provider features (primary roadmap)
 
-- [ ] Error handling and retry
-- [ ] Conversation persistence to plain-text files (gptel-style): save `crush-region-type`/`crush-response-to`/attachment bounds as a file-local, recreate properties on open
 - [x] Token storage via `auth-source` (`machine hyper.charm.land login apikey password sk-hyper-...`), gptel-style; `crush-hyper-token` accepts string/function/nil
-- [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (tokens currently come from `auth-source` via `crush-hyper-token`)
 - [ ] Session history: `x-session-id` / `x-session-affinity` headers plus an in-buffer history round trip (send prior `[user, assistant]` messages) ([HYPER-API.md §3.1](HYPER-API.md))
-- [ ] Reasoning display: stream `reasoning_content` deltas into a styled region ([HYPER-API.md §3.5](HYPER-API.md))
-- [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection
 - [ ] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages — plus a permission policy for tool execution (the CLI backend auto-approves; direct mode needs one)
-- [ ] Tool call visibility in responses
+- [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (tokens currently come from `auth-source` via `crush-hyper-token`)
+- [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection
+- [ ] Error handling and retry
 - [ ] Hypercredit display from `usage.remaining.hypercredits`, with `GET /v1/credits` fallback ([HYPER-API.md §4](HYPER-API.md))
-- [ ] Interrupt support for in-flight hyper requests (`crush-backend-interrupt` is currently a cleanup stub; `crush-process` stays nil so `crush-send-input`'s still-running guard does not block)
+- [ ] Interrupt support for in-flight hyper requests (currently a cleanup stub; the "still running" guard does not block)
+- [ ] Tool call visibility in responses
+- [ ] Conversation persistence to plain-text files (gptel-style): save `crush-region-type`/`crush-response-to`/attachment bounds as a file-local, recreate properties on open
 
 ### Phase 3: Integration
 

@@ -31,10 +31,13 @@
 
 ;;; Commentary:
 
-;; crush.el is a GNU Emacs package for interacting with the Crush CLI
-;; (https://github.com/charmbracelet/crush).  It provides a dedicated
-;; interactive buffer that sends structured prompts to the Crush CLI
-;; and receives streamed responses.
+;; crush.el is a GNU Emacs package for direct provider interaction: a
+;; dedicated interactive buffer that sends structured prompts to AI
+;; models over HTTP and receives streamed responses.  The primary
+;; backend (default) talks to the Charm Hyper gateway
+;; (https://hyper.charm.land) via streaming chat completions; a
+;; compatibility backend drives the Crush CLI (https://github.com/
+;; charmbracelet/crush) `crush run' instead.
 ;;
 ;; In addition to the dedicated chat buffer, any buffer selection can
 ;; be used as context.  The selection is formatted as a markdown fenced
@@ -42,11 +45,10 @@
 ;; into the crush buffer where the user can add additional context
 ;; about what to do with it.
 ;;
-;; IMPORTANT: This package uses `crush run' mode, which auto-approves
-;; all permissions.  Tools like `edit', `write', and `bash' execute
-;; immediately without prompting for user confirmation.  This is
-;; functionally equivalent to running `crush --yolo'.  See CRUSH-SPEC.md
-;; for details on permission behavior.
+;; IMPORTANT: the optional `run' backend auto-approves all tool
+;; permissions (functionally `crush --yolo'); the default `hyper'
+;; backend executes no local tools.  See CRUSH-SPEC.md for details on
+;; the CLI's permission behavior.
 ;;
 ;; See TODO.md for the full project goal and roadmap.
 
