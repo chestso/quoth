@@ -424,8 +424,7 @@ BEG and END are standard after-change hook arguments."
   (when (and crush--prompt-start-marker
              (markerp crush--prompt-start-marker)
              (>= beg (marker-position crush--prompt-start-marker)))
-    (put-text-property beg end 'crush-prompt-id crush--prompt-id)
-    (put-text-property beg end 'crush-role 'user))
+    (put-text-property beg end 'crush-prompt-id crush--prompt-id))
   (crush--update-header-line))
 
 (defun crush--lang-from-extension (filename)
@@ -523,11 +522,10 @@ editable."
         (start (point)))
     (insert "crush> ")
     (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
-    (put-text-property start (point) 'crush-role 'user)
     (add-text-properties
      start (point)
      '(read-only t
-                 front-sticky (read-only crush-role)
+                 front-sticky (read-only)
                  rear-nonsticky (read-only font-lock-face)
                  font-lock-face crush-prompt-face))
     (crush--freeze-region (point-min) start)
@@ -1085,8 +1083,6 @@ reasoning sub-span retagged `reasoning').  Shared by
                        'crush-response-to prompt-id)
     (put-text-property response-start response-end
                        'crush-region-type 'response)
-    (put-text-property response-start response-end
-                       'crush-role 'assistant)
     ;; Reasoning is a sub-region of the response: tag it over the
     ;; response tags so lookup by region type sees `reasoning'
     ;; first for the CoT span.
@@ -1100,9 +1096,7 @@ reasoning sub-span retagged `reasoning').  Shared by
             (put-text-property rs re
                                'crush-response-to prompt-id)
             (put-text-property rs re
-                               'crush-region-type 'reasoning)
-            (put-text-property rs re
-                               'crush-role 'reasoning)))))))
+                               'crush-region-type 'reasoning)))))))
 
 (defun crush-facade--close-response (response-start prompt-id)
   "Close the response started at RESPONSE-START with PROMPT-ID.
