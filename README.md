@@ -102,11 +102,19 @@ The hyper backend uses `crush-model` (the shared model defcustom), falling back 
 
 Request tuning: timeout in seconds, `max_tokens` (default 64000), and sampling temperature (nil means unset).
 
+### crush-hyper-history-limit / crush-hyper-history-include-reasoning
+
+The hyper backend is stateful: each request re-sends the buffer's completed exchanges as `user` and `assistant` messages before the new prompt, so the model sees the whole conversation. The conversation is read from the buffer's tagged regions at send time — nothing is stored client- or server-side (`x-session-id` affinity headers are still on the roadmap). `crush-hyper-history-limit` (default 200) caps how many prior exchanges are sent (the most recent ones are always retained); set it to `0` to disable history and get phase-1 stateless per-prompt requests.
+
+`crush-hyper-history-include-reasoning` (default nil) controls whether streamed chain-of-thought rides along in history: off, the assistant turn carries only the answer; on, the CoT is re-sent as the `reasoning_content` field of the assistant message, which is what Hyper requires for thinking turns carried across requests.
+
 ### crush-hyper-thinking / crush-hyper-reasoning-effort
 
 When `crush-hyper-thinking` is non-nil, Hyper's internal thinking mode is enabled. `crush-hyper-reasoning-effort` selects the reasoning level (`low`, `medium`, `high`, `max`); nil uses the model default.
 
 Reasoning ("chain-of-thought") text streams into the buffer as it is received, tagged as a reasoning region and highlighted with a background derived from the theme's `region` face (so markdown text colors stay visible). When the response finishes, the reasoning is auto-collapsed behind a dim `... reasoning (N lines, M chars)` marker; press `TAB` or `C-c c r` to expand or re-collapse it. Works identically in GUI and terminal frames.
+
+Reasoning is a display aid and is excluded from model-visible history by default; set `crush-hyper-history-include-reasoning` to `t` to re-send it as the `reasoning_content` field on the assistant message (per [HYPER-API.md §3.4](HYPER-API.md)).
 
 ### crush-debug-mode
 
@@ -133,12 +141,12 @@ The hyper backend (default) is crush.el's **primary mode of operation**: it post
 
 #### Session continuity
 
-For phase 1 the hyper backend is stateless: each prompt is a single request with the full context. Session history (sending prior `[user, assistant]` messages via `x-session-id`) is on the roadmap ([TODO.md](TODO.md)).
+The hyper backend is stateful: prior conversation from the buffer's tagged regions is folded into each request's messages array as `[system, prior-user, prior-assistant, ..., current-user]`. Set `crush-hyper-history-limit` to `0` for stateless per-prompt requests. Because the buffer is the source of truth, `C-c c k` (clear) and `C-c c n` (new session) both start a fresh conversation naturally, and the same conversation is what you see in the buffer. Server-side session persistence (`x-session-id` / `x-session-affinity`, like the CLI's SQLite store) is separate roadmap work ([TODO.md](TODO.md)).
 
 #### Current limitations
 
 - Manual token only (`crush-hyper-token`); OAuth device flow is planned.
-- No history, no model catalog, no tool calls.
+- No model catalog, no tool calls.
 - Interrupt is a stub; the "still running" guard does not block during hyper requests, so avoid typing another prompt mid-stream.
 - `crush-backend-grant-permission` is a no-op (no tool execution to authorize yet).
 

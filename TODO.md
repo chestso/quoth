@@ -6,7 +6,7 @@ crush.el is a GNU Emacs package for **direct provider interaction**: chatting wi
 
 It operates in two ways:
 
-1. **Dedicated chat buffer**: A buffer that sends structured prompts to the provider (hyper) and receives streamed responses, including chain-of-thought reasoning. The hyper backend is stateless per prompt (session history is on the roadmap).
+1. **Dedicated chat buffer**: A buffer that sends structured prompts to the provider (hyper) and receives streamed responses, including chain-of-thought reasoning. The hyper backend is stateful per buffer; `crush-hyper-history-limit` 0 restores stateless per-prompt requests.
 
 2. **Selection-as-context**: In any Emacs buffer, a selection can be used as context. When sent, the selection is formatted as a markdown fenced code block with file path and line numbers, then inserted into the crush buffer. The user can then add additional context about what to do with the selection before sending the prompt.
 
@@ -118,7 +118,8 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 ### Phase 2: Provider features (primary roadmap)
 
 - [x] Token storage via `auth-source` (`machine hyper.charm.land login apikey password sk-hyper-...`), gptel-style; `crush-hyper-token` accepts string/function/nil
-- [ ] Session history: `x-session-id` / `x-session-affinity` headers plus an in-buffer history round trip (send prior `[user, assistant]` messages) ([HYPER-API.md §3.1](HYPER-API.md))
+- [x] In-buffer history round trip (default on): prior `[user, assistant]` turns are read from the buffer's tagged regions and re-sent with each request (`crush-hyper-history-limit` caps the tail; 0 disables; `crush-hyper-history-include-reasoning` opts the CoT back in as `reasoning_content`)
+- [ ] `x-session-id` / `x-session-affinity` headers for server-side prefix/token caching ([HYPER-API.md §3.1](HYPER-API.md))
 - [ ] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages — plus a permission policy for tool execution (the CLI backend auto-approves; direct mode needs one)
 - [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (tokens currently come from `auth-source` via `crush-hyper-token`)
 - [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection

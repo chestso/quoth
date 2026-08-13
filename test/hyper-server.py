@@ -166,6 +166,47 @@ def main():
                 conn.sendall(reasoning_frame("harder").encode())
                 conn.sendall(content_frame("answer").encode())
                 conn.sendall(sse("[DONE]").encode())
+            elif mode == "history":
+                # History round-trip: the first request is a plain
+                # [system, user]; later requests carry prior turns (>= 3
+                # messages) and get an "ack <prior>" reply.
+                conn.sendall(sse_ok.encode())
+                try:
+                    req = json.loads(body)
+                    msgs = req.get("messages", [])
+                    if len(msgs) >= 3:
+                        prior = msgs[-2]
+                        conn.sendall(
+                            content_frame(
+                                "ack " + str(prior.get("content", ""))[:20]
+                            ).encode()
+                        )
+                    else:
+                        conn.sendall(content_frame("first").encode())
+                except ValueError:
+                    conn.sendall(content_frame("first").encode())
+                conn.sendall(sse("[DONE]").encode())
+            elif mode == "reasoning-history":
+                # Turn 1: a thinking request (reasoning + answer).  Later
+                # requests (with prior turns) get an "ack" reply.
+                conn.sendall(sse_ok.encode())
+                try:
+                    req = json.loads(body)
+                    msgs = req.get("messages", [])
+                    if len(msgs) >= 3:
+                        prior = msgs[-2]
+                        conn.sendall(
+                            content_frame(
+                                "ack " + str(prior.get("content", ""))[:20]
+                            ).encode()
+                        )
+                    else:
+                        conn.sendall(reasoning_frame("think step ").encode())
+                        conn.sendall(reasoning_frame("hidden").encode())
+                        conn.sendall(content_frame("answer out").encode())
+                except ValueError:
+                    conn.sendall(content_frame("first").encode())
+                conn.sendall(sse("[DONE]").encode())
             else:  # ok-stream, slow
                 conn.sendall(sse_ok.encode())
                 for d in deltas:

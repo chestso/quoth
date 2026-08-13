@@ -1369,5 +1369,203 @@ right after the prompt inherits `read-only' and Emacs signals
     (should (assoc "/tmp/x/foo/" crush--root-buffer-alist))
     (should (equal (alist-get "/tmp/x/foo/" crush--root-buffer-alist nil nil #'equal)
                    "*crush:foo*"))))
+
+
+
+;;; 33. Conversation history extraction: tagged regions -> turns
+
+;;; These tests pin the contract of the facade's history extraction:
+;;; `crush--history-turns' reads the buffer's tagged regions (prompt
+;;; markers, user input, responses, reasoning) and produces the (ROLE
+;;; . TEXT) conversation that the hyper backend re-sends.  Role tags
+;;; (`crush-role') are applied by `crush--insert-prompt' /
+;;; `crush--after-change' (user) and `crush--tag-response-region'
+;;; (assistant/reasoning); the turns builder groups the buffer by
+;;; prompt so the pending prompt is never included.
+
+(defun crush-test--seed-exchange (prompt-text reply-text)
+  "In the current crush buffer, type PROMPT-TEXT and simulate a
+completed exchange: response region REPLY-TEXT tagged as the turn's
+answer, then a fresh pending prompt marker.  Returns the completed
+prompt's ID."
+  (let ((prompt-id crush--prompt-id))
+    (goto-char (point-max))
+    (insert prompt-text)
+    (goto-char (point-max))
+    (newline)
+    (let ((response-start (point)))
+      (insert reply-text)
+      (crush--tag-response-region response-start (point) prompt-id))
+    (goto-char (point-max))
+    (newline)
+    (setq-local crush--prompt-id (crush--generate-id))
+    (crush--insert-prompt)
+    prompt-id))
+
+(ert-deftest crush-test/history-turns-nil-when-only-one-prompt ()
+  "With a single (pending) prompt there is no history to extract."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (null (crush--history-turns crush--prompt-id)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-turns-excludes-pending-prompt ()
+  "The pending (current) prompt is being sent; it must not appear in
+the returned turns."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((completed-id (crush-test--seed-exchange "first prompt" "first reply")))
+            (should (= (length (crush--history-turns crush--prompt-id)) 2))
+            (should (equal (car (crush--history-turns crush--prompt-id))
+                           (cons 'user "first prompt"))))
+          (should (eq (get-text-property (point-min) 'crush-role) 'user))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-turns-includes-multiple-exchanges ()
+  "Two completed exchanges both appear, oldest first."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id1 (crush-test--seed-exchange "first prompt" "first reply"))
+                (id2 (crush-test--seed-exchange "second prompt" "second reply")))
+            (let ((turns (crush--history-turns crush--prompt-id)))
+              (should (= (length turns) 4))
+              (should (equal (nth 0 turns) (cons 'user "first prompt")))
+              (should (equal (nth 1 turns) (cons 'assistant "first reply")))
+              (should (equal (nth 2 turns) (cons 'user "second prompt")))
+              (should (equal (nth 3 turns) (cons 'assistant "second reply")))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-turns-omits-unanswered-attachment-text ()
+  "An unanswered prompt contributes its user text but no assistant turn."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id1 (crush-test--seed-exchange "first prompt" "first reply")))
+            (goto-char (point-max))
+            (insert "second prompt")
+            (let ((turns (crush--history-turns crush--prompt-id)))
+              (ignore id1)
+              (should (= (length turns) 2))
+              (should (equal (car turns) (cons 'user "first prompt")))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-turns-user-text-skips-response-region ()
+  "The user turn must not leak the assistant reply text itself
+(responses share the `crush-prompt-id' tag)."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((completed-id (crush-test--seed-exchange "hello" "answer text")))
+            (let ((turns (crush--history-turns crush--prompt-id)))
+              (ignore completed-id)
+              (should (equal (car turns) (cons 'user "hello")))
+              (should (equal (cadr turns) (cons 'assistant "answer text")))))))
+    (crush-test--cleanup)))
+
+;; Helper: seed an exchange whose response carries a reasoning span.
+(defun crush-test--seed-reasoning-exchange (prompt-text reasoning-text answer-text)
+  "Type PROMPT-TEXT; stream REASONING-TEXT then ANSWER-TEXT as one
+response, tagged as the streaming machinery tags it (reasoning span
+over the CoT, response for the answer).  Returns the prompt ID."
+  (let ((prompt-id crush--prompt-id))
+    (goto-char (point-max))
+    (insert prompt-text)
+    (goto-char (point-max))
+    (newline)
+    (let ((response-start (point)))
+      (insert reasoning-text "\n\n" answer-text)
+      ;; Tag the whole response, then re-tag the CoT span as reasoning.
+      (crush--tag-response-region response-start (point) prompt-id)
+      (let ((inhibit-read-only t)
+            (rs (+ response-start (length reasoning-text))))
+        (put-text-property response-start rs 'crush-region-type 'reasoning)
+        (put-text-property response-start rs 'crush-role 'reasoning)))
+    (goto-char (point-max))
+    (newline)
+    (setq-local crush--prompt-id (crush--generate-id))
+    (crush--insert-prompt)
+    prompt-id))
+
+(ert-deftest crush-test/history-turns-excludes-reasoning-by-default ()
+  "By default (`crush-hyper-history-include-reasoning' nil) the
+assistant turn carries only the answer text; the CoT span is dropped."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-reasoning-exchange
+                     "question" "step one\nstep two" "final answer")))
+            (ignore id)
+            (let ((turns (crush--history-turns crush--prompt-id)))
+              (should (= (length turns) 2))
+              (should (equal (car turns) (cons 'user "question")))
+              (should (equal (cadr turns) (cons 'assistant "final answer")))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-turns-splits-reasoning-when-enabled ()
+  "With `crush-hyper-history-include-reasoning' t, the assistant turn
+is followed by a `reasoning' record carrying the CoT text."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer))
+            (crush-hyper-history-include-reasoning t))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-reasoning-exchange
+                     "question" "step one\nstep two" "final answer")))
+            (ignore id)
+            (let ((turns (crush--history-turns crush--prompt-id)))
+              (should (= (length turns) 3))
+              (should (equal (car turns) (cons 'user "question")))
+              (should (equal (cadr turns) (cons 'assistant "final answer")))
+              (should (equal (caddr turns)
+                             (cons 'reasoning "step one\nstep two")))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-limit-caps-turns ()
+  "`crush-hyper-history-limit' caps the prior exchanges; the tail stays."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer))
+            (crush-hyper-history-limit 1))
+        (with-current-buffer buf
+          (let ((id1 (crush-test--seed-exchange "first" "one")))
+            (ignore id1)
+            (let ((id2 (crush-test--seed-exchange "second" "two")))
+              (ignore id2)
+              (let ((turns (crush--history-turns crush--prompt-id)))
+                (should (= (length turns) 2))
+                (should (equal (car turns) (cons 'user "second")))
+                (should (equal (cadr turns) (cons 'assistant "two")))))))
+    (crush-test--cleanup))))
+
+(ert-deftest crush-test/history-limit-zero-disables ()
+  "`crush-hyper-history-limit' 0 means no history at all."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer))
+            (crush-hyper-history-limit 0))
+        (with-current-buffer buf
+          (let ((id1 (crush-test--seed-exchange "first" "one")))
+            (ignore id1)
+            (should (null (crush--history-turns crush--prompt-id)))))
+    (crush-test--cleanup))))
+
+(ert-deftest crush-test/history-turns-always-fresh ()
+  "Extraction reads the live buffer; no cache can go stale."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id1 (crush-test--seed-exchange "first" "reply")))
+            (let ((turns (crush--history-turns crush--prompt-id)))
+              (should (equal turns
+                             '((user . "first") (assistant . "reply")))))
+            ;; Editing a completed region is reflected immediately.
+            (let ((inhibit-read-only t)
+                  (rs (text-property-any (point-min) (point-max)
+                                         'crush-response-to id1)))
+              (delete-region rs (1+ rs)))
+            (should-not (equal (crush--history-turns crush--prompt-id)
+                               '((user . "first") (assistant . "reply")))))
+    (crush-test--cleanup)))))
+
 (provide 'crush-test-buffer)
 ;;; crush-test-buffer.el ends here

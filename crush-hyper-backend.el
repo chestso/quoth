@@ -93,6 +93,13 @@ either.  Functions are called and the result is resolved recursively."
           resolved
         (crush-hyper--resolve-token resolved)))))
 
+(defcustom crush-hyper-history-include-reasoning nil
+  "When non-nil, streamed reasoning (CoT) is re-sent along with the
+assistant turns as `reasoning_content' (per HYPER-API.md §3.4).
+nil (default) keeps reasoning out of the model-visible history."
+  :type 'boolean
+  :group 'crush)
+
 (defcustom crush-hyper-timeout 300
   "Seconds to wait for a hyper request to finish before giving up."
   :type 'number
@@ -144,6 +151,7 @@ switched off."
   "Model used when the backend model slot and `crush-model' are both nil.")
 
 (declare-function crush--debug-log "crush.el" (category message))
+(declare-function crush--history-for "crush.el" (buffer))
 
 (cl-defstruct (crush-hyper-backend
                (:include crush-backend (type 'hyper))
@@ -157,23 +165,68 @@ switched off."
   token
   model)
 
-(defun crush--hyper-compose-request (prompt context model)
+(defun crush--hyper-history-messages (turns)
+  "Build message alists from history TURNS.
+TURNS is a list of (ROLE . TEXT) conses from the facade's history
+extraction (see `crush--history-turns').  `user' and `assistant'
+become messages; a `reasoning' turn immediately following an
+`assistant' turn is folded into that same assistant message as the
+`reasoning_content' field (HYPER-API.md §3.4).  Any other role, and
+empty or whitespace-only text, is dropped.  Returns the alists in
+conversation order."
+  (let ((messages nil)
+        (pending nil))
+    (dolist (turn turns)
+      (let ((role (car turn))
+            (text (cdr turn)))
+        (cond
+         ((and (eq role 'reasoning) pending)
+          ;; Attach the trace to the assistant message just built.
+          (setcdr (last pending)
+                  (list (cons 'reasoning_content text))))
+         ((and (memq role '(user assistant))
+               (stringp text)
+               (> (length (string-trim text)) 0))
+          (let ((msg (cons (cons 'role (symbol-name role))
+                           (list (cons 'content text)))))
+            (push msg messages)
+            (setq pending msg)))
+         (t (setq pending nil)))))
+    (nreverse messages)))
+
+(defun crush--hyper-compose-request (prompt context model &optional turns)
   "Compose a chat-completions request alist for PROMPT.
 CONTEXT is optional attachment text; MODEL is the resolved model (the
 caller passes the backend's model slot, already derived from the shared
 `crush-model' defcustom).  Falls back to `crush-hyper-default-model'.
-The body carries `stream: t' and no tools (phase 1)."
+Prior (ROLE . TEXT) TURNS from the facade's history extraction ride
+between the system prompt and the new user message; with no turns the
+body carries exactly system + user (`stream: t', no tools).  History
+is disabled by the caller passing nil turns (`crush-hyper-history-limit
+0 means the facade extracts none)."
   (let* ((model (or model crush-hyper-default-model))
          (user-content (if (and context (not (string-empty-p context)))
-                           (concat crush-context-preamble "\n\n"
-                                   context "\n\n" prompt)
+                           (concat crush-context-preamble "
+
+"
+                                   context "
+
+" prompt)
                          prompt))
+         (user-message (list (list '(role . "user")
+                                   (cons 'content user-content))))
+         (messages (if turns
+                       (append (list (list '(role . "system")
+                                           (cons 'content crush-hyper-system-prompt)))
+                               (crush--hyper-history-messages turns)
+                               user-message)
+                     (list (list '(role . "system")
+                                 (cons 'content crush-hyper-system-prompt))
+                           (list '(role . "user")
+                                 (cons 'content user-content)))))
          (body `((model . ,model)
                  (stream . t)
-                 (messages . ,(list (list '(role . "system")
-                                          (cons 'content crush-hyper-system-prompt))
-                                    (list '(role . "user")
-                                          (cons 'content user-content)))))))
+                 (messages . ,messages))))
     (when crush-hyper-max-tokens
       (setq body (cons (cons 'max_tokens crush-hyper-max-tokens) body)))
     (when crush-hyper-temperature
@@ -184,7 +237,6 @@ The body carries `stream: t' and no tools (phase 1)."
       (setq body (append body
                          `((reasoning_effort . ,crush-hyper-reasoning-effort)))))
     body))
-
 (defun crush--hyper-sse-new-state ()
   "Return a fresh SSE parser state plist."
   (list :pending "" :done nil :error nil))
@@ -432,10 +484,17 @@ backend never touches buffers.  Returns the curl process."
   "Send PROMPT to BACKEND via a direct HTTP+SSE request to Hyper.
 COMPLETION is the facade's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
-errors.  The backend never touches buffers or finalizes itself."
-  (ignore session-id continue-p buffer stderr)
-  (let* ((body (crush--hyper-compose-request
-                prompt context (crush-hyper-backend-model backend)))
+errors.  The prior conversation is read from BUFFER via the facade's
+`crush--history-for' (which enters the buffer itself) and re-sent as
+`user'/'assistant' messages; the facade's `crush-hyper-history-limit'
+decides whether any turns exist.  The backend never touches buffers
+itself."
+  (ignore session-id continue-p stderr)
+  (let* ((history (and buffer
+                       (crush--history-for buffer)))
+         (body (crush--hyper-compose-request
+                prompt context (crush-hyper-backend-model backend)
+                history))
          (base-url (or (crush-hyper-backend-base-url backend)
                        (getenv "HYPER_URL")
                        crush-hyper-base-url))

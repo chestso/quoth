@@ -99,6 +99,14 @@ Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
 ;;; buffer-local state owned by the facade (defined below); backends
 ;;; must not touch them.
 
+(defcustom crush-hyper-history-limit 200
+  "Maximum number of prior prompts sent as history by the hyper backend.
+0 disables history entirely (each prompt is a single request).  Only
+the last LIMIT complete exchanges are sent; the current turn is always
+sent in full."
+  :type 'integer
+  :group 'crush)
+
 (defcustom crush--continue nil
   "Whether to pass --continue to the Crush CLI.
 When non-nil, the next prompt continues the active session in the folder.
@@ -188,6 +196,7 @@ Buffer-local.")
 (defvar crush--input-ring-file-name
   (expand-file-name "crush-history" user-emacs-directory)
   "File where input history is persisted.")
+
 
 ;;; Backend abstraction
 
@@ -415,7 +424,8 @@ BEG and END are standard after-change hook arguments."
   (when (and crush--prompt-start-marker
              (markerp crush--prompt-start-marker)
              (>= beg (marker-position crush--prompt-start-marker)))
-    (put-text-property beg end 'crush-prompt-id crush--prompt-id))
+    (put-text-property beg end 'crush-prompt-id crush--prompt-id)
+    (put-text-property beg end 'crush-role 'user))
   (crush--update-header-line))
 
 (defun crush--lang-from-extension (filename)
@@ -513,10 +523,11 @@ editable."
         (start (point)))
     (insert "crush> ")
     (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
+    (put-text-property start (point) 'crush-role 'user)
     (add-text-properties
      start (point)
      '(read-only t
-		 front-sticky (read-only)
+		 front-sticky (read-only crush-role)
 		 rear-nonsticky (read-only font-lock-face)
 		 font-lock-face crush-prompt-face))
     (crush--freeze-region (point-min) start)
@@ -560,6 +571,150 @@ Each element is (START END ATTACHMENT-ID)."
         (setq pos (or (next-single-property-change pos 'crush-prompt-id nil (point-max))
                       (point-max)))))
     (nreverse prompts)))
+
+(defun crush-get-response-text (prompt-id)
+  "Return the assistant answer text for PROMPT-ID, or nil.
+The text tagged `crush-response-to' equal to PROMPT-ID, excluding the
+streamed reasoning (CoT) span and the reasoning-fold marker line.
+Reasoning streams before the answer, so the answer is everything after
+the reasoning region.  Returns nil when no such region exists."
+  (let ((pos (text-property-any (point-min) (point-max)
+                                'crush-response-to prompt-id)))
+    (when pos
+      (let* ((end (or (next-single-property-change pos 'crush-response-to
+                                                   nil (point-max))
+                      (point-max)))
+             (reasoning-start (text-property-any pos end
+                                                 'crush-region-type 'reasoning))
+             (answer-start (or (and reasoning-start
+                                    (next-single-property-change
+                                     reasoning-start 'crush-region-type nil end))
+                               pos)))
+        (string-trim
+         (buffer-substring-no-properties answer-start end))))))
+
+(defun crush-get-reasoning-text (prompt-id)
+  "Return the streamed reasoning (CoT) text for PROMPT-ID, or nil.
+The span tagged `crush-region-type' `reasoning' within the response
+region for PROMPT-ID, trimmed.  Returns nil when the model produced
+no chain-of-thought."
+  (let ((pos (text-property-any (point-min) (point-max)
+                                'crush-response-to prompt-id)))
+    (when pos
+      (let ((end (or (next-single-property-change pos 'crush-response-to
+                                                  nil (point-max))
+                     (point-max))))
+        (let ((rs (text-property-any pos end 'crush-region-type 'reasoning)))
+          (when rs
+            (let ((re (or (next-single-property-change rs 'crush-region-type
+                                                       nil end)
+                          end)))
+              (let ((text (string-trim
+                           (buffer-substring-no-properties rs re))))
+                (when (> (length text) 0)
+                  text)))))))))
+
+(defun crush--user-turn-text (prompt-id)
+  "Return the user-side text for PROMPT-ID: typed input + attachments.
+The text is the buffer content tagged with `crush-prompt-id' PROMPT-ID
+in buffer order, including attachment regions (that context traveled
+inside the user message when sent), excluding the `crush> ' marker
+line, the response, and reasoning regions (which share the
+`crush-prompt-id' tag but belong to the assistant).  Returns nil when
+nothing remains."
+  (let ((pos (text-property-any (point-min) (point-max)
+                                'crush-prompt-id prompt-id))
+        (chunks nil))
+    (while pos
+      ;; Chunk ends either where `crush-prompt-id' changes (the next
+      ;; prompt) or where `crush-region-type' changes (a response or
+      ;; reasoning region nested inside this prompt's text).
+      (let* ((prompt-end (or (next-single-property-change pos 'crush-prompt-id
+                                                          nil (point-max))
+                             (point-max)))
+             (type-end (or (next-single-property-change pos 'crush-region-type
+                                                        nil prompt-end)
+                           prompt-end))
+             (end type-end)
+             (chunk-start (if (string= (buffer-substring-no-properties
+                                        pos (min (point-max) (+ pos 7)))
+                                       "crush> ")
+                              (+ pos 7)
+                            pos)))
+        (when (and (< chunk-start end)
+                   (memq (get-text-property pos 'crush-region-type)
+                         '(nil attachment)))
+          (push (buffer-substring-no-properties chunk-start end) chunks))
+        (setq pos (and (< end (point-max))
+                       (text-property-any end (point-max)
+                                          'crush-prompt-id prompt-id)))))
+    (let ((text (string-join (nreverse chunks) "")))
+      (when (> (length (string-trim text)) 0)
+        (string-trim text)))))
+
+(defun crush--history-turns (prompt-id)
+  "Return the conversation history up to (but excluding) PROMPT-ID.
+Iterates the buffer's prompts in buffer order, stopping at PROMPT-ID
+(the pending prompt, which is being sent and therefore never part of
+history).  For each prior prompt emits (ROLE . TEXT) conses: `user'
+with the typed input and attachments, `assistant' with the streamed
+answer (reasoning excluded), and, when
+`crush-hyper-history-include-reasoning' is enabled, a `reasoning'
+record carrying the CoT text.  Returns nil when PROMPT-ID is the
+first prompt in the buffer."
+  (if (and (boundp 'crush-hyper-history-limit)
+           (= crush-hyper-history-limit 0))
+      nil
+    (let* ((prompts (crush-get-all-prompts))
+           (reached-current nil)
+           (turns nil))
+      (dolist (id prompts)
+        (if (string= id prompt-id)
+            (setq reached-current t)
+          (unless reached-current
+            (let ((user-text (crush--user-turn-text id)))
+              (when user-text
+                (push (cons 'user user-text) turns)))
+            (let ((resp-text (crush-get-response-text id)))
+              (when resp-text
+                (push (cons 'assistant resp-text) turns)))
+            (when (and (boundp 'crush-hyper-history-include-reasoning)
+                       crush-hyper-history-include-reasoning)
+              (let ((reasoning-text (crush-get-reasoning-text id)))
+                (when reasoning-text
+                  (push (cons 'reasoning reasoning-text) turns)))))))
+      ;; `crush-hyper-history-limit' caps the EXCHANGE count; the tail
+      ;; (most recent) always survives.  Drop the surplus oldest user
+      ;; turns from the front.
+      (let* ((limited (nreverse turns))
+             (exchanges (cl-count-if (lambda (turn) (eq (car turn) 'user))
+                                     limited)))
+        (if (and (boundp 'crush-hyper-history-limit)
+                 (> crush-hyper-history-limit 0)
+                 (> exchanges crush-hyper-history-limit))
+            ;; Skip whole exchanges from the front until exactly
+            ;; `crush-hyper-history-limit' user turns remain.  Stop AT
+            ;; the first user turn that must be kept.
+            (let ((to-cut (- exchanges crush-hyper-history-limit))
+                  (cut 0)
+                  (i 0))
+              (while (and (< i (length limited))
+                          (if (eq (car (nth i limited)) 'user)
+                              (< cut to-cut)
+                            t))
+                (when (eq (car (nth i limited)) 'user)
+                  (setq cut (1+ cut)))
+                (setq i (1+ i)))
+              (seq-subseq limited i))
+          limited)))))
+(defun crush--history-for (buffer)
+  "Return the history turns for BUFFER, excluding its pending prompt.
+The pending prompt is the one about to be sent (its ID lives in
+BUFFER's `crush--prompt-id'); the transcript stops at the last
+completed exchange.  Entering BUFFER is this function's job, keeping
+the backend buffer-free."
+  (with-current-buffer buffer
+    (crush--history-turns crush--prompt-id)))
 
 (defun crush--install-font-lock-guard (&optional enable)
   "Protect read-only boundaries from font-lock in the current buffer.
@@ -930,6 +1085,8 @@ reasoning sub-span retagged `reasoning').  Shared by
                        'crush-response-to prompt-id)
     (put-text-property response-start response-end
                        'crush-region-type 'response)
+    (put-text-property response-start response-end
+                       'crush-role 'assistant)
     ;; Reasoning is a sub-region of the response: tag it over the
     ;; response tags so lookup by region type sees `reasoning'
     ;; first for the CoT span.
@@ -943,7 +1100,9 @@ reasoning sub-span retagged `reasoning').  Shared by
             (put-text-property rs re
                                'crush-response-to prompt-id)
             (put-text-property rs re
-                               'crush-region-type 'reasoning)))))))
+                               'crush-region-type 'reasoning)
+            (put-text-property rs re
+                               'crush-role 'reasoning)))))))
 
 (defun crush-facade--close-response (response-start prompt-id)
   "Close the response started at RESPONSE-START with PROMPT-ID.

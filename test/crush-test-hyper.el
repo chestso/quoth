@@ -607,5 +607,327 @@ and return the capture output."
                  (should-not (search-forward "sk-hyper-supersecret" nil t)))))))
       (crush-test--cleanup))))
 
+;;; 94. Hyper backend: conversation history
+
+;;; Prior turns always ride in the composed request body as
+;;; [system, prior-user, prior-assistant, ..., current-user]; with no
+;;; prior turns the messages array stays a plain [system, user].
+;;; `crush-hyper-history-limit' (0 = off) is the only switch.
+
+(ert-deftest crush-test/hyper-history-compose-prepends-turns ()
+  "Prior turns ride before the new user message."
+  (let* ((req (crush--hyper-compose-request
+               "second" nil "m"
+               '((user . "first") (assistant . "one"))))
+         (msgs (alist-get 'messages req)))
+    (should (= (length msgs) 4))
+    (should (string= (crush--hyper-alist-get "role" (nth 0 msgs)) "system"))
+    (should (string= (crush--hyper-alist-get "content" (nth 1 msgs)) "first"))
+    (should (string= (crush--hyper-alist-get "role" (nth 2 msgs)) "assistant"))
+    (should (string= (crush--hyper-alist-get "content" (nth 2 msgs)) "one"))
+    (should (string= (crush--hyper-alist-get "content" (nth 3 msgs)) "second"))))
+
+(ert-deftest crush-test/hyper-history-compose-plain-with-no-turns ()
+  "With no prior turns (first prompt, or limit 0) it is exactly
+system + user."
+  (let* ((req (crush--hyper-compose-request "second" nil "m" nil))
+         (msgs (alist-get 'messages req)))
+    (should (= (length msgs) 2))
+    (should (string= (crush--hyper-alist-get "content" (nth 1 msgs))
+                     "second"))))
+
+(ert-deftest crush-test/hyper-history-compose-drops-junk-turns ()
+  "Unrecognized roles and empty text never reach the messages array."
+  (let* ((req (crush--hyper-compose-request
+               "hi" nil "m"
+               '((user . "a") (reasoning . "hidden") (assistant . "")
+                 (user . "   "))))
+         (msgs (alist-get 'messages req)))
+    ;; system + the single meaningful user turn + new user.
+    (should (= (length msgs) 3))
+    (should (string= (crush--hyper-alist-get "content" (nth 1 msgs)) "a"))))
+
+(ert-deftest crush-test/hyper-history-wire-roundtrip ()
+  "A second prompt is sent with the prior user+assistant turns as history.
+The first request is a plain [system, user]; the second request body's
+messages array is [system, prior-user, prior-assistant, current]."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((capture
+                 (crush-test--with-hyper-server
+                  'history
+                  (lambda (base)
+                    (let ((buf (current-buffer)))
+                      ;; Turn 1: type the prompt, send with history on.
+                      (goto-char (point-max))
+                      (insert "first")
+                      (save-excursion (goto-char (point-max)) (newline))
+                      (setq-local crush--response-start (point-marker))
+                      (let ((backend (crush-make-hyper-backend
+                                      :buffer buf
+                                      :base-url base
+                                      :token "tok")))
+                        (crush-backend-send-prompt
+                         backend "first"
+                         :completion (crush-test--hyper-completion buf)
+                         :on-delta (crush-test--hyper-on-delta buf)
+                         :on-error (crush-test--hyper-on-error buf)
+                         :buffer buf)
+                        (let ((deadline (+ (float-time) 6)))
+                          (while (and (< (float-time) deadline)
+                                      (< (length (crush-get-all-prompts)) 2))
+                            (accept-process-output nil 0.1)
+                            (sit-for 0.02))))
+                      ;; Turn 2: fresh prompt, send "second".
+                      (setq-local crush--prompt-id (crush--generate-id))
+                      (crush--insert-prompt)
+                      (goto-char (point-max))
+                      (newline)
+                      (insert "second")
+                      (goto-char (point-max))
+                      (setq-local crush--response-start (point-marker))
+                      (let ((backend (crush-make-hyper-backend
+                                      :buffer buf
+                                      :base-url base
+                                      :token "tok")))
+                        (crush-backend-send-prompt
+                         backend "second"
+                         :completion (crush-test--hyper-completion buf)
+                         :on-delta (crush-test--hyper-on-delta buf)
+                         :on-error (crush-test--hyper-on-error buf)
+                         :buffer buf)
+                        (let ((deadline (+ (float-time) 6)))
+                          (while (and (< (float-time) deadline)
+                                      (not (save-excursion
+                                             (goto-char (point-min))
+                                             (search-forward "ack" nil t))))
+                            (accept-process-output nil 0.1)
+                            (sit-for 0.02)))))))))
+            (let* ((base (nth 0 capture))
+                   (requests (nth 1 capture)))
+              (should base)
+              (should (= (length requests) 2))
+              (let* ((req (nth 0 requests))
+                     (body (json-read-from-string (nth 3 req)))
+                     (msgs (crush--hyper-alist-get "messages" body)))
+                (should (= (length msgs) 2))
+                (should (string= (crush--hyper-alist-get "content" (aref msgs 1))
+                                 "first")))
+              (let* ((req (nth 1 requests))
+                     (body (json-read-from-string (nth 3 req)))
+                     (msgs (crush--hyper-alist-get "messages" body)))
+                (should (= (length msgs) 4))
+                (should (string= (crush--hyper-alist-get "role" (aref msgs 0))
+                                 "system"))
+                (should (string= (crush--hyper-alist-get "content" (aref msgs 1))
+                                 "first"))
+                (should (string= (crush--hyper-alist-get "role" (aref msgs 2))
+                                 "assistant"))
+                (should (string= (crush--hyper-alist-get "content" (aref msgs 2))
+                                 "first"))
+                (should (string= (crush--hyper-alist-get "content" (aref msgs 3))
+                                 "second")))))))
+      (crush-test--cleanup)))
+
+(ert-deftest crush-test/hyper-history-real-send-input-flow ()
+  "Driving `crush-send-input' twice re-sends prior turns as history.
+The second request body must be [system, user \"hi\", assistant reply,
+user \"hello\"]; the first stays [system, user \"hi\"]."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq-local crush-active-backend
+                      (crush-make-hyper-backend
+                       :buffer (current-buffer)
+                       :working-directory default-directory
+                       :token "tok"
+                       :model crush-model))
+          (let ((result
+                 (crush-test--with-hyper-server
+                  'history
+                  (lambda (base)
+                    (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                    (let ((buf (current-buffer)))
+                      (goto-char (point-max))
+                      (insert "hi")
+                      (crush-send-input)
+                      (let ((dl (+ (float-time) 6)))
+                        (while (and (< (float-time) dl)
+                                    (< (length (crush-get-all-prompts)) 2))
+                          (accept-process-output nil 0.1) (sit-for 0.02)))
+                      (goto-char (point-max))
+                      (insert "hello")
+                      (crush-send-input)
+                      (let ((dl (+ (float-time) 6)) (found nil))
+                        (while (and (< (float-time) dl) (not found))
+                          (accept-process-output nil 0.1) (sit-for 0.02)
+                          (setq found (save-excursion
+                                        (goto-char (point-min))
+                                        (search-forward "ack" nil t))))
+                        (should found)))))))
+            (let ((requests (nth 1 result)))
+              (should (= (length requests) 2))
+              (let* ((r1 (nth 0 requests))
+                     (m1 (crush--hyper-alist-get "messages"
+                                                 (json-read-from-string (nth 3 r1)))))
+                (should (= (length m1) 2))
+                (should (string= (crush--hyper-alist-get "content" (aref m1 1))
+                                 "hi")))
+              (let* ((r2 (nth 1 requests))
+                     (m2 (crush--hyper-alist-get "messages"
+                                                 (json-read-from-string (nth 3 r2)))))
+                (should (= (length m2) 4))
+                (should (string= (crush--hyper-alist-get "content" (aref m2 1))
+                                 "hi"))
+                (should (string= (crush--hyper-alist-get "role" (aref m2 2))
+                                 "assistant"))
+                (should (string= (crush--hyper-alist-get "content" (aref m2 3))
+                                 "hello")))))))
+      (crush-test--cleanup)))
+
+(ert-deftest crush-test/hyper-history-limit-zero-disables ()
+  "Setting `crush-hyper-history-limit' to 0 disables history: the
+second request is a plain [system, user]."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq-local crush-active-backend
+                      (crush-make-hyper-backend
+                       :buffer (current-buffer)
+                       :working-directory default-directory
+                       :token "tok"
+                       :model crush-model))
+          (let ((crush-hyper-history-limit 0))
+            (let ((result
+                   (crush-test--with-hyper-server
+                    'history
+                    (lambda (base)
+                      (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                      (let ((buf (current-buffer)))
+                        (goto-char (point-max))
+                        (insert "hi")
+                        (crush-send-input)
+                        (let ((dl (+ (float-time) 6)))
+                          (while (and (< (float-time) dl)
+                                      (< (length (crush-get-all-prompts)) 2))
+                            (accept-process-output nil 0.1) (sit-for 0.02)))
+                        (goto-char (point-max))
+                        (insert "hello")
+                        (crush-send-input)
+                        (let ((dl (+ (float-time) 6)) (found nil))
+                          (while (and (< (float-time) dl) (not found))
+                            (accept-process-output nil 0.1) (sit-for 0.02)
+                            (setq found (save-excursion
+                                          (goto-char (point-min))
+                                          (search-forward "first" nil t))))
+                          (should found)))))))
+              (let ((requests (nth 1 result)))
+                (should (= (length requests) 2))
+                (let* ((r2 (nth 1 requests))
+                       (m2 (crush--hyper-alist-get "messages"
+                                                   (json-read-from-string (nth 3 r2)))))
+                  (should (= (length m2) 2))
+                  (should (string= (crush--hyper-alist-get "content" (aref m2 1))
+                                   "hello"))))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/hyper-history-compose-excluded-stays-plain ()
+  "Excluded reasoning: the assistant message has only `content'."
+  (let* ((req (crush--hyper-compose-request
+               "hello" nil "m"
+               '((user . "first")
+                 (assistant . "answer"))))
+         (msgs (alist-get 'messages req)))
+    (should (= (length msgs) 4))
+    (let ((a (nth 2 msgs)))
+      (should (string= (crush--hyper-alist-get "role" a) "assistant"))
+      (should (string= (crush--hyper-alist-get "content" a) "answer"))
+      (should-not (assoc 'reasoning_content a)))))
+
+(ert-deftest crush-test/hyper-history-compose-reasoning-wire-shape ()
+  "Included reasoning: ONE assistant message carrying both `content'
+and `reasoning_content'; no standalone reasoning message."
+  (let* ((req (crush--hyper-compose-request
+               "hello" nil "m"
+               '((user . "first")
+                 (assistant . "answer")
+                 (reasoning . "trace"))))
+         (msgs (alist-get 'messages req)))
+    (should (= (length msgs) 4))
+    (let ((a (nth 2 msgs)))
+      (should (string= (crush--hyper-alist-get "role" a) "assistant"))
+      (should (string= (crush--hyper-alist-get "content" a) "answer"))
+      (should (string= (crush--hyper-alist-get "reasoning_content" a)
+                       "trace")))
+    ;; No message has role "reasoning".
+    (should-not (cl-some (lambda (m)
+                           (string= (crush--hyper-alist-get "role" m)
+                                    "reasoning"))
+                         msgs))))
+
+(ert-deftest crush-test/hyper-history-compose-reasoning-orphan-dropped ()
+  "A `reasoning' record with no preceding assistant turn is dropped."
+  (let* ((req (crush--hyper-compose-request
+               "hello" nil "m"
+               '((reasoning . "stray"))))
+         (msgs (alist-get 'messages req)))
+    (should (= (length msgs) 2))))
+
+(ert-deftest crush-test/hyper-history-wire-reasoning-content-field ()
+  "With `crush-hyper-history-include-reasoning', a later request's
+assistant message carries `content' AND `reasoning_content' as sibling
+fields (HYPER-API.md §3.4)."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq-local crush-active-backend
+                      (crush-make-hyper-backend
+                       :buffer (current-buffer)
+                       :working-directory default-directory
+                       :token "tok"
+                       :model crush-model))
+          (let ((crush-hyper-history-include-reasoning t))
+            (let ((result
+                   (crush-test--with-hyper-server
+                    'reasoning-history
+                    (lambda (base)
+                      (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                      (let ((buf (current-buffer)))
+                        ;; Turn 1 through the real send path: reasoning
+                        ;; deltas stream, finalize tags them.
+                        (goto-char (point-max))
+                        (insert "first")
+                        (crush-send-input)
+                        (let ((dl (+ (float-time) 6)))
+                          (while (and (< (float-time) dl)
+                                      (< (length (crush-get-all-prompts)) 2))
+                            (accept-process-output nil 0.1) (sit-for 0.02)))
+                        ;; Turn 2: history must carry reasoning_content.
+                        (goto-char (point-max))
+                        (insert "second")
+                        (crush-send-input)
+                        (let ((dl (+ (float-time) 6)) (found nil))
+                          (while (and (< (float-time) dl) (not found))
+                            (accept-process-output nil 0.1) (sit-for 0.02)
+                            (setq found (save-excursion
+                                          (goto-char (point-min))
+                                          (search-forward "ack" nil t))))
+                          (should found)))))))
+              (let ((requests (nth 1 result)))
+                (should (>= (length requests) 2))
+                (let* ((r2 (nth 1 requests))
+                       (m2 (crush--hyper-alist-get "messages"
+                                                   (json-read-from-string (nth 3 r2)))))
+                  (should (= (length m2) 4))
+                  (let ((a (aref m2 2)))
+                    (should (string= (crush--hyper-alist-get "role" a)
+                                     "assistant"))
+                    (should (string= (crush--hyper-alist-get "content" a)
+                                     "answer out"))
+                    (should (string= (crush--hyper-alist-get "reasoning_content" a)
+                                     "think step hidden")))))))))
+      (crush-test--cleanup)))
+
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here
