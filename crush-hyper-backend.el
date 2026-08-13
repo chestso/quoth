@@ -214,25 +214,25 @@ body carries exactly system + user (`stream: t', no tools).  History
 is disabled by the caller passing nil turns (`crush-hyper-history-limit
 0 means the facade extracts none)."
   (let* ((model (or model crush-hyper-default-model))
-         (user-content (if (and context (not (string-empty-p context)))
-                           (concat crush-context-preamble "
-
-"
-                                   context "
-
-" prompt)
-                         prompt))
-         (user-message (list (list '(role . "user")
-                                   (cons 'content user-content))))
-         (messages (if turns
-                       (append (list (list '(role . "system")
-                                           (cons 'content crush-hyper-system-prompt)))
-                               (crush--hyper-history-messages turns)
-                               user-message)
-                     (list (list '(role . "system")
-                                 (cons 'content crush-hyper-system-prompt))
-                           (list '(role . "user")
-                                 (cons 'content user-content)))))
+         (user-content
+          (if (and context (not (string-empty-p context)))
+              (concat crush-context-preamble "\n\n"
+                      context "\n\n"
+                      prompt)
+            prompt))
+         (user-message
+          (list (list '(role . "user")
+                      (cons 'content user-content))))
+         (messages
+          (if turns
+              (append (list (list '(role . "system")
+                                  (cons 'content crush-hyper-system-prompt)))
+                      (crush--hyper-history-messages turns)
+                      user-message)
+            (list (list '(role . "system")
+                        (cons 'content crush-hyper-system-prompt))
+                  (list '(role . "user")
+                        (cons 'content user-content)))))
          (body `((model . ,model)
                  (stream . t)
                  (messages . ,messages))))
@@ -246,6 +246,7 @@ is disabled by the caller passing nil turns (`crush-hyper-history-limit
       (setq body (append body
                          `((reasoning_effort . ,crush-hyper-reasoning-effort)))))
     body))
+
 (defun crush--hyper-sse-new-state ()
   "Return a fresh SSE parser state plist."
   (list :pending "" :done nil :error nil))
