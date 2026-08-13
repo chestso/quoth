@@ -39,7 +39,24 @@
 (require 'ert)
 (require 'cl-lib)
 
-(require 'crush-xxh3)
+;;; flycheck byte-compiles this file in isolation, and its batch child's
+;;; `load-path' excludes the package root and test dir.  Prefer
+;;; `require'; fall back to loading each dep from this file's directory
+;;; or its parent (the package root) so flycheck and package loads work.
+(eval-and-compile
+  (dolist (dep '("crush-xxh3"))
+    (unless (require (intern dep) nil t)
+      (let* ((base (file-name-directory
+                    (or buffer-file-name load-file-name default-directory)))
+             (dirs (list base (expand-file-name ".." base)))
+             (loaded nil))
+        (dolist (dir dirs)
+          (unless loaded
+            (let ((file (expand-file-name (concat dep ".el") dir)))
+              (when (file-exists-p file)
+                (load file nil t)
+                (setq loaded t)))))))))
+
 
 (ert-deftest crush-test/xxh3-empty-string ()
   "The empty string hashes to zeebo/xxh3's value (2d06800538d394c2)."

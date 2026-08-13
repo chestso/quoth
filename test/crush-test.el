@@ -36,7 +36,24 @@
 (require 'ert)
 (require 'cl-lib)
 
-(require 'crush)
+;;; flycheck byte-compiles this file in isolation, and its batch child's
+;;; `load-path' excludes the package root and test dir.  Prefer
+;;; `require'; fall back to loading each dep from this file's directory
+;;; or its parent (the package root) so flycheck and package loads work.
+(eval-and-compile
+  (dolist (dep '("crush"))
+    (unless (require (intern dep) nil t)
+      (let* ((base (file-name-directory
+                    (or buffer-file-name load-file-name default-directory)))
+             (dirs (list base (expand-file-name ".." base)))
+             (loaded nil))
+        (dolist (dir dirs)
+          (unless loaded
+            (let ((file (expand-file-name (concat dep ".el") dir)))
+              (when (file-exists-p file)
+                (load file nil t)
+                (setq loaded t)))))))))
+
 
 ;;; Helper
 
@@ -76,14 +93,19 @@ tests; the global default is `hyper')."
     (when (get-buffer name)
       (kill-buffer name))))
 
-(require 'crush-test-buffer)
-(require 'crush-test-commands)
-(require 'crush-test-backend)
-(require 'crush-test-hyper)
-(require 'crush-test-reasoning)
-(require 'crush-test-stream)
-(require 'crush-test-xxh3)
-(require 'crush-test-tools)
+;;; Load the topic test files the same way: `require' first, then
+;;; fall back to this directory so flycheck and direct loads work.
+(eval-and-compile
+  (dolist (dep '("crush-test-buffer" "crush-test-commands"
+                 "crush-test-backend" "crush-test-hyper"
+                 "crush-test-reasoning" "crush-test-stream"
+                 "crush-test-xxh3" "crush-test-tools"))
+    (unless (require (intern dep) nil t)
+      (load (expand-file-name
+             (concat dep ".el")
+             (file-name-directory
+              (or buffer-file-name load-file-name default-directory)))
+            nil t))))
 
 (provide 'crush-test)
 ;;; crush-test.el ends here
