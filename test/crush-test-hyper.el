@@ -15,9 +15,9 @@
 (ert-deftest crush-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
   (let ((crush-model nil))
-    (let* ((req (crush--hyper-compose-request "Hello" nil "qwen3.7-plus"))
+    (let* ((req (crush--hyper-compose-request "Hello" nil "m"))
            (msgs (alist-get 'messages req)))
-      (should (string= (alist-get 'model req) "qwen3.7-plus"))
+      (should (string= (alist-get 'model req) "m"))
       (should (eq (alist-get 'stream req) t))
       (should (= (length msgs) 2))
       (should (string= (crush--hyper-alist-get "role" (nth 0 msgs)) "system"))
@@ -51,10 +51,10 @@
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 
 (ert-deftest crush-test/hyper-compose-model-default ()
-  "When no model is set, the catalog default should be used."
+  "When no model is set, the crush default model is used."
   (let ((crush-model nil))
     (should (string= (alist-get 'model (crush--hyper-compose-request "P" nil nil))
-                     "qwen3.7-plus"))))
+                     crush-hyper-default-model))))
 
 (ert-deftest crush-test/hyper-compose-no-tools-in-phase1 ()
   "Phase 1 should not announce any tools."

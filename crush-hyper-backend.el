@@ -157,7 +157,7 @@ switched off."
   "You are a helpful assistant.  You answer concisely and correctly."
   "System prompt sent with every phase-1 hyper request.")
 
-(defconst crush-hyper-default-model "qwen3.7-plus"
+(defconst crush-hyper-default-model "deepseek-v4-flash"
   "Model used when the backend model slot and `crush-model' are both nil.")
 
 (declare-function crush--debug-log "crush.el" (category message))

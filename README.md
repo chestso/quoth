@@ -96,7 +96,7 @@ Set it to `nil` to request without a token (useful for local gateways). A missin
 
 ### Model selection for hyper
 
-The hyper backend uses `crush-model` (the shared model defcustom), falling back to the constant `crush-hyper-default-model` (`qwen3.7-plus`). Request-level `max_tokens`, `temperature`, and `thinking`/`reasoning_effort` are controlled by the defcustoms below.
+The hyper backend uses `crush-model` (the shared model defcustom), falling back to the constant `crush-hyper-default-model` (`deepseek-v4-flash`). Request-level `max_tokens`, `temperature`, and `thinking`/`reasoning_effort` are controlled by the defcustoms below.
 
 ### crush-hyper-timeout / crush-hyper-max-tokens / crush-hyper-temperature
 
