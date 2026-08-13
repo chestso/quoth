@@ -2,6 +2,12 @@
 
 A GNU Emacs package for chatting with AI providers directly from an Emacs buffer.
 
+## Motivation
+
+crush.el started with the observation that the Crush CLI's prompt area is not powerful enough to work with. A prompt is text, and text is the editor's home turf: composing, revising, and reviewing a prompt is editing, and an editor is a much more powerful surface for it than any prompt field. The keyboard is part of the story too — Crush's shortcuts follow Windows/macOS conventions, not Emacs muscle memory. And so the package grew out of a simple wish: to interact with Crush directly from the editor that is already open, Emacs.
+
+Everything else follows from that wish. The conversation lives in a real buffer, so it inherits everything Emacs offers — kill and yank, search, multiple windows, markdown rendering, and project-aware context insertion — instead of a fixed prompt area with a fixed set of keys.
+
 ## Goal
 
 crush.el's primary mode of operation is **direct provider interaction**: it talks to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE (no separate CLI binary needed). A dedicated Emacs buffer sends prompts and streams the model's response, including chain-of-thought reasoning. On top of that, any buffer selection can be used as context: the selection is formatted as a markdown fenced code block with the file path and line numbers (relative to the project root), then inserted into the crush buffer before the prompt as an attachment.
