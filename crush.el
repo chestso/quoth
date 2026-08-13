@@ -217,12 +217,23 @@ Buffer-local.")
 ;;; live in `crush-backend.el'; the concrete backends in
 ;;; `crush-run-backend.el' (the `crush run' CLI) and
 ;;; `crush-hyper-backend.el' (direct HTTP to the Charm Hyper gateway).
-
-(require 'crush-backend)
-(require 'crush-run-backend)
-(require 'crush-hyper-backend)
-(require 'crush-stream)
-(require 'crush-tool)
+;;; The dependency files sit next to this file but are not guaranteed to
+;;; be on `load-path': package.el adds the package dir, while direct
+;;; `load' or flycheck's batch byte-compile do not.  Try `require'
+;;; first, then fall back to loading from this file's own directory so
+;;; both setups work.
+(eval-and-compile
+  (dolist (dep '("crush-backend" "crush-xxh3" "crush-stream"
+                 "crush-run-backend" "crush-hyper-backend" "crush-tool"))
+    (unless (require (intern dep) nil t)
+      (load (expand-file-name
+             (concat dep ".el")
+             (file-name-directory
+              ;; In a flycheck byte-compile child the source path lives in
+              ;; `buffer-file-name'; under `load' it is `load-file-name'.
+              ;; `default-directory' is a last resort for eval-buffer.
+              (or buffer-file-name load-file-name default-directory)))
+            nil t))))
 
 (defvar crush-active-backend nil
   "The active crush backend for this buffer (facade-owned).

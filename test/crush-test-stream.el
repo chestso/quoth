@@ -216,9 +216,9 @@ dedicated stream module."
     (should (string-match-p "defun crush-facade--stream-progress" stream-src))
     (should (string-match-p "defun crush-facade--record-error" stream-src))
     (should (string-match-p "crush--stream-state" stream-src)))
-  ;; crush.el should require it and no longer define the protocol itself.
+  ;; crush.el should load it and no longer define the protocol itself.
   (let ((core (crush-test--stream-source "crush")))
-    (should (string-match-p "require 'crush-stream" core))
+    (should (string-match-p "\"crush-stream\"" core))
     (should-not (string-match-p "defun crush-facade--stream-progress" core))))
 
 (provide 'crush-test-stream)
