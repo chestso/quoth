@@ -139,6 +139,76 @@ which region each delta belongs to."
     (should (plist-get (cdr result) :done))
     (should (string= (plist-get (cdr result) :error) "boom"))))
 
+(ert-deftest crush-test/sse-on-event-fires-per-data-event ()
+  "With `:on-event', the callback sees the raw payload of every
+complete `data:' event, in order, before it is dispatched."
+  (let ((events nil))
+    (let* ((result (crush--hyper-sse-feed
+                    (crush-test--sse-state)
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n"
+                    :on-event (lambda (payload) (push payload events))))
+           (more (crush--hyper-sse-feed
+                  (cdr result)
+                  "data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n"
+                  :on-event (lambda (payload) (push payload events)))))
+      (ignore more)
+      (should (equal (nreverse events)
+                     '("{\"choices\":[{\"delta\":{\"content\":\"one\"}}]}"
+                       "{\"choices\":[{\"delta\":{\"content\":\"two\"}}]}"))))))
+
+(ert-deftest crush-test/sse-on-event-fires-only-for-done-events ()
+  "The callback fires only for complete `data:' events: an unterminated
+fragment (no blank line) is not an event; `[DONE]' is (with its raw
+text)."
+  (let* ((events nil)
+         (on-event (lambda (payload) (push payload events))))
+    (let* ((partial (crush--hyper-sse-feed
+                     (crush-test--sse-state)
+                     "data: {\"choices\":[{\"delta\":{\"con"
+                     :on-event on-event))
+           (a (crush--hyper-sse-feed
+               (cdr partial)
+               "tent\":\"x\"}}]}\n\n"
+               :on-event on-event))
+           (b (crush--hyper-sse-feed
+               (cdr a)
+               "data: [DONE]\n\n"
+               :on-event on-event)))
+      (ignore b)
+      (should (equal (nreverse events)
+                     '("{\"choices\":[{\"delta\":{\"content\":\"x\"}}]}"
+                       "[DONE]"))))))
+
+(ert-deftest crush-test/sse-event-worth-pretty-final-usage-chunk ()
+  "The final chunk with finish_reason and usage is worth pretty-printing
+(it carries the conversation's statistics), regardless of formatting."
+  (let ((payload (concat
+                  "{\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{},"
+                  "\"finish_reason\":\"stop\"}],"
+                  "\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":70,"
+                  "\"total_tokens\":90}}")))
+    (should (crush--hyper-event-worth-pretty-p payload))))
+
+(ert-deftest crush-test/sse-event-worth-pretty-long-content ()
+  "A delta carrying a long content (>= 40 chars) is worth pretty-printing,
+so large streamed chunks stay readable."
+  (let ((payload (concat
+                  "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\""
+                  (make-string 40 ?a)
+                  "\"},\"finish_reason\":null}]}")))
+    (should (crush--hyper-event-worth-pretty-p payload))))
+
+(ert-deftest crush-test/sse-event-not-worth-pretty-short-delta ()
+  "A short per-token delta is kept compact (not pretty-printed), keeping
+the debug log bounded during long streams."
+  (dolist (payload '("{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"We\"},\"finish_reason\":null}]}"
+                     "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Hello\"},\"finish_reason\":null}]}"
+                     "data: [DONE]"))
+    (should-not (crush--hyper-event-worth-pretty-p payload))))
+
+
+
+
 ;;; 92c. Hyper transport: filter state persistence and curl config
 
 (ert-deftest crush-test/hyper-transport-filter-persists-split-events ()
@@ -692,8 +762,8 @@ and return the capture output."
                (should (buffer-live-p debug-buf))
                (with-current-buffer debug-buf
                  (goto-char (point-min))
-                 (should (search-forward "request: POST" nil t))
-                 (should (search-forward "body=" nil t))
+                (should (search-forward "request: POST" nil t))
+                (should (search-forward "body:" nil t))
                  (goto-char (point-min))
                  (should (search-forward "response: POST" nil t))
                  (goto-char (point-min))

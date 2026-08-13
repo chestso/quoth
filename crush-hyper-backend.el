@@ -251,15 +251,18 @@ is disabled by the caller passing nil turns (`crush-hyper-history-limit
   "Return a fresh SSE parser state plist."
   (list :pending "" :done nil :error nil))
 
-(defun crush--hyper-sse-feed (state chunk)
+(defun crush--hyper-sse-feed (state chunk &optional &rest args)
   "Feed CHUNK into SSE parser STATE and return (DELTAS . NEW-STATE).
 Each delta is a (KIND . TEXT) cons, where KIND is `content' or
 `reasoning'; see `crush--hyper-sse-extract-deltas'.  Sets `:done'
 when `[DONE]' or an error payload is seen; the `:pending' buffer
-keeps partial events across chunk boundaries."
+keeps partial events across chunk boundaries.  ARGS may contain
+:on-event, a callback invoked with the raw payload of each COMPLETE
+`data:' event (before it is dispatched), including `[DONE]'."
   (let ((pending (concat (plist-get state :pending) chunk))
         (done (plist-get state :done))
         (error (plist-get state :error))
+        (on-event (plist-get args :on-event))
         (deltas nil))
     ;; Normalize CRLF, then split into events.  An event is one or more
     ;; lines followed by a blank line (\"\\n\\n\").  A trailing fragment
@@ -286,6 +289,8 @@ keeps partial events across chunk boundaries."
             ;; never splits a JSON event across lines).
             (dolist (data-line data-lines)
               (let ((payload (string-trim (substring data-line 5))))
+                (when (functionp on-event)
+                  (funcall on-event payload))
                 (cond
                  ((string= payload "[DONE]")
                   (setq done t))
@@ -371,11 +376,17 @@ the facade's on-delta callback.  The HTTP response head (headers) is
 not valid SSE and is ignored by the parser; the status line is parsed
 for diagnostics, and errors are surfaced by the sentinel when curl
 exits non-zero."
-  (crush--debug-log 'output (format "%S" (string-replace "\r" "" string)))
   (unless (process-get proc :crush-head-parsed)
     (setq string (crush--hyper-parse-head proc string)))
-  (let* ((sse-state (process-get proc :crush-sse))
-         (result (crush--hyper-sse-feed sse-state string))
+  (let* ((on-event (lambda (payload)
+                     (crush--debug-log
+                      'output
+                      (if (crush--hyper-event-worth-pretty-p payload)
+                          (concat "data:\n"
+                                  (crush--hyper-json-pretty payload))
+                        (concat "data: " payload)))))
+         (sse-state (process-get proc :crush-sse))
+         (result (crush--hyper-sse-feed sse-state string :on-event on-event))
          (deltas (car result))
          (new-state (cdr result)))
     (dolist (delta deltas)
@@ -405,6 +416,7 @@ The token is never logged."
           (process-put proc :crush-status status)
           (process-put proc :crush-content-type content-type)
           (process-put proc :crush-head-parsed t)
+          (crush--debug-log 'output (string-replace "\r" "" head-text))
           (crush--debug-log
            'response
            (format "POST %s model=%S status=%s content-type=%s token=%s"
@@ -434,6 +446,44 @@ HTTP error), finish with an error; otherwise ensure cleanup."
        (if status
            (format "HTTP %s from %s" status (process-get proc :crush-url))
          "connection closed without [DONE]")))))
+
+(defun crush--hyper-json-pretty (json-string)
+  "Return JSON-STRING pretty-printed with 2-space indentation.
+Uses `json-pretty-print' in a temp buffer, avoiding any dependency on
+`json-pretty-print-string' (not present in older json.el)."
+  (with-temp-buffer
+    (insert json-string)
+    (json-pretty-print (point-min) (point-max))
+    (buffer-string)))
+
+(defun crush--hyper-event-worth-pretty-p (payload)
+  "Return non-nil if SSE PAYLOAD deserves pretty-printing in the log.
+A payload is worth pretty-printing when it parses as JSON and either
+carries the final chunk (`choices[].finish_reason' or top-level
+`usage') or a long delta text (>= 40 chars).  Everything else --
+short per-token deltas, `[DONE]', malformed payloads -- is kept
+compact to bound the debug log during long streams."
+  (when (and (string-prefix-p "{" payload))
+    (let ((obj (ignore-errors (json-read-from-string payload))))
+      (when obj
+        (let* ((raw-choices (crush--hyper-alist-get "choices" obj))
+               (first-choice (if (vectorp raw-choices)
+                                 (and (> (length raw-choices) 0)
+                                      (aref raw-choices 0))
+                               (car-safe raw-choices)))
+               (delta (and first-choice
+                           (crush--hyper-alist-get "delta" first-choice)))
+               (finish (and first-choice
+                            (crush--hyper-alist-get "finish_reason" first-choice)))
+               (usage (crush--hyper-alist-get "usage" obj))
+               (content (and delta
+                             (crush--hyper-alist-get "content" delta)))
+               (reasoning (and delta
+                               (crush--hyper-alist-get "reasoning_content" delta)))
+               (text (or content reasoning)))
+          (or finish usage
+              (and (stringp text)
+                   (>= (length text) 40))))))))
 
 (defun crush--hyper-request (base-url token body on-delta callback &optional on-error session-id)
   "Send HTTP POST to BASE-URL with TOKEN and JSON BODY via curl.
@@ -483,12 +533,12 @@ backend never touches buffers.  Returns the curl process."
     (process-put proc :crush-status nil)
     (crush--debug-log
      'request
-     (format "POST %s model=%S token=%s sess=%s body=%S"
+     (format "POST %s model=%S token=%s sess=%s\nbody:\n%s"
              (process-get proc :crush-url)
              (process-get proc :crush-model)
              (if (process-get proc :crush-token-p) "present" "none")
              (or session-id "-")
-             (json-encode body)))
+             (crush--hyper-json-pretty (json-encode body))))
     ;; Config + JSON body over stdin; EOF closes the request.
     (process-send-string proc config)
     (process-send-string proc payload)

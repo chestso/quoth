@@ -897,7 +897,7 @@ FILE is the file path, START and END are the line numbers."
 
 (defun crush--output-filter (proc string)
   "Insert STRING from PROC into the crush buffer at the process mark."
-  (crush--debug-log 'output (format "%S" string))
+  (crush--debug-log 'output string)
   (when (buffer-live-p (process-buffer proc))
     (with-current-buffer (process-buffer proc)
       (let ((inhibit-read-only t)
