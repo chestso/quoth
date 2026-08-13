@@ -236,7 +236,7 @@
               ;; New ID should be different
               (should (stringp crush--prompt-id))
               (should (not (string= old-id crush--prompt-id))))))
-	(crush-test--cleanup))))
+      (crush-test--cleanup))))
 
 ;;; 18. Header line display
 

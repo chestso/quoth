@@ -129,7 +129,7 @@ open (`crush--response-start' at point-max after a newline)."
   "Reasoning text should be tagged `crush-region-type' reasoning."
   (let ((expected-id nil))
     (let ((buf (crush-test--finalize-with-reasoning
-		(lambda (proc)
+                (lambda (proc)
                   (setq expected-id crush--prompt-id)
                   (crush-facade--append-delta "think hard" 'reasoning)
                   (crush-facade--append-delta "answer" 'content)))))

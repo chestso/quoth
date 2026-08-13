@@ -70,8 +70,8 @@ compatibility with the Crush CLI."
                (:include crush-backend (type 'run))
                (:constructor nil)
                (:constructor crush-make-run-backend
-			     (&key buffer working-directory program args model
-				   &aux (type 'run) (completion-action nil)))
+                             (&key buffer working-directory program args model
+                                   &aux (type 'run) (completion-action nil)))
                (:copier nil))
   "Standalone crush run backend."
   program

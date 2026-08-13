@@ -488,8 +488,8 @@ metadata (like prompt IDs) is not re-tagged by `crush--after-change'."
       (add-text-properties
        start end
        '(read-only t
-		   front-sticky (read-only)
-		   rear-nonsticky (read-only))))))
+                   front-sticky (read-only)
+                   rear-nonsticky (read-only))))))
 
 (defun crush--reassert-read-only-boundaries (&rest _)
   "Re-assert `rear-nonsticky' on all read-only text.
@@ -527,9 +527,9 @@ editable."
     (add-text-properties
      start (point)
      '(read-only t
-		 front-sticky (read-only crush-role)
-		 rear-nonsticky (read-only font-lock-face)
-		 font-lock-face crush-prompt-face))
+                 front-sticky (read-only crush-role)
+                 rear-nonsticky (read-only font-lock-face)
+                 font-lock-face crush-prompt-face))
     (crush--freeze-region (point-min) start)
     (setq-local crush--prompt-start-marker (copy-marker start))
     (set-marker-insertion-type crush--prompt-start-marker t)
@@ -860,8 +860,8 @@ Resolves against `project-root' when in a project, otherwise
   "Format the selection as a markdown fenced code block.
 FILE is the file path, START and END are the line numbers."
   (let* ((start-line (save-excursion
-		       (goto-char start)
-		       (line-number-at-pos)))
+                       (goto-char start)
+                       (line-number-at-pos)))
          (end-line (save-excursion
                      (goto-char end)
                      (line-number-at-pos)))
