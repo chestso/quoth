@@ -64,10 +64,10 @@ to answer the prompt."
 COMPLETION is a zero-argument closure (the facade's continuation) that
 the backend must invoke exactly once when the response stream finishes.
 BUFFER is the crush buffer the backend may associate its transport
-process with, and STDERR is the stderr buffer, purely as data objects
-(never read or switched to).  ON-DELTA is a (DELTA KIND) callback that
-consumes streamed output, and ON-ERROR receives stream error messages,
-for backends that stream (hyper).")
+process with, and STDERR is the stderr buffer; both are passed purely
+as data objects, never read or switched to.  ON-DELTA is a (DELTA
+KIND) callback that consumes streamed output, and ON-ERROR receives
+stream error messages, for backends that stream (hyper).")
 
 (cl-defgeneric crush-backend-interrupt (backend)
   "Interrupt the currently running operation on BACKEND.")
@@ -84,8 +84,8 @@ ACTION is `allow', `allow-session', or `deny'.")
 
 (cl-defgeneric crush-backend--tool-results (backend tool-calls)
   "Build the tool-result messages for TOOL-CALLS from BACKEND's buffer.
-TOOL-CALLS is a vector of tool-call alists from the SSE stream
-(accumulated by `crush--hyper-sse-merge-tool-calls').  Returns a
+TOOL-CALLS is a vector of tool-call alists from the SSE stream,
+accumulated by `crush--hyper-sse-merge-tool-calls'.  Returns a
 list of message alists ready to be appended to the conversation
 history: an assistant message with `tool_calls' followed by
 `role: \"tool\"' messages with the results."

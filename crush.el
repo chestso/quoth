@@ -666,9 +666,9 @@ nothing remains."
 
 (defun crush--history-turns (prompt-id)
   "Return the conversation history up to (but excluding) PROMPT-ID.
-Iterates the buffer's prompts in buffer order, stopping at PROMPT-ID
-(the pending prompt, which is being sent and therefore never part of
-history).  For each prior prompt emits (ROLE . TEXT) conses: `user'
+Iterate the buffer's prompts in buffer order, stopping at PROMPT-ID;
+the pending prompt is being sent and therefore never part of history.
+For each prior prompt emit (ROLE . TEXT) conses: `user'
 with the typed input and attachments, `assistant' with the streamed
 answer (reasoning excluded), `tool' with the tool-call exchange text,
 and, when `crush-hyper-history-include-reasoning' is enabled, a
@@ -717,11 +717,11 @@ is the first prompt in the buffer."
               (seq-subseq limited i))
           limited)))))
 (defun crush--history-for (buffer)
-  "Return the history turns for BUFFER, excluding its pending prompt.
+  "Return BUFFER's history without its pending prompt.
 The pending prompt is the one about to be sent (its ID lives in
 BUFFER's `crush--prompt-id'); the transcript stops at the last
-completed exchange.  Entering BUFFER is this function's job, keeping
-the backend buffer-free."
+completed exchange.  Entering BUFFER is this function's job, which
+keeps the backend buffer-free."
   (with-current-buffer buffer
     (crush--history-turns crush--prompt-id)))
 
@@ -1204,11 +1204,11 @@ continuation) when injected; otherwise falls back to
 
 (defun crush-facade--append-delta (delta kind)
   "Append streamed DELTA of KIND (`content' or `reasoning') to the buffer.
-The facade's buffer-aware consumer for streaming backends: inserts at
-point-max (the growing response area), drives the reasoning overlay
-(the first reasoning delta opens the region, later ones extend it, the
-first content delta freezes it), and moves the cursor along reasoning
-insertions while leaving point alone for content.  `crush--response-start'
+The facade's buffer-aware consumer for streaming backends inserts at
+point-max, the growing response area, and drives the reasoning overlay:
+the first reasoning delta opens the region, later ones extend it, the
+first content delta freezes it, and the cursor moves along reasoning
+insertions while point stays put for content.  `crush--response-start'
 is never touched; it stays at the response start for finalization.
 Runs in the crush buffer (the facade's `:on-delta' closure enters it)."
   (let ((inhibit-read-only t)

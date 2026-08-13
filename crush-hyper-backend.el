@@ -103,9 +103,10 @@ either.  Functions are called and the result is resolved recursively."
         (crush-hyper--resolve-token resolved)))))
 
 (defcustom crush-hyper-history-include-reasoning nil
-  "When non-nil, streamed reasoning (CoT) is re-sent along with the
-assistant turns as `reasoning_content' (per HYPER-API.md §3.4).
-nil (default) keeps reasoning out of the model-visible history."
+  "Non-nil re-sends streamed reasoning (CoT) with assistant turns.
+The reasoning is emitted as `reasoning_content' (per HYPER-API.md
+section 3.4).  The default nil keeps reasoning out of the
+model-visible history."
   :type 'boolean
   :group 'crush)
 
@@ -217,12 +218,12 @@ for the value; nil omits the header."
   model)
 
 (defun crush--hyper-history-messages (turns)
-  "Build message alists from history TURNS.
+  "Build message alists from conversation history.
 TURNS is a list of (ROLE . TEXT) conses from the facade's history
 extraction (see `crush--history-turns').  `user' and `assistant'
 become messages; a `reasoning' turn immediately following an
 `assistant' turn is folded into that same assistant message as the
-`reasoning_content' field (HYPER-API.md §3.4).  A `tool' turn
+`reasoning_content' field (HYPER-API.md section 3.4).  A `tool' turn
 following an `assistant' turn is emitted as a `role: \"tool\"'
 message with `tool_call_id'.  Any other role, and empty or
 whitespace-only text, is dropped.  Returns the alists in
@@ -427,10 +428,10 @@ tool_calls); ORIG is the parsed JSON object (nil when OBJ is nil)."
                     (list 'tool_calls nil obj)))))))
 
 (defun crush--hyper-sse-merge-tool-calls (state obj)
-  "Merge tool_calls deltas from OBJ into STATE's :tool-calls vector.
-OpenAI streams tool calls stepwise: each delta carries an index,
-an id (on the first chunk), and function name/arguments.  Arguments
-are glued across chunks by index."
+  "Merge tool-call deltas from OBJ into STATE's :tool-calls vector.
+OpenAI emits each tool call as several deltas: every delta carries
+an index, an id (on the first chunk), and function name/arguments.
+Arguments accumulate across chunks by index."
   (let* ((first-choice (crush--hyper-first-choice obj))
          (delta (and first-choice
                      (crush--hyper-alist-get "delta" first-choice)))
@@ -475,11 +476,11 @@ are glued across chunks by index."
 ;;; url.el or raw sockets.  Request config and body go to curl via stdin.
 
 (defun crush--hyper-emit-delta (proc delta kind)
-  "Emit DELTA text of KIND (`content' or `reasoning') to the facade.
-Stores the delta as a pending `:crush-emitted' event and invokes the
-facade's `:crush-on-delta' callback (a closure of (DELTA KIND)) that
-owns buffer insertion, the reasoning overlay, and the cursor.  The
-transport never touches buffers."
+  "Emit DELTA text of KIND (`content' or `reasoning') for PROC.
+Store the delta as a pending `:crush-emitted' event on PROC and
+invoke the facade's `:crush-on-delta' callback, which is a closure
+taking (DELTA KIND), that owns buffer insertion, the reasoning
+overlay, and the cursor.  The transport never touches buffers."
   (process-put proc :crush-emitted t)
   (let ((on-delta (process-get proc :crush-on-delta)))
     (when (functionp on-delta)
@@ -688,10 +689,10 @@ COMPLETION is the facade's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
 errors.  SESSION-UUID is the buffer's opaque session identifier; when
 `crush-hyper-session-cache-p' is non-nil it is hashed (XXH3-64) and
-sent as the x-session-id / x-session-affinity cache-affinity headers
-(SESSION-ID is the CLI-only session, unused here).  The prior
-conversation is read from BUFFER via the facade's `crush--history-for'
-(which enters the buffer itself) and re-sent as `user'/'assistant'
+sent as the x-session-id / x-session-affinity cache-affinity headers,
+whereas SESSION-ID (the CLI-only session) is unused here.  The prior
+conversation is read from BUFFER via the facade's `crush--history-for',
+which enters the buffer itself, and re-sent as `user'/'assistant'
 messages; the facade's `crush-hyper-history-limit' decides whether any
 turns exist.  The backend never touches buffers itself."
   (ignore session-id continue-p stderr)

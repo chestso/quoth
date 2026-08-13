@@ -50,8 +50,8 @@ Declared here so the compiler accepts the free reference in
 (defvar crush--stream-state nil
   "Facade stream state plist: (:status STATUS :error ERR :count N).
 STATUS is `idle', `active', `done', or `error'.  ERR is the error
-message when STATUS is `error'; COUNT is the application count
-(runnable pipeline, inflight, and blocked applications).
+message when STATUS is `error', and COUNT is the application count,
+meaning the runnable pipeline, inflight, and blocked applications.
 Buffer-local.")
 
 (defun crush-facade--stream-transition (status &optional count error)
@@ -68,7 +68,7 @@ Records the transition in `crush--stream-state'."
   "Return the facade stream state plist (status, error, applications).
 Reads `crush--stream-state', defaulting to a fresh `idle' state with one
 application when the buffer never sent anything.  Exposes `:applications'
-(the runnable-pipeline/inflight/blocked count) for UI consumers."
+as the runnable-pipeline/inflight/blocked count for UI consumers."
   (let* ((state (or crush--stream-state
                     (list :status 'idle :error nil :count 1)))
          (count (or (plist-get state :count)

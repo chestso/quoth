@@ -101,19 +101,19 @@
                       #x49daf0b751dd0d17 #x9e68d429265516d3
                       #xfca1477d58be162b #xce31d07ad1b8f88f
                       #x280416958f3acb45 #x7e404bbbcafbd7af]
-  "key64_000..key64_184 (24 x u64), little-endian reads of the secret.")
+  "`key64_000'..`key64_184' (24 x u64), little-endian reads of the secret.")
 
 ;;; key64_103 / key64_111 (the two "offset" constants used by the
 ;;; trailing-group path at input lengths 129..240).
 (defconst crush-xxh3--key64-offset
   [#x4f0bc7c7bbdcf93f   ; key64_103
    #x59b4cd4be0518a1d]  ; key64_111
-  "key64_103 / key64_111, used by the trailing-group path.")
+  "`key64_103' / `key64_111', used by the trailing-group path.")
 
 ;;; key32_000..key32_004 (4 x u32), used by the short path.
 (defconst crush-xxh3--key32
   [#xbe4ba423 #x396cfeb8 #x1cad21f7 #x2c81017c]
-  "key32_000..key32_004 (4 x u32), used by the short path.")
+  "`key32_000'..`key32_004' (4 x u32), used by the short path.")
 
 ;;; Precomputed lowercase hex for a byte.
 (defconst crush-xxh3--byte-hex
@@ -189,7 +189,7 @@ multiply), NOT the hi^lo folding used by `crush-xxh3--mul128-fold64'."
     h))
 
 (defun crush-xxh3--xxh-avalanche-small (h)
-  "Apply xxhAvalancheSmall (used by the short path)."
+  "Apply xxhAvalancheSmall to H, for the short path."
   (let* ((h (logxor h (ash h -33)))
          (h (crush-xxh3--mul64 h crush-xxh3--prime64-2))
          (h (logxor h (ash h -29)))
@@ -248,7 +248,7 @@ longer inputs error."
      ((<= l 240)
       (crush-xxh3--hash-medium-long s l))
      (t
-      (error "crush-xxh3: input too long (%d bytes), long path not implemented"
+      (error "Crush XXH3: input too long (%d bytes), long path not implemented"
              l)))))
 
 (defun crush-xxh3--hash-short (s l)
@@ -366,9 +366,9 @@ longer inputs error."
     (crush-xxh3--xxh3-avalanche acc)))
 
 (defun crush-xxh3--hash-medium-long (s l)
-  "Hash byte vector S of length L (129 <= L <= 240) via the extended
-medium path: the first 128 bytes are striped, then trailing 16-byte
-groups, then the final 16 bytes."
+  "Hash byte vector S of length L (129 <= L <= 240).
+Uses the extended medium path: the first 128 bytes are striped, then
+trailing 16-byte groups, then the final 16 bytes."
   (let ((acc (crush-xxh3--mul64 l crush-xxh3--prime64-1)))
     (setq acc
           (crush-xxh3--mask64
