@@ -30,7 +30,7 @@
   "A reasoning delta creates a yellow overlay tagged crush-overlay."
   (crush-test--with-reasoning-process
    (lambda (proc)
-     (crush--hyper-insert-delta proc "think" 'reasoning)
+     (crush-facade--append-delta "think" 'reasoning)
      (let ((ov (car (overlays-in (point-min) (point-max)))))
        (should (overlayp ov))
        (should (eq (overlay-get ov 'face) 'crush-reasoning-face))
@@ -46,9 +46,9 @@
      ;; Move point away from the insertion area first, as a user might
      ;; when scrolling up to read earlier conversation.
      (goto-char (point-min))
-     (crush--hyper-insert-delta proc "think" 'reasoning)
+     (crush-facade--append-delta "think" 'reasoning)
      (should (= (point) (point-max)))
-     (crush--hyper-insert-delta proc " harder" 'reasoning)
+     (crush-facade--append-delta " harder" 'reasoning)
      (should (= (point) (point-max)))
      (should (string= (buffer-substring-no-properties
                        (- (point) (length " harder")) (point))
@@ -58,8 +58,8 @@
   "Subsequent reasoning deltas extend the overlay."
   (crush-test--with-reasoning-process
    (lambda (proc)
-     (crush--hyper-insert-delta proc "think" 'reasoning)
-     (crush--hyper-insert-delta proc " harder" 'reasoning)
+     (crush-facade--append-delta "think" 'reasoning)
+     (crush-facade--append-delta " harder" 'reasoning)
      (let ((ov (car (overlays-in (point-min) (point-max)))))
        (should (overlayp ov))
        (should (string= (buffer-substring-no-properties
@@ -70,9 +70,9 @@
   "First content delta freezes the reasoning overlay."
   (crush-test--with-reasoning-process
    (lambda (proc)
-     (crush--hyper-insert-delta proc "think" 'reasoning)
-     (crush--hyper-insert-delta proc " hard" 'reasoning)
-     (crush--hyper-insert-delta proc "answer" 'content)
+     (crush-facade--append-delta "think" 'reasoning)
+     (crush-facade--append-delta " hard" 'reasoning)
+     (crush-facade--append-delta "answer" 'content)
      (let ((ov (car (overlays-in (point-min) (point-max)))))
        (should (overlayp ov))
        (should (string= (buffer-substring-no-properties
@@ -83,8 +83,8 @@
   "The first content delta after reasoning adds two newlines before it."
   (crush-test--with-reasoning-process
    (lambda (proc)
-     (crush--hyper-insert-delta proc "think" 'reasoning)
-     (crush--hyper-insert-delta proc "answer" 'content)
+     (crush-facade--append-delta "think" 'reasoning)
+     (crush-facade--append-delta "answer" 'content)
      (goto-char (point-min))
      (search-forward "answer")
      (let ((answer-start (match-beginning 0)))
@@ -95,7 +95,7 @@
   "Content-only stream leaves reasoning state nil."
   (crush-test--with-reasoning-process
    (lambda (proc)
-     (crush--hyper-insert-delta proc "answer" 'content)
+     (crush-facade--append-delta "answer" 'content)
      (should-not (overlays-in (point-min) (point-max)))
      (should-not crush--reasoning-start)
      (should-not crush--reasoning-overlay))))
@@ -119,7 +119,7 @@ open (`crush--response-start' at point-max after a newline)."
                          (unwind-protect
                              (progn
                                (funcall insert-fn proc)
-                               (crush--finalize-response))
+                               (crush-facade--finalize))
                            (delete-process proc)))
                        (current-buffer)))
       (unless result (crush-test--cleanup)))
@@ -131,8 +131,8 @@ open (`crush--response-start' at point-max after a newline)."
     (let ((buf (crush-test--finalize-with-reasoning
 		(lambda (proc)
                   (setq expected-id crush--prompt-id)
-                  (crush--hyper-insert-delta proc "think hard" 'reasoning)
-                  (crush--hyper-insert-delta proc "answer" 'content)))))
+                  (crush-facade--append-delta "think hard" 'reasoning)
+                  (crush-facade--append-delta "answer" 'content)))))
       (with-current-buffer buf
         (let ((start (save-excursion
                        (goto-char (point-min))
@@ -152,8 +152,8 @@ open (`crush--response-start' at point-max after a newline)."
   "The response region should cover the whole answer including reasoning."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "think" 'reasoning)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "think" 'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (save-excursion
         (goto-char (point-min))
@@ -166,7 +166,7 @@ open (`crush--response-start' at point-max after a newline)."
   "Finalize should reset reasoning markers even with no content."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "think" 'reasoning)))))
+                (crush-facade--append-delta "think" 'reasoning)))))
     (with-current-buffer buf
       (should-not crush--reasoning-start)
       (should-not crush--reasoning-end)
@@ -190,10 +190,10 @@ The fold lives on the reasoning overlay, tagged `crush-overlay'."
   "Finalize should auto-collapse the reasoning region with a dim marker."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "line one
+                (crush-facade--append-delta "line one
 line two
 " 'reasoning)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((ov (crush-test--reasoning-fold-overlay)))
         (should (overlayp ov))
@@ -212,8 +212,8 @@ line two
   "The collapse marker should carry the toggle keymap."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "think" 'reasoning)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "think" 'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (goto-char (point-min))
       (search-forward "...")
@@ -230,8 +230,8 @@ line two
 A marker overlay paints it with the reasoning region background."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "think" 'reasoning)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "think" 'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (goto-char (point-min))
       (search-forward "...")
@@ -252,8 +252,8 @@ A marker overlay paints it with the reasoning region background."
 body overlay ends at end of line."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "partial\n" 'reasoning)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "partial\n" 'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((ov (crush-test--reasoning-fold-overlay)))
         (should (overlayp ov))
@@ -271,7 +271,7 @@ body overlay ends at end of line."
   "Content-only responses should get no fold control."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (should-not (crush-test--reasoning-fold-overlay))
       (goto-char (point-min))
@@ -282,10 +282,10 @@ body overlay ends at end of line."
   "crush-reasoning-toggle should expand a collapsed reasoning region."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "line one
+                (crush-facade--append-delta "line one
 line two
 " 'reasoning)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((ov (crush-test--reasoning-fold-overlay)))
         (should (eq (overlay-get ov 'crush-fold-state) 'collapsed))
@@ -304,10 +304,10 @@ line two
   "crush-reasoning-toggle should collapse an expanded reasoning region."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "line one
+                (crush-facade--append-delta "line one
 line two
 " 'reasoning)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((ov (crush-test--reasoning-fold-overlay)))
         (goto-char (point-min))
@@ -335,7 +335,7 @@ line two
   "crush-reasoning-toggle should message when no fold is at point."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (goto-char (point-min))
       (let ((messages nil))
@@ -351,8 +351,8 @@ line two
 The marker's real-text keymap dispatches TAB to the toggle."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
-                (crush--hyper-insert-delta proc "think" 'reasoning)
-                (crush--hyper-insert-delta proc "answer" 'content)))))
+                (crush-facade--append-delta "think" 'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((ov (crush-test--reasoning-fold-overlay)))
         (goto-char (point-min))
@@ -389,8 +389,8 @@ The marker's real-text keymap dispatches TAB to the toggle."
             (process-put proc :crush-target (current-buffer))
             (unwind-protect
                 (progn
-                  (crush--hyper-insert-delta proc "partial think" 'reasoning)
-                  (setq-local crush--backend
+                  (crush-facade--append-delta "partial think" 'reasoning)
+                  (setq-local crush-active-backend
                               (crush-make-hyper-backend
                                :buffer (current-buffer)
                                :working-directory default-directory))
@@ -416,7 +416,7 @@ The marker's real-text keymap dispatches TAB to the toggle."
             (process-put proc :crush-target (current-buffer))
             (unwind-protect
                 (progn
-                  (crush--hyper-insert-delta proc "think" 'reasoning)
+                  (crush-facade--append-delta "think" 'reasoning)
                   (crush-clear-buffer)
                   (should-not (crush-test--reasoning-fold-overlay))
                   (should-not (overlays-in (point-min) (point-max))))
@@ -436,10 +436,10 @@ The marker's real-text keymap dispatches TAB to the toggle."
             (process-put proc :crush-target (current-buffer))
             (unwind-protect
                 (progn
-                  (crush--hyper-insert-delta proc "think hard" 'reasoning)
+                  (crush-facade--append-delta "think hard" 'reasoning)
                   ;; Simulate an active backend so crush-interrupt
                   ;; calls the backend interrupt path.
-                  (setq-local crush--backend
+                  (setq-local crush-active-backend
                               (crush-make-hyper-backend
                                :buffer (current-buffer)
                                :working-directory default-directory))
@@ -467,7 +467,7 @@ The marker's real-text keymap dispatches TAB to the toggle."
             (process-put proc :crush-target (current-buffer))
             (unwind-protect
                 (progn
-                  (crush--hyper-insert-delta proc "think" 'reasoning)
+                  (crush-facade--append-delta "think" 'reasoning)
                   (should (overlays-in (point-min) (point-max)))
                   (crush-clear-buffer)
                   (should-not (overlays-in (point-min) (point-max)))

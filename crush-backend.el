@@ -45,7 +45,12 @@
                (:copier nil))
   "Base structure for a crush backend."
   buffer
+  completion-action
   working-directory
+  ;; Application count: the number of pipeline applications (runnable,
+  ;; inflight, blocked) this backend accounts for.  The facade reads it
+  ;; via stream progress; a value of 0 means the backend is idle.
+  (application-count 1)
   (type nil))
 
 (defconst crush-context-preamble
@@ -55,8 +60,15 @@ optional line range. Paths are relative to the project root. Use this context
 to answer the prompt."
   "Preamble used before attached context by both backends.")
 
-(cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p)
-  "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.")
+(cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p completion buffer stderr on-delta on-error)
+  "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.
+COMPLETION is a zero-argument closure (the facade's continuation) that
+the backend must invoke exactly once when the response stream finishes.
+BUFFER is the crush buffer the backend may associate its transport
+process with, and STDERR is the stderr buffer, purely as data objects
+(never read or switched to).  ON-DELTA is a (DELTA KIND) callback that
+consumes streamed output, and ON-ERROR receives stream error messages,
+for backends that stream (hyper).")
 
 (cl-defgeneric crush-backend-interrupt (backend)
   "Interrupt the currently running operation on BACKEND.")

@@ -141,26 +141,16 @@ switched off."
   "System prompt sent with every phase-1 hyper request.")
 
 (defconst crush-hyper-default-model "qwen3.7-plus"
-  "Model used when `crush-model' and the backend model are both nil.")
-
-(defvar crush-model nil
-  "Model to use for hyper requests.
-Defined in `crush-run-backend.el' as a defcustom; shadowed here so
-the compiler knows the free reference in `crush--hyper-compose-request'
-is a variable.")
+  "Model used when the backend model slot and `crush-model' are both nil.")
 
 (declare-function crush--debug-log "crush.el" (category message))
-(declare-function crush--finalize-response "crush.el" ())
-(declare-function crush--reasoning-start-region "crush.el" ())
-(declare-function crush--reasoning-extend-overlay "crush.el" ())
-(declare-function crush--reasoning-stop "crush.el" ())
 
 (cl-defstruct (crush-hyper-backend
                (:include crush-backend (type 'hyper))
                (:constructor nil)
                (:constructor crush-make-hyper-backend
                              (&key buffer working-directory base-url token model
-                                   &aux (type 'hyper)))
+                                   &aux (type 'hyper) (completion-action nil)))
                (:copier nil))
   "Backend that talks to the Charm Hyper gateway via HTTP+SSE."
   base-url
@@ -169,9 +159,11 @@ is a variable.")
 
 (defun crush--hyper-compose-request (prompt context model)
   "Compose a chat-completions request alist for PROMPT.
-CONTEXT is optional attachment text; MODEL overrides the configured model.
+CONTEXT is optional attachment text; MODEL is the resolved model (the
+caller passes the backend's model slot, already derived from the shared
+`crush-model' defcustom).  Falls back to `crush-hyper-default-model'.
 The body carries `stream: t' and no tools (phase 1)."
-  (let* ((model (or model crush-model crush-hyper-default-model))
+  (let* ((model (or model crush-hyper-default-model))
          (user-content (if (and context (not (string-empty-p context)))
                            (concat crush-context-preamble "\n\n"
                                    context "\n\n" prompt)
@@ -282,49 +274,29 @@ nil when OBJ is nil or carries no delta text."
 ;;; subprocess filter gives us SSE chunks as they arrive without fighting
 ;;; url.el or raw sockets.  Request config and body go to curl via stdin.
 
-(defun crush--hyper-insert-delta (proc delta kind)
-  "Insert DELTA text of KIND into the crush buffer served by PROC.
-KIND is `content' or `reasoning'.  Both append at the end of the
-buffer (the growing response area) so streamed deltas stay in
-order.  `crush--response-start' is not touched; it continues to
-mark the start of the response for `crush--finalize-response'.
-
-Reasoning deltas additionally drive the reasoning overlay: the
-first one opens the region, subsequent ones extend it, and the
-first content delta freezes it.  The cursor follows reasoning
-insertions (point moves to the growing stream end); content keeps
-the user's point."
-  (let ((target (process-get proc :crush-target)))
-    (when (buffer-live-p target)
-      (with-current-buffer target
-        (let ((inhibit-read-only t)
-              (inhibit-modification-hooks t))
-          (save-excursion
-            (goto-char (point-max))
-            (pcase kind
-              ('reasoning
-               (crush--reasoning-start-region)
-               (crush--reasoning-extend-overlay))
-              ('content
-               (crush--reasoning-stop)))
-            (insert delta)
-            (pcase kind
-              ('reasoning
-               (crush--reasoning-extend-overlay))))
-          (when (eq kind 'reasoning)
-            (goto-char (point-max))))))))
+(defun crush--hyper-emit-delta (proc delta kind)
+  "Emit DELTA text of KIND (`content' or `reasoning') to the facade.
+Stores the delta as a pending `:crush-emitted' event and invokes the
+facade's `:crush-on-delta' callback (a closure of (DELTA KIND)) that
+owns buffer insertion, the reasoning overlay, and the cursor.  The
+transport never touches buffers."
+  (process-put proc :crush-emitted t)
+  (let ((on-delta (process-get proc :crush-on-delta)))
+    (when (functionp on-delta)
+      (funcall on-delta delta kind))))
 
 (defun crush--hyper-http-finish (proc error)
   "Finalize the curl request on PROC with optional ERROR.
-Inserts an error line when ERROR is non-nil and runs the finalize
-callback exactly once."
+Emits ERROR through the facade's `:crush-on-error' callback when
+non-nil, then runs the finalize callback exactly once."
   (unless (process-get proc :crush-finished)
     ;; Mark finished first so a sentinel racing the [DONE] filter path
     ;; cannot double-finalize.
     (process-put proc :crush-finished t)
     (when error
-      (crush--hyper-insert-delta proc (format "
-[crush-hyper error: %s]" error) 'content))
+      (let ((on-error (process-get proc :crush-on-error)))
+        (when (functionp on-error)
+          (funcall on-error error))))
     (let ((finish (process-get proc :crush-done-callback)))
       (when finish (funcall finish)))
     (when (process-live-p proc)
@@ -332,10 +304,11 @@ callback exactly once."
 
 (defun crush--hyper-curl-filter (proc string)
   "Filter for the curl process PROC receiving SSE chunk STRING.
-Feed the chunk to the SSE parser and insert any content deltas into the
-crush buffer.  The HTTP response head (headers) is not valid SSE and is
-ignored by the parser; the status line is parsed for diagnostics, and
-errors are surfaced by the sentinel when curl exits non-zero."
+Feed the chunk to the SSE parser and emit any content deltas through
+the facade's on-delta callback.  The HTTP response head (headers) is
+not valid SSE and is ignored by the parser; the status line is parsed
+for diagnostics, and errors are surfaced by the sentinel when curl
+exits non-zero."
   (crush--debug-log 'output (format "%S" (string-replace "\r" "" string)))
   (unless (process-get proc :crush-head-parsed)
     (setq string (crush--hyper-parse-head proc string)))
@@ -344,7 +317,7 @@ errors are surfaced by the sentinel when curl exits non-zero."
          (deltas (car result))
          (new-state (cdr result)))
     (dolist (delta deltas)
-      (crush--hyper-insert-delta proc (cdr delta) (car delta)))
+      (crush--hyper-emit-delta proc (cdr delta) (car delta)))
     ;; Persist the full parser state: the state plist has no :sse key,
     ;; and dropping the `:pending' fragment would lose any SSE event
     ;; split across process-filter chunks.
@@ -400,11 +373,12 @@ HTTP error), finish with an error; otherwise ensure cleanup."
            (format "HTTP %s from %s" status (process-get proc :crush-url))
          "connection closed without [DONE]")))))
 
-(defun crush--hyper-request (base-url token body target callback)
+(defun crush--hyper-request (base-url token body on-delta callback &optional on-error)
   "Send HTTP POST to BASE-URL with TOKEN and JSON BODY via curl.
-TARGET is the crush buffer to insert streamed content into; CALLBACK
-is called with no args when the stream finishes.  Returns the curl
-process."
+ON-DELTA is a callback (DELTA KIND) consuming streamed deltas (the
+facade's append-delta); CALLBACK runs with no args when the stream
+finishes; ON-ERROR (optional) receives a stream error message.  The
+backend never touches buffers.  Returns the curl process."
   (let* ((payload (json-encode body))
          (config (concat
                   (format "url = %s/chat/completions\n" base-url)
@@ -429,7 +403,8 @@ process."
                 :sentinel #'crush--hyper-curl-sentinel
                 :stderr (get-buffer-create "*crush-errors*"))))
     (process-put proc :crush-sse (crush--hyper-sse-new-state))
-    (process-put proc :crush-target target)
+    (process-put proc :crush-on-delta on-delta)
+    (process-put proc :crush-on-error on-error)
     (process-put proc :crush-done-callback callback)
     ;; Request metadata for `crush--hyper-curl-filter' diagnostics.
     (process-put proc :crush-url (format "%s/chat/completions" base-url))
@@ -453,27 +428,30 @@ process."
 ;;; Hyper backend methods
 
 (cl-defmethod crush-backend-send-prompt
-  ((backend crush-hyper-backend) prompt &key context session-id continue-p)
-  "Send PROMPT to BACKEND via a direct HTTP+SSE request to Hyper."
-  (ignore session-id continue-p)
+  ((backend crush-hyper-backend) prompt &key context session-id continue-p completion buffer stderr on-delta on-error)
+  "Send PROMPT to BACKEND via a direct HTTP+SSE request to Hyper.
+COMPLETION is the facade's continuation invoked when the stream
+finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
+errors.  The backend never touches buffers or finalizes itself."
+  (ignore session-id continue-p buffer stderr)
   (let* ((body (crush--hyper-compose-request
                 prompt context (crush-hyper-backend-model backend)))
          (base-url (or (crush-hyper-backend-base-url backend)
                        (getenv "HYPER_URL")
                        crush-hyper-base-url))
          (token (crush-hyper--resolve-token
-                 (or (crush-hyper-backend-token backend) crush-hyper-token)))
-         (buffer (crush-backend-buffer backend)))
-    (with-current-buffer buffer
-      (setq-local crush--response-start (point-marker)))
+                 (or (crush-hyper-backend-token backend) crush-hyper-token))))
+    (setf (crush-backend-completion-action backend) completion)
     (crush--hyper-request
-     base-url token body buffer
-     (lambda ()
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (crush--finalize-response)))))
-    (with-current-buffer buffer
-      (setq-local crush-process nil))))
+     base-url token body
+     ;; The transport's on-delta callback is the facade's append-delta
+     ;; (or a no-op fallback); no buffer knowledge leaks into the backend.
+     (or on-delta #'ignore)
+     ;; The done-callback is the injected completion.
+     (or completion #'ignore)
+     ;; Stream errors surface through the facade's on-error callback.
+     (or on-error #'ignore))
+    nil))
 
 (cl-defmethod crush-backend-interrupt ((backend crush-hyper-backend))
   "Interrupt the hyper request for BACKEND."

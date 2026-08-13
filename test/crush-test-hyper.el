@@ -41,7 +41,9 @@
         (crush-hyper-temperature 0.5)
         (crush-hyper-thinking t)
         (crush-hyper-reasoning-effort "high"))
-    (let ((req (crush--hyper-compose-request "P" nil nil)))
+    ;; The model is resolved by the caller (the facade passes the backend
+    ;; model slot derived from `crush-model'); compose uses it directly.
+    (let ((req (crush--hyper-compose-request "P" nil crush-model)))
       (should (string= (alist-get 'model req) "my-model"))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
@@ -152,7 +154,8 @@ chunks and silently discarding any event split across them."
                                          :noquery t
                                          :coding 'binary)))
             (process-put proc :crush-sse (crush--hyper-sse-new-state))
-            (process-put proc :crush-target target)
+            (process-put proc :crush-on-delta
+                         (crush-test--hyper-on-delta target))
             (process-put proc :crush-done-callback #'ignore)
             (process-put proc :crush-head "")
             (process-put proc :crush-head-parsed nil)
@@ -187,12 +190,33 @@ chunks and silently discarding any event split across them."
             (crush--hyper-request
              "http://127.0.0.1:1" "tok"
              (crush--hyper-compose-request "hi" nil "m")
-             (current-buffer) #'ignore)))
+             #'ignore #'ignore)))
       (delete-process proc))
     (should (string-match-p "max-time = 45"
                             (mapconcat #'identity (nreverse received) "\n")))))
 
 ;;; 92b. Hyper backend: token resolution
+
+(defun crush-test--hyper-on-delta (buf)
+  "Return the facade append-delta closure for BUF (buffer-aware)."
+  (lambda (delta kind)
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (crush-facade--append-delta delta kind)))))
+
+(defun crush-test--hyper-completion (buf)
+  "Return the facade finalize closure for BUF (buffer-aware)."
+  (lambda ()
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (crush-facade--finalize)))))
+
+(defun crush-test--hyper-on-error (buf)
+  "Return the facade record-error closure for BUF (buffer-aware)."
+  (lambda (message)
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (crush-facade--record-error message)))))
 
 ;;; `crush-hyper--resolve-token' supports string, function, and nil
 ;;; tokens; the default `crush-hyper-token' function reads from
@@ -256,6 +280,32 @@ chunks and silently discarding any event split across them."
                     (or (crush-hyper-backend-token backend)
                         crush-hyper-token))))
         (should (string= token "sk-hyper-slot"))))))
+
+(ert-deftest crush-test/hyper-send-injects-completion ()
+  "crush-backend-send-prompt for hyper should use the injected completion.
+The completion is the facade's continuation; the backend must invoke it
+on stream completion instead of finalizing or touching buffers itself."
+  (let ((captured-completion nil)
+        (injected (lambda () (setq captured-completion 'called)))
+        (base "http://127.0.0.1:1"))
+    (cl-letf (((symbol-function 'crush--hyper-request)
+               (lambda (&rest args)
+                 (setq captured-completion (nth 4 args))
+                 (make-pipe-process :name "crush-hyper-test-fake"
+                                    :noquery t))))
+      (let ((backend (crush-make-hyper-backend
+                      :buffer (current-buffer)
+                      :base-url base
+                      :token "tok")))
+        (unwind-protect
+            (progn
+              (crush-backend-send-prompt
+               backend "hi" :completion injected)
+              ;; The backend must have threaded the injected completion
+              ;; into the transport instead of a buffer-based finalizer:
+              ;; running it must trigger the injected side effect.
+              (should (eq captured-completion injected)))
+          (crush-test--cleanup))))))
 
 ;;; 93. Hyper backend: wire integration via dummy server
 
@@ -341,7 +391,7 @@ and return the capture output."
                     (let ((proc (crush--hyper-request
                                  base "tok-rf"
                                  (crush--hyper-compose-request "hi" nil "m")
-                                 (current-buffer) #'ignore)))
+                                 #'ignore #'ignore)))
                       (let ((deadline (+ (float-time) 6)))
                         (while (and (process-live-p proc)
                                     (null (process-get proc :crush-finished))
@@ -381,11 +431,8 @@ and return the capture output."
                (let ((buf (current-buffer)))
                  (let ((proc (crush--hyper-request
                               base "tok" (crush--hyper-compose-request "hi" nil "m")
-                              buf
-                              (lambda ()
-                                (when (buffer-live-p buf)
-                                  (with-current-buffer buf
-                                    (crush--finalize-response)))))))
+                              (crush-test--hyper-on-delta buf)
+                              (crush-test--hyper-completion buf))))
                    (let ((deadline (+ (float-time) 6)))
                      (while (and (process-live-p proc)
                                  (null (process-get proc :crush-finished))
@@ -423,11 +470,8 @@ and return the capture output."
                (let ((buf (current-buffer)))
                  (let ((proc (crush--hyper-request
                               base "tok" (crush--hyper-compose-request "hi" nil "m")
-                              buf
-                              (lambda ()
-                                (when (buffer-live-p buf)
-                                  (with-current-buffer buf
-                                    (crush--finalize-response)))))))
+                              (crush-test--hyper-on-delta buf)
+                              (crush-test--hyper-completion buf))))
                    (let ((deadline (+ (float-time) 6)))
                      (while (and (process-live-p proc)
                                  (null (process-get proc :crush-finished))
@@ -490,7 +534,9 @@ and return the capture output."
              (setq-local crush--response-start (point-marker))
              (let ((proc (crush--hyper-request
                           base "tok" (crush--hyper-compose-request "hi" nil "m")
-                          (current-buffer) #'ignore)))
+                          (crush-test--hyper-on-delta (current-buffer))
+                          (crush-test--hyper-completion (current-buffer))
+                          (crush-test--hyper-on-error (current-buffer)))))
                (let ((deadline (+ (float-time) 6)))
                  (while (and (process-live-p proc)
                              (null (process-get proc :crush-finished))
@@ -498,7 +544,7 @@ and return the capture output."
                    (accept-process-output nil 0.1)
                    (sit-for 0.02))))
              (goto-char (point-min))
-             (should (search-forward "crush-hyper error" nil t)))))
+             (should (search-forward "[crush error:" nil t)))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-wire-404-reports-status ()
@@ -512,7 +558,9 @@ and return the capture output."
              (setq-local crush--response-start (point-marker))
              (let* ((proc (crush--hyper-request
                            base "tok" (crush--hyper-compose-request "hi" nil "m")
-                           (current-buffer) #'ignore))
+                           (crush-test--hyper-on-delta (current-buffer))
+                           (crush-test--hyper-completion (current-buffer))
+                           (crush-test--hyper-on-error (current-buffer))))
                     (deadline (+ (float-time) 6)))
                (while (and (process-live-p proc)
                            (null (process-get proc :crush-finished))
@@ -523,7 +571,7 @@ and return the capture output."
                (let ((status (process-get proc :crush-status)))
                  (should (= status 404))))
              (goto-char (point-min))
-             (should (search-forward "crush-hyper error: HTTP 404" nil t)))))
+             (should (search-forward "[crush error: HTTP 404" nil t)))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-wire-logs-request-without-token ()
@@ -538,7 +586,8 @@ and return the capture output."
              (let ((proc (crush--hyper-request
                           base "sk-hyper-supersecret"
                           (crush--hyper-compose-request "hi" nil "m")
-                          (current-buffer) #'ignore)))
+                          (crush-test--hyper-on-delta (current-buffer))
+                          (crush-test--hyper-completion (current-buffer)))))
                (let ((deadline (+ (float-time) 6)))
                  (while (and (process-live-p proc)
                              (null (process-get proc :crush-finished))

@@ -410,6 +410,37 @@
                                (overlays-in (point-min) (point-max))))))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/facade-finalize-tags-and-reprompts ()
+  "The facade continuation should finalize the response: tag it, insert a
+fresh prompt, and regenerate the prompt ID."
+  (unwind-protect
+      (with-current-buffer (crush-test--fresh-buffer)
+        (goto-char (point-max))
+        (newline)
+        (setq-local crush--response-start (point-marker))
+        (insert "mock response")
+        (let ((old-id crush--prompt-id)
+              (response-start (point-marker)))
+          ;; The facade continuation is exactly what crush-send-input
+          ;; injects into the backend.
+          (let ((buf (current-buffer)))
+            (funcall (lambda ()
+                       (when (buffer-live-p buf)
+                         (with-current-buffer buf
+                           (crush-facade--finalize))))))
+          ;; Fresh prompt inserted after the response, with a new ID.
+          (goto-char (point-min))
+          (search-forward "mock response")
+          (should (eq (get-text-property (match-beginning 0)
+                                         'crush-region-type)
+                      'response))
+          (should-not (string= crush--prompt-id old-id))
+          (goto-char (point-max))
+          (search-backward "crush> ")
+          (should (< (marker-position response-start)
+                     (point)))))
+    (crush-test--cleanup)))
+
 ;;; (Phase 2-5 comint-era tests were deleted during the migration; the
 ;;; surviving invariants are covered by the tests below.)
 

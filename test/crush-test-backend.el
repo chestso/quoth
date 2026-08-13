@@ -38,8 +38,7 @@
     (should (member "--continue" captured-args))))
 
 (ert-deftest crush-test/backend-command-omits-continue ()
-  "crush-backend-send-prompt should omit --continue when :continue-p is nil."
-  (let ((captured-args nil)
+  "crush-backend-send-prompt should omit --continue when :continue-p is nil."  (let ((captured-args nil)
         (real-make-process (symbol-function #'make-process)))
     (cl-letf (((symbol-function #'make-process)
                (lambda (&rest args)
@@ -61,6 +60,31 @@
               (call-interactively #'crush-send-input)))
         (crush-test--cleanup)))
     (should-not (member "--continue" captured-args))))
+
+(ert-deftest crush-test/facade-send-injects-completion ()
+  "crush-send-input should inject a completion action into the backend.
+The completion action is the facade's continuation so the backend can
+signal stream completion without knowing about buffers or finalization."
+  (let ((captured-completion nil)
+        (buf (crush-test--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (cl-letf (((symbol-function 'crush-backend-send-prompt)
+                     (lambda (_backend _prompt &rest args)
+                       (setq captured-completion (plist-get args :completion)))))
+            (goto-char (point-max))
+            (insert "test")
+            (call-interactively #'crush-send-input)
+            (should (functionp captured-completion)))
+          ;; The captured action must be the facade's continuation:
+          ;; calling it finalizes the response (fresh prompt + new
+          ;; prompt-id), even though the backend capture already happened.
+          (let ((old-id crush--prompt-id))
+            (setq-local crush--response-start (point-marker))
+            (funcall captured-completion)
+            (should-not (string= crush--prompt-id old-id))
+            (should (search-backward "crush> " nil t))))
+      (crush-test--cleanup))))
 
 ;;; Mock CLI integration tests
 
@@ -351,23 +375,116 @@ or the crush> prompt marker."
 
 ;;; Backend abstraction tests
 
+(ert-deftest crush-test/active-backend-variable-renamed ()
+  "The facade's backend variable should be `crush-active-backend' (not
+the legacy `crush--backend'), reflecting facade ownership."
+  (unwind-protect
+      (with-current-buffer (crush-test--fresh-buffer)
+        (should (boundp 'crush-active-backend))
+        (should (crush-backend-p crush-active-backend))
+        (should-not (boundp 'crush--backend)))
+    (crush-test--cleanup)))
+
+(defun crush-test--source-text (file)
+  "Return the source text of FILE at the package root."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name file
+                       (file-name-directory
+                        (directory-file-name
+                         (file-name-directory
+                          (locate-library "crush-test"))))))
+    (buffer-string)))
+
+(ert-deftest crush-test/model-defcustom-single ()
+  "There should be exactly one `crush-model' defcustom in the package.
+Previously `crush-run-backend.el' defined it and `crush-hyper-backend.el'
+shadowed it as a defvar; the facade should own the single defcustom."
+  (let* ((files '("crush.el" "crush-run-backend.el" "crush-hyper-backend.el"))
+         (defcustom-count
+           (apply #'+
+                  (mapcar
+                   (lambda (file)
+                     (with-temp-buffer
+                       (insert (crush-test--source-text file))
+                       (goto-char (point-min))
+                       (count-matches "(defcustom crush-model ")))
+                   files)))
+         (defvar-count
+           (apply #'+
+                  (mapcar
+                   (lambda (file)
+                     (with-temp-buffer
+                       (insert (crush-test--source-text file))
+                       (goto-char (point-min))
+                       (count-matches "(defvar crush-model ")))
+                   files))))
+    (should (= defcustom-count 1))
+    (should (= defvar-count 0))))
+
+(ert-deftest crush-test/run-backend-buffer-unaware ()
+  "crush-run-backend.el should not reference buffers, buffer-local state,
+or the errors buffer: backends are buffer-unaware by design."
+  (let ((src (with-temp-buffer
+               (insert-file-contents
+                (expand-file-name "crush-run-backend.el"
+                                  (file-name-directory
+                                   (directory-file-name
+                                    (file-name-directory
+                                     (locate-library "crush-test"))))))
+               (buffer-string)))
+        (forbidden '("with-current-buffer"
+                     "set-buffer"
+                     "buffer-live-p"
+                     "get-buffer"
+                     "current-buffer"
+                     "crush-backend-buffer"
+                     "crush--response-start"
+                     "crush-process"
+                     "process-buffer"
+                     "crush--finalize-response"
+                     "*crush-errors*")))
+    (dolist (term forbidden)
+      (should-not (string-match-p term src)))))
+
+(ert-deftest crush-test/hyper-backend-buffer-unaware ()
+  "crush-hyper-backend.el should not reference buffers, buffer-local state,
+or the errors buffer: backends are buffer-unaware by design."
+  (let ((src (with-temp-buffer
+               (insert-file-contents
+                (expand-file-name "crush-hyper-backend.el"
+                                  (file-name-directory
+                                   (directory-file-name
+                                    (file-name-directory
+                                     (locate-library "crush-test"))))))
+               (buffer-string)))
+        (forbidden '("with-current-buffer"
+                     "buffer-live-p"
+                     "crush-backend-buffer"
+                     "crush--response-start"
+                     "crush-process"
+                     "process-buffer"
+                     "crush--finalize-response")))
+    (dolist (term forbidden)
+      (should-not (string-match-p term src)))))
+
 (ert-deftest crush-test/backend-is-run-by-default ()
-  "crush--backend should be a crush-run-backend by default."
+  "crush-active-backend should be a crush-run-backend by default."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should crush--backend)
-          (should (crush-backend-p crush--backend))
-          (should (crush-run-backend-p crush--backend))
-          (should (eq (crush-backend-type crush--backend) 'run))))
+          (should crush-active-backend)
+          (should (crush-backend-p crush-active-backend))
+          (should (crush-run-backend-p crush-active-backend))
+          (should (eq (crush-backend-type crush-active-backend) 'run))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-has-buffer ()
-  "crush--backend should have its buffer set."
+  "crush-active-backend should have its buffer set."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (eq (crush-backend-buffer crush--backend) buf))))
+          (should (eq (crush-backend-buffer crush-active-backend) buf))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-has-program ()
@@ -375,7 +492,7 @@ or the crush> prompt marker."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (string= (crush-run-backend-program crush--backend) crush-program))))
+          (should (string= (crush-run-backend-program crush-active-backend) crush-program))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-active-p-when-no-process ()
@@ -383,7 +500,7 @@ or the crush> prompt marker."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should-not (crush-backend-active-p crush--backend))))
+          (should-not (crush-backend-active-p crush-active-backend))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-active-p-when-process-running ()
@@ -391,15 +508,16 @@ or the crush> prompt marker."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq-local crush-process (make-process
-                                     :name "crush-test-fake"
-                                     :buffer buf
-                                     :command '("sleep" "30")
-                                     :connection-type 'pipe
-                                     :noquery t))
-          (should (crush-backend-active-p crush--backend))
-          (interrupt-process crush-process)
-          (setq-local crush-process nil)))
+          (setf (crush-run-backend-process crush-active-backend)
+                (make-process
+                 :name "crush-test-fake"
+                 :buffer buf
+                 :command '("sleep" "30")
+                 :connection-type 'pipe
+                 :noquery t))
+          (should (crush-backend-active-p crush-active-backend))
+          (interrupt-process (crush-run-backend-process crush-active-backend))
+          (setf (crush-run-backend-process crush-active-backend) nil)))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-send-prompt-spawns-process ()
@@ -450,16 +568,18 @@ or the crush> prompt marker."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq-local crush-process (make-process
-                                     :name "crush-test-fake"
-                                     :buffer buf
-                                     :command '("sleep" "30")
-                                     :connection-type 'pipe
-                                     :noquery t))
-          (should (crush-backend-active-p crush--backend))
-          (crush-backend-interrupt crush--backend)
-          (should-not (crush-backend-active-p crush--backend))
-          (setq-local crush-process nil)))
+          (setf (crush-run-backend-process crush-active-backend)
+                (make-process
+                 :name "crush-test-fake"
+                 :buffer buf
+                 :command '("sh" "-c" "kill -INT $$")
+                 :connection-type 'pipe
+                 :noquery t))
+          (should (crush-backend-active-p crush-active-backend))
+          (crush-backend-interrupt crush-active-backend)
+          (accept-process-output nil 0.2)
+          (should-not (crush-backend-active-p crush-active-backend))
+          (setf (crush-run-backend-process crush-active-backend) nil)))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-cleanup-kills-process ()
@@ -467,15 +587,16 @@ or the crush> prompt marker."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq-local crush-process (make-process
-                                     :name "crush-test-fake"
-                                     :buffer buf
-                                     :command '("sleep" "30")
-                                     :connection-type 'pipe
-                                     :noquery t))
-          (should (crush-backend-active-p crush--backend))
-          (crush-backend-cleanup crush--backend)
-          (should-not (crush-backend-active-p crush--backend))))
+          (setf (crush-run-backend-process crush-active-backend)
+                (make-process
+                 :name "crush-test-fake"
+                 :buffer buf
+                 :command '("sleep" "30")
+                 :connection-type 'pipe
+                 :noquery t))
+          (should (crush-backend-active-p crush-active-backend))
+          (crush-backend-cleanup crush-active-backend)
+          (should-not (crush-backend-active-p crush-active-backend))))
     (crush-test--cleanup)))
 
 
@@ -484,18 +605,18 @@ or the crush> prompt marker."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (null (crush-backend-grant-permission crush--backend "perm-id" 'allow)))))
+          (should (null (crush-backend-grant-permission crush-active-backend "perm-id" 'allow)))))
     (crush-test--cleanup)))
 
 ;;; Phase 6: Backend abstraction cleanup
 
 
 (ert-deftest crush-test/send-input-always-uses-backend ()
-  "crush-send-input should always use crush--backend (never nil)."
+  "crush-send-input should always use crush-active-backend (never nil)."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should crush--backend)))
+          (should crush-active-backend)))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-send-prompt-receives-continue-p ()
@@ -544,13 +665,13 @@ or the crush> prompt marker."
 
 (ert-deftest crush-test/send-input-no-dead-else-branch ()
   "crush-send-input should not have a fallback path when backend is nil.
-The else branch in crush-send-input is dead code since crush--backend
+The else branch in crush-send-input is dead code since crush-active-backend
 is always set after crush--init-buffer."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should crush--backend)
-          (should (crush-run-backend-p crush--backend))))
+          (should crush-active-backend)
+          (should (crush-run-backend-p crush-active-backend))))
     (crush-test--cleanup)))
 
 (provide 'crush-test-backend)

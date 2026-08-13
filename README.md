@@ -39,7 +39,7 @@ Set the default model for Crush:
 (setq crush-model "claude-sonnet-4-20250514")
 ```
 
-When set, the model is passed to `crush run --model`. When `nil` (default), uses Crush's default model.
+When set, the model is passed to `crush run --model` (run backend) or used as the hyper request model (hyper backend). When `nil` (default), each backend falls back to its own default (the CLI's configured model, or `crush-hyper-default-model` for hyper).
 
 ### crush-working-directory
 

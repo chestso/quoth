@@ -45,6 +45,7 @@ The buffer is bound to `crush-test--root' and deterministically named."
 (require 'crush-test-backend)
 (require 'crush-test-hyper)
 (require 'crush-test-reasoning)
+(require 'crush-test-stream)
 
 (provide 'crush-test)
 ;;; crush-test.el ends here

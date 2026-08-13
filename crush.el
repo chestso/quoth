@@ -81,12 +81,54 @@ visible on top.  `:extend t' paints the background across the full
 window width on every line the reasoning covers."
   :group 'crush)
 
+(defcustom crush-model nil
+  "Model to use for Crush requests (both backends).
+When nil, the backends fall back to their defaults: the Crush CLI's
+configured model, or `crush-hyper-default-model' for hyper.  The facade
+passes this into the backend's model slot at buffer initialization.
+Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
+  :type '(choice (const nil) string)
+  :group 'crush)
+
 ;;; Buffer-local state
 
 ;;; `crush--continue', `crush--session', `crush--response-start',
-;;; `crush--pending-context', `crush-process', and `crush--backend' are
-;;; defined in `crush-run-backend.el' (they are shared with the hyper
-;;; backend).
+;;; `crush--pending-context', and `crush-process' are the shared
+;;; buffer-local state owned by the facade (defined below); backends
+;;; must not touch them.
+
+(defcustom crush--continue nil
+  "Whether to pass --continue to the Crush CLI.
+When non-nil, the next prompt continues the active session in the folder.
+Set to nil by `crush-new-session' and `crush-clear-buffer' so the next
+prompt starts a fresh session.
+Buffer-local."
+  :type 'boolean
+  :group 'crush)
+
+(defcustom crush--session nil
+  "Session ID to pass to the Crush CLI via --session.
+When non-nil, continues a specific session by ID.
+Takes precedence over `crush--continue'.
+Buffer-local."
+  :type '(choice (const nil) string)
+  :group 'crush)
+
+(defvar crush--response-start nil
+  "Marker for where response text starts.
+Set when prompt is sent, used by sentinel to tag response text.
+Buffer-local.")
+
+(defvar crush--pending-context nil
+  "Context text stashed for stdin delivery.
+Buffer-local.")
+
+(defvar crush-process nil
+  "The currently running Crush process, if any.
+Buffer-local.")
+
+;;; The facade stream protocol (state, progress, error pane) lives in
+;;; `crush-stream.el'; crush.el requires and transitions it.
 
 (defvar crush--prompt-id nil
   "Unique ID for the current pending prompt.
@@ -155,12 +197,12 @@ Buffer-local.")
 (require 'crush-backend)
 (require 'crush-run-backend)
 (require 'crush-hyper-backend)
+(require 'crush-stream)
 
-(defvar crush--backend nil
-  "The active crush backend for this buffer.
-Defined in `crush-run-backend.el' as a buffer-local variable; shadowed
-here so the compiler knows the free references in `crush-send-input'
-and `crush-interrupt' are buffer-local variables.")
+(defvar crush-active-backend nil
+  "The active crush backend for this buffer (facade-owned).
+Set during buffer initialization; the facade's `crush-facade--send'
+and `crush-interrupt' dispatch through it.  Buffer-local.")
 
 (declare-function markdown-mode "markdown-mode" ())
 
@@ -567,7 +609,7 @@ unfontifying.  ENABLE nil restores the default."
       (setq-local crush--attachments nil)
       (setq-local crush--response-start nil)
       (setq-local crush--pending-context nil)
-      (setq-local crush--backend nil)
+      (setq-local crush-active-backend nil)
       (setq-local crush--prompt-start-marker nil)
       (setq-local crush--input-start-marker nil)
       (setq-local crush--input-ring nil)
@@ -588,7 +630,7 @@ unfontifying.  ENABLE nil restores the default."
                        default-directory)))
       (setq-local crush--project-root
                   (crush--canonical-root default-directory))
-      (setq-local crush--backend
+      (setq-local crush-active-backend
                   (pcase crush-backend-type
                     (`hyper (crush-make-hyper-backend
                              :buffer buf
@@ -878,7 +920,7 @@ it.  Markers are invalidated."
 PROMPT-ID is applied to both regions.  Applies `crush-prompt-id',
 `crush-response-to' and `crush-region-type' (`response', with the
 reasoning sub-span retagged `reasoning').  Shared by
-`crush--finalize-response' and `crush-interrupt'."
+`crush-facade--finalize' and `crush-interrupt'."
   (when (and response-start (> response-end response-start))
     (put-text-property response-start response-end
                        'crush-prompt-id prompt-id)
@@ -901,15 +943,12 @@ reasoning sub-span retagged `reasoning').  Shared by
             (put-text-property rs re
                                'crush-region-type 'reasoning)))))))
 
-(defun crush--finalize-response ()
-  "Finalize the current response in the current crush buffer.
-Tags the response text, inserts a fresh prompt, and resets per-prompt
-state.  Shared by the run-backend sentinel and the hyper backend's
-stream-completion callback."
-  (let* ((inhibit-read-only t)
-         (response-start (when (markerp crush--response-start)
-			   (marker-position crush--response-start)))
-         (prompt-id crush--prompt-id))
+(defun crush-facade--close-response (response-start prompt-id)
+  "Close the response started at RESPONSE-START with PROMPT-ID.
+Tags the response text (including any reasoning sub-span), auto-collapses
+the reasoning fold, resets reasoning state, and inserts a fresh prompt.
+Runs in the crush buffer, which owns all response text."
+  (let ((inhibit-read-only t))
     (save-excursion
       (goto-char (point-max))
       (newline)
@@ -930,19 +969,103 @@ stream-completion callback."
     (setq-local crush-process nil)
     (setq-local crush--response-start nil)
     (setq-local crush--attachments nil)
+    ;; The facade owns process lifecycle: clear the backend's process
+    ;; slot so `crush-backend-active-p' reads nil after completion.
+    (when (and crush-active-backend
+               (crush-run-backend-p crush-active-backend))
+      (setf (crush-run-backend-process crush-active-backend) nil))
     (crush--input-ring-write)
     (crush--update-header-line)
     (goto-char (point-max))))
 
+(defun crush-facade--finalize ()
+  "Finalize the current response via the facade.
+Calls `crush-facade--close-response' with the response-start marker and
+current prompt ID; the backend's completion action invokes this."
+  (crush-facade--stream-transition 'done 1)
+  (let ((response-start (when (markerp crush--response-start)
+                          (marker-position crush--response-start)))
+        (prompt-id crush--prompt-id))
+    (crush-facade--close-response response-start prompt-id)))
 (defun crush--process-sentinel (process event)
-  "Sentinel for PROCESS that handles completion and interruption for EVENT."
+  "Sentinel for PROCESS that handles completion and interruption for EVENT.
+Invokes the backend's stored completion action (the facade's
+continuation) when injected; otherwise falls back to
+`crush-facade--finalize' (the run backend's legacy path)."
   (when (buffer-live-p (process-buffer process))
     (with-current-buffer (process-buffer process)
       (let* ((event-str (if (stringp event) event (format "%s" event))))
         (crush--debug-log 'sentinel (format "%s" event-str))
-        (crush--finalize-response)))))
+        (let ((completion-action
+               (and crush-active-backend
+                    (crush-backend-completion-action crush-active-backend))))
+          (if (functionp completion-action)
+              (funcall completion-action)
+            (crush-facade--finalize)))))))
 
 ;;; Major mode commands
+
+(defun crush-facade--append-delta (delta kind)
+  "Append streamed DELTA of KIND (`content' or `reasoning') to the buffer.
+The facade's buffer-aware consumer for streaming backends: inserts at
+point-max (the growing response area), drives the reasoning overlay
+(the first reasoning delta opens the region, later ones extend it, the
+first content delta freezes it), and moves the cursor along reasoning
+insertions while leaving point alone for content.  `crush--response-start'
+is never touched; it stays at the response start for finalization.
+Runs in the crush buffer (the facade's `:on-delta' closure enters it)."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
+    (save-excursion
+      (goto-char (point-max))
+      (pcase kind
+        ('reasoning
+         (crush--reasoning-start-region)
+         (crush--reasoning-extend-overlay))
+        ('content
+         (crush--reasoning-stop)))
+      (insert delta)
+      (pcase kind
+        ('reasoning
+         (crush--reasoning-extend-overlay))))
+    (when (eq kind 'reasoning)
+      (goto-char (point-max)))))
+
+(defun crush-facade--send (prompt context has-context)
+  "Send PROMPT (with optional CONTEXT when HAS-CONTEXT) via the active backend.
+Injects the facade's continuation as the backend's completion action so
+backends signal stream completion without touching buffers.  Runs in the
+crush buffer, which owns all streamed output."
+  (let ((buf (current-buffer)))
+    (crush-facade--stream-transition 'active 2)
+    (let ((real-proc (crush-backend-send-prompt
+                      crush-active-backend prompt
+                      :context (when has-context context)
+                      :session-id crush--session
+                      :continue-p crush--continue
+                      :completion (lambda ()
+                                    (when (buffer-live-p buf)
+                                      (with-current-buffer buf
+                                        (crush-facade--finalize))))
+                      :on-delta (lambda (delta kind)
+                                  (when (buffer-live-p buf)
+                                    (with-current-buffer buf
+                                      (crush-facade--append-delta delta kind))))
+                      :on-error (lambda (message)
+                                  (when (buffer-live-p buf)
+                                    (with-current-buffer buf
+                                      (crush-facade--record-error message))))
+                      :buffer buf
+                      :stderr (get-buffer-create "*crush-errors*"))))
+      ;; The facade owns the per-prompt buffer plumbing that backends
+      ;; must not know about: the process mark, session/process state,
+      ;; and the response-start marker.  Runs only when the backend
+      ;; returned a process (mocked transports may return nil).
+      (when (and real-proc (processp real-proc))
+        (set-marker (process-mark real-proc) (point-max))
+        (setq-local crush-process real-proc)
+        (setq-local crush--continue t)
+        (setq-local crush--response-start (point-marker))))))
 
 (defun crush-send-input ()
   "Send the current prompt to the Crush CLI."
@@ -971,10 +1094,7 @@ stream-completion callback."
     (newline)
     (setq-local crush--response-start (point-marker))
     (setq-local crush--input-ring-index 0)
-    (crush-backend-send-prompt crush--backend prompt
-                               :context (when has-context context)
-                               :session-id crush--session
-                               :continue-p crush--continue)
+    (crush-facade--send prompt context has-context)
     (setq-local crush--attachments nil)
     (goto-char (point-max))))
 
@@ -983,8 +1103,8 @@ stream-completion callback."
   (interactive)
   (let ((interrupted nil))
     (cond
-     ((and crush--backend (crush-backend-active-p crush--backend))
-      (crush-backend-interrupt crush--backend)
+     ((and crush-active-backend (crush-backend-active-p crush-active-backend))
+      (crush-backend-interrupt crush-active-backend)
       (setq-local crush-process nil)
       (setq interrupted t))
      (crush-process
@@ -1014,6 +1134,7 @@ stream-completion callback."
   "Clear the Crush buffer output and start a fresh session."
   (interactive)
   (setq-local crush--continue nil)
+  (crush-facade--stream-clear)
   ;; Delete all crush-overlay tagged overlays
   (dolist (ov (overlays-in (point-min) (point-max)))
     (when (overlay-get ov 'crush-overlay)

@@ -58,12 +58,6 @@
   :type '(repeat string)
   :group 'crush)
 
-(defcustom crush-model nil
-  "Model to use for the Crush CLI.
-When nil, uses the default model configured in Crush.
-Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
-  :type '(choice (const nil) string)
-  :group 'crush)
 
 (defcustom crush-debug-mode t
   "When non-nil, log commands, input, and output to a *crush-debug* buffer."
@@ -75,12 +69,13 @@ Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
                (:constructor nil)
                (:constructor crush-make-run-backend
 			     (&key buffer working-directory program args model
-				   &aux (type 'run)))
+				   &aux (type 'run) (completion-action nil)))
                (:copier nil))
   "Standalone crush run backend."
   program
   args
-  model)
+  model
+  process)
 
 (defcustom crush-working-directory nil
   "Working directory for the Crush CLI.
@@ -89,110 +84,81 @@ otherwise `default-directory'."
   :type '(choice (const nil) directory)
   :group 'crush)
 
-(defcustom crush--continue nil
-  "Whether to pass --continue to the Crush CLI.
-When non-nil, the next prompt continues the active session in the folder.
-Set to nil by `crush-new-session' and `crush-clear-buffer' so the next
-prompt starts a fresh session.
-Buffer-local."
-  :type 'boolean
-  :group 'crush)
-
-(defcustom crush--session nil
-  "Session ID to pass to the Crush CLI via --session.
-When non-nil, continues a specific session by ID.
-Takes precedence over `crush--continue'.
-Buffer-local."
-  :type '(choice (const nil) string)
-  :group 'crush)
-
 (defcustom crush-input-ring-size 32
   "Maximum number of prompts stored in the input ring."
   :type 'integer
   :group 'crush)
 
-(defvar crush--response-start nil
-  "Marker for where response text starts.
-Set when prompt is sent, used by sentinel to tag response text.
-Buffer-local.")
-
-(defvar crush--pending-context nil
-  "Context text stashed for stdin delivery.
-Buffer-local.")
-
-(defvar crush-process nil
-  "The currently running Crush process, if any.
-Buffer-local.")
-
-(declare-function crush-backend-buffer "crush.el" (backend))
 (declare-function crush--debug-log "crush.el" (category message))
 (declare-function crush--output-filter "crush.el" (proc string))
 (declare-function crush--process-sentinel "crush.el" (process event))
 
 (cl-defmethod crush-backend-send-prompt
-  ((backend crush-run-backend) prompt &key context session-id continue-p)
+  ((backend crush-run-backend) prompt &key context session-id continue-p completion buffer stderr on-delta on-error)
   "Send PROMPT to BACKEND via `crush run' as a new process.
-For CONTEXT, SESSION-ID, and CONTINUE-P, see `crush-backend-send-prompt'."
-  (with-current-buffer (crush-backend-buffer backend)
-    (let* ((has-context (and context (not (string-empty-p context))))
-           (stdin-text (and has-context
-                            (concat crush-context-preamble "\n\n"
-                                    context "\n\n" prompt "\n")))
-           (base-args (append
-                       (list (crush-run-backend-program backend) "run" "--quiet")
-                       (crush-run-backend-args backend)
-                       (when (crush-run-backend-model backend)
-                         (list "--model" (crush-run-backend-model backend)))))
-           (session-args (append
-                          base-args
-                          (when session-id
-                            (list "--session" session-id))
-                          (when (and continue-p (not session-id))
-                            (list "--continue"))))
-           (args (if has-context session-args
-                   (append session-args (list prompt))))
-           (real-proc (make-process
-                       :name "crush"
-                       :buffer (current-buffer)
-                       :command args
-                       :connection-type 'pipe
-                       :filter #'crush--output-filter
-                       :sentinel #'crush--process-sentinel
-                       :stderr (get-buffer-create "*crush-errors*")
-                       :noquery t)))
-      (crush--debug-log 'command (format "%s" args))
-      (crush--debug-log 'input (format "%S (context: %s)"
-                                       prompt (if has-context "yes" "none")))      (set-marker (process-mark real-proc) (point-max))
-      (setq-local crush-process real-proc)
-      (setq-local crush--continue t)
-      (setq-local crush--response-start (point-marker))
-      (when (process-live-p real-proc)
-        (when stdin-text
-          (process-send-string real-proc stdin-text))
-        ;; Always close stdin with EOF. `crush run' reads all of stdin
-        ;; before processing (CRUSH-SPEC), so keeping the pipe open would
-        ;; block the process indefinitely even when the prompt is a CLI arg.
-        (process-send-eof real-proc))
-      real-proc)))
+For CONTEXT, SESSION-ID, and CONTINUE-P, see `crush-backend-send-prompt'.
+COMPLETION is stored on the backend (the facade's continuation).
+BUFFER and STDERR are the crush/errors buffers the process is associated
+with; the backend uses them only for `make-process', never reading or
+switching to them.  ON-DELTA and ON-ERROR are unused by the run backend."
+  (ignore on-delta on-error)
+  (let* ((has-context (and context (not (string-empty-p context))))
+         (stdin-text (and has-context
+                          (concat crush-context-preamble "\n\n"
+                                  context "\n\n" prompt "\n")))
+         (base-args (append
+                     (list (crush-run-backend-program backend) "run" "--quiet")
+                     (crush-run-backend-args backend)
+                     (when (crush-run-backend-model backend)
+                       (list "--model" (crush-run-backend-model backend)))))
+         (session-args (append
+                        base-args
+                        (when session-id
+                          (list "--session" session-id))
+                        (when (and continue-p (not session-id))
+                          (list "--continue"))))
+         (args (if has-context session-args
+                 (append session-args (list prompt))))
+         (real-proc (make-process
+                     :name "crush"
+                     :buffer buffer
+                     :command args
+                     :connection-type 'pipe
+                     :filter #'crush--output-filter
+                     :sentinel #'crush--process-sentinel
+                     :stderr stderr
+                     :noquery t)))
+    (setf (crush-run-backend-process backend) real-proc)
+    (setf (crush-backend-completion-action backend) completion)
+    (crush--debug-log 'command (format "%s" args))
+    (crush--debug-log 'input (format "%S (context: %s)"
+                                     prompt (if has-context "yes" "none")))
+    (when (process-live-p real-proc)
+      (when stdin-text
+        (process-send-string real-proc stdin-text))
+      ;; Always close stdin with EOF. `crush run' reads all of stdin
+      ;; before processing (CRUSH-SPEC), so keeping the pipe open would
+      ;; block the process indefinitely even when the prompt is a CLI arg.
+      (process-send-eof real-proc))
+    real-proc))
 
 (cl-defmethod crush-backend-interrupt ((backend crush-run-backend))
   "Interrupt the crush run process managed by BACKEND."
-  (with-current-buffer (crush-backend-buffer backend)
-    (when crush-process
-      (interrupt-process crush-process)
-      (setq-local crush-process nil))))
+  (let ((proc (crush-run-backend-process backend)))
+    (when (and proc (process-live-p proc))
+      (interrupt-process proc))))
 
 (cl-defmethod crush-backend-active-p ((backend crush-run-backend))
   "Return non-nil if BACKEND has a live crush run process."
-  (with-current-buffer (crush-backend-buffer backend)
-    (and crush-process (process-live-p crush-process))))
+  (let ((proc (crush-run-backend-process backend)))
+    (and proc (process-live-p proc))))
 
 (cl-defmethod crush-backend-cleanup ((backend crush-run-backend))
   "Kill any running process for BACKEND."
-  (with-current-buffer (crush-backend-buffer backend)
-    (when (and crush-process (process-live-p crush-process))
-      (delete-process crush-process))
-    (setq-local crush-process nil)))
+  (let ((proc (crush-run-backend-process backend)))
+    (when (and proc (process-live-p proc))
+      (delete-process proc))
+    (setf (crush-run-backend-process backend) nil)))
 
 (cl-defmethod crush-backend-grant-permission ((_backend crush-run-backend) _permission-id _action)
   "No-op for run backend: permissions are auto-approved."
