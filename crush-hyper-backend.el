@@ -42,8 +42,20 @@
 (require 'cl-lib)
 (require 'json)
 (require 'auth-source)
-(require 'crush-backend)
-(require 'crush-xxh3)
+;;; flycheck's emacs-lisp checker byte-compiles each file in isolation,
+;;; and its batch child's `load-path' excludes the package directory.
+;;; Prefer `require'; fall back to loading the siblings from this
+;;; file's own directory so both flycheck and package-installed loads
+;;; work.  The order follows the dependency graph: `crush-backend'
+;;; first, then `crush-xxh3' which it uses.
+(eval-and-compile
+  (dolist (dep '("crush-backend" "crush-xxh3"))
+    (unless (require (intern dep) nil t)
+      (load (expand-file-name
+             (concat dep ".el")
+             (file-name-directory
+              (or buffer-file-name load-file-name default-directory)))
+            nil t))))
 
 (defcustom crush-hyper-session-cache-p t
   "Send x-session-id and x-session-affinity cache-affinity headers.
