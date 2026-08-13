@@ -82,5 +82,15 @@ for backends that stream (hyper).")
   "Respond to a permission request on BACKEND identified by PERMISSION-ID.
 ACTION is `allow', `allow-session', or `deny'.")
 
+(cl-defgeneric crush-backend--tool-results (backend tool-calls)
+  "Build the tool-result messages for TOOL-CALLS from BACKEND's buffer.
+TOOL-CALLS is a vector of tool-call alists from the SSE stream
+(accumulated by `crush--hyper-sse-merge-tool-calls').  Returns a
+list of message alists ready to be appended to the conversation
+history: an assistant message with `tool_calls' followed by
+`role: \"tool\"' messages with the results."
+  (ignore backend tool-calls)
+  nil)
+
 (provide 'crush-backend)
 ;;; crush-backend.el ends here

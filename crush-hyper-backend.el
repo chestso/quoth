@@ -199,6 +199,10 @@ for the value; nil omits the header."
 
 (declare-function crush--debug-log "crush.el" (category message))
 (declare-function crush--history-for "crush.el" (buffer))
+(defvar crush-tools-enabled t)
+(declare-function crush-make-tool-call "crush-tool" (&rest args))
+(declare-function crush-tool-execute "crush-tool" (tool-call))
+(declare-function crush--tool-parse-args "crush-tool" (args-json))
 
 (cl-defstruct (crush-hyper-backend
                (:include crush-backend (type 'hyper))
@@ -218,8 +222,10 @@ TURNS is a list of (ROLE . TEXT) conses from the facade's history
 extraction (see `crush--history-turns').  `user' and `assistant'
 become messages; a `reasoning' turn immediately following an
 `assistant' turn is folded into that same assistant message as the
-`reasoning_content' field (HYPER-API.md §3.4).  Any other role, and
-empty or whitespace-only text, is dropped.  Returns the alists in
+`reasoning_content' field (HYPER-API.md §3.4).  A `tool' turn
+following an `assistant' turn is emitted as a `role: \"tool\"'
+message with `tool_call_id'.  Any other role, and empty or
+whitespace-only text, is dropped.  Returns the alists in
 conversation order."
   (let ((messages nil)
         (pending nil))
@@ -228,9 +234,14 @@ conversation order."
             (text (cdr turn)))
         (cond
          ((and (eq role 'reasoning) pending)
-          ;; Attach the trace to the assistant message just built.
           (setcdr (last pending)
                   (list (cons 'reasoning_content text))))
+         ((and (eq role 'tool) pending)
+          (push (list (cons 'role "tool")
+                      (cons 'tool_call_id "unknown")
+                      (cons 'content text))
+                messages)
+          (setq pending nil))
          ((and (memq role '(user assistant))
                (stringp text)
                (> (length (string-trim text)) 0))
@@ -250,7 +261,9 @@ Prior (ROLE . TEXT) TURNS from the facade's history extraction ride
 between the system prompt and the new user message; with no turns the
 body carries exactly system + user (`stream: t', no tools).  History
 is disabled by the caller passing nil turns (`crush-hyper-history-limit
-0 means the facade extracts none)."
+0 means the facade extracts none).  When `crush-tools-enabled' is
+non-nil (the default), the request announces the `bash' tool and
+`tool_choice: \"auto\"'."
   (let* ((model (or model crush-hyper-default-model))
          (user-content
           (if (and context (not (string-empty-p context)))
@@ -283,20 +296,39 @@ is disabled by the caller passing nil turns (`crush-hyper-history-limit
     (when crush-hyper-reasoning-effort
       (setq body (append body
                          `((reasoning_effort . ,crush-hyper-reasoning-effort)))))
+    (when crush-tools-enabled
+      (setq body (append body
+                         (list (cons 'tools (crush--hyper-tool-schema))
+                               (cons 'tool_choice "auto")))))
     body))
+
+(defun crush--hyper-tool-schema ()
+  "Return the tool schema vector for the `bash' tool."
+  (let ((param-props
+         `((command . ((type . "string")
+                       (description . "The shell command to execute")))
+           (working_dir . ((type . "string")
+                           (description . "Working directory (defaults to the buffer's project root)"))))))
+    `[((type . "function")
+       (function . ((name . "bash")
+                    (description . "Run a shell command in the user's environment and return its combined standard output and error, with the exit code appended. Anything can be run through bash.")
+                    (parameters . ((type . "object")
+                                   (properties . ,param-props)
+                                   (required . ["command"]))))))]))
 
 (defun crush--hyper-sse-new-state ()
   "Return a fresh SSE parser state plist."
-  (list :pending "" :done nil :error nil))
+  (list :pending "" :done nil :error nil :tool-calls nil))
 
 (defun crush--hyper-sse-feed (state chunk &optional &rest args)
   "Feed CHUNK into SSE parser STATE and return (DELTAS . NEW-STATE).
-Each delta is a (KIND . TEXT) cons, where KIND is `content' or
-`reasoning'; see `crush--hyper-sse-extract-deltas'.  Sets `:done'
-when `[DONE]' or an error payload is seen; the `:pending' buffer
-keeps partial events across chunk boundaries.  ARGS may contain
-:on-event, a callback invoked with the raw payload of each COMPLETE
-`data:' event (before it is dispatched), including `[DONE]'."
+Each delta is a (KIND TEXT ORIG) list, where KIND is `content',
+`reasoning', or `tool_calls' (TEXT nil for tool_calls).
+Sets `:done' when `[DONE]' or an error payload is seen; the
+`:pending' buffer keeps partial events across chunk boundaries.
+ARGS may contain :on-event, a callback invoked with the raw payload
+of each COMPLETE `data:' event (before it is dispatched), including
+`[DONE]'."
   (let ((pending (concat (plist-get state :pending) chunk))
         (done (plist-get state :done))
         (error (plist-get state :error))
@@ -339,9 +371,12 @@ keeps partial events across chunk boundaries.  ARGS may contain
                           (setq done t)
                           (setq error (crush--hyper-alist-get "error" obj)))
                       (setq deltas (nconc deltas
-                                          (crush--hyper-sse-extract-deltas obj))))))))))))
+                                          (crush--hyper-sse-extract-deltas obj))))
+                    (when obj
+                      (crush--hyper-sse-merge-tool-calls state obj))))))))))
       (cons deltas
-            (list :pending pending :done done :error error)))))
+            (list :pending pending :done done :error error
+                  :tool-calls (plist-get state :tool-calls))))))
 
 (defun crush--hyper-alist-get (key alist)
   "Return the value for KEY in ALIST, handling symbol or string keys."
@@ -350,10 +385,9 @@ keeps partial events across chunk boundaries.  ARGS may contain
 
 (defun crush--hyper-sse-extract-deltas (obj)
   "Return typed deltas from SSE JSON object OBJ.
-A delta is a cons (KIND . TEXT) where KIND is `content' or
-`reasoning'.  `content' carries `choices[0].delta.content';
-`reasoning' carries `choices[0].delta.reasoning_content'.  Returns
-nil when OBJ is nil or carries no delta text."
+Each delta is a list (KIND TEXT ORIG) where KIND is `content',
+`reasoning', or `tool_calls'; TEXT is the delta text (nil for
+tool_calls); ORIG is the parsed JSON object (nil when OBJ is nil)."
   (when obj
     (let* ((raw-choices (crush--hyper-alist-get "choices" obj))
            (first-choice (if (vectorp raw-choices)
@@ -365,12 +399,62 @@ nil when OBJ is nil or carries no delta text."
            (content (and delta
                          (crush--hyper-alist-get "content" delta)))
            (reasoning (and delta
-                           (crush--hyper-alist-get "reasoning_content" delta))))
+                           (crush--hyper-alist-get "reasoning_content" delta)))
+           (tool-calls (and delta
+                            (crush--hyper-alist-get "tool_calls" delta))))
       (delq nil
             (list (when (stringp content)
-                    (cons 'content content))
+                    (list 'content content obj))
                   (when (stringp reasoning)
-                    (cons 'reasoning reasoning)))))))
+                    (list 'reasoning reasoning obj))
+                  (when (and tool-calls (vectorp tool-calls))
+                    (list 'tool_calls nil obj)))))))
+
+(defun crush--hyper-sse-merge-tool-calls (state obj)
+  "Merge tool_calls deltas from OBJ into STATE's :tool-calls vector.
+OpenAI streams tool calls stepwise: each delta carries an index,
+an id (on the first chunk), and function name/arguments.  Arguments
+are glued across chunks by index."
+  (let* ((raw-choices (crush--hyper-alist-get "choices" obj))
+         (first-choice (if (vectorp raw-choices)
+                           (and (> (length raw-choices) 0)
+                                (aref raw-choices 0))
+                         (car-safe raw-choices)))
+         (delta (and first-choice
+                     (crush--hyper-alist-get "delta" first-choice)))
+         (tc-delta (and delta
+                        (crush--hyper-alist-get "tool_calls" delta))))
+    (when (and tc-delta (vectorp tc-delta))
+      (let ((tcs (plist-get state :tool-calls)))
+        (unless tcs (setq tcs (make-vector 0 nil)))
+        (seq-do
+         (lambda (tc)
+           (let ((idx (crush--hyper-alist-get "index" tc)))
+             (when (and idx (integerp idx))
+               (while (>= idx (length tcs))
+                 (setq tcs (vconcat tcs [nil])))
+               (let ((existing (aref tcs idx)))
+                 (if existing
+                     (let* ((new-fn (crush--hyper-alist-get "function" tc))
+                            (new-args (and new-fn
+                                           (crush--hyper-alist-get
+                                            "arguments" new-fn)))
+                            (ex-fn (or (assoc "function" existing)
+                                       (assoc 'function existing))))
+                       (when (and new-args ex-fn (cdr ex-fn))
+                         (let ((args-cell
+                                (or (assoc "arguments" (cdr ex-fn))
+                                    (assoc 'arguments (cdr ex-fn)))))
+                           (if args-cell
+                               (setcdr args-cell
+                                       (concat (or (cdr args-cell) "")
+                                               new-args))
+                             (setcdr ex-fn
+                                     (cons (cons 'arguments new-args)
+                                           (cdr ex-fn)))))))
+                   (aset tcs idx tc))))))
+         tc-delta)
+        (plist-put state :tool-calls tcs)))))
 
 ;;; Hyper transport
 
@@ -428,7 +512,8 @@ exits non-zero."
          (deltas (car result))
          (new-state (cdr result)))
     (dolist (delta deltas)
-      (crush--hyper-emit-delta proc (cdr delta) (car delta)))
+      (when (nth 1 delta)
+        (crush--hyper-emit-delta proc (nth 1 delta) (nth 0 delta))))
     ;; Persist the full parser state: the state plist has no :sse key,
     ;; and dropping the `:pending' fragment would lose any SSE event
     ;; split across process-filter chunks.
@@ -645,6 +730,41 @@ turns exist.  The backend never touches buffers itself."
 (cl-defmethod crush-backend-grant-permission ((_backend crush-hyper-backend) _permission-id _action)
   "No permissions are issued in phase 1."
   nil)
+
+(cl-defmethod crush-backend--tool-results ((_backend crush-hyper-backend) tool-calls)
+  "Build the tool-result continuation messages for TOOL-CALLS.
+Returns (assistant-tool-calls-msg . tool-result-msgs)."
+  (let ((tcs-list nil)
+        (tool-msgs nil))
+    (when (vectorp tool-calls)
+      (dotimes (i (length tool-calls))
+        (let ((tc (aref tool-calls i)))
+          (when tc
+            (let ((id (crush--hyper-alist-get "id" tc))
+                  (fn (crush--hyper-alist-get "function" tc)))
+              (ignore fn)
+              (let ((name (and fn (crush--hyper-alist-get "name" fn)))
+                    (args (and fn (crush--hyper-alist-get "arguments" fn))))
+                (when (and id name)
+                  (let ((call (crush-make-tool-call :id id :name name)))
+                    (when args
+                      (aset call 2 (crush--tool-parse-args args)))
+                    (let ((result (crush-tool-execute call)))
+                      (push (list (cons 'id id)
+                                  (cons 'type "function")
+                                  (cons 'function
+                                        (list (cons 'name name)
+                                              (cons 'arguments
+                                                    (or args "")))))
+                            tcs-list)
+                      (push (list (cons 'role "tool")
+                                  (cons 'tool_call_id id)
+                                  (cons 'content (car result)))
+                            tool-msgs))))))))))
+    (cons (list (cons 'role "assistant")
+                (cons 'content :null)
+                (cons 'tool_calls (vconcat (nreverse tcs-list))))
+          (nreverse tool-msgs))))
 
 (provide 'crush-hyper-backend)
 ;;; crush-hyper-backend.el ends here

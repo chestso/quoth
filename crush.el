@@ -222,6 +222,7 @@ Buffer-local.")
 (require 'crush-run-backend)
 (require 'crush-hyper-backend)
 (require 'crush-stream)
+(require 'crush-tool)
 
 (defvar crush-active-backend nil
   "The active crush backend for this buffer (facade-owned).
@@ -669,10 +670,10 @@ Iterates the buffer's prompts in buffer order, stopping at PROMPT-ID
 (the pending prompt, which is being sent and therefore never part of
 history).  For each prior prompt emits (ROLE . TEXT) conses: `user'
 with the typed input and attachments, `assistant' with the streamed
-answer (reasoning excluded), and, when
-`crush-hyper-history-include-reasoning' is enabled, a `reasoning'
-record carrying the CoT text.  Returns nil when PROMPT-ID is the
-first prompt in the buffer."
+answer (reasoning excluded), `tool' with the tool-call exchange text,
+and, when `crush-hyper-history-include-reasoning' is enabled, a
+`reasoning' record carrying the CoT text.  Returns nil when PROMPT-ID
+is the first prompt in the buffer."
   (if (and (boundp 'crush-hyper-history-limit)
            (= crush-hyper-history-limit 0))
       nil
@@ -689,23 +690,20 @@ first prompt in the buffer."
             (let ((resp-text (crush-get-response-text id)))
               (when resp-text
                 (push (cons 'assistant resp-text) turns)))
+            (let ((tool-text (crush--tool-turn-text id)))
+              (when tool-text
+                (push (cons 'tool tool-text) turns)))
             (when (and (boundp 'crush-hyper-history-include-reasoning)
                        crush-hyper-history-include-reasoning)
               (let ((reasoning-text (crush-get-reasoning-text id)))
                 (when reasoning-text
                   (push (cons 'reasoning reasoning-text) turns)))))))
-      ;; `crush-hyper-history-limit' caps the EXCHANGE count; the tail
-      ;; (most recent) always survives.  Drop the surplus oldest user
-      ;; turns from the front.
       (let* ((limited (nreverse turns))
              (exchanges (cl-count-if (lambda (turn) (eq (car turn) 'user))
                                      limited)))
         (if (and (boundp 'crush-hyper-history-limit)
                  (> crush-hyper-history-limit 0)
                  (> exchanges crush-hyper-history-limit))
-            ;; Skip whole exchanges from the front until exactly
-            ;; `crush-hyper-history-limit' user turns remain.  Stop AT
-            ;; the first user turn that must be kept.
             (let ((to-cut (- exchanges crush-hyper-history-limit))
                   (cut 0)
                   (i 0))
@@ -726,6 +724,26 @@ completed exchange.  Entering BUFFER is this function's job, keeping
 the backend buffer-free."
   (with-current-buffer buffer
     (crush--history-turns crush--prompt-id)))
+
+(defun crush--tool-turn-text (prompt-id)
+  "Return the tool-call exchange text for PROMPT-ID, or nil.
+The region tagged `crush-region-type' `tool' within the response
+region for PROMPT-ID.  Returns nil when no tool calls were made."
+  (let ((pos (text-property-any (point-min) (point-max)
+                                'crush-response-to prompt-id)))
+    (when pos
+      (let ((end (or (next-single-property-change pos 'crush-response-to
+                                                  nil (point-max))
+                     (point-max))))
+        (let ((ts (text-property-any pos end 'crush-region-type 'tool)))
+          (when ts
+            (let ((te (or (next-single-property-change ts 'crush-region-type
+                                                       nil end)
+                          end)))
+              (let ((text (string-trim
+                           (buffer-substring-no-properties ts te))))
+                (when (> (length text) 0)
+                  text)))))))))
 
 (defun crush--install-font-lock-guard (&optional enable)
   "Protect read-only boundaries from font-lock in the current buffer.
@@ -1100,7 +1118,9 @@ it.  Markers are invalidated."
 PROMPT-ID is applied to both regions.  Applies `crush-prompt-id',
 `crush-response-to' and `crush-region-type' (`response', with the
 reasoning sub-span retagged `reasoning').  Shared by
-`crush-facade--finalize' and `crush-interrupt'."
+`crush-facade--finalize' and `crush-interrupt'.  Tool regions within
+the response are tagged `tool' and carry the `crush-tool-call'
+property for wire resume."
   (when (and response-start (> response-end response-start))
     (put-text-property response-start response-end
                        'crush-prompt-id prompt-id)
@@ -1108,9 +1128,6 @@ reasoning sub-span retagged `reasoning').  Shared by
                        'crush-response-to prompt-id)
     (put-text-property response-start response-end
                        'crush-region-type 'response)
-    ;; Reasoning is a sub-region of the response: tag it over the
-    ;; response tags so lookup by region type sees `reasoning'
-    ;; first for the CoT span.
     (let ((reasoning-region (crush--reasoning-region)))
       (when reasoning-region
         (let ((rs (car reasoning-region))
@@ -1238,15 +1255,42 @@ crush buffer, which owns all streamed output."
                                       (crush-facade--record-error message))))
                       :buffer buf
                       :stderr (get-buffer-create "*crush-errors*"))))
-      ;; The facade owns the per-prompt buffer plumbing that backends
-      ;; must not know about: the process mark, session/process state,
-      ;; and the response-start marker.  Runs only when the backend
-      ;; returned a process (mocked transports may return nil).
       (when (and real-proc (processp real-proc))
         (set-marker (process-mark real-proc) (point-max))
         (setq-local crush-process real-proc)
         (setq-local crush--continue t)
         (setq-local crush--response-start (point-marker))))))
+
+(defun crush--tool-block-insert (tool-calls prompt-id)
+  "Insert a tool-call block for TOOL-CALLS into the buffer.
+TOOL-CALLS is a plist of :name :id :args-json :result :exit.
+PROMPT-ID is the current prompt's ID.  The block is read-only,
+tagged `crush-region-type' `tool' with `crush-prompt-id' /
+`crush-response-to', and carries the `crush-tool-call' property
+for wire resume.  Returns the end position of the inserted block."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t)
+        (start (point-max)))
+    (save-excursion
+      (goto-char start)
+      (insert (format "⛏ tool: %s\n" (plist-get tool-calls :name)))
+      (insert (format "  command: %s\n" (or (plist-get tool-calls :args-json) "")))
+      (let ((exit (plist-get tool-calls :exit)))
+        (when exit
+          (insert (format "  exit: %s\n" exit))))
+      (let ((result (plist-get tool-calls :result)))
+        (when result
+          (insert (format "  output: %s\n" result)))))
+    (let ((end (point-max)))
+      (put-text-property start end 'crush-region-type 'tool)
+      (put-text-property start end 'crush-prompt-id prompt-id)
+      (put-text-property start end 'crush-response-to prompt-id)
+      (put-text-property start (1- end) 'crush-tool-call
+                         (list :id (plist-get tool-calls :id)
+                               :name (plist-get tool-calls :name)
+                               :args-json (plist-get tool-calls :args-json)))
+      (crush--freeze-region start end)
+      end)))
 
 (defun crush-send-input ()
   "Send the current prompt to the Crush CLI."

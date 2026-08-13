@@ -207,6 +207,49 @@ def main():
                 except ValueError:
                     conn.sendall(content_frame("first").encode())
                 conn.sendall(sse("[DONE]").encode())
+            elif mode == "tool-call":
+                # Tool-call round-trip: first request emits tool_calls
+                # with finish_reason; subsequent requests carry role:tool
+                # messages and get a content answer.
+                conn.sendall(sse_ok.encode())
+                try:
+                    req = json.loads(body)
+                    msgs = req.get("messages", [])
+                    has_tool = any(
+                        m.get("role") == "tool" for m in msgs if isinstance(m, dict)
+                    )
+                    if has_tool:
+                        conn.sendall(content_frame("tool-result-ack").encode())
+                        conn.sendall(sse("[DONE]").encode())
+                    else:
+                        tc_frame = json.dumps(
+                            {
+                                "choices": [
+                                    {
+                                        "delta": {
+                                            "tool_calls": [
+                                                {
+                                                    "index": 0,
+                                                    "id": "call_abc",
+                                                    "function": {
+                                                        "name": "bash",
+                                                        "arguments": json.dumps(
+                                                            {"command": "echo hi"}
+                                                        ),
+                                                    },
+                                                }
+                                            ]
+                                        },
+                                        "finish_reason": "tool_calls",
+                                    }
+                                ]
+                            }
+                        )
+                        conn.sendall(sse(tc_frame).encode())
+                        conn.sendall(sse("[DONE]").encode())
+                except ValueError:
+                    conn.sendall(content_frame("first").encode())
+                    conn.sendall(sse("[DONE]").encode())
             else:  # ok-stream, slow
                 conn.sendall(sse_ok.encode())
                 for d in deltas:

@@ -49,8 +49,7 @@
       (should (= (length msgs) 2))
       (should (string= (crush--hyper-alist-get "role" (nth 0 msgs)) "system"))
       (should (string= (crush--hyper-alist-get "role" (nth 1 msgs)) "user"))
-      (should (string= (crush--hyper-alist-get "content" (nth 1 msgs)) "Hello"))
-      (should-not (assq 'tools req)))))
+      (should (string= (crush--hyper-alist-get "content" (nth 1 msgs)) "Hello")))))
 
 (ert-deftest crush-test/hyper-compose-with-context-merges-preamble ()
   "With context, the user message should carry preamble + context + prompt."
@@ -83,17 +82,31 @@
     (should (string= (alist-get 'model (crush--hyper-compose-request "P" nil nil))
                      crush-hyper-default-model))))
 
-(ert-deftest crush-test/hyper-compose-no-tools-in-phase1 ()
-  "Phase 1 should not announce any tools."
+(ert-deftest crush-test/hyper-compose-tools-by-default ()
+  "With `crush-tools-enabled' t (the default) the request body should
+announce the bash tool and tool_choice auto."
   (let ((req (crush--hyper-compose-request "P" nil "m")))
-    (should-not (assq 'tools req))
-    (should-not (assq 'tool_choice req))))
+    (should (assq 'tools req))
+    (should (equal (alist-get 'tool_choice req) "auto"))
+    (let ((tools (alist-get 'tools req)))
+      (should (vectorp tools))
+      (should (= (length tools) 1))
+      (should (equal (cdr (assq 'name (cdr (assq 'function (aref tools 0)))))
+                     "bash")))))
+
+(ert-deftest crush-test/hyper-compose-no-tools-when-disabled ()
+  "With `crush-tools-enabled' nil, the request body should be
+byte-identical to the pre-tools format (no `tools' or `tool_choice')."
+  (let ((crush-tools-enabled nil))
+    (let ((req (crush--hyper-compose-request "P" nil "m")))
+      (should-not (assq 'tools req))
+      (should-not (assq 'tool_choice req)))))
 
 ;;; 92. Hyper backend: SSE parser
 
 (defun crush-test--sse-state ()
   "Return a fresh, empty SSE parser state."
-  (list :pending "" :done nil))
+  (list :pending "" :done nil :tool-calls nil))
 
 (ert-deftest crush-test/sse-parser-single-delta ()
   "A single data event should yield its content delta."
@@ -101,7 +114,8 @@
                   (crush-test--sse-state)
                   "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"))
          (deltas (car result)))
-    (should (equal deltas '((content . "Hello"))))
+    (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) deltas)
+                   '((content . "Hello"))))
     (should-not (plist-get (cdr result) :done))))
 
 (ert-deftest crush-test/sse-parser-multiple-events-per-chunk ()
@@ -111,7 +125,8 @@
                  "data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n"
                  "data: [DONE]\n\n"))
          (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
-    (should (equal (car result) '((content . "one") (content . "two"))))
+    (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
+                   '((content . "one") (content . "two"))))
     (should (plist-get (cdr result) :done))))
 
 (ert-deftest crush-test/sse-parser-chunk-split-mid-line ()
@@ -121,7 +136,8 @@
          (r2 (crush--hyper-sse-feed (cdr r1) "tent\":\"abc\"}}]}\n\n"))
          (r3 (crush--hyper-sse-feed (cdr r2) "data: [DONE]\n\n")))
     (should (equal (car r1) nil))
-    (should (equal (car r2) '((content . "abc"))))
+    (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car r2))
+                   '((content . "abc"))))
     (should (plist-get (cdr r3) :done))))
 
 (ert-deftest crush-test/sse-parser-crlf ()
@@ -129,7 +145,8 @@
   (let* ((result (crush--hyper-sse-feed
                   (crush-test--sse-state)
                   "data: {\"choices\":[{\"delta\":{\"content\":\"CR\"}}]}\r\n\r\n")))
-    (should (equal (car result) '((content . "CR"))))))
+    (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
+                   '((content . "CR"))))))
 
 (ert-deftest crush-test/sse-parser-multiline-data-payload ()
   "A data payload spanning several data: lines should be joined."
@@ -137,14 +154,16 @@
                         "\"}}]}\n"
                         "data: {\"choices\":[{\"delta\":{\"content\":\" two\"}}]}\n\n"))
          (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
-    (should (equal (car result) '((content . "line") (content . " two"))))))
+    (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
+                   '((content . "line") (content . " two"))))))
 
 (ert-deftest crush-test/sse-parser-reasoning-delta ()
   "A reasoning_content delta should yield a reasoning-typed delta."
   (let* ((result (crush--hyper-sse-feed
                   (crush-test--sse-state)
                   "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n")))
-    (should (equal (car result) '((reasoning . "think"))))
+    (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
+                   '((reasoning . "think"))))
     (should-not (plist-get (cdr result) :done))))
 
 (ert-deftest crush-test/sse-parser-reasoning-then-content ()
@@ -155,8 +174,55 @@ which region each delta belongs to."
                  "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n"
                  "data: {\"choices\":[{\"delta\":{\"content\":\"seen\"}}]}\n\n"))
          (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
-    (should (equal (car result)
+    (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
                    '((reasoning . "think") (content . "seen"))))))
+
+(ert-deftest crush-test/sse-tool-calls-delta ()
+  "A tool_calls delta should yield a (tool_calls nil ORIG) delta."
+  (let* ((result (crush--hyper-sse-feed
+                  (crush-test--sse-state)
+                  (concat "data: {\"choices\":[{\"delta\":"
+                          "{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\","
+                          "\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"com\"}}]}}]}\n\n"))))
+    (let ((deltas (car result)))
+      (should (= (length deltas) 1))
+      (should (eq (nth 0 (nth 0 deltas)) 'tool_calls))
+      (should (null (nth 1 (nth 0 deltas))))
+      (should (nth 2 (nth 0 deltas))))))
+
+(ert-deftest crush-test/sse-tool-calls-merge-by-index ()
+  "Tool calls delta arguments should be glued across chunks by index."
+  (let* ((s1 (crush-test--sse-state))
+         (json1 (json-encode '((choices . [((delta (tool_calls . [((index . 0) (id . "call_x") (function (name . "bash") (arguments . "part1")))])))]))))
+         (json2 (json-encode '((choices . [((delta (tool_calls . [((index . 0) (function (arguments . "part2")))])))]))))
+         (r1 (crush--hyper-sse-feed
+              s1 (concat "data: " json1 "\n\n")))
+         (r2 (crush--hyper-sse-feed
+              (cdr r1) (concat "data: " json2 "\n\n"))))
+    (let ((tcs (plist-get (cdr r2) :tool-calls)))
+      (should (vectorp tcs))
+      (should (>= (length tcs) 1))
+      (let ((args (crush--hyper-alist-get
+                   "arguments"
+                   (crush--hyper-alist-get
+                    "function"
+                    (aref tcs 0)))))
+        (should (string= args "part1part2"))))))
+
+(ert-deftest crush-test/sse-mixed-content-and-tool-calls ()
+  "A chunk with both content and tool_calls should yield both deltas."
+  (let* ((result (crush--hyper-sse-feed
+                  (crush-test--sse-state)
+                  (concat "data: {\"choices\":[{\"delta\":"
+                          "{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\","
+                          "\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]}}]}\n\n"
+                          "data: {\"choices\":[{\"delta\":"
+                          "{\"content\":\"text\"}}]}\n\n"))))
+    (let ((deltas (car result)))
+      (should (= (length deltas) 2))
+      (should (eq (nth 0 (nth 0 deltas)) 'tool_calls))
+      (should (eq (nth 0 (nth 1 deltas)) 'content))
+      (should (string= (nth 1 (nth 1 deltas)) "text")))))
 
 (ert-deftest crush-test/sse-parser-error-payload ()
   "An error data payload should set done and surface the message."
@@ -1192,6 +1258,46 @@ fields (HYPER-API.md §3.4)."
                     (should (string= (crush--hyper-alist-get "reasoning_content" a)
                                      "think step hidden")))))))))
     (crush-test--cleanup)))
+
+(ert-deftest crush-test/hyper-wire-tool-call-finish-reason ()
+  "A `finish_reason: tool_calls' should surface tool_calls on the SSE
+state and the parser should report them."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush-test--with-hyper-server
+           'tool-call
+           (lambda (base)
+             (setq-local crush--response-start (point-marker))
+             (let ((buf (current-buffer)))
+               (let ((proc (crush--hyper-request
+                            base "tok" (crush--hyper-compose-request "hi" nil "m")
+                            (crush-test--hyper-on-delta buf)
+                            (lambda ()
+                              (with-current-buffer buf
+                                (message "tool-call done"))))))
+                 (let ((deadline (+ (float-time) 6)))
+                   (while (and (process-live-p proc)
+                               (null (process-get proc :crush-finished))
+                               (< (float-time) deadline))
+                     (accept-process-output nil 0.1)
+                     (sit-for 0.02)))
+                 (let ((sse (process-get proc :crush-sse)))
+                   (should sse)
+                   (let ((tcs (plist-get sse :tool-calls)))
+                     (should (vectorp tcs))
+                     (should (>= (length tcs) 1))
+                     (should (string= (crush--hyper-alist-get "id" (aref tcs 0))
+                                      "call_abc")))))))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-compose-disabled-tools-no-key ()
+  "With `crush-tools-enabled' nil, the request body should lack the
+`tools' and `tool_choice' keys."
+  (let ((crush-tools-enabled nil))
+    (let ((req (crush--hyper-compose-request "P" nil "m")))
+      (should-not (assq 'tools req))
+      (should-not (assq 'tool_choice req)))))
 
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here
