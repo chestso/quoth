@@ -268,7 +268,7 @@
               ;; New ID should be different
               (should (stringp crush--prompt-id))
               (should (not (string= old-id crush--prompt-id))))))
-      (crush-test--cleanup))))
+        (crush-test--cleanup))))
 
 ;;; 18. Header line display
 
@@ -1566,7 +1566,7 @@ is followed by a `reasoning' record carrying the CoT text."
                 (should (= (length turns) 2))
                 (should (equal (car turns) (cons 'user "second")))
                 (should (equal (cadr turns) (cons 'assistant "two")))))))
-    (crush-test--cleanup))))
+        (crush-test--cleanup))))
 
 (ert-deftest crush-test/history-limit-zero-disables ()
   "`crush-hyper-history-limit' 0 means no history at all."
@@ -1577,7 +1577,7 @@ is followed by a `reasoning' record carrying the CoT text."
           (let ((id1 (crush-test--seed-exchange "first" "one")))
             (ignore id1)
             (should (null (crush--history-turns crush--prompt-id)))))
-    (crush-test--cleanup))))
+        (crush-test--cleanup))))
 
 (ert-deftest crush-test/history-turns-always-fresh ()
   "Extraction reads the live buffer; no cache can go stale."
@@ -1595,7 +1595,7 @@ is followed by a `reasoning' record carrying the CoT text."
               (delete-region rs (1+ rs)))
             (should-not (equal (crush--history-turns crush--prompt-id)
                                '((user . "first") (assistant . "reply")))))
-    (crush-test--cleanup)))))
+          (crush-test--cleanup)))))
 
 (provide 'crush-test-buffer)
 ;;; crush-test-buffer.el ends here

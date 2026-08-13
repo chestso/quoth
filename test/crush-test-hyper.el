@@ -762,8 +762,8 @@ and return the capture output."
                (should (buffer-live-p debug-buf))
                (with-current-buffer debug-buf
                  (goto-char (point-min))
-                (should (search-forward "request: POST" nil t))
-                (should (search-forward "body:" nil t))
+                 (should (search-forward "request: POST" nil t))
+                 (should (search-forward "body:" nil t))
                  (goto-char (point-min))
                  (should (search-forward "response: POST" nil t))
                  (goto-char (point-min))
@@ -891,7 +891,7 @@ messages array is [system, prior-user, prior-assistant, current]."
                                  "first"))
                 (should (string= (crush--hyper-alist-get "content" (aref msgs 3))
                                  "second")))))))
-      (crush-test--cleanup)))
+    (crush-test--cleanup)))
 
 (ert-deftest crush-test/hyper-history-real-send-input-flow ()
   "Driving `crush-send-input' twice re-sends prior turns as history.
@@ -947,7 +947,7 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
                                  "assistant"))
                 (should (string= (crush--hyper-alist-get "content" (aref m2 3))
                                  "hello")))))))
-      (crush-test--cleanup)))
+    (crush-test--cleanup)))
 
 (ert-deftest crush-test/hyper-history-limit-zero-disables ()
   "Setting `crush-hyper-history-limit' to 0 disables history: the
@@ -1090,7 +1090,7 @@ fields (HYPER-API.md §3.4)."
                                      "answer out"))
                     (should (string= (crush--hyper-alist-get "reasoning_content" a)
                                      "think step hidden")))))))))
-      (crush-test--cleanup)))
+    (crush-test--cleanup)))
 
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here

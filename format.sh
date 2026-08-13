@@ -5,21 +5,29 @@ echo "=== Formatting Elisp ==="
 # docstring glued to its body opener (test/crush-test-backend.el) are
 # valid Lisp but mis-indented by `calculate-lisp-indent'; running
 # `indent-region' on them corrupts the layout, so only trailing
-# whitespace is cleaned there.
-emacs --batch -L . --eval '(progn
+# whitespace is cleaned there.  Every other file gets `emacs-lisp-mode'
+# before indenting.
+# `timeout --foreground' keeps the batch Emacs killable by Ctrl+C (no
+# separate process group) while still guaranteeing the step cannot hang:
+# `with-temp-buffer' avoids find-file/save-buffer entirely, so no file-local
+# vars, mode hooks, or "create directory?" prompts can ever block it.
+timeout --foreground 60 emacs --batch -L . --eval '(progn
         (dolist (file (append (file-expand-wildcards "*.el")
                               (file-expand-wildcards "test/*.el")))
           (let ((excluded (member (file-name-nondirectory file)
                                   (list "crush-stream.el"
-                                        "crush-test-backend.el"))))
-            (find-file file)
-            (unless excluded
+                                        "crush-test-backend.el")))
+                (abs (expand-file-name file)))
+            (with-temp-buffer
+              (insert-file-contents abs)
+              (emacs-lisp-mode)
               (setq indent-tabs-mode nil)
-              (indent-region (point-min) (point-max)))
-            (delete-trailing-whitespace)
-            (save-buffer)
+              (unless excluded
+                (indent-region (point-min) (point-max)))
+              (delete-trailing-whitespace)
+              (write-region (point-min) (point-max) abs))
             (message "  %s%s" file
-                     (if excluded " (skipped indent)" "")))))' 2>&1 | grep -E "^  "
+                     (if excluded " (skipped indent)" "")))))' 2>&1 | grep -E "^  " || true
 
 echo "=== Formatting Markdown ==="
 find . -name "*.md" -not -path "./.git/*" -print0 |
