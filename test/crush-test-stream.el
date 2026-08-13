@@ -88,10 +88,10 @@ Returns the completion action the facade injected."
   "Recording an error marks the stream errored and renders a clickable pane."
   (unwind-protect
       (with-current-buffer (crush-test--fresh-buffer)
-        (crush-facade--record-error "boom")
+        (crush-facade--record-error "Boom")
         (let ((state (crush-facade--stream-progress)))
           (should (eq (plist-get state :status) 'error))
-          (should (string= (plist-get state :error) "boom")))
+          (should (string= (plist-get state :error) "Boom")))
         (let ((ov (cl-find-if
                    (lambda (o) (overlay-get o 'crush-error-action))
                    (overlays-in (point-min) (point-max)))))
@@ -107,10 +107,10 @@ Returns the completion action the facade injected."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/clear-buffer-removes-error-pane ()
-  "crush-clear-buffer should remove the error pane overlay."
+  "Crush-clear-buffer should remove the error pane overlay."
   (unwind-protect
       (with-current-buffer (crush-test--fresh-buffer)
-        (crush-facade--record-error "boom")
+        (crush-facade--record-error "Boom")
         (should (cl-some (lambda (o) (overlay-get o 'crush-error-action))
                          (overlays-in (point-min) (point-max))))
         (crush-clear-buffer)
@@ -208,9 +208,9 @@ This is what `crush--output-filter' uses to append streamed output."
         (buffer-string)))))
 
 (ert-deftest crush-test/stream-file-provides-protocol ()
-  "The stream protocol (state, progress, error pane) should live in
-`crush-stream.el', not in the core crush.el: the facade delegates to a
-dedicated stream module."
+  "The stream protocol lives in its own file, not the core.
+State, progress, and the error pane live in `crush-stream.el'; the
+facade delegates to a dedicated stream module."
   (let ((stream-src (crush-test--stream-source "crush-stream")))
     (should stream-src)
     (should (string-match-p "defun crush-facade--stream-progress" stream-src))

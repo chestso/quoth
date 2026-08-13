@@ -40,7 +40,7 @@
 ;;; 1. No duplicate defvar crush--continue
 
 (ert-deftest crush-test/no-duplicate-continue-defvar ()
-  "crush--continue should be defined and buffer-local, default nil."
+  "Crush--continue should be defined and buffer-local, default nil."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -452,7 +452,7 @@
 ;;; 40. Integration: crush-clear-buffer removes overlays
 
 (ert-deftest crush-test/clear-buffer-removes-overlays ()
-  "crush-clear-buffer should remove old crush-overlay tagged overlays."
+  "Crush-clear-buffer should remove old crush-overlay tagged overlays."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -470,8 +470,8 @@
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/facade-finalize-tags-and-reprompts ()
-  "The facade continuation should finalize the response: tag it, insert a
-fresh prompt, and regenerate the prompt ID."
+  "The facade continuation finalizes the response.
+It tags the response, inserts a fresh prompt, and regenerates the ID."
   (unwind-protect
       (with-current-buffer (crush-test--fresh-buffer)
         (goto-char (point-max))
@@ -549,13 +549,13 @@ fresh prompt, and regenerate the prompt ID."
 ;;; 57. Debug logging - crush-debug-mode defcustom
 
 (ert-deftest crush-test/debug-mode-defaults-to-t ()
-  "crush-debug-mode should default to t."
+  "Crush-debug-mode should default to t."
   (should (eq crush-debug-mode t)))
 
 ;;; 58. Debug logging - crush--debug-log creates buffer and writes
 
 (ert-deftest crush-test/debug-log-creates-buffer ()
-  "crush--debug-log should create *crush-debug* buffer when enabled."
+  "Crush--debug-log should create *crush-debug* buffer when enabled."
   (unwind-protect
       (let ((crush-debug-mode t))
         (should-not (get-buffer "*crush-debug*"))
@@ -569,7 +569,7 @@ fresh prompt, and regenerate the prompt ID."
 ;;; 59. Debug logging - disabled mode is no-op
 
 (ert-deftest crush-test/debug-log-disabled-no-op ()
-  "crush--debug-log should do nothing when crush-debug-mode is nil."
+  "Crush--debug-log should do nothing when crush-debug-mode is nil."
   (unwind-protect
       (let ((crush-debug-mode nil))
         (crush--debug-log 'test "should not appear")
@@ -585,7 +585,7 @@ fresh prompt, and regenerate the prompt ID."
 ;;; 62. Debug logging - output logged in crush--output-filter
 
 (ert-deftest crush-test/debug-logs-output ()
-  "crush--output-filter should log output to *crush-debug*."
+  "Crush--output-filter should log output to *crush-debug*."
   (unwind-protect
       (let ((crush-debug-mode t)
             (buf (crush-test--fresh-buffer)))
@@ -609,7 +609,7 @@ fresh prompt, and regenerate the prompt ID."
 ;;; 63. Debug logging - sentinel logged
 
 (ert-deftest crush-test/debug-logs-sentinel ()
-  "crush--process-sentinel should log the event to *crush-debug*."
+  "Crush--process-sentinel should log the event to *crush-debug*."
   (unwind-protect
       (let ((crush-debug-mode t)
             (buf (crush-test--fresh-buffer)))
@@ -639,7 +639,7 @@ fresh prompt, and regenerate the prompt ID."
 ;;; 64. Prompt insertion rename
 
 (ert-deftest crush-test/insert-prompt-renamed ()
-  "crush--insert-prompt should be defined (renamed from crush--insert-prompt-marker)."
+  "Crush--insert-prompt should be defined (renamed from crush--insert-prompt-marker)."
   (should (fboundp 'crush--insert-prompt)))
 
 
@@ -683,7 +683,7 @@ read-only previous content, blocking edits and insertions."
 ;;; 67. Phase 6: crush--insert-before-prompt uses crush--prompt-start-marker
 
 (ert-deftest crush-test/insert-before-prompt-works-without-prompt-start ()
-  "crush--insert-before-prompt should insert before crush--prompt-start-marker."
+  "Crush--insert-before-prompt should insert before crush--prompt-start-marker."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -700,7 +700,7 @@ read-only previous content, blocking edits and insertions."
 ;;; 69. Phase 6: crush--after-change uses crush--prompt-start-marker
 
 (ert-deftest crush-test/after-change-tags-without-prompt-start ()
-  "crush--after-change should tag input with prompt-id using crush--prompt-start-marker."
+  "Crush--after-change should tag input with prompt-id using crush--prompt-start-marker."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -716,7 +716,7 @@ read-only previous content, blocking edits and insertions."
 ;;; Phase 0: Parallel markers
 
 (ert-deftest crush-test/prompt-start-marker-set-on-init ()
-  "crush--prompt-start-marker should be set after buffer init."
+  "Crush--prompt-start-marker should be set after buffer init."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -727,7 +727,7 @@ read-only previous content, blocking edits and insertions."
 ;;; Phase 0 tracking tests (DELETED in Phase 4: no comint-last-prompt to track)
 
 (ert-deftest crush-test/input-start-marker-set-on-init ()
-  "crush--input-start-marker should be set after buffer init."
+  "Crush--input-start-marker should be set after buffer init."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -736,7 +736,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/prompt-start-marker-insertion-type ()
-  "crush--prompt-start-marker should have insertion-type t (advances on insert before)."
+  "Crush--prompt-start-marker should have insertion-type t (advances on insert before)."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -745,13 +745,13 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/crush-prompt-face-defined ()
-  "crush-prompt-face should be defined."
+  "Crush-prompt-face should be defined."
   (should (facep 'crush-prompt-face)))
 
 ;;; Phase 2: Custom output filter
 
 (ert-deftest crush-test/output-filter-inserts-at-mark ()
-  "crush--output-filter should insert text at the process mark position."
+  "Crush--output-filter should insert text at the process mark position."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -773,7 +773,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/output-filter-advances-process-mark ()
-  "crush--output-filter should advance the process mark past inserted text."
+  "Crush--output-filter should advance the process mark past inserted text."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -795,7 +795,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/output-filter-logs-to-debug ()
-  "crush--output-filter should log output to *crush-debug* when debug mode is on."
+  "Crush--output-filter should log output to *crush-debug* when debug mode is on."
   (unwind-protect
       (let ((crush-debug-mode t)
             (buf (crush-test--fresh-buffer)))
@@ -817,7 +817,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/output-filter-no-field-property ()
-  "crush--output-filter should NOT set field=output on inserted text."
+  "Crush--output-filter should NOT set field=output on inserted text."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -837,7 +837,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/output-filter-handles-dead-buffer ()
-  "crush--output-filter should not error when process buffer is dead."
+  "Crush--output-filter should not error when process buffer is dead."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -857,7 +857,7 @@ read-only previous content, blocking edits and insertions."
 ;;; Phase 3: Custom input ring
 
 (ert-deftest crush-test/custom-input-ring-initialized ()
-  "crush--input-ring should be a ring in a crush buffer."
+  "Crush--input-ring should be a ring in a crush buffer."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -866,7 +866,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/custom-input-ring-add ()
-  "crush--input-ring-add should add input to the ring."
+  "Crush--input-ring-add should add input to the ring."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -881,7 +881,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/custom-input-ring-add-skips-duplicate ()
-  "crush--input-ring-add should not add consecutive duplicate entries."
+  "Crush--input-ring-add should not add consecutive duplicate entries."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -893,7 +893,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/custom-input-ring-add-skips-empty ()
-  "crush--input-ring-add should not add empty strings."
+  "Crush--input-ring-add should not add empty strings."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -903,7 +903,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/custom-input-ring-read-from-file ()
-  "crush--input-ring-read should read history from file."
+  "Crush--input-ring-read should read history from file."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer))
             (tmpfile (make-temp-file "crush-ring-test")))
@@ -922,7 +922,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/custom-input-ring-write-to-file ()
-  "crush--input-ring-write should write history to file."
+  "Crush--input-ring-write should write history to file."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer))
             (tmpfile (make-temp-file "crush-ring-test")))
@@ -941,7 +941,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/send-input-adds-to-custom-ring ()
-  "crush-send-input should add prompt to crush--input-ring."
+  "Crush-send-input should add prompt to crush--input-ring."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -974,7 +974,7 @@ read-only previous content, blocking edits and insertions."
 
 
 (ert-deftest crush-test/input-previous-inserts-from-ring ()
-  "M-p should insert previous input from crush--input-ring."
+  "\\[crush--input-previous] inserts the previous ring input."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -990,7 +990,7 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/input-next-inserts-from-ring ()
-  "M-n should insert next (more recent) input from crush--input-ring."
+  "\\[crush--input-next] inserts the next (more recent) ring input."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1007,15 +1007,15 @@ read-only previous content, blocking edits and insertions."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/input-ring-file-name-default ()
-  "crush--input-ring-file-name should default to a file in user-emacs-directory."
+  "`crush--input-ring-file-name' defaults to a file in `user-emacs-directory'."
   (should (string= crush--input-ring-file-name
                    (expand-file-name "crush-history" user-emacs-directory))))
 
 ;;; Phase 4: Sever comint-mode, switch to text-mode
 
 (ert-deftest crush-test/mode-parent-is-text-mode ()
-  "The crush buffer's major mode should be the parent mode (text-mode or
-markdown-mode), deriving from text-mode and never comint-mode.
+  "The crush buffer's major mode is the parent mode.
+It derives from `text-mode' (or `markdown-mode'), never `comint-mode'.
 There is no separate `crush-mode' major mode."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
@@ -1065,7 +1065,7 @@ There is no separate `crush-mode' major mode."
 ;;; Phase 8: Optional markdown-mode base
 
 (ert-deftest crush-test/parent-mode-is-text-or-markdown ()
-  "crush--parent-mode should be either text-mode or markdown-mode."
+  "`crush--parent-mode' is either `text-mode' or `markdown-mode'."
   (should (memq crush--parent-mode '(text-mode markdown-mode))))
 
 (ert-deftest crush-test/mode-derives-from-parent-mode ()
@@ -1209,7 +1209,7 @@ Backspacing into the prompt should be blocked."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/inhibit-read-only-allows-programmatic-insert ()
-  "Programmatic insertion with inhibit-read-only should bypass the freeze."
+  "Programmatic insertion bypasses the freeze with `inhibit-read-only'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1221,7 +1221,7 @@ Backspacing into the prompt should be blocked."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/clear-buffer-keeps-prompt-readable-input ()
-  "crush-clear-buffer should reset the buffer so input is editable again."
+  "Crush-clear-buffer should reset the buffer so input is editable again."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1443,7 +1443,8 @@ right after the prompt inherits `read-only' and Emacs signals
 ;;; prompt so the pending prompt is never included.
 
 (defun crush-test--seed-exchange (prompt-text reply-text)
-  "In the current crush buffer, type PROMPT-TEXT and simulate a
+  "Seed a completed exchange in the current crush buffer.
+Types PROMPT-TEXT and simulates a
 completed exchange: response region REPLY-TEXT tagged as the turn's
 answer, then a fresh pending prompt marker.  Returns the completed
 prompt's ID."
@@ -1470,8 +1471,8 @@ prompt's ID."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-excludes-pending-prompt ()
-  "The pending (current) prompt is being sent; it must not appear in
-the returned turns."
+  "The pending (current) prompt never appears in the turns.
+It is being sent when the history is extracted."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1511,8 +1512,8 @@ the returned turns."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-user-text-skips-response-region ()
-  "The user turn must not leak the assistant reply text itself
-(responses share the `crush-prompt-id' tag)."
+  "The user turn never leaks the assistant reply text.
+The response region shares the `crush-prompt-id' tag."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1525,7 +1526,8 @@ the returned turns."
 
 ;; Helper: seed an exchange whose response carries a reasoning span.
 (defun crush-test--seed-reasoning-exchange (prompt-text reasoning-text answer-text)
-  "Type PROMPT-TEXT; stream REASONING-TEXT then ANSWER-TEXT as one
+  "Seed an exchange whose response carries a reasoning span.
+Types PROMPT-TEXT; streams REASONING-TEXT then ANSWER-TEXT as one
 response, tagged as the streaming machinery tags it (reasoning span
 over the CoT, response for the answer).  Returns the prompt ID."
   (let ((prompt-id crush--prompt-id))
@@ -1547,8 +1549,9 @@ over the CoT, response for the answer).  Returns the prompt ID."
     prompt-id))
 
 (ert-deftest crush-test/history-turns-excludes-reasoning-by-default ()
-  "By default (`crush-hyper-history-include-reasoning' nil) the
-assistant turn carries only the answer text; the CoT span is dropped."
+  "By default the assistant turn carries only the answer text.
+Here `crush-hyper-history-include-reasoning' is nil, so the CoT span is
+dropped."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1562,8 +1565,9 @@ assistant turn carries only the answer text; the CoT span is dropped."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-splits-reasoning-when-enabled ()
-  "With `crush-hyper-history-include-reasoning' t, the assistant turn
-is followed by a `reasoning' record carrying the CoT text."
+  "With reasoning enabled the assistant turn is followed by a record.
+`crush-hyper-history-include-reasoning' t makes the CoT text its own
+`reasoning' turn."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer))
             (crush-hyper-history-include-reasoning t))

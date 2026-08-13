@@ -60,15 +60,15 @@
                    "ce7d19a5418fb365")))
 
 (ert-deftest crush-test/xxh3-uuid-shaped ()
-  "The session-UUID shape used by Crush (f47ac10b...) hashes to
-zeebo/xxh3's value (db22027126414ba6), the exact wire value for
+  "Hash the Crush session-UUID shape (f47ac10b...).
+zeebo/xxh3 yields db22027126414ba6, the exact wire value for
 x-session-id / x-session-affinity."
   (should (string= (crush-xxh3-hash64 "f47ac10b-58cc-4372-a567-0e02b2c3d479")
                    "db22027126414ba6")))
 
 (ert-deftest crush-test/xxh3-long-string ()
-  "A 48-byte input reaches the long-path (>= 48 bytes) of XXH3 and
-hashes to zeebo/xxh3's value (e80a6fbd46bf1339)."
+  "Hash a 48-byte input through the long path (>= 48 bytes).
+zeebo/xxh3 yields e80a6fbd46bf1339."
   (should (string= (crush-xxh3-hash64
                     "0123456789abcdef0123456789abcdef0123456789abcdef")
                    "e80a6fbd46bf1339")))
@@ -95,8 +95,8 @@ a 48-byte input and a 47-byte input both hash deterministically."
     (should-not (string= (crush-xxh3-hash64 s48) (crush-xxh3-hash64 s47)))))
 
 (ert-deftest crush-test/xxh3-official-known-answers ()
-  "The port matches the official XXH3-64 known-answer values from the
-Cyan4973/xxHash reference implementation (independently of zeebo)."
+  "Check XXH3-64 against the official known-answer values.
+Reference: Cyan4973/xxHash (independently of zeebo)."
   (let ((pairs '(("" . "2d06800538d394c2")
                  ("a" . "e6c632b61e964e1f")
                  ("abc" . "78af5f94892f3950")

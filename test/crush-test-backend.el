@@ -40,7 +40,7 @@
 ;;; 10. Backend command includes --continue when continue-p is true
 
 (ert-deftest crush-test/backend-command-includes-continue ()
-  "crush-backend-send-prompt should include --continue when :continue-p is t."
+  "Crush-backend-send-prompt should include --continue when :continue-p is t."
   (let ((captured-args nil)
         (real-make-process (symbol-function #'make-process)))
     (cl-letf (((symbol-function #'make-process)
@@ -65,7 +65,7 @@
     (should (member "--continue" captured-args))))
 
 (ert-deftest crush-test/backend-command-omits-continue ()
-  "crush-backend-send-prompt should omit --continue when :continue-p is nil."  (let ((captured-args nil)
+  "Crush-backend-send-prompt should omit --continue when :continue-p is nil."  (let ((captured-args nil)
         (real-make-process (symbol-function #'make-process)))
     (cl-letf (((symbol-function #'make-process)
                (lambda (&rest args)
@@ -89,7 +89,7 @@
     (should-not (member "--continue" captured-args))))
 
 (ert-deftest crush-test/facade-send-injects-completion ()
-  "crush-send-input should inject a completion action into the backend.
+  "Crush-send-input should inject a completion action into the backend.
 The completion action is the facade's continuation so the backend can
 signal stream completion without knowing about buffers or finalization."
   (let ((captured-completion nil)
@@ -155,7 +155,7 @@ Returns the contents of the capture file after BODY completes."
 (ert-deftest crush-test/mock-process-exits-promptly-without-context ()
   "Without context, the crush process should exit promptly after sending EOF.
 Regression test: `crush run' reads all of stdin before processing, so stdin
-must be closed with EOF even when the prompt is a CLI arg. Otherwise the
+must be closed with EOF even when the prompt is a CLI arg.  Otherwise the
 process never exits and the buffer hangs after hitting RET."
   (let ((default-directory crush-test--root))
     (unwind-protect
@@ -204,8 +204,8 @@ process never exits and the buffer hangs after hitting RET."
     (should (string-match-p "\\*\\*Attachment: foo.el" result))
     (should (string-match-p "markdown fenced code blocks" result))))
 
-(ert-deftest crush-test/mock-sends-continue-flag ()
-  "After first prompt, --continue should be passed on subsequent prompts."
+(ert-deftest crush-test/mock-sends-continue ()
+  "Subsequent prompts pass `--continue' to the mock CLI."
   (let ((result (crush-test--with-mock
                  (lambda ()
                    (let ((buf (crush-test--fresh-buffer)))
@@ -222,7 +222,7 @@ process never exits and the buffer hangs after hitting RET."
 ;;; 11. --quiet flag suppresses spinner
 
 (ert-deftest crush-test/backend-command-includes-quiet ()
-  "crush-backend-send-prompt should always include --quiet."
+  "Crush-backend-send-prompt should always include --quiet."
   (let ((captured-args nil)
         (real-make-process (symbol-function #'make-process)))
     (cl-letf (((symbol-function #'make-process)
@@ -272,7 +272,7 @@ process never exits and the buffer hangs after hitting RET."
 ;;; 13. --session flag support
 
 (ert-deftest crush-test/backend-command-includes-session-when-set ()
-  "crush-backend-send-prompt should include --session when session-id is set."
+  "Crush-backend-send-prompt should include --session when session-id is set."
   (let ((captured-args nil)
         (real-make-process (symbol-function #'make-process)))
     (cl-letf (((symbol-function #'make-process)
@@ -298,7 +298,7 @@ process never exits and the buffer hangs after hitting RET."
     (should (member "abc123" captured-args))))
 
 (ert-deftest crush-test/backend-command-omits-session-when-nil ()
-  "crush-backend-send-prompt should omit --session when session-id is nil."
+  "Crush-backend-send-prompt should omit --session when session-id is nil."
   (let ((captured-args nil)
         (real-make-process (symbol-function #'make-process)))
     (cl-letf (((symbol-function #'make-process)
@@ -325,7 +325,7 @@ process never exits and the buffer hangs after hitting RET."
 ;;; 14. --model flag support
 
 (ert-deftest crush-test/backend-command-includes-model-when-set ()
-  "crush-backend-send-prompt should include --model when crush-model is set."
+  "Crush-backend-send-prompt should include --model when crush-model is set."
   (let ((crush-model "claude-sonnet-4-20250514")
         (captured-args nil)
         (real-make-process (symbol-function #'make-process)))
@@ -351,7 +351,7 @@ process never exits and the buffer hangs after hitting RET."
     (should (member "claude-sonnet-4-20250514" captured-args))))
 
 (ert-deftest crush-test/backend-command-omits-model-when-nil ()
-  "crush-backend-send-prompt should omit --model when crush-model is nil."
+  "Crush-backend-send-prompt should omit --model when crush-model is nil."
   (let ((crush-model nil)
         (captured-args nil)
         (real-make-process (symbol-function #'make-process)))
@@ -378,7 +378,7 @@ process never exits and the buffer hangs after hitting RET."
 ;;; 68. Phase 6: crush-send-input uses crush--input-start-marker
 
 (ert-deftest crush-test/send-input-works-without-prompt-start ()
-  "crush-send-input should extract input using crush--input-start-marker.
+  "Crush-send-input should extract input using crush--input-start-marker.
 The extracted prompt in stdin should not include preceding text
 or the crush> prompt marker."
   (let ((result (crush-test--with-mock
@@ -403,8 +403,8 @@ or the crush> prompt marker."
 ;;; Backend abstraction tests
 
 (ert-deftest crush-test/active-backend-variable-renamed ()
-  "The facade's backend variable should be `crush-active-backend' (not
-the legacy `crush--backend'), reflecting facade ownership."
+  "The facade's backend variable is `crush-active-backend'.
+It is no longer the legacy `crush--backend', reflecting facade ownership."
   (unwind-protect
       (with-current-buffer (crush-test--fresh-buffer)
         (should (boundp 'crush-active-backend))
@@ -450,7 +450,8 @@ shadowed it as a defvar; the facade should own the single defcustom."
     (should (= defvar-count 0))))
 
 (ert-deftest crush-test/run-backend-buffer-unaware ()
-  "crush-run-backend.el should not reference buffers, buffer-local state,
+  "`crush-run-backend.el' stays free of buffers and local state.
+It must not reference buffers, buffer-local state,
 or the errors buffer: backends are buffer-unaware by design."
   (let ((src (with-temp-buffer
                (insert-file-contents
@@ -475,7 +476,8 @@ or the errors buffer: backends are buffer-unaware by design."
       (should-not (string-match-p term src)))))
 
 (ert-deftest crush-test/hyper-backend-buffer-unaware ()
-  "crush-hyper-backend.el should not reference buffers, buffer-local state,
+  "`crush-hyper-backend.el' stays free of buffers and local state.
+It must not reference buffers, buffer-local state,
 or the errors buffer: backends are buffer-unaware by design."
   (let ((src (with-temp-buffer
                (insert-file-contents
@@ -496,8 +498,8 @@ or the errors buffer: backends are buffer-unaware by design."
       (should-not (string-match-p term src)))))
 
 (ert-deftest crush-test/backend-is-run-by-default ()
-  "crush-active-backend should be a crush-run-backend in the test
-harness (which pins `crush-backend-type' to `run')."
+  "`crush-active-backend' is a run backend in the test harness.
+The harness pins `crush-backend-type' to `run'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -508,12 +510,13 @@ harness (which pins `crush-backend-type' to `run')."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-type-defaults-to-hyper ()
-  "The package default backend is `hyper' (direct provider interaction
-is the primary goal; the CLI `run' backend is the compatibility path)."
+  "The package default backend is `hyper'.
+Direct provider interaction is the primary goal; the CLI `run' backend
+is the compatibility path."
   (should (eq crush-backend-type 'hyper)))
 
 (ert-deftest crush-test/backend-has-buffer ()
-  "crush-active-backend should have its buffer set."
+  "Crush-active-backend should have its buffer set."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -521,7 +524,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-has-program ()
-  "crush-run-backend should have the program path set."
+  "Crush-run-backend should have the program path set."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -529,7 +532,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-active-p-when-no-process ()
-  "crush-backend-active-p should return nil when no process is running."
+  "Crush-backend-active-p should return nil when no process is running."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -537,7 +540,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-active-p-when-process-running ()
-  "crush-backend-active-p should return non-nil when a process is running."
+  "Crush-backend-active-p should return non-nil when a process is running."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -554,7 +557,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-send-prompt-spawns-process ()
-  "crush-backend-send-prompt should spawn a crush process via the backend."
+  "Crush-backend-send-prompt should spawn a crush process via the backend."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((result (crush-test--with-mock
@@ -569,7 +572,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/backend-send-prompt-with-context ()
-  "crush-backend-send-prompt should send context via stdin when attachments exist."
+  "Crush-backend-send-prompt should send context via stdin when attachments exist."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((result (crush-test--with-mock
@@ -597,7 +600,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/backend-interrupt-stops-process ()
-  "crush-backend-interrupt should stop the running process."
+  "Crush-backend-interrupt should stop the running process."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -616,7 +619,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-cleanup-kills-process ()
-  "crush-backend-cleanup should kill any running process."
+  "Crush-backend-cleanup should kill any running process."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -634,7 +637,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
 
 
 (ert-deftest crush-test/backend-grant-permission-noop-for-run ()
-  "crush-backend-grant-permission should be a no-op for run backend."
+  "Crush-backend-grant-permission should be a no-op for run backend."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -645,7 +648,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
 
 
 (ert-deftest crush-test/send-input-always-uses-backend ()
-  "crush-send-input should always use crush-active-backend (never nil)."
+  "Crush-send-input should always use crush-active-backend (never nil)."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -653,7 +656,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/backend-send-prompt-receives-continue-p ()
-  "crush-backend-send-prompt should receive :continue-p keyword."
+  "Crush-backend-send-prompt should receive :continue-p keyword."
   (let ((received-continue-p nil))
     (cl-letf (((symbol-function #'crush-backend-send-prompt)
                (lambda (_backend _prompt &rest keys)
@@ -675,7 +678,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
     (should received-continue-p)))
 
 (ert-deftest crush-test/backend-send-prompt-continue-p-nil-when-no-continue ()
-  "crush-backend-send-prompt :continue-p should be nil when crush--continue is nil."
+  "Crush-backend-send-prompt :continue-p should be nil when crush--continue is nil."
   (let ((received-continue-p 'unset))
     (cl-letf (((symbol-function #'crush-backend-send-prompt)
                (lambda (_backend _prompt &rest keys)
@@ -697,7 +700,7 @@ is the primary goal; the CLI `run' backend is the compatibility path)."
     (should-not received-continue-p)))
 
 (ert-deftest crush-test/send-input-no-dead-else-branch ()
-  "crush-send-input should not have a fallback path when backend is nil.
+  "Crush-send-input should not have a fallback path when backend is nil.
 The else branch in crush-send-input is dead code since crush-active-backend
 is always set after crush--init-buffer."
   (unwind-protect

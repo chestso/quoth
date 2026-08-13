@@ -69,8 +69,8 @@
         (should (= (cdr result) -1))))))
 
 (ert-deftest crush-test/tool-execute-returns-result-and-exit ()
-  "`crush-tool-execute' should return (RESULT-TEXT . EXIT-CODE) and
-fill the call's result/exit slots."
+  "`crush-tool-execute' returns a result and exit code.
+It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
   (let* ((call (crush-test--tool-call "bash" "{\"command\":\"echo hi\"}"))
          (result (crush-tool-execute call)))
     (should (stringp (car result)))
@@ -137,8 +137,8 @@ fill the call's result/exit slots."
       (should-not spawned))))
 
 (ert-deftest crush-test/bash-exec-uses-working-dir ()
-  "The command should run with the resolved working directory as
-`default-directory'."
+  "The command runs with the resolved working directory.
+That directory becomes `default-directory' for the call."
   (let ((wd (make-temp-file "crush-wd" t)))
     (unwind-protect
         (let* ((call (crush-test--tool-call
@@ -198,8 +198,7 @@ fill the call's result/exit slots."
     (should (= (cdr result) 124))))
 
 (ert-deftest crush-test/bash-exec-timeout-kills ()
-  "A command exceeding `crush-tool-timeout' should be killed and the
-result should say so."
+  "A command exceeding `crush-tool-timeout' is killed.\nThe result reports the timeout."
   (let ((crush-tool-timeout 1))
     (let* ((call (crush-test--tool-call "bash" "{\"command\":\"sleep 10\"}"))
            (result (crush-bash--exec call)))

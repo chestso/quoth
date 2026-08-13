@@ -67,12 +67,12 @@
 ;;; Minor mode
 
 (ert-deftest crush-test/minor-mode-defined ()
-  "crush-minor-mode should be defined as a minor mode."
+  "Crush-minor-mode should be defined as a minor mode."
   (should (boundp 'crush-minor-mode))
   (should (fboundp 'crush-minor-mode)))
 
 (ert-deftest crush-test/minor-mode-keymap-has-bindings ()
-  "crush-minor-mode-map should have the expected keybindings."
+  "Crush-minor-mode-map should have the expected keybindings."
   (let ((map (symbol-value 'crush-minor-mode-map)))
     (should (keymapp map))
     (should (eq (lookup-key map (kbd "C-c C-s")) #'crush-insert-selection))
@@ -81,7 +81,7 @@
     (should (eq (lookup-key map (kbd "C-c C-c")) #'crush))))
 
 (ert-deftest crush-test/minor-mode-toggle ()
-  "crush-minor-mode should toggle on and off in a source buffer."
+  "Crush-minor-mode should toggle on and off in a source buffer."
   (with-temp-buffer
     (insert "hello")
     (should-not crush-minor-mode)
@@ -93,7 +93,7 @@
 ;;; crush-insert-buffer
 
 (ert-deftest crush-test/insert-buffer-inserts-entire-buffer ()
-  "crush-insert-buffer should insert the entire buffer as an org source block."
+  "Crush-insert-buffer should insert the entire buffer as an org source block."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
@@ -109,7 +109,7 @@
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/insert-buffer-no-file-shows-no-file ()
-  "crush-insert-buffer should show (no file) when buffer has no file."
+  "Crush-insert-buffer should show (no file) when buffer has no file."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
@@ -122,7 +122,7 @@
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/insert-buffer-works-while-process-running ()
-  "crush-insert-buffer should work even when a crush process is running."
+  "Crush-insert-buffer should work even when a crush process is running."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (progn
@@ -148,7 +148,7 @@
 ;;; crush-insert-filepath
 
 (ert-deftest crush-test/insert-filepath-inserts-path ()
-  "crush-insert-filepath should insert the file path as context."
+  "Crush-insert-filepath should insert the file path as context."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
@@ -161,7 +161,7 @@
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/insert-filepath-no-file-errors ()
-  "crush-insert-filepath should error when buffer has no file."
+  "Crush-insert-filepath should error when buffer has no file."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
@@ -171,7 +171,7 @@
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/insert-filepath-uses-relative-path ()
-  "crush-insert-filepath should use a path relative to project root."
+  "Crush-insert-filepath should use a path relative to project root."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
@@ -190,7 +190,7 @@
 ;;; crush-insert-selection via minor mode keymap
 
 (ert-deftest crush-test/insert-selection-via-minor-mode-key ()
-  "crush-insert-selection should be callable via the minor mode keybinding."
+  "Crush-insert-selection should be callable via the minor mode keybinding."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-temp-buffer
@@ -213,10 +213,10 @@
 ;;; 21. Attachments have attachment-id and prompt-id properties
 
 (ert-deftest crush-test/init-buffer-is-idempotent ()
-  "Calling crush--init-buffer on an initialized crush buffer should not
-regenerate the prompt ID or clobber existing state.
-Regression: with markdown-mode as the parent, major-mode is markdown-mode
-(not crush-mode), so the old 'eq major-mode' guard failed to detect an
+  "An initialized crush buffer resists re-initialization:
+regenerating the prompt ID or clobbering existing state must not happen.
+Regression: with markdown-mode as the parent, major-mode is markdown-mode,
+not crush-mode, so the old 'eq major-mode' guard failed to detect an
 already-initialized buffer and re-initialized it."
   (let ((default-directory crush-test--root))
     (unwind-protect
@@ -273,8 +273,8 @@ already-initialized buffer and re-initialized it."
 ;;; 37. Attachment formatting: markdown fenced blocks
 
 (ert-deftest crush-test/format-selection-emits-fenced-block ()
-  "crush--format-selection should emit a markdown fenced code block
-with an Attachment header line."
+  "`crush--format-selection' emits a markdown fenced code block.
+The block carries an Attachment header line."
   (let ((buf (crush-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
@@ -285,7 +285,7 @@ with an Attachment header line."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/format-selection-uses-relative-path ()
-  "Attachment paths must be relative to the project root (or default-directory)."
+  "Attachment paths are relative to the project root (or `default-directory')."
   (let ((buf (crush-test--fresh-buffer))
         (crush-working-directory "/tmp/proj"))
     (unwind-protect
@@ -297,7 +297,7 @@ with an Attachment header line."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/format-selection-no-file ()
-  "crush--format-selection without a file should use (no file)."
+  "Crush--format-selection without a file should use (no file)."
   (let ((buf (crush-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
@@ -308,7 +308,7 @@ with an Attachment header line."
 ;;; 37b. Attachment language from extension
 
 (ert-deftest crush-test/lang-from-extension ()
-  "crush--lang-from-extension should map extensions to markdown languages."
+  "Crush--lang-from-extension should map extensions to markdown languages."
   (let ((buf (crush-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
@@ -323,8 +323,8 @@ with an Attachment header line."
 ;;; 38. Attachment text properties
 
 (ert-deftest crush-test/attachment-has-filename-lines-properties ()
-  "Inserted attachments should carry crush-filename and crush-lines
-on the header line, relative to the project root."
+  "Inserted attachments carry `crush-filename' and `crush-lines'.
+These live on the header line, relative to the project root."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -343,8 +343,8 @@ on the header line, relative to the project root."
 ;;; 39. Filepath attachment (link form)
 
 (ert-deftest crush-test/insert-filepath-emits-link ()
-  "crush-insert-filepath should insert a markdown link attachment
-with crush-region-type 'attachment and a project-root-relative path."
+  "`crush-insert-filepath' inserts a markdown link attachment.
+It sets crush-region-type 'attachment and a project-root-relative path."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -413,12 +413,12 @@ with crush-region-type 'attachment and a project-root-relative path."
 ;;; Phase 5: crush-chat-mode minor mode
 
 (ert-deftest crush-test/chat-mode-is-defined ()
-  "crush-chat-mode should be defined as a minor mode."
+  "Crush-chat-mode should be defined as a minor mode."
   (should (boundp 'crush-chat-mode))
   (should (fboundp 'crush-chat-mode)))
 
 (ert-deftest crush-test/chat-mode-enabled-in-crush-buffer ()
-  "crush-chat-mode should be enabled in crush buffers."
+  "Crush-chat-mode should be enabled in crush buffers."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -426,7 +426,7 @@ with crush-region-type 'attachment and a project-root-relative path."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/chat-mode-has-keymap ()
-  "crush-chat-mode-map should have the expected keybindings.
+  "Crush-chat-mode-map should have the expected keybindings.
 All commands live under the `C-c c' prefix so they do not conflict
 with markdown-mode's `C-c C-*' bindings."
   (let ((map (symbol-value 'crush-chat-mode-map))
@@ -455,7 +455,7 @@ with markdown-mode's `C-c C-*' bindings."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/chat-mode-adds-after-change-hook ()
-  "crush-chat-mode should add crush--after-change to after-change-functions."
+  "`crush-chat-mode' adds `crush--after-change' to `after-change-functions'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -463,7 +463,7 @@ with markdown-mode's `C-c C-*' bindings."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/chat-mode-adds-post-command-hook ()
-  "crush-chat-mode should add crush--update-header-line to post-command-hook."
+  "`crush-chat-mode' adds `crush--update-header-line' to `post-command-hook'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf

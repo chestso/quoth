@@ -27,6 +27,12 @@
 ;;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 ;;; SOFTWARE.
 
+;;; Commentary:
+
+;; Entry point for the crush test suite: loads the topic test files.
+
+;;; Code:
+
 (require 'ert)
 (require 'cl-lib)
 

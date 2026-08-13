@@ -83,8 +83,8 @@
                      crush-hyper-default-model))))
 
 (ert-deftest crush-test/hyper-compose-tools-by-default ()
-  "With `crush-tools-enabled' t (the default) the request body should
-announce the bash tool and tool_choice auto."
+  "With `crush-tools-enabled' t the body announces the bash tool.
+The default is non-nil, so `tool_choice' is `auto'."
   (let ((req (crush--hyper-compose-request "P" nil "m")))
     (should (assq 'tools req))
     (should (equal (alist-get 'tool_choice req) "auto"))
@@ -95,8 +95,8 @@ announce the bash tool and tool_choice auto."
                      "bash")))))
 
 (ert-deftest crush-test/hyper-compose-no-tools-when-disabled ()
-  "With `crush-tools-enabled' nil, the request body should be
-byte-identical to the pre-tools format (no `tools' or `tool_choice')."
+  "With `crush-tools-enabled' nil the body matches the pre-tools format.
+It is byte-identical, with no `tools' or `tool_choice' key."
   (let ((crush-tools-enabled nil))
     (let ((req (crush--hyper-compose-request "P" nil "m")))
       (should-not (assq 'tools req))
@@ -233,8 +233,8 @@ which region each delta belongs to."
     (should (string= (plist-get (cdr result) :error) "boom"))))
 
 (ert-deftest crush-test/sse-on-event-fires-per-data-event ()
-  "With `:on-event', the callback sees the raw payload of every
-complete `data:' event, in order, before it is dispatched."
+  "With `:on-event', the callback sees every raw payload.
+It fires for each complete `data:' event, in order, before dispatch."
   (let ((events nil))
     (let* ((result (crush--hyper-sse-feed
                     (crush-test--sse-state)
@@ -250,9 +250,9 @@ complete `data:' event, in order, before it is dispatched."
                        "{\"choices\":[{\"delta\":{\"content\":\"two\"}}]}"))))))
 
 (ert-deftest crush-test/sse-on-event-fires-only-for-done-events ()
-  "The callback fires only for complete `data:' events: an unterminated
-fragment (no blank line) is not an event; `[DONE]' is (with its raw
-text)."
+  "The callback fires only for complete `data:' events.
+An unterminated fragment (no blank line) is not an event; `[DONE]'
+is, with its raw text."
   (let* ((events nil)
          (on-event (lambda (payload) (push payload events))))
     (let* ((partial (crush--hyper-sse-feed
@@ -273,8 +273,9 @@ text)."
                        "[DONE]"))))))
 
 (ert-deftest crush-test/sse-event-worth-pretty-final-usage-chunk ()
-  "The final chunk with finish_reason and usage is worth pretty-printing
-(it carries the conversation's statistics), regardless of formatting."
+  "The final chunk is worth pretty-printing.
+It carries finish_reason and usage, the conversation's statistics,
+regardless of formatting."
   (let ((payload (concat
                   "{\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{},"
                   "\"finish_reason\":\"stop\"}],"
@@ -283,8 +284,8 @@ text)."
     (should (crush--hyper-event-worth-pretty-p payload))))
 
 (ert-deftest crush-test/sse-event-worth-pretty-long-content ()
-  "A delta carrying a long content (>= 40 chars) is worth pretty-printing,
-so large streamed chunks stay readable."
+  "A delta with long content (>= 40 chars) is pretty-printed.
+Large streamed chunks stay readable in the debug log."
   (let ((payload (concat
                   "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\""
                   (make-string 40 ?a)
@@ -292,8 +293,8 @@ so large streamed chunks stay readable."
     (should (crush--hyper-event-worth-pretty-p payload))))
 
 (ert-deftest crush-test/sse-event-not-worth-pretty-short-delta ()
-  "A short per-token delta is kept compact (not pretty-printed), keeping
-the debug log bounded during long streams."
+  "A short per-token delta stays compact.
+It is not pretty-printed, keeping the debug log bounded during streams."
   (dolist (payload '("{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"We\"},\"finish_reason\":null}]}"
                      "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Hello\"},\"finish_reason\":null}]}"
                      "data: [DONE]"))
@@ -359,8 +360,9 @@ chunks and silently discarding any event split across them."
                             (mapconcat #'identity (nreverse received) "\n")))))
 
 (ert-deftest crush-test/hyper-request-emits-session-headers ()
-  "With the cache gate on and a session UUID, both x-session-id and
-x-session-affinity headers are sent with the same XXH3-64 hash."
+  "With the cache gate on, both session headers are sent.
+They are `x-session-id' and `x-session-affinity', with the same
+XXH3-64 hash."
   (let ((received nil)
         (proc (make-pipe-process :name "crush-hyper-test-cap" :noquery t))
         (crush-hyper-session-cache-p t)
@@ -384,8 +386,7 @@ x-session-affinity headers are sent with the same XXH3-64 hash."
                config)))))
 
 (ert-deftest crush-test/hyper-request-sends-user-agent ()
-  "The curl config carries a User-Agent header, defaulting to the
-same value Hyper receives from the Crush CLI's fantasy SDK."
+  "The curl config carries a User-Agent header.\nIt defaults to the same value Hyper receives from the Crush CLI's\nfantasy SDK."
   (let ((received nil)
         (proc (make-pipe-process :name "crush-hyper-test-ua" :noquery t)))
     (unwind-protect
@@ -404,8 +405,8 @@ same value Hyper receives from the Crush CLI's fantasy SDK."
              (mapconcat #'identity (nreverse received) "\n")))))
 
 (ert-deftest crush-test/hyper-method-sends-x-crush-id-by-default ()
-  "With the default setting, the method passes a stable per-machine
-ID to the transport; repeated sends resolve to the same value."
+  "The default setting passes a stable per-machine ID.
+Repeated sends resolve to the same value."
   (let ((captured nil))
     (cl-letf (((symbol-function 'crush--hyper-request)
                (lambda (_base _tok _body _on _cb &optional _err _sess id)
@@ -426,9 +427,10 @@ ID to the transport; repeated sends resolve to the same value."
         (crush-test--cleanup)))))
 
 (ert-deftest crush-test/hyper-x-crush-id-forms ()
-  "The resolver accepts t (derive), string (verbatim), function
-(called), and nil (omit); the transport emits the header only when
-the value is non-nil."
+  "The resolver accepts several value forms.
+It accepts t (derive), a string (verbatim), a function (called), and
+nil (omit); the transport emits the header only when the value is
+non-nil."
   (should (string-match-p "[0-9a-f]\\{16\\}" (crush-hyper--x-crush-id)))
   (let ((crush-hyper-x-crush-id "my-id"))
     (should (string= "my-id" (crush-hyper--x-crush-id))))
@@ -478,8 +480,7 @@ the value is non-nil."
       (should-not (string-match-p "x-session-affinity" config)))))
 
 (ert-deftest crush-test/hyper-method-gates-session-id-on-defcustom ()
-  "The hyper method computes the session hash only when the cache gate
-is on; with the gate off it passes nil for the session headers."
+  "The session hash is computed only when the cache gate is on.\nWith the gate off, nil is passed for the session headers."
   (let ((captured-session nil))
     (cl-letf (((symbol-function 'crush--hyper-request)
                (lambda (&rest args)
@@ -499,8 +500,9 @@ is on; with the gate off it passes nil for the session headers."
         (crush-test--cleanup)))))
 
 (ert-deftest crush-test/hyper-method-hashes-session-uuid-when-enabled ()
-  "With the cache gate on, the method passes the XXH3-64 hash of the
-session UUID (matching the run backend's --session would not)."
+  "With the cache gate on, the method passes the XXH3-64 hash.
+This is of the session UUID, which matching the run backend's
+`--session' would not."
   (let ((captured-session nil))
     (cl-letf (((symbol-function 'crush--hyper-request)
                (lambda (&rest args)
@@ -606,7 +608,7 @@ session UUID (matching the run backend's --session would not)."
         (should (string= token "sk-hyper-slot"))))))
 
 (ert-deftest crush-test/hyper-send-injects-completion ()
-  "crush-backend-send-prompt for hyper should use the injected completion.
+  "Crush-backend-send-prompt for hyper should use the injected completion.
 The completion is the facade's continuation; the backend must invoke it
 on stream completion instead of finalizing or touching buffers itself."
   (let ((captured-completion nil)
@@ -677,8 +679,8 @@ on stream completion instead of finalizing or touching buffers itself."
                     (file-name-directory (locate-library "crush-test"))))
 
 (defun crush-test--with-hyper-server (mode body-fn)
-  "Start a dummy hyper server in MODE, call BODY-FN with its BASE-URL,
-and return the capture output."
+  "Start a dummy hyper server in MODE, call BODY-FN with its BASE-URL.
+Returns the capture output."
   (let* ((cap (crush-test--hyper-cap-file))
          (proc (make-process
                 :name "crush-hyper-test"
@@ -701,7 +703,7 @@ and return the capture output."
                   (when (string-prefix-p "http" l)
                     (setq base l))))))
           (unless base
-            (error "hyper dummy server failed to start"))
+            (error "Hyper dummy server failed to start"))
           (funcall body-fn base)
           (crush-test--read-hyper-capture cap))
       (when proc (delete-process proc))
@@ -958,8 +960,8 @@ and return the capture output."
     (should (string= (crush--hyper-alist-get "content" (nth 3 msgs)) "second"))))
 
 (ert-deftest crush-test/hyper-history-compose-plain-with-no-turns ()
-  "With no prior turns (first prompt, or limit 0) it is exactly
-system + user."
+  "With no prior turns the request is exactly system + user.
+This covers the first prompt, or a limit of 0."
   (let* ((req (crush--hyper-compose-request "second" nil "m" nil))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 2))
@@ -1117,8 +1119,8 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/hyper-history-limit-zero-disables ()
-  "Setting `crush-hyper-history-limit' to 0 disables history: the
-second request is a plain [system, user]."
+  "Setting `crush-hyper-history-limit' to 0 disables history.
+The second request is a plain [system, user]."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -1176,8 +1178,7 @@ second request is a plain [system, user]."
       (should-not (assoc 'reasoning_content a)))))
 
 (ert-deftest crush-test/hyper-history-compose-reasoning-wire-shape ()
-  "Included reasoning: ONE assistant message carrying both `content'
-and `reasoning_content'; no standalone reasoning message."
+  "Included reasoning yields one assistant message.\nIt carries both `content' and `reasoning_content'; there is no\nstandalone reasoning message."
   (let* ((req (crush--hyper-compose-request
                "hello" nil "m"
                '((user . "first")
@@ -1205,9 +1206,7 @@ and `reasoning_content'; no standalone reasoning message."
     (should (= (length msgs) 2))))
 
 (ert-deftest crush-test/hyper-history-wire-reasoning-content-field ()
-  "With `crush-hyper-history-include-reasoning', a later request's
-assistant message carries `content' AND `reasoning_content' as sibling
-fields (HYPER-API.md §3.4)."
+  "A later request's assistant message carries both fields.\nWith `crush-hyper-history-include-reasoning', `content' and\n`reasoning_content' are siblings (HYPER-API.md section 3.4)."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -1260,8 +1259,8 @@ fields (HYPER-API.md §3.4)."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/hyper-wire-tool-call-finish-reason ()
-  "A `finish_reason: tool_calls' should surface tool_calls on the SSE
-state and the parser should report them."
+  "A `finish_reason: tool_calls' surfaces its tool calls.
+The SSE state carries them and the parser reports them."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -1292,8 +1291,7 @@ state and the parser should report them."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-compose-disabled-tools-no-key ()
-  "With `crush-tools-enabled' nil, the request body should lack the
-`tools' and `tool_choice' keys."
+  "With `crush-tools-enabled' nil the body lacks the tool keys.\nNeither `tools' nor `tool_choice' appears."
   (let ((crush-tools-enabled nil))
     (let ((req (crush--hyper-compose-request "P" nil "m")))
       (should-not (assq 'tools req))

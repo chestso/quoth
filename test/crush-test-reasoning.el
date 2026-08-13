@@ -275,8 +275,9 @@ A marker overlay paints it with the reasoning region background."
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/finalize-snaps-fold-to-lines ()
-  "The collapsed fold snaps to whole lines: marker at line start,
-body overlay ends at end of line."
+  "The collapsed fold snaps to whole lines.
+The marker sits at the line start and the body overlay ends at end of
+line."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
                 (crush-facade--append-delta "partial\n" 'reasoning)
@@ -306,7 +307,7 @@ body overlay ends at end of line."
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/toggle-expands-collapsed-reasoning ()
-  "crush-reasoning-toggle should expand a collapsed reasoning region."
+  "Crush-reasoning-toggle should expand a collapsed reasoning region."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
                 (crush-facade--append-delta "line one
@@ -328,7 +329,7 @@ line two
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/toggle-collapses-expanded-reasoning ()
-  "crush-reasoning-toggle should collapse an expanded reasoning region."
+  "Crush-reasoning-toggle should collapse an expanded reasoning region."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
                 (crush-facade--append-delta "line one
@@ -359,7 +360,7 @@ line two
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/toggle-no-fold-at-point ()
-  "crush-reasoning-toggle should message when no fold is at point."
+  "Crush-reasoning-toggle should message when no fold is at point."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (proc)
                 (crush-facade--append-delta "answer" 'content)))))
@@ -399,12 +400,12 @@ The marker's real-text keymap dispatches TAB to the toggle."
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/chat-map-binds-reasoning-toggle ()
-  "C-c c r should resolve to crush-reasoning-toggle."
+  "The reasoning-toggle binding resolves to `crush-reasoning-toggle'."
   (should (eq (lookup-key (symbol-value 'crush-chat-command-map) (kbd "r"))
               #'crush-reasoning-toggle)))
 
 (ert-deftest crush-test/interrupt-auto-collapses-reasoning ()
-  "crush-interrupt should auto-collapse partial reasoning."
+  "Crush-interrupt should auto-collapse partial reasoning."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -433,7 +434,7 @@ The marker's real-text keymap dispatches TAB to the toggle."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/clear-buffer-removes-fold-overlay ()
-  "crush-clear-buffer should delete the reasoning fold overlay."
+  "Crush-clear-buffer should delete the reasoning fold overlay."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -451,7 +452,7 @@ The marker's real-text keymap dispatches TAB to the toggle."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/interrupt-tags-reasoning-region ()
-  "crush-interrupt should tag streamed reasoning up to the interrupt."
+  "Crush-interrupt should tag streamed reasoning up to the interrupt."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -484,7 +485,7 @@ The marker's real-text keymap dispatches TAB to the toggle."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/clear-buffer-removes-reasoning-overlay ()
-  "crush-clear-buffer should delete the reasoning overlay."
+  "Crush-clear-buffer should delete the reasoning overlay."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
