@@ -731,6 +731,16 @@ reasoning.  Inert when no reasoning is active or it already ended."
 TAB / RET (and mouse-1 on GUIs, ignored harmlessly in TUI) toggle
 `crush-reasoning-toggle'.")
 
+(defun crush--reasoning-build-marker (start end)
+  "Return the propertized reasoning fold marker for region START..END.
+The marker is `... reasoning (N lines, M chars)' carrying the toggle
+keymap and `crush-fold-mark'."
+  (propertize
+   (format "... reasoning (%d lines, %d chars)"
+           (count-lines start end) (- end start))
+   'keymap crush--reasoning-fold-keymap
+   'crush-fold-mark t))
+
 (defun crush--reasoning-install-fold (region)
   "Install the reasoning fold on REGION (START . END) of current buffer.
 Snaps the reasoning region to whole lines and auto-collapses it: a
@@ -765,15 +775,9 @@ TAB work through native key dispatch.  Returns the body overlay."
             body-start)
         (save-excursion
           (goto-char start-m)
-          (let* ((nlines (count-lines start-m end-m))
-                 (chars (- (marker-position end-m) (marker-position start-m)))
-                 (marker (propertize
-                          (format "... reasoning (%d lines, %d chars)"
-                                  nlines chars)
-                          'keymap crush--reasoning-fold-keymap
-                          'crush-fold-mark t)))
-            (insert marker)
-            (setq body-start (point))))
+          (insert (crush--reasoning-build-marker
+                   (marker-position start-m) (marker-position end-m)))
+          (setq body-start (point)))
         ;; Paint the marker line with the reasoning face via an
         ;; overlay (font-lock would strip a text-property face).
         (let ((mark-ov (make-overlay start-m body-start nil t)))
@@ -825,38 +829,9 @@ by `C-c c r', or directly."
               (overlay-put ov 'invisible nil)
               (message "Reasoning expanded"))
           ;; Collapse: hide the body behind a marker line.
-          (let* ((start (overlay-start ov))
-                 (end (overlay-end ov))
-                 (start-m (copy-marker start))
-                 (end-m (copy-marker end t))
-                 (nlines (count-lines start end))
-                 (chars (- end start))
-                 (marker (propertize
-                          (format "... reasoning (%d lines, %d chars)"
-                                  nlines chars)
-                          'keymap crush--reasoning-fold-keymap
-                          'crush-fold-mark t))
-                 body-start)
-            (let ((inhibit-read-only t)
-                  (inhibit-modification-hooks t))
-              (save-excursion
-                (goto-char start-m)
-                (insert marker)
-                (setq body-start (point)))
-              ;; Paint the marker line with the reasoning face via an
-              ;; overlay (font-lock would strip a text-property face).
-              (let ((mark-ov (make-overlay start-m body-start nil t)))
-                (overlay-put mark-ov 'crush-overlay t)
-                (overlay-put mark-ov 'face 'crush-reasoning-face))
-              ;; Freeze the new marker text (read-only) like the
-              ;; surrounding frozen response.
-              (crush--freeze-region (marker-position start-m) body-start)
-              (move-overlay ov body-start end-m)
-              (overlay-put ov 'crush-fold-state 'collapsed)
-              (overlay-put ov 'invisible t))
-            (set-marker start-m nil)
-            (set-marker end-m nil)
-            (message "Reasoning collapsed")))))))
+          (crush--reasoning-install-fold
+           (cons (overlay-start ov) (overlay-end ov)))
+          (message "Reasoning collapsed"))))))
 
 (defun crush--reasoning-tab ()
   "Handle TAB in crush chat buffers.
@@ -1006,32 +981,25 @@ stream-completion callback."
 (defun crush-interrupt ()
   "Interrupt the currently running Crush process."
   (interactive)
-  (if (and crush--backend (crush-backend-active-p crush--backend))
-      (progn
-        (crush-backend-interrupt crush--backend)
-        (setq-local crush-process nil)
-        (let ((inhibit-read-only t))
-          (save-excursion
-            (goto-char (point-max))
-            (newline)
-            ;; Tag the partial response (including any streamed
-            ;; reasoning) up to the interrupt point.
-            (let ((response-start (when (markerp crush--response-start)
-                                    (marker-position crush--response-start))))
-              (crush--tag-response-region response-start (point) crush--prompt-id)
-              (when-let* ((region (crush--reasoning-region)))
-                (crush--reasoning-install-fold region))
-              (crush--reasoning-reset))
-            (crush--insert-prompt)))
-        (goto-char (point-max))
-        (message "Crush process interrupted"))
-    (when crush-process
+  (let ((interrupted nil))
+    (cond
+     ((and crush--backend (crush-backend-active-p crush--backend))
+      (crush-backend-interrupt crush--backend)
+      (setq-local crush-process nil)
+      (setq interrupted t))
+     (crush-process
       (interrupt-process crush-process)
       (setq-local crush-process nil)
+      (setq interrupted t))
+     (t
+      (message "No crush process running")))
+    (when interrupted
       (let ((inhibit-read-only t))
         (save-excursion
           (goto-char (point-max))
           (newline)
+          ;; Tag the partial response (including any streamed reasoning)
+          ;; up to the interrupt point, and auto-collapse the reasoning.
           (let ((response-start (when (markerp crush--response-start)
                                   (marker-position crush--response-start))))
             (crush--tag-response-region response-start (point) crush--prompt-id)
@@ -1040,9 +1008,7 @@ stream-completion callback."
             (crush--reasoning-reset))
           (crush--insert-prompt)))
       (goto-char (point-max))
-      (message "Crush process interrupted"))
-    (unless crush-process
-      (message "No crush process running"))))
+      (message "Crush process interrupted"))))
 
 (defun crush-clear-buffer ()
   "Clear the Crush buffer output and start a fresh session."
