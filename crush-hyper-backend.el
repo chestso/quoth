@@ -383,17 +383,33 @@ of each COMPLETE `data:' event (before it is dispatched), including
   (or (cdr (assoc key alist))
       (cdr (assoc (if (stringp key) (intern key) (symbol-name key)) alist))))
 
+(defun crush--hyper-alist-set (key alist value)
+  "Set KEY to VALUE in ALIST, handling symbol or string keys.
+Mutates the existing cell in place when found (either key type);
+otherwise prepends a new (KEY . VALUE) cell and returns ALIST.
+KEY is stored as a string to match `json-read-from-string' convention."
+  (let ((cell (or (assoc key alist)
+                  (assoc (if (stringp key) (intern key) (symbol-name key)) alist))))
+    (if cell
+        (setcdr cell value)
+      (setcar alist (cons (if (stringp key) key (symbol-name key)) value)))
+    alist))
+
+(defun crush--hyper-first-choice (obj)
+  "Return the first choices[] entry from SSE JSON object OBJ, or nil."
+  (let ((raw-choices (crush--hyper-alist-get "choices" obj)))
+    (if (vectorp raw-choices)
+        (and (> (length raw-choices) 0)
+             (aref raw-choices 0))
+      (car-safe raw-choices))))
+
 (defun crush--hyper-sse-extract-deltas (obj)
   "Return typed deltas from SSE JSON object OBJ.
 Each delta is a list (KIND TEXT ORIG) where KIND is `content',
 `reasoning', or `tool_calls'; TEXT is the delta text (nil for
 tool_calls); ORIG is the parsed JSON object (nil when OBJ is nil)."
   (when obj
-    (let* ((raw-choices (crush--hyper-alist-get "choices" obj))
-           (first-choice (if (vectorp raw-choices)
-                             (and (> (length raw-choices) 0)
-                                  (aref raw-choices 0))
-                           (car-safe raw-choices)))
+    (let* ((first-choice (crush--hyper-first-choice obj))
            (delta (and first-choice
                        (crush--hyper-alist-get "delta" first-choice)))
            (content (and delta
@@ -415,11 +431,7 @@ tool_calls); ORIG is the parsed JSON object (nil when OBJ is nil)."
 OpenAI streams tool calls stepwise: each delta carries an index,
 an id (on the first chunk), and function name/arguments.  Arguments
 are glued across chunks by index."
-  (let* ((raw-choices (crush--hyper-alist-get "choices" obj))
-         (first-choice (if (vectorp raw-choices)
-                           (and (> (length raw-choices) 0)
-                                (aref raw-choices 0))
-                         (car-safe raw-choices)))
+  (let* ((first-choice (crush--hyper-first-choice obj))
          (delta (and first-choice
                      (crush--hyper-alist-get "delta" first-choice)))
          (tc-delta (and delta
@@ -435,23 +447,22 @@ are glued across chunks by index."
                  (setq tcs (vconcat tcs [nil])))
                (let ((existing (aref tcs idx)))
                  (if existing
-                     (let* ((new-fn (crush--hyper-alist-get "function" tc))
+                     ;; Merge: glue new arguments onto the existing
+                     ;; function's arguments cell.
+                     (let* ((new-fn (crush--hyper-alist-get
+                                     "function" tc))
                             (new-args (and new-fn
                                            (crush--hyper-alist-get
                                             "arguments" new-fn)))
-                            (ex-fn (or (assoc "function" existing)
-                                       (assoc 'function existing))))
-                       (when (and new-args ex-fn (cdr ex-fn))
-                         (let ((args-cell
-                                (or (assoc "arguments" (cdr ex-fn))
-                                    (assoc 'arguments (cdr ex-fn)))))
-                           (if args-cell
-                               (setcdr args-cell
-                                       (concat (or (cdr args-cell) "")
-                                               new-args))
-                             (setcdr ex-fn
-                                     (cons (cons 'arguments new-args)
-                                           (cdr ex-fn)))))))
+                            (ex-fn (crush--hyper-alist-get
+                                    "function" existing)))
+                       (when (and new-args ex-fn)
+                         (let ((cur-args (crush--hyper-alist-get
+                                          "arguments" ex-fn)))
+                           (crush--hyper-alist-set
+                            "arguments" ex-fn
+                            (concat (or cur-args "") new-args)))))
+                   ;; First delta for this index: store as-is.
                    (aset tcs idx tc))))))
          tc-delta)
         (plist-put state :tool-calls tcs)))))
@@ -589,11 +600,7 @@ compact to bound the debug log during long streams."
   (when (and (string-prefix-p "{" payload))
     (let ((obj (ignore-errors (json-read-from-string payload))))
       (when obj
-        (let* ((raw-choices (crush--hyper-alist-get "choices" obj))
-               (first-choice (if (vectorp raw-choices)
-                                 (and (> (length raw-choices) 0)
-                                      (aref raw-choices 0))
-                               (car-safe raw-choices)))
+        (let* ((first-choice (crush--hyper-first-choice obj))
                (delta (and first-choice
                            (crush--hyper-alist-get "delta" first-choice)))
                (finish (and first-choice
