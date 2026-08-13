@@ -74,7 +74,7 @@ tests; the global default is `hyper')."
   (let ((name (crush-test--buffer-name)))
     (when (get-buffer name)
       (kill-buffer name))
-    (cl-letf (((symbol-function 'project-current) (lambda (&optional dir) nil)))
+    (cl-letf (((symbol-function 'project-current) (lambda (&optional _dir) nil)))
       (let ((default-directory crush-test--root)
             (crush-backend-type 'run))
         (crush)))

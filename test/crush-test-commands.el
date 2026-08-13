@@ -53,6 +53,11 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
+(declare-function crush-test--fresh-buffer "crush-test")
+(declare-function crush-test--cleanup "crush-test")
+(declare-function crush-test--buffer-name "crush-test")
+(defvar crush-test--root)
+
 ;;; 8. Selection insertion during running process
 
 (ert-deftest crush-test/insert-selection-works-while-process-running ()

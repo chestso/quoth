@@ -53,6 +53,10 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
+(declare-function crush-test--fresh-buffer "crush-test")
+(declare-function crush-test--cleanup "crush-test")
+(defvar crush-test--root)
+
 ;;; 10. Backend command includes --continue when continue-p is true
 
 (ert-deftest crush-test/backend-command-includes-continue ()

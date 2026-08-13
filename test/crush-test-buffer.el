@@ -53,6 +53,11 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
+(declare-function crush-test--fresh-buffer "crush-test")
+(declare-function crush-test--cleanup "crush-test")
+(declare-function crush-test--buffer-name "crush-test")
+(defvar crush-test--root)
+
 ;;; 1. No duplicate defvar crush--continue
 
 (ert-deftest crush-test/no-duplicate-continue-defvar ()
@@ -227,7 +232,7 @@
 (ert-deftest crush-test/session-uuid-distinct-across-buffers ()
   "Two fresh crush buffers get distinct session UUIDs."
   (unwind-protect
-      (let* ((name1 (crush-test--buffer-name))
+      (let* ((_name1 (crush-test--buffer-name))
              (buf1 (crush-test--fresh-buffer))
              (uuid1 (with-current-buffer buf1 crush--session-uuid)))
         ;; Force a second buffer by turning off buffer reuse (fresh-buffer
@@ -310,8 +315,8 @@
               (crush--process-sentinel fake-proc "finished\n")
               ;; New ID should be different
               (should (stringp crush--prompt-id))
-              (should (not (string= old-id crush--prompt-id))))))
-        (crush-test--cleanup))))
+              (should (not (string= old-id crush--prompt-id)))))))
+    (crush-test--cleanup)))
 
 ;;; 18. Header line display
 
@@ -691,8 +696,8 @@ read-only previous content, blocking edits and insertions."
             (should (get-char-property (match-beginning 0) 'read-only))
             (should (get-text-property (match-beginning 0) 'read-only))
             (goto-char (match-beginning 0))
-            (should-error (insert-and-inherit "X") :type 'text-read-only))))
-    (crush-test--cleanup)))
+            (should-error (insert-and-inherit "X") :type 'text-read-only)))
+      (crush-test--cleanup))))
 
 ;;; 66. Phase 6: crush--ensure-process uses crush--prompt-start-marker (DELETED in Phase 3: ensure-process removed)
 
@@ -1270,7 +1275,7 @@ Backspacing into the prompt should be blocked."
             (set-marker (process-mark mock-proc) (point-max))
             (accept-process-output mock-proc 2)
             (crush--process-sentinel mock-proc "finished\n"))
-          (font-lock-fontify-buffer)
+          (font-lock-ensure)
           (goto-char (point-min))
           (should (search-forward "crush> " nil t))
           (should (get-char-property (match-beginning 0) 'read-only))
@@ -1305,7 +1310,7 @@ fail to enforce read-only."
               (set-marker (process-mark mock-proc) (point-max))
               (accept-process-output mock-proc 2)
               (crush--process-sentinel mock-proc "finished\n"))
-            (font-lock-fontify-buffer)
+            (font-lock-ensure)
             (goto-char (point-min))
             (should (search-forward "crush> " nil t))
             (goto-char (match-beginning 0))
@@ -1335,7 +1340,7 @@ right after the prompt inherits `read-only' and Emacs signals
           (with-current-buffer buf
             ;; Fontify without any prior input, as jit-lock does during
             ;; redisplay.  This strips rear-nonsticky from the prompt.
-            (font-lock-fontify-buffer)
+            (font-lock-ensure)
             (goto-char (point-max))
             (should-not (get-char-property (point) 'read-only))
             (insert-and-inherit "hello")
@@ -1373,7 +1378,7 @@ right after the prompt inherits `read-only' and Emacs signals
 (ert-deftest crush-test/current-buffer-uses-project-root ()
   "`crush--current-crush-buffer' should prefer the project root."
   (cl-letf (((symbol-function 'project-current)
-             (lambda (&optional dir)
+             (lambda (&optional _dir)
                (list 'vc 'Git "/tmp/crush-proj-root/"))))
     (unwind-protect
         (let* ((root (expand-file-name "crush-test-x" temporary-file-directory))
@@ -1492,7 +1497,7 @@ It is being sent when the history is extracted."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((completed-id (crush-test--seed-exchange "first prompt" "first reply")))
+          (let ((_completed-id (crush-test--seed-exchange "first prompt" "first reply")))
             (should (= (length (crush--history-turns crush--prompt-id)) 2))
             (should (equal (car (crush--history-turns crush--prompt-id))
                            (cons 'user "first prompt"))))))
@@ -1503,8 +1508,8 @@ It is being sent when the history is extracted."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id1 (crush-test--seed-exchange "first prompt" "first reply"))
-                (id2 (crush-test--seed-exchange "second prompt" "second reply")))
+          (let ((_id1 (crush-test--seed-exchange "first prompt" "first reply"))
+                (_id2 (crush-test--seed-exchange "second prompt" "second reply")))
             (let ((turns (crush--history-turns crush--prompt-id)))
               (should (= (length turns) 4))
               (should (equal (nth 0 turns) (cons 'user "first prompt")))
@@ -1601,30 +1606,27 @@ dropped."
 
 (ert-deftest crush-test/history-limit-caps-turns ()
   "`crush-hyper-history-limit' caps the prior exchanges; the tail stays."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (crush-hyper-history-limit 1))
-        (with-current-buffer buf
-          (let ((id1 (crush-test--seed-exchange "first" "one")))
-            (ignore id1)
-            (let ((id2 (crush-test--seed-exchange "second" "two")))
-              (ignore id2)
-              (let ((turns (crush--history-turns crush--prompt-id)))
-                (should (= (length turns) 2))
-                (should (equal (car turns) (cons 'user "second")))
-                (should (equal (cadr turns) (cons 'assistant "two")))))))
-        (crush-test--cleanup))))
+  (let ((crush-hyper-history-limit 1))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((_id1 (crush-test--seed-exchange "first" "one")))
+              (let ((_id2 (crush-test--seed-exchange "second" "two")))
+                (let ((turns (crush--history-turns crush--prompt-id)))
+                  (should (= (length turns) 2))
+                  (should (equal (car turns) (cons 'user "second")))
+                  (should (equal (cadr turns) (cons 'assistant "two"))))))))
+      (crush-test--cleanup))))
 
 (ert-deftest crush-test/history-limit-zero-disables ()
   "`crush-hyper-history-limit' 0 means no history at all."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (crush-hyper-history-limit 0))
-        (with-current-buffer buf
-          (let ((id1 (crush-test--seed-exchange "first" "one")))
-            (ignore id1)
-            (should (null (crush--history-turns crush--prompt-id)))))
-        (crush-test--cleanup))))
+  (let ((crush-hyper-history-limit 0))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((_id1 (crush-test--seed-exchange "first" "one")))
+              (should (null (crush--history-turns crush--prompt-id))))))
+      (crush-test--cleanup))))
 
 (ert-deftest crush-test/history-turns-always-fresh ()
   "Extraction reads the live buffer; no cache can go stale."
@@ -1641,8 +1643,8 @@ dropped."
                                          'crush-response-to id1)))
               (delete-region rs (1+ rs)))
             (should-not (equal (crush--history-turns crush--prompt-id)
-                               '((user . "first") (assistant . "reply")))))
-          (crush-test--cleanup)))))
+                               '((user . "first") (assistant . "reply")))))))
+    (crush-test--cleanup)))
 
 (provide 'crush-test-buffer)
 ;;; crush-test-buffer.el ends here

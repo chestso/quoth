@@ -53,6 +53,16 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
+;;; Shared harness helpers live in `crush-test.el', loaded at runtime by
+;;; the test runner; declare them here so byte-compiling this file in
+;;; isolation produces no warnings.
+(defvar crush-test--root)
+(declare-function crush-test--fresh-buffer "crush-test" ())
+(declare-function crush-test--cleanup "crush-test" ())
+
+(defvar crush-test--captured-completion nil
+  "Capture slot for `crush-test/hyper-send-injects-completion'.")
+
 ;;; 91. Hyper backend: request composition
 
 (ert-deftest crush-test/hyper-compose-no-context ()
@@ -627,12 +637,12 @@ This is of the session UUID, which matching the run backend's
   "Crush-backend-send-prompt for hyper should use the injected completion.
 The completion is the facade's continuation; the backend must invoke it
 on stream completion instead of finalizing or touching buffers itself."
-  (let ((captured-completion nil)
-        (injected (lambda () (setq captured-completion 'called)))
+  (let ((crush-test--captured-completion nil)
+        (injected (lambda () (setq crush-test--captured-completion 'called)))
         (base "http://127.0.0.1:1"))
     (cl-letf (((symbol-function 'crush--hyper-request)
                (lambda (&rest args)
-                 (setq captured-completion (nth 4 args))
+                 (setq crush-test--captured-completion (nth 4 args))
                  (make-pipe-process :name "crush-hyper-test-fake"
                                     :noquery t))))
       (let ((backend (crush-make-hyper-backend
@@ -646,7 +656,7 @@ on stream completion instead of finalizing or touching buffers itself."
               ;; The backend must have threaded the injected completion
               ;; into the transport instead of a buffer-based finalizer:
               ;; running it must trigger the injected side effect.
-              (should (eq captured-completion injected)))
+              (should (eq crush-test--captured-completion injected)))
           (crush-test--cleanup))))))
 
 ;;; 93. Hyper backend: wire integration via dummy server
@@ -809,7 +819,7 @@ Returns the capture output."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
-          (let ((old-prompt-id crush--prompt-id))
+          (let ((_old-prompt-id crush--prompt-id))
             (crush-test--with-hyper-server
              'reasoning
              (lambda (base)
@@ -1075,8 +1085,8 @@ messages array is [system, prior-user, prior-assistant, current]."
                 (should (string= (crush--hyper-alist-get "content" (aref msgs 2))
                                  "first"))
                 (should (string= (crush--hyper-alist-get "content" (aref msgs 3))
-                                 "second")))))))
-    (crush-test--cleanup)))
+                                 "second"))))))
+      (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-history-real-send-input-flow ()
   "Driving `crush-send-input' twice re-sends prior turns as history.
@@ -1096,7 +1106,7 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
                   'history
                   (lambda (base)
                     (setf (crush-hyper-backend-base-url crush-active-backend) base)
-                    (let ((buf (current-buffer)))
+                    (let ((_buf (current-buffer)))
                       (goto-char (point-max))
                       (insert "hi")
                       (crush-send-input)
@@ -1131,8 +1141,8 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
                 (should (string= (crush--hyper-alist-get "role" (aref m2 2))
                                  "assistant"))
                 (should (string= (crush--hyper-alist-get "content" (aref m2 3))
-                                 "hello")))))))
-    (crush-test--cleanup)))
+                                 "hello"))))))
+      (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-history-limit-zero-disables ()
   "Setting `crush-hyper-history-limit' to 0 disables history.
@@ -1152,7 +1162,7 @@ The second request is a plain [system, user]."
                     'history
                     (lambda (base)
                       (setf (crush-hyper-backend-base-url crush-active-backend) base)
-                      (let ((buf (current-buffer)))
+                      (let ((_buf (current-buffer)))
                         (goto-char (point-max))
                         (insert "hi")
                         (crush-send-input)
@@ -1177,8 +1187,8 @@ The second request is a plain [system, user]."
                                                    (json-read-from-string (nth 3 r2)))))
                   (should (= (length m2) 2))
                   (should (string= (crush--hyper-alist-get "content" (aref m2 1))
-                                   "hello"))))))))
-    (crush-test--cleanup)))
+                                   "hello")))))))
+      (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-history-compose-excluded-stays-plain ()
   "Excluded reasoning: the assistant message has only `content'."
@@ -1238,7 +1248,7 @@ The second request is a plain [system, user]."
                     'reasoning-history
                     (lambda (base)
                       (setf (crush-hyper-backend-base-url crush-active-backend) base)
-                      (let ((buf (current-buffer)))
+                      (let ((_buf (current-buffer)))
                         ;; Turn 1 through the real send path: reasoning
                         ;; deltas stream, finalize tags them.
                         (goto-char (point-max))
@@ -1271,8 +1281,8 @@ The second request is a plain [system, user]."
                     (should (string= (crush--hyper-alist-get "content" a)
                                      "answer out"))
                     (should (string= (crush--hyper-alist-get "reasoning_content" a)
-                                     "think step hidden")))))))))
-    (crush-test--cleanup)))
+                                     "think step hidden"))))))))
+      (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-wire-tool-call-finish-reason ()
   "A `finish_reason: tool_calls' surfaces its tool calls.

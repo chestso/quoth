@@ -54,6 +54,10 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
+(declare-function crush-test--fresh-buffer "crush-test")
+(declare-function crush-test--cleanup "crush-test")
+(declare-function crush-test--buffer-name "crush-test")
+
 (defun crush-test--send-capturing-completion ()
   "Send a prompt in a fresh buffer with `crush-backend-send-prompt' mocked.
 Returns the completion action the facade injected."
