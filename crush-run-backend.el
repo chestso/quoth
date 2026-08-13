@@ -96,14 +96,15 @@ otherwise `default-directory'."
 (declare-function crush--process-sentinel "crush.el" (process event))
 
 (cl-defmethod crush-backend-send-prompt
-  ((backend crush-run-backend) prompt &key context session-id continue-p completion buffer stderr on-delta on-error)
+  ((backend crush-run-backend) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error)
   "Send PROMPT to BACKEND via `crush run' as a new process.
 For CONTEXT, SESSION-ID, and CONTINUE-P, see `crush-backend-send-prompt'.
+SESSION-UUID is the hyper-only cache-affinity identifier, unused here.
 COMPLETION is stored on the backend (the facade's continuation).
 BUFFER and STDERR are the crush/errors buffers the process is associated
 with; the backend uses them only for `make-process', never reading or
 switching to them.  ON-DELTA and ON-ERROR are unused by the run backend."
-  (ignore on-delta on-error)
+  (ignore session-uuid on-delta on-error)
   (let* ((has-context (and context (not (string-empty-p context))))
          (stdin-text (and has-context
                           (concat crush-context-preamble "\n\n"

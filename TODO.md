@@ -24,7 +24,7 @@ crush.el talks to providers through a backend abstraction (`crush-backend-*` gen
 - **Per-prompt calling (hyper)**: Each prompt is a single streaming chat completion against the provider. The hyper backend keeps no conversation state of its own; history round trips are roadmap work.
 - **Per-prompt calling (run)**: Each prompt is sent to `crush run` as a separate invocation. The CLI streams the response to stdout and exits.
 - **Per-root buffers**: Each project (or directory when none) gets its own crush buffer, named after the root's basename (`*crush:name*`, suffix `(2)` on collisions). `crush-minor-mode` commands always target the buffer for the source buffer's project or directory.
-- **Session continuity (run)**: The first prompt starts a fresh session. Each subsequent prompt passes `--continue`, which continues the active session in the working directory. `crush-new-session` resets this so the next prompt starts a new session.
+- **Session continuity (run)**: The first prompt starts a fresh session. Each subsequent prompt passes `--continue`, which continues the active session in the working directory. `crush-clear-buffer` resets this so the next prompt starts a new session.
 - **Manual session selection (run)**: Setting `crush--session` passes `--session <id>` to continue a specific session by ID.
 - **Context format**: Selections are formatted as markdown fenced code blocks with an attachment header line:
 
@@ -100,7 +100,7 @@ Attachments are rendered as markdown (fenced blocks with a header line, or links
 
 Chat commands are all reachable via keys that markdown-mode does not bind.
 
-- [x] Moved chat commands under the free `C-c c` prefix (`crush-chat-command-map`): `s` send, `i` interrupt, `k` clear, `n` new session, `a` insert selection
+- [x] Moved chat commands under the free `C-c c` prefix (`crush-chat-command-map`): `s` send, `i` interrupt, `k` clear, `a` insert selection
 - [x] `RET` still sends; `M-p`/`M-n` still navigate history; `crush-minor-mode` source-buffer keys unchanged
 
 ### Phase 1f: Hyper backend phase 1 — primary path (complete)
@@ -119,7 +119,8 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 
 - [x] Token storage via `auth-source` (`machine hyper.charm.land login apikey password sk-hyper-...`), gptel-style; `crush-hyper-token` accepts string/function/nil
 - [x] In-buffer history round trip (default on): prior `[user, assistant]` turns are read from the buffer's tagged regions and re-sent with each request (`crush-hyper-history-limit` caps the tail; 0 disables; `crush-hyper-history-include-reasoning` opts the CoT back in as `reasoning_content`)
-- [ ] `x-session-id` / `x-session-affinity` headers for server-side prefix/token caching ([HYPER-API.md §3.1](HYPER-API.md))
+- [x] `x-session-id` / `x-session-affinity` headers for server-side prefix/token caching ([HYPER-API.md §3.1](HYPER-API.md)), via a dedicated pure-Elisp XXH3-64 (`crush-xxh3.el`, seed 0, big-endian, 16-hex); per-buffer UUID (`crush--session-uuid`), rotated by `crush-clear-buffer`, gate `crush-hyper-session-cache-p`
+- [ ] Persistence (deferred): Phase 2 (file-backed saving): persist `crush--session-uuid` as a file-local, recompute `crush--session-id` on load. The UUID never leaves via TLS except to Hyper (the 16-hex only).
 - [ ] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages — plus a permission policy for tool execution (the CLI backend auto-approves; direct mode needs one)
 - [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (tokens currently come from `auth-source` via `crush-hyper-token`)
 - [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection

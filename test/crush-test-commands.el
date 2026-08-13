@@ -410,7 +410,6 @@ with markdown-mode's `C-c C-*' bindings."
     (should (eq (lookup-key cmd (kbd "s")) #'crush-send-input))
     (should (eq (lookup-key cmd (kbd "i")) #'crush-interrupt))
     (should (eq (lookup-key cmd (kbd "k")) #'crush-clear-buffer))
-    (should (eq (lookup-key cmd (kbd "n")) #'crush-new-session))
     (should (eq (lookup-key cmd (kbd "a")) #'crush-insert-selection))
     ;; markdown-mode's C-c C-* bindings must not be shadowed.
     (should-not (lookup-key map (kbd "C-c C-c")))

@@ -94,10 +94,10 @@ Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
 
 ;;; Buffer-local state
 
-;;; `crush--continue', `crush--session', `crush--response-start',
-;;; `crush--pending-context', and `crush-process' are the shared
-;;; buffer-local state owned by the facade (defined below); backends
-;;; must not touch them.
+;;; `crush--continue', `crush--session-uuid', `crush--session-id',
+;;; `crush--response-start', `crush--pending-context', and
+;;; `crush-process' are the shared buffer-local state owned by the
+;;; facade (defined below); backends must not touch them.
 
 (defcustom crush-hyper-history-limit 200
   "Maximum number of prior prompts sent as history by the hyper backend.
@@ -110,8 +110,8 @@ sent in full."
 (defcustom crush--continue nil
   "Whether to pass --continue to the Crush CLI.
 When non-nil, the next prompt continues the active session in the folder.
-Set to nil by `crush-new-session' and `crush-clear-buffer' so the next
-prompt starts a fresh session.
+Set to nil by `crush-clear-buffer' so the next prompt starts a fresh
+session.
 Buffer-local."
   :type 'boolean
   :group 'crush)
@@ -123,6 +123,20 @@ Takes precedence over `crush--continue'.
 Buffer-local."
   :type '(choice (const nil) string)
   :group 'crush)
+
+(defvar-local crush--session-uuid nil
+  "Opaque UUID identifying this crush buffer's session.
+Generated in `crush--init-buffer' and rotated by `crush-clear-buffer'.
+The hyper backend hashes it (XXH3-64) for the x-session-id /
+x-session-affinity cache-affinity headers; the raw UUID is never sent
+to the network.  Persistence (as a file-local) is Phase 2 roadmap work.
+Buffer-local.")
+
+(defvar-local crush--session-id nil
+  "The 16-hex XXH3-64 of `crush--session-uuid'.
+Computed lazily by the hyper backend on request; kept here so the hash
+is stable for the session's life, and to trace as `SESS' in the debug
+log.  Buffer-local.")
 
 (defvar crush--response-start nil
   "Marker for where response text starts.
@@ -216,6 +230,7 @@ Set during buffer initialization; the facade's `crush-facade--send'
 and `crush-interrupt' dispatch through it.  Buffer-local.")
 
 (declare-function markdown-mode "markdown-mode" ())
+(declare-function crush-xxh3-hash64 "crush-xxh3" (input))
 
 ;;; Buffer naming
 
@@ -286,7 +301,6 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
     (define-key map (kbd "s") #'crush-send-input)
     (define-key map (kbd "i") #'crush-interrupt)
     (define-key map (kbd "k") #'crush-clear-buffer)
-    (define-key map (kbd "n") #'crush-new-session)
     (define-key map (kbd "a") #'crush-insert-selection)
     (define-key map (kbd "r") #'crush-reasoning-toggle)
     map)
@@ -743,6 +757,18 @@ unfontifying.  ENABLE nil restores the default."
                         (remove-list-of-text-properties beg end props)))))
     (kill-local-variable 'font-lock-unfontify-region-function)))
 
+(defun crush--init-session-uuid ()
+  "Generate a fresh session UUID and its cached XXH3-64 hash.
+Sets `crush--session-uuid' to an opaque random string and
+`crush--session-id' to the 16-hex XXH3-64 of it.  The UUID is
+buffer-local and never leaves via the network; only the hash is sent."
+  (setq-local crush--session-uuid
+              (format "crs-%s-%s-%s"
+                      (format-time-string "%Y%m%d%H%M%S")
+                      (substring (md5 (format "%s%s" (random) (current-time))) 0 8)
+                      (substring (md5 (format "%s%s" (random) (current-time))) 0 8)))
+  (setq-local crush--session-id (crush-xxh3-hash64 crush--session-uuid)))
+
 (defun crush--init-buffer (buf)
   "Initialize BUF as a crush buffer if not already initialized."
   (with-current-buffer buf
@@ -760,7 +786,7 @@ unfontifying.  ENABLE nil restores the default."
       (setq-local crush--prompt-id (crush--generate-id))
       (setq-local crush-process nil)
       (setq-local crush--continue nil)
-      (setq-local crush--session nil)
+      (crush--init-session-uuid)
       (setq-local crush--attachments nil)
       (setq-local crush--response-start nil)
       (setq-local crush--pending-context nil)
@@ -1197,6 +1223,7 @@ crush buffer, which owns all streamed output."
                       crush-active-backend prompt
                       :context (when has-context context)
                       :session-id crush--session
+                      :session-uuid crush--session-uuid
                       :continue-p crush--continue
                       :completion (lambda ()
                                     (when (buffer-live-p buf)
@@ -1286,9 +1313,12 @@ crush buffer, which owns all streamed output."
       (message "Crush process interrupted"))))
 
 (defun crush-clear-buffer ()
-  "Clear the Crush buffer output and start a fresh session."
+  "Clear the Crush buffer output and start a fresh session.
+Also rotates the buffer's session UUID, so the next prompt gets a
+cold hyperscale cache (new x-session-id / x-session-affinity)."
   (interactive)
   (setq-local crush--continue nil)
+  (crush--init-session-uuid)
   (crush-facade--stream-clear)
   ;; Delete all crush-overlay tagged overlays
   (dolist (ov (overlays-in (point-min) (point-max)))
@@ -1298,14 +1328,6 @@ crush buffer, which owns all streamed output."
   (let ((inhibit-read-only t))
     (erase-buffer)
     (crush--insert-prompt)))
-
-(defun crush-new-session ()
-  "Start a new Crush session.
-The next prompt will omit --continue, starting a fresh session.
-Subsequent prompts will continue the new active session."
-  (interactive)
-  (setq-local crush--continue nil)
-  (message "New Crush session will start on next prompt"))
 
 ;;; Minor mode commands
 

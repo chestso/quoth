@@ -386,6 +386,13 @@ Each model entry:
   server-side prefix caching, billed at `cost_per_1m_in_cached`.
 - **Affinity by session.** The `x-session-id` / `x-session-affinity` headers
   keep a conversation pinned to the same upstream cache node.
+- **Cache TTL: undocumented.** Hyper does not publish the server-side
+  lifetime (expiry/eviction) of a cached conversation prefix. The closest
+  upstream reference (Fireworks/Workers AI, which Hyper appears to resell)
+  states cached prompts usually persist "at least several minutes" and up
+  to "several hours", with the oldest evicted first. Clients therefore need
+  no rotation logic: on expiry the cache simply misses and rebuilds (often
+  billed at `cache_create: 0`).
 - **Rotating refresh tokens.** Because each `/token/exchange` consumes the
   presented refresh token, an HTTP `401` on an LLM request indicates the
   refresh token is stale/consumed and the client must re-run the device

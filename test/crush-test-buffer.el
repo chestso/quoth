@@ -167,16 +167,48 @@
           (should (null crush--continue))))
     (crush-test--cleanup)))
 
-;;; 9. crush-new-session resets continue
+;;; 9. Session UUID state: init, rotation, distinctness
 
-(ert-deftest crush-test/new-session-resets-continue ()
-  "`crush-new-session' should reset `crush--continue' to nil."
+(ert-deftest crush-test/session-uuid-init ()
+  "A fresh crush buffer gets a session UUID and its XXH3-64 hash."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq-local crush--continue t)
-          (call-interactively #'crush-new-session)
-          (should (null crush--continue))))
+          (should (stringp crush--session-uuid))
+          (should (> (length crush--session-uuid) 0))
+          (should (string= crush--session-id
+                           (crush-xxh3-hash64 crush--session-uuid)))
+          (should (string-match-p "\\`[0-9a-f]\\{16\\}\\'" crush--session-id))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/session-uuid-distinct-across-buffers ()
+  "Two fresh crush buffers get distinct session UUIDs."
+  (unwind-protect
+      (let* ((name1 (crush-test--buffer-name))
+             (buf1 (crush-test--fresh-buffer))
+             (uuid1 (with-current-buffer buf1 crush--session-uuid)))
+        ;; Force a second buffer by turning off buffer reuse (fresh-buffer
+        ;; kills the existing one, so create a separately named buffer).
+        (let ((crush--root-buffer-alist nil)
+              (buf2 (get-buffer-create "*crush:sess2*")))
+          (crush--init-buffer buf2)
+          (let ((uuid2 (with-current-buffer buf2 crush--session-uuid)))
+            (should-not (equal uuid1 uuid2)))
+          (kill-buffer buf2)))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/session-uuid-rotates-on-clear ()
+  "`crush-clear-buffer' rotates the session UUID (fresh cache affinity)."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((old-uuid crush--session-uuid)
+                (old-id crush--session-id))
+            (crush-clear-buffer)
+            (should-not (equal crush--session-uuid old-uuid))
+            (should-not (equal crush--session-id old-id))
+            (should (string= crush--session-id
+                             (crush-xxh3-hash64 crush--session-uuid))))))
     (crush-test--cleanup)))
 
 ;;; 15. Stderr buffer creation

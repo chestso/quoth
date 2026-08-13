@@ -49,6 +49,7 @@ tests; the global default is `hyper')."
 (require 'crush-test-hyper)
 (require 'crush-test-reasoning)
 (require 'crush-test-stream)
+(require 'crush-test-xxh3)
 
 (provide 'crush-test)
 ;;; crush-test.el ends here

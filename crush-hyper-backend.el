@@ -44,6 +44,16 @@
 (require 'json)
 (require 'auth-source)
 (require 'crush-backend)
+(require 'crush-xxh3)
+
+(defcustom crush-hyper-session-cache-p t
+  "Send x-session-id and x-session-affinity cache-affinity headers.
+Each hyper request carries the XXH3-64 hash of the buffer's session
+UUID, pinning the conversation to a server-side prefix/token cache.
+The hash is opaque and stable for the session; disable to opt out of
+affinity (each request misses the cache)."
+  :type 'boolean
+  :group 'crush)
 
 (defcustom crush-hyper-base-url "https://hyper.charm.land/v1"
   "Base URL of the Charm Hyper gateway.
@@ -425,11 +435,13 @@ HTTP error), finish with an error; otherwise ensure cleanup."
            (format "HTTP %s from %s" status (process-get proc :crush-url))
          "connection closed without [DONE]")))))
 
-(defun crush--hyper-request (base-url token body on-delta callback &optional on-error)
+(defun crush--hyper-request (base-url token body on-delta callback &optional on-error session-id)
   "Send HTTP POST to BASE-URL with TOKEN and JSON BODY via curl.
 ON-DELTA is a callback (DELTA KIND) consuming streamed deltas (the
 facade's append-delta); CALLBACK runs with no args when the stream
-finishes; ON-ERROR (optional) receives a stream error message.  The
+finishes; ON-ERROR (optional) receives a stream error message;
+SESSION-ID, when non-nil, is the XXH3-64 of the buffer's session UUID,
+sent as x-session-id / x-session-affinity for prefix caching.  The
 backend never touches buffers.  Returns the curl process."
   (let* ((payload (json-encode body))
          (config (concat
@@ -442,6 +454,10 @@ backend never touches buffers.  Returns the curl process."
                   "header = \"Content-Type: application/json\"\n"
                   (when token
                     (format "header = \"Authorization: Bearer %s\"\n" token))
+                  (when session-id
+                    (format "header = \"x-session-id: %s\"\n" session-id))
+                  (when session-id
+                    (format "header = \"x-session-affinity: %s\"\n" session-id))
                   "data-binary = @-\n"))
          (buf (get-buffer-create " *crush-hyper*"))
          (proc (make-process
@@ -467,10 +483,11 @@ backend never touches buffers.  Returns the curl process."
     (process-put proc :crush-status nil)
     (crush--debug-log
      'request
-     (format "POST %s model=%S token=%s body=%S"
+     (format "POST %s model=%S token=%s sess=%s body=%S"
              (process-get proc :crush-url)
              (process-get proc :crush-model)
              (if (process-get proc :crush-token-p) "present" "none")
+             (or session-id "-")
              (json-encode body)))
     ;; Config + JSON body over stdin; EOF closes the request.
     (process-send-string proc config)
@@ -480,15 +497,18 @@ backend never touches buffers.  Returns the curl process."
 ;;; Hyper backend methods
 
 (cl-defmethod crush-backend-send-prompt
-  ((backend crush-hyper-backend) prompt &key context session-id continue-p completion buffer stderr on-delta on-error)
+  ((backend crush-hyper-backend) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error)
   "Send PROMPT to BACKEND via a direct HTTP+SSE request to Hyper.
 COMPLETION is the facade's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
-errors.  The prior conversation is read from BUFFER via the facade's
-`crush--history-for' (which enters the buffer itself) and re-sent as
-`user'/'assistant' messages; the facade's `crush-hyper-history-limit'
-decides whether any turns exist.  The backend never touches buffers
-itself."
+errors.  SESSION-UUID is the buffer's opaque session identifier; when
+`crush-hyper-session-cache-p' is non-nil it is hashed (XXH3-64) and
+sent as the x-session-id / x-session-affinity cache-affinity headers
+(SESSION-ID is the CLI-only session, unused here).  The prior
+conversation is read from BUFFER via the facade's `crush--history-for'
+(which enters the buffer itself) and re-sent as `user'/'assistant'
+messages; the facade's `crush-hyper-history-limit' decides whether any
+turns exist.  The backend never touches buffers itself."
   (ignore session-id continue-p stderr)
   (let* ((history (and buffer
                        (crush--history-for buffer)))
@@ -499,7 +519,9 @@ itself."
                        (getenv "HYPER_URL")
                        crush-hyper-base-url))
          (token (crush-hyper--resolve-token
-                 (or (crush-hyper-backend-token backend) crush-hyper-token))))
+                 (or (crush-hyper-backend-token backend) crush-hyper-token)))
+         (session-id (and crush-hyper-session-cache-p session-uuid
+                          (crush-xxh3-hash64 session-uuid))))
     (setf (crush-backend-completion-action backend) completion)
     (crush--hyper-request
      base-url token body
@@ -509,7 +531,8 @@ itself."
      ;; The done-callback is the injected completion.
      (or completion #'ignore)
      ;; Stream errors surface through the facade's on-error callback.
-     (or on-error #'ignore))
+     (or on-error #'ignore)
+     session-id)
     nil))
 
 (cl-defmethod crush-backend-interrupt ((backend crush-hyper-backend))

@@ -141,7 +141,9 @@ The hyper backend (default) is crush.el's **primary mode of operation**: it post
 
 #### Session continuity
 
-The hyper backend is stateful: prior conversation from the buffer's tagged regions is folded into each request's messages array as `[system, prior-user, prior-assistant, ..., current-user]`. Set `crush-hyper-history-limit` to `0` for stateless per-prompt requests. Because the buffer is the source of truth, `C-c c k` (clear) and `C-c c n` (new session) both start a fresh conversation naturally, and the same conversation is what you see in the buffer. Server-side session persistence (`x-session-id` / `x-session-affinity`, like the CLI's SQLite store) is separate roadmap work ([TODO.md](TODO.md)).
+The hyper backend is stateful: prior conversation from the buffer's tagged regions is folded into each request's messages array as `[system, prior-user, prior-assistant, ..., current-user]`. Set `crush-hyper-history-limit` to `0` for stateless per-prompt requests. Because the buffer is the source of truth, `C-c c k` (clear) starts a fresh conversation naturally, and the same conversation is what you see in the buffer.
+
+Each buffer also owns an opaque session UUID (rotated by `C-c c k`), whose XXH3-64 hash is sent as the `x-session-id` / `x-session-affinity` headers on every hyper request, enabling server-side prefix/token caching (HYPER-API.md §3.1). The raw UUID never leaves the machine; only the 16-hex hash goes over TLS. Disable with `crush-hyper-session-cache-p` (default t).
 
 #### Current limitations
 
@@ -188,8 +190,7 @@ This means:
 
 To start a fresh session:
 
-- `C-c c n` (`crush-new-session`) — resets `crush--continue` to `nil`, so the next prompt starts a new session
-- `C-c c k` (`crush-clear-buffer`) — clears the buffer **and** starts a fresh session
+- `C-c c k` (`crush-clear-buffer`) — clears the buffer, starts a fresh session, and rotates the session UUID so the next prompt gets a cold cache
 
 ##### `--session <id>` (manual)
 
@@ -226,7 +227,7 @@ crush--continue=nil  crush run --quiet "first prompt"
                      ↓ (crush--continue set to t)
 crush--continue=t    crush run --quiet --continue "follow up"
 crush--continue=t    crush run --quiet --continue "another"
-C-c c n pressed      (crush--continue reset to nil)
+C-c c k pressed      (buffer cleared, crush--continue reset to nil)
 crush--continue=nil  crush run --quiet "new session"
 ```
 
@@ -261,8 +262,7 @@ All metadata is stored as **text properties** on buffer content; highlighting is
 - `M-p` / `M-n` — navigate input history (previous/next input)
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point; otherwise normal TAB
 - `C-c c i` — interrupt the running crush process
-- `C-c c k` — clear the crush buffer (also starts a fresh session)
-- `C-c c n` — start a new session
+- `C-c c k` — clear the crush buffer (also starts a fresh session and rotates the session UUID)
 - `C-c c a` — insert the current buffer selection as context into the crush buffer
 - `C-c c r` — expand/collapse the reasoning fold at point
 

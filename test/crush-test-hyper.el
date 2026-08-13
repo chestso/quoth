@@ -195,6 +195,93 @@ chunks and silently discarding any event split across them."
     (should (string-match-p "max-time = 45"
                             (mapconcat #'identity (nreverse received) "\n")))))
 
+(ert-deftest crush-test/hyper-request-emits-session-headers ()
+  "With the cache gate on and a session UUID, both x-session-id and
+x-session-affinity headers are sent with the same XXH3-64 hash."
+  (let ((received nil)
+        (proc (make-pipe-process :name "crush-hyper-test-cap" :noquery t))
+        (crush-hyper-session-cache-p t)
+        (uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _args) proc))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p string) (push string received)))
+                  ((symbol-function 'process-send-eof) #'ignore))
+          (crush--hyper-request
+           "http://127.0.0.1:1" "tok"
+           (crush--hyper-compose-request "hi" nil "m")
+           #'ignore #'ignore nil (crush-xxh3-hash64 uuid)))
+      (delete-process proc))
+    (let ((config (mapconcat #'identity (nreverse received) "\n")))
+      (should (string-match-p "header = \"x-session-id: db22027126414ba6\""
+                              config))
+      (should (string-match-p
+               "header = \"x-session-affinity: db22027126414ba6\""
+               config)))))
+
+(ert-deftest crush-test/hyper-request-omits-session-headers-when-gate-off ()
+  "With the cache gate off, neither session header is emitted."
+  (let ((received nil)
+        (proc (make-pipe-process :name "crush-hyper-test-cap" :noquery t))
+        (crush-hyper-session-cache-p nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _args) proc))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p string) (push string received)))
+                  ((symbol-function 'process-send-eof) #'ignore))
+          (crush--hyper-request
+           "http://127.0.0.1:1" "tok"
+           (crush--hyper-compose-request "hi" nil "m")
+           #'ignore #'ignore))
+      (delete-process proc))
+    (let ((config (mapconcat #'identity (nreverse received) "\n")))
+      (should-not (string-match-p "x-session-id" config))
+      (should-not (string-match-p "x-session-affinity" config)))))
+
+(ert-deftest crush-test/hyper-method-gates-session-id-on-defcustom ()
+  "The hyper method computes the session hash only when the cache gate
+is on; with the gate off it passes nil for the session headers."
+  (let ((captured-session nil))
+    (cl-letf (((symbol-function 'crush--hyper-request)
+               (lambda (&rest args)
+                 (setq captured-session (nth 6 args))
+                 (make-pipe-process :name "crush-hyper-test-fake"
+                                    :noquery t)))
+              ((symbol-function 'crush--history-for) (lambda (_b) nil)))
+      (unwind-protect
+          (let ((backend (crush-make-hyper-backend
+                          :buffer (current-buffer)
+                          :base-url "http://127.0.0.1:1"
+                          :token "tok"))
+                (crush-hyper-session-cache-p nil))
+            (crush-backend-send-prompt
+             backend "hi" :session-uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+            (should (null captured-session)))
+        (crush-test--cleanup)))))
+
+(ert-deftest crush-test/hyper-method-hashes-session-uuid-when-enabled ()
+  "With the cache gate on, the method passes the XXH3-64 hash of the
+session UUID (matching the run backend's --session would not)."
+  (let ((captured-session nil))
+    (cl-letf (((symbol-function 'crush--hyper-request)
+               (lambda (&rest args)
+                 (setq captured-session (nth 6 args))
+                 (make-pipe-process :name "crush-hyper-test-fake"
+                                    :noquery t)))
+              ((symbol-function 'crush--history-for) (lambda (_b) nil)))
+      (unwind-protect
+          (let ((backend (crush-make-hyper-backend
+                          :buffer (current-buffer)
+                          :base-url "http://127.0.0.1:1"
+                          :token "tok"))
+                (crush-hyper-session-cache-p t))
+            (crush-backend-send-prompt
+             backend "hi" :session-uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+            (should (string= captured-session "db22027126414ba6")))
+        (crush-test--cleanup)))))
+
 ;;; 92b. Hyper backend: token resolution
 
 (defun crush-test--hyper-on-delta (buf)
@@ -391,7 +478,9 @@ and return the capture output."
                     (let ((proc (crush--hyper-request
                                  base "tok-rf"
                                  (crush--hyper-compose-request "hi" nil "m")
-                                 #'ignore #'ignore)))
+                                 #'ignore #'ignore nil
+                                 (crush-xxh3-hash64
+                                  "f47ac10b-58cc-4372-a567-0e02b2c3d479"))))
                       (let ((deadline (+ (float-time) 6)))
                         (while (and (process-live-p proc)
                                     (null (process-get proc :crush-finished))
@@ -413,6 +502,10 @@ and return the capture output."
                        "Bearer tok-rf"))
       (should (string= (cdr (assoc "content-type" headers))
                        "application/json"))
+      (should (string= (cdr (assoc "x-session-id" headers))
+                       "db22027126414ba6"))
+      (should (string= (cdr (assoc "x-session-affinity" headers))
+                       "db22027126414ba6"))
       (let ((decoded (json-read-from-string body)))
         (should (string= (crush--hyper-alist-get "model" decoded) "m"))
         (should (eq (crush--hyper-alist-get "stream" decoded) t))))))
