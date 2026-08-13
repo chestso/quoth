@@ -288,12 +288,12 @@ KIND is `content' or `reasoning'.  Both append at the end of the
 buffer (the growing response area) so streamed deltas stay in
 order.  `crush--response-start' is not touched; it continues to
 mark the start of the response for `crush--finalize-response'.
-The user's point is never moved: deltas append at point-max under
-`save-excursion', so scrolling up during a stream is safe.
 
 Reasoning deltas additionally drive the reasoning overlay: the
 first one opens the region, subsequent ones extend it, and the
-first content delta freezes it."
+first content delta freezes it.  The cursor follows reasoning
+insertions (point moves to the growing stream end); content keeps
+the user's point."
   (let ((target (process-get proc :crush-target)))
     (when (buffer-live-p target)
       (with-current-buffer target
@@ -310,7 +310,9 @@ first content delta freezes it."
             (insert delta)
             (pcase kind
               ('reasoning
-               (crush--reasoning-extend-overlay)))))))))
+               (crush--reasoning-extend-overlay))))
+          (when (eq kind 'reasoning)
+            (goto-char (point-max))))))))
 
 (defun crush--hyper-http-finish (proc error)
   "Finalize the curl request on PROC with optional ERROR.

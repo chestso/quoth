@@ -779,6 +779,9 @@ TAB work through native key dispatch.  Returns the body overlay."
         (let ((mark-ov (make-overlay start-m body-start nil t)))
           (overlay-put mark-ov 'crush-overlay t)
           (overlay-put mark-ov 'face 'crush-reasoning-face))
+        ;; Freeze the marker text so it is read-only like the rest of
+        ;; the frozen response.
+        (crush--freeze-region (marker-position start-m) body-start)
         (move-overlay ov body-start end-m)
         (overlay-put ov 'crush-fold-state 'collapsed)
         (overlay-put ov 'invisible t))
@@ -845,6 +848,9 @@ by `C-c c r', or directly."
               (let ((mark-ov (make-overlay start-m body-start nil t)))
                 (overlay-put mark-ov 'crush-overlay t)
                 (overlay-put mark-ov 'face 'crush-reasoning-face))
+              ;; Freeze the new marker text (read-only) like the
+              ;; surrounding frozen response.
+              (crush--freeze-region (marker-position start-m) body-start)
               (move-overlay ov body-start end-m)
               (overlay-put ov 'crush-fold-state 'collapsed)
               (overlay-put ov 'invisible t))

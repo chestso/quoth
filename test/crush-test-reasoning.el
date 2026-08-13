@@ -39,21 +39,20 @@
                          (overlay-start ov) (overlay-end ov))
                         "think"))))))
 
-(ert-deftest crush-test/reasoning-stream-keeps-cursor ()
-  "Streamed reasoning should not move the user's point.
-Reasoning always appends at point-max, but the cursor stays where
-the user put it (e.g. when scrolling up to read earlier history)."
+(ert-deftest crush-test/reasoning-stream-moves-cursor ()
+  "Point should follow the reasoning stream to the insertion point."
   (crush-test--with-reasoning-process
    (lambda (proc)
+     ;; Move point away from the insertion area first, as a user might
+     ;; when scrolling up to read earlier conversation.
      (goto-char (point-min))
      (crush--hyper-insert-delta proc "think" 'reasoning)
-     (should (= (point) (point-min)))
+     (should (= (point) (point-max)))
      (crush--hyper-insert-delta proc " harder" 'reasoning)
-     (should (= (point) (point-min)))
-     ;; The reasoning text did append at the end of the buffer.
-     (save-excursion
-       (goto-char (point-max))
-       (should (search-backward "think harder" nil t))))))
+     (should (= (point) (point-max)))
+     (should (string= (buffer-substring-no-properties
+                       (- (point) (length " harder")) (point))
+                      " harder")))))
 
 (ert-deftest crush-test/hyper-reasoning-overlay-grows-with-deltas ()
   "Subsequent reasoning deltas extend the overlay."
@@ -323,7 +322,13 @@ line two
         (should (eq (overlay-get ov 'invisible) t))
         ;; Marker text is back.
         (goto-char (point-min))
-        (should (search-forward "..." nil t))))
+        (should (search-forward "..." nil t))
+        ;; The re-collapsed marker is read-only like the response.
+        (goto-char (match-beginning 0))
+        (should (get-text-property (point) 'read-only))
+        (should-error (delete-region (line-beginning-position)
+                                     (line-end-position))
+                      :type 'text-read-only)))
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/toggle-no-fold-at-point ()
