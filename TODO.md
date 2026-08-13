@@ -127,7 +127,7 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 - [ ] Hypercredit display from `usage.remaining.hypercredits`, with `GET /v1/credits` fallback ([HYPER-API.md §4](HYPER-API.md))
 - [ ] Interrupt support for in-flight hyper requests (currently a cleanup stub; the "still running" guard does not block)
 - [ ] Tool call visibility in responses
-- [ ] Conversation persistence to plain-text files (gptel-style, deferred): save `crush-region-type`/`crush-response-to`/attachment bounds plus `crush--session-uuid` as file-locals, recreate properties and recompute `crush--session-id` on open. The UUID never leaves via TLS except to Hyper (only its 16-hex XXH3 hash does).
+- [ ] Conversation persistence to plain-text files (gptel-style, deferred): save `crush-region-type`/`crush-response-to`/attachment bounds plus `crush--session-uuid` as file-locals, recreate properties and recompute `crush--session-id` on open. Only the 16-hex XXH3 hash ever goes over the wire (to Hyper).
 
 ### Phase 3: Integration
 
