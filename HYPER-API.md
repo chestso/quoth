@@ -170,6 +170,25 @@ The value is a deterministic XXH3 hash of the Crush session UUID (not the
 raw UUID), so it is opaque and stable for the life of the session. This is
 what enables **server-side prefix/token caching** across turns.
 
+Crush also sends a per-machine identifier on every request
+(`internal/agent/coordinator.go` sets it on the Hyper provider):
+
+```
+x-crush-id: <per-machine identifier>
+```
+
+The value derives from the same machine fingerprint Crush uses for its
+analytics (`machineid.ProtectedID("charm")`, HMAC-SHA256 hardware
+fingerprint, hex-encoded; `internal/event/identifier.go`), so it is
+opaque, stable per machine, and carries no user payload. It lets the
+gateway recognize repeat clients (rate/pricing/cache correlation) the
+way the CLI's own requests do.
+
+crush.el mirrors this: the hyper backend sends `x-crush-id` on every
+request by default, deriving a stable per-machine value (XXH3-64 of the
+local system identity) via `crush-hyper-x-crush-id` (`t` derive, string
+verbatim, function, or `nil` to omit).
+
 ### 3.2 Request body
 
 ```jsonc

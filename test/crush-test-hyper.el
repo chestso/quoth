@@ -317,6 +317,80 @@ x-session-affinity headers are sent with the same XXH3-64 hash."
                "header = \"x-session-affinity: db22027126414ba6\""
                config)))))
 
+(ert-deftest crush-test/hyper-request-sends-user-agent ()
+  "The curl config carries a User-Agent header, defaulting to the
+same value Hyper receives from the Crush CLI's fantasy SDK."
+  (let ((received nil)
+        (proc (make-pipe-process :name "crush-hyper-test-ua" :noquery t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _args) proc))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p string) (push string received)))
+                  ((symbol-function 'process-send-eof) #'ignore))
+          (crush--hyper-request
+           "http://127.0.0.1:1" "tok"
+           (crush--hyper-compose-request "hi" nil "m")
+           #'ignore #'ignore))
+      (delete-process proc))
+    (should (string-match-p
+             "header = \"User-Agent: Charm-Fantasy/0.41.0"
+             (mapconcat #'identity (nreverse received) "\n")))))
+
+(ert-deftest crush-test/hyper-method-sends-x-crush-id-by-default ()
+  "With the default setting, the method passes a stable per-machine
+ID to the transport; repeated sends resolve to the same value."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'crush--hyper-request)
+               (lambda (_base _tok _body _on _cb &optional _err _sess id)
+                 (setq captured id)
+                 (make-pipe-process :name "crush-hyper-test-fake"
+                                    :noquery t)))
+              ((symbol-function 'crush--history-for) (lambda (_b) nil)))
+      (unwind-protect
+          (let ((backend (crush-make-hyper-backend
+                          :buffer (current-buffer)
+                          :base-url "http://127.0.0.1:1"
+                          :token "tok")))
+            (crush-backend-send-prompt backend "hi")
+            (should (string-match-p "[0-9a-f]\\{16\\}" (or captured "")))
+            (let ((first captured))
+              (crush-backend-send-prompt backend "hi")
+              (should (string= first captured))))
+        (crush-test--cleanup)))))
+
+(ert-deftest crush-test/hyper-x-crush-id-forms ()
+  "The resolver accepts t (derive), string (verbatim), function
+(called), and nil (omit); the transport emits the header only when
+the value is non-nil."
+  (should (string-match-p "[0-9a-f]\\{16\\}" (crush-hyper--x-crush-id)))
+  (let ((crush-hyper-x-crush-id "my-id"))
+    (should (string= "my-id" (crush-hyper--x-crush-id))))
+  (let ((crush-hyper-x-crush-id (lambda () "fn-id")))
+    (should (string= "fn-id" (crush-hyper--x-crush-id))))
+  (let ((crush-hyper-x-crush-id nil))
+    (should-not (crush-hyper--x-crush-id)))
+  ;; Wire: an explicit id lands in the config; nil omits it.
+  (cl-flet ((capture (id)
+              (let ((received nil)
+                    (proc (make-pipe-process :name "crush-hyper-test-xf"
+                                             :noquery t)))
+                (unwind-protect
+                    (cl-letf (((symbol-function 'make-process)
+                               (lambda (&rest _args) proc))
+                              ((symbol-function 'process-send-string)
+                               (lambda (_p string) (push string received)))
+                              ((symbol-function 'process-send-eof) #'ignore))
+                      (crush--hyper-request
+                       "http://127.0.0.1:1" "tok"
+                       (crush--hyper-compose-request "hi" nil "m")
+                       #'ignore #'ignore nil nil id))
+                  (delete-process proc))
+                (mapconcat #'identity (nreverse received) "\n"))))
+    (should (string-match-p "header = \"x-crush-id: my-id\""
+                            (capture "my-id")))
+    (should-not (string-match-p "x-crush-id" (capture nil)))))
+
 (ert-deftest crush-test/hyper-request-omits-session-headers-when-gate-off ()
   "With the cache gate off, neither session header is emitted."
   (let ((received nil)

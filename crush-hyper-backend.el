@@ -152,6 +152,44 @@ switched off."
   :type 'string
   :group 'crush)
 
+(defcustom crush-hyper-user-agent
+  "Charm-Fantasy/0.41.0 (https://charm.land/fantasy)"
+  "User-Agent header value for hyper chat-completions requests.
+The Crush CLI does not set its own User-Agent on the Hyper chat path;
+the value Hyper receives is the default of the fantasy SDK pinned in
+the CLI's go.mod (charm.land/fantasy v0.41.0), rendered as
+`Charm-Fantasy/<version> (https://charm.land/fantasy)'.  We send the
+same string so the gateway sees an identical client.  (The CLI sends
+the bare \"crush\" UA only on its OAuth device-flow endpoints.)"
+  :type 'string
+  :group 'crush)
+
+(defcustom crush-hyper-x-crush-id t
+  "Value for the x-crush-id header on hyper requests.
+
+The Crush CLI sends its per-machine ID in this header on every Hyper
+chat-completions request.  When t (default), a stable per-machine ID
+is derived locally; a string is sent verbatim; a function is called
+for the value; nil omits the header."
+  :type '(choice (const :tag "Derive per-machine ID" t)
+                 (const :tag "Omit" nil)
+                 string
+                 function)
+  :group 'crush)
+
+(defun crush-hyper--x-crush-id ()
+  "Return the resolved x-crush-id value, or nil to omit."
+  (let ((id (cond
+             ((functionp crush-hyper-x-crush-id)
+              (funcall crush-hyper-x-crush-id))
+             ((stringp crush-hyper-x-crush-id)
+              crush-hyper-x-crush-id)
+             (crush-hyper-x-crush-id
+              ;; Stable per-machine: XXH3-64 of system identity.
+              (crush-xxh3-hash64
+               (concat (system-name) "@" (getenv "HOME")))))))
+    (and (stringp id) (> (length id) 0) id)))
+
 (defconst crush-hyper-system-prompt
   "You are a helpful assistant.  You answer concisely and correctly."
   "System prompt sent with every phase-1 hyper request.")
@@ -485,14 +523,16 @@ compact to bound the debug log during long streams."
               (and (stringp text)
                    (>= (length text) 40))))))))
 
-(defun crush--hyper-request (base-url token body on-delta callback &optional on-error session-id)
+(defun crush--hyper-request (base-url token body on-delta callback &optional on-error session-id x-crush-id)
   "Send HTTP POST to BASE-URL with TOKEN and JSON BODY via curl.
 ON-DELTA is a callback (DELTA KIND) consuming streamed deltas (the
 facade's append-delta); CALLBACK runs with no args when the stream
 finishes; ON-ERROR (optional) receives a stream error message;
 SESSION-ID, when non-nil, is the XXH3-64 of the buffer's session UUID,
-sent as x-session-id / x-session-affinity for prefix caching.  The
-backend never touches buffers.  Returns the curl process."
+sent as x-session-id / x-session-affinity for prefix caching.
+X-CRUSH-ID, when non-nil, is sent as the x-crush-id header (matching
+the Crush CLI's per-machine ID).  The backend never touches buffers.
+Returns the curl process."
   (let* ((payload (json-encode body))
          (config (concat
                   (format "url = %s/chat/completions\n" base-url)
@@ -502,12 +542,15 @@ backend never touches buffers.  Returns the curl process."
                   "no-buffer\n"
                   (format "max-time = %s\n" (or crush-hyper-timeout 300))
                   "header = \"Content-Type: application/json\"\n"
+                  (format "header = \"User-Agent: %s\"\n" crush-hyper-user-agent)
                   (when token
                     (format "header = \"Authorization: Bearer %s\"\n" token))
                   (when session-id
                     (format "header = \"x-session-id: %s\"\n" session-id))
                   (when session-id
                     (format "header = \"x-session-affinity: %s\"\n" session-id))
+                  (when x-crush-id
+                    (format "header = \"x-crush-id: %s\"\n" x-crush-id))
                   "data-binary = @-\n"))
          (buf (get-buffer-create " *crush-hyper*"))
          (proc (make-process
@@ -571,7 +614,8 @@ turns exist.  The backend never touches buffers itself."
          (token (crush-hyper--resolve-token
                  (or (crush-hyper-backend-token backend) crush-hyper-token)))
          (session-id (and crush-hyper-session-cache-p session-uuid
-                          (crush-xxh3-hash64 session-uuid))))
+                          (crush-xxh3-hash64 session-uuid)))
+         (x-crush-id (crush-hyper--x-crush-id)))
     (setf (crush-backend-completion-action backend) completion)
     (crush--hyper-request
      base-url token body
@@ -582,7 +626,8 @@ turns exist.  The backend never touches buffers itself."
      (or completion #'ignore)
      ;; Stream errors surface through the facade's on-error callback.
      (or on-error #'ignore)
-     session-id)
+     session-id
+     x-crush-id)
     nil))
 
 (cl-defmethod crush-backend-interrupt ((backend crush-hyper-backend))
