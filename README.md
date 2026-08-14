@@ -157,15 +157,11 @@ Each buffer also owns an opaque session UUID (rotated by `C-c c k`), whose XXH3-
 
 The hyper backend supports tool calls when `crush-tools-enabled` is non-nil (the default). When the model calls a tool, the tool block is rendered in the buffer as markdown:
 
-```
 **🔧 tool: bash**
 
 **command:** `{"command":"ls"}`
-
 **exit:** `0`
-
 **output:**
-```
 
 ```
 <command>ls</command>
@@ -174,8 +170,6 @@ crush.el
 </output>
 <exit_code>0</exit_code>
 ```
-
-````
 
 The output is enclosed in a fenced code block whose fence length is one backtick longer than the longest run of backticks in the output, so nested fences never break the block. The tool block is read-only and tagged `crush-region-type 'tool'`.
 
@@ -242,7 +236,7 @@ To continue a specific session by ID, set `crush--session`:
 
 ```elisp
 (setq-local crush--session "abc123")
-````
+```
 
 This passes `--session abc123` to Crush, which:
 
