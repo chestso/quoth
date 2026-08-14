@@ -463,13 +463,15 @@ init); falls back to `crush-hyper-default-model' for hyper backends."
              crush-hyper-default-model))))
 
 (defun crush--region-label-at-point ()
-  "Return a human label for the `crush-region-type' at point."
-  (pcase (get-text-property (point) 'crush-region-type)
-    ('attachment "attachment")
-    ('response "response")
-    ('reasoning "reasoning")
-    ('tool "tool")
-    (_ (if (crush-get-prompt-at-point) "prompt" "plain"))))
+  "Return a human label for the `crush-region-type' at point.
+Any region type symbol maps to its name, so new region types (e.g. the
+nested `tool-output' span) label themselves without a static list.
+When no region type is set, falls back to `prompt' on prompt/input
+text and `plain' elsewhere."
+  (let ((type (get-text-property (point) 'crush-region-type)))
+    (if (and type (symbolp type))
+        (symbol-name type)
+      (if (crush-get-prompt-at-point) "prompt" "plain"))))
 
 (defun crush--update-header-line ()
   "Update header line with the current model and region type at point."

@@ -118,11 +118,11 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 ### Phase 2: Provider features (primary roadmap)
 
 - [x] Token storage via `auth-source` (`machine hyper.charm.land login apikey password sk-hyper-...`), gptel-style; `crush-hyper-token` accepts string/function/nil
-- [x] In-buffer history round trip (default on): prior `[user, assistant]` turns are read from the buffer's tagged regions and re-sent with each request (`crush-hyper-history-limit` caps the tail; 0 disables; `crush-hyper-history-include-reasoning` opts the CoT back in as `reasoning_content`)
+- [x] In-buffer history round trip (default on): prior `[user, assistant (and tool)]` turns are read from the buffer's tagged regions and re-sent with each request (tool calls replay as the OpenAI-conformant assistant `tool_calls` + tool result pair with the real `tool_call_id`) (`crush-hyper-history-limit` caps the tail; 0 disables; `crush-hyper-history-include-reasoning` opts the CoT back in as `reasoning_content`)
 - [x] `x-session-id` / `x-session-affinity` headers for server-side prefix/token caching ([HYPER-API.md §3.1](HYPER-API.md)), via a dedicated pure-Elisp XXH3-64 (`crush-xxh3.el`, seed 0, big-endian, 16-hex); per-buffer UUID (`crush--session-uuid`), rotated by `crush-clear-buffer`, gate `crush-hyper-session-cache-p`
 - [x] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages. First tool: `bash` — see the tool design notes
   - [x] Tool blocks rendered as markdown in the buffer (bold 🔧 tool name, inline code for command/exit, fenced code block for output)
-  - [x] Tool blocks are read-only, tagged `crush-region-type 'tool'`, and carry `crush-tool-call` for wire resume
+  - [x] Tool blocks are read-only, tagged `crush-region-type 'tool'`, and carry `crush-tool-call` for wire resume; the raw result span inside the block is tagged `crush-region-type 'tool-output'` so history sends the raw `<command>/<output>/<exit_code>` (never the rendered toolbar)
   - [x] Tool loop: up to `crush-tool-loop-max` (8) consecutive rounds, each round sends the assistant message with `tool_calls` plus `role: "tool"` results
   - [x] Tool output fenced code blocks escape nested fences via longest-backtick-run detection
   - [x] Tools run without confirmation (yolo), matching the CLI backend's auto-approve behavior

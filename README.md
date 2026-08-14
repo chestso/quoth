@@ -75,7 +75,7 @@ Which crush backend to use:
 (setq crush-backend-type 'hyper)
 ```
 
-- `hyper` (default) — direct HTTP access to the Charm Hyper gateway, bypassing the CLI entirely; the package's primary mode of operation (see [Hyper backend](#hyper-backend)). Requires only `curl`. Supports conversation history, tool calls, and session caching. OAuth is still on the roadmap.
+- `hyper` (default) — direct HTTP access to the Charm Hyper gateway, bypassing the CLI entirely; the package's primary mode of operation (see the [hyper backend](ARCHITECTURE.md#hyper-backend-primary)). Requires only `curl`. Supports conversation history, tool calls, and session caching. OAuth is still on the roadmap.
 - `run` — standalone `crush run` mode (compatibility with the Crush CLI). Each prompt spawns a new process. Fully implemented.
 
 ### crush-hyper-base-url
@@ -110,7 +110,7 @@ Request tuning: timeout in seconds, `max_tokens` (default 64000), and sampling t
 
 ### crush-hyper-history-limit / crush-hyper-history-include-reasoning
 
-The hyper backend is stateful: each request re-sends the buffer's completed exchanges as `user` and `assistant` messages before the new prompt, so the model sees the whole conversation. The conversation is read from the buffer's tagged regions at send time — nothing is stored client- or server-side. `crush-hyper-history-limit` (default 200) caps how many prior exchanges are sent (the most recent ones are always retained); set it to `0` to disable history and get phase-1 stateless per-prompt requests.
+The hyper backend is stateful: each request re-sends the buffer's completed exchanges — `user`, `assistant`, and `tool` turns — before the new prompt, so the model sees the whole conversation. Tool calls replay in the OpenAI function-calling shape: an assistant `tool_calls` declaration followed by the tool result with the matching `tool_call_id` (only the raw `<command>/<output>/<exit_code>` result and the stored call id travel, never the rendered tool block). The conversation is read from the buffer's tagged regions at send time — nothing is stored client- or server-side. `crush-hyper-history-limit` (default 200) caps how many prior exchanges are sent (the most recent ones are always retained); set it to `0` to disable history and get phase-1 stateless per-prompt requests.
 
 `crush-hyper-history-include-reasoning` (default nil) controls whether streamed chain-of-thought rides along in history: off, the assistant turn carries only the answer; on, the CoT is re-sent as the `reasoning_content` field of the assistant message, which is what Hyper requires for thinking turns carried across requests.
 
@@ -130,166 +130,17 @@ When non-nil (default), log commands, input, output, and sentinel events to a `*
 
 ## Architecture
 
-### Backend Abstraction
+crush.el talks to providers through a small backend abstraction
+(`crush-backend-*` protocol): the **hyper backend** (default) is direct
+HTTP streaming against the [Charm Hyper gateway](HYPER-API.md) — no CLI
+binary needed — and the **run backend** drives the `crush run` CLI for
+compatibility. Both are wired into the same facade, so the chat buffer
+behaves identically whichever backend is active.
 
-All provider/CLI interaction goes through a backend protocol (`crush-backend-send-prompt`, `crush-backend-interrupt`, `crush-backend-active-p`, `crush-backend-cleanup`, `crush-backend-grant-permission`). The protocol and shared base struct live in `crush-backend.el`; each backend is a dedicated, buffer-unaware file:
-
-- `crush-hyper-backend.el` — the default implementation: direct HTTP access to the Charm Hyper gateway (see [Hyper backend](#hyper-backend)).
-- `crush-run-backend.el` — the compatibility CLI backend (see [Run backend](#run-backend)). Spawns `crush run --quiet` per prompt.
-
-### Hyper backend
-
-The hyper backend (default) is crush.el's **primary mode of operation**: it posts the prompt to Hyper's OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`, base URL defaulting to `https://hyper.charm.land/v1`) and streams the response directly. It does **not** spawn `crush run`, so it does not need the Crush CLI installed — only `curl` (which is used the same way gptel and plz.el use it).
-
-#### How it works
-
-1. `crush-backend-send-prompt` composes the request body (`crush--hyper-compose-request`: messages array with a minimal system prompt, the user prompt, model, and `stream: t`) and fires a `curl --config -` subprocess; the config (URL, `request = POST`, JSON content-type, bearer auth header, and `data-binary = @-`) plus the JSON body go to curl over stdin. `data-binary = @-` is the **last** config line so curl reads the rest of stdin as the body.
-2. SSE frames are parsed incrementally in the process filter (`crush--hyper-curl-filter` → `crush--hyper-sse-feed`); content deltas are emitted to the facade's `:on-delta` callback (`crush-facade--append-delta`), which appends them in order and drives the reasoning overlay.
-3. A final `[DONE]` event, or the process exiting, runs the injected completion (`crush-facade--finalize`), which tags the response, freezes it, and inserts a fresh `crush> ` prompt. Stream errors surface through `:on-error` into a clickable error pane.
-
-#### Session continuity
-
-The hyper backend is stateful: prior conversation from the buffer's tagged regions is folded into each request's messages array as `[system, prior-user, prior-assistant, ..., current-user]`. Set `crush-hyper-history-limit` to `0` for stateless per-prompt requests. Because the buffer is the source of truth, `C-c c k` (clear) starts a fresh conversation naturally, and the same conversation is what you see in the buffer.
-
-Each buffer also owns an opaque session UUID (rotated by `C-c c k`), whose XXH3-64 hash is sent as the `x-session-id` / `x-session-affinity` headers on every hyper request, enabling server-side prefix/token caching (HYPER-API.md §3.1). The raw UUID never leaves the machine; only the 16-hex hash goes over TLS. Disable with `crush-hyper-session-cache-p` (default t).
-
-#### Tool calls
-
-The hyper backend supports tool calls when `crush-tools-enabled` is non-nil (the default). When the model calls a tool, the tool block is rendered in the buffer as markdown:
-
-**🔧 tool: bash**
-
-**command:** `{"command":"ls"}`  
-**exit:** `0`  
-**output:**
-
-```
-<command>ls</command>
-<output>
-crush.el
-</output>
-<exit_code>0</exit_code>
-```
-
-The output is enclosed in a fenced code block whose fence length is one backtick longer than the longest run of backticks in the output, so nested fences never break the block. The tool block is read-only and tagged `crush-region-type 'tool'`.
-
-Tools run without confirmation (`yolo` mode). Up to `crush-tool-loop-max` (default 8) consecutive tool-call rounds are supported per prompt; the loop stops after that limit or when the model produces a content answer instead of tool calls.
-
-#### Configuration
-
-- `crush-tools-enabled` — toggle tool support (default `t`)
-- `crush-tool-loop-max` — maximum tool-call rounds per prompt (default 8)
-- `crush-tool-timeout` — maximum seconds a tool command may run (default 60)
-- `crush-tool-max-output` — maximum characters of tool output to display (default 30000)
-- `crush-bash-program` — shell to use for the `bash` tool (default nil, uses `shell-file-name`)
-
-#### Current limitations
-
-- Manual token only (`crush-hyper-token`); OAuth device flow is planned.
-- No model catalog.
-- Interrupt is a stub; the "still running" guard does not block during hyper requests, so avoid typing another prompt mid-stream.
-- `crush-backend-grant-permission` is a no-op (tools run without confirmation).
-
-### Run backend
-
-The run backend (compatibility, `crush-backend-type 'run`) drives the **Crush CLI** instead: each prompt spawns a new `crush run` process and streams its stdout into the crush buffer. It requires the `crush` binary on `exec-path` (`crush-program`).
-
-#### How it works
-
-1. `crush-backend-send-prompt` builds the command line: `crush run --quiet [--model M] [--session ID | --continue] [prompt]`. `--quiet` suppresses the spinner; stderr goes to the `*crush-errors*` buffer. `--session` takes precedence over `--continue`.
-2. Output is streamed into the buffer by `crush--output-filter` at the process mark; on exit the sentinel runs the facade's completion — tagging the response, freezing it read-only, and inserting a fresh `crush> ` prompt. There is no persistent process.
-
-#### How context reaches the model
-
-`crush run` treats stdin as opaque text: the CLI reads all of it and prepends it verbatim to the prompt, separated by a blank line. It does not parse attachment headers, `(lines N-M)` ranges, fence languages, or links, and it never reads or slices the referenced files. With attachments the backend writes `preamble + attachment blocks + prompt` to the process's stdin (the prompt is the last stdin line) and closes it with EOF, because `crush run` reads all of stdin before it starts.
-
-So the blocks crush.el inserts are plain markdown in the LLM message. The `**Attachment:**` header and line range are hints for the model — it may re-read a specific range with its `view` tool, or just reason over the text it was given.
-
-#### Session continuity
-
-The run backend sends only the current prompt (and any attached context blocks) on each invocation; it keeps no conversation state of its own. Continuity is delegated to the CLI's session store: every prompt is persisted there, and each new invocation tells the CLI which session to resume.
-
-The link between prompts lives entirely in two buffer-local variables:
-
-- `crush--continue` — set to `t` by the run backend immediately after the first prompt is spawned (`crush-backend-send-prompt`). It is passed to the next invocation as `--continue`, which resumes the most recent session for the working directory — in practice, the prior conversation travels along with the new prompt.
-- `crush--session` — a manual session id, passed as `--session <id>`; takes precedence over `--continue` and resumes a specific session instead.
-
-#### Session management
-
-##### `--continue` (automatic)
-
-After sending your first prompt, `crush--continue` is set to `t`. All subsequent prompts automatically include `--continue`, which tells Crush to continue the most recent session in the working directory.
-
-This means:
-
-- The first prompt starts a new session
-- All follow-up prompts in the same buffer continue that session
-- The session persists across Emacs restarts (stored in Crush's database)
-
-To start a fresh session:
-
-- `C-c c k` (`crush-clear-buffer`) — clears the buffer, starts a fresh session, and rotates the session UUID so the next prompt gets a cold cache
-
-##### `--session <id>` (manual)
-
-To continue a specific session by ID, set `crush--session`:
-
-```elisp
-(setq-local crush--session "abc123")
-```
-
-This passes `--session abc123` to Crush, which:
-
-- Takes precedence over `--continue`
-- Allows resuming a specific session from your history
-- Session IDs can be: full UUID, full XXH3 hash, or hash prefix
-
-To list available sessions:
-
-```bash
-crush session list --json
-```
-
-To clear manual session selection and return to automatic `--continue` behavior:
-
-```elisp
-(setq-local crush--session nil)
-```
-
-##### Session Flow Example
-
-```
-Buffer state         Command sent
-----------------     --------------------------
-crush--continue=nil  crush run --quiet "first prompt"
-                     ↓ (crush--continue set to t)
-crush--continue=t    crush run --quiet --continue "follow up"
-crush--continue=t    crush run --quiet --continue "another"
-C-c c k pressed      (buffer cleared, crush--continue reset to nil)
-crush--continue=nil  crush run --quiet "new session"
-```
-
-With manual session ID:
-
-```
-crush--session="abc123"  crush run --quiet --session abc123 "resume"
-```
-
-#### Assuming permissions
-
-`crush run` auto-approves every tool permission — functionally `--yolo` (see [Important: Permission Behavior](#important-permission-behavior)). There is no prompt-by-prompt approval in the run backend; `crush-backend-grant-permission` is a no-op.
-
-### Chat Buffer Composition
-
-The crush buffer's major mode is the parent mode (`markdown-mode` if available, else `text-mode`); `crush-chat-mode` is a **minor mode** that provides the chat keybindings and hooks. Rendering, prompt tracking, and fontification are all implemented with text properties, markers, and markdown native font-lock instead of comint.
-
-### Read-Only Handling
-
-Prompt text and completed exchanges are made read-only via **text properties** (`read-only` with `front-sticky`/`rear-nonsticky` boundaries), so the history can't be edited while the current input area stays fully editable. A font-lock guard (`font-lock-unfontify-region-function`) and a `post-command-hook` re-assert the boundaries after markdown-mode refontifies the buffer.
-
-### Metadata
-
-All metadata is stored as **text properties** on buffer content; highlighting is left to markdown-mode's native font-lock.
+Details — how requests are composed and streamed, session continuity,
+tool-call replay, buffer metadata and read-only internals, the CLI's
+stdin semantics, and a hacking guide — live in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Usage
 
@@ -335,16 +186,25 @@ Keybindings (active when `crush-minor-mode` is enabled):
 
 ## Prompt IDs and Attachments
 
-Each prompt is assigned a unique ID when the `crush> ` prompt is created, before you type anything. This ID is used to track attachments (context blocks) that belong to that prompt. All metadata is stored as text properties on the buffer content, so it persists and can be retrieved at any time.
+Each prompt is assigned a unique ID when the `crush> ` prompt is
+created, before you type anything. This ID tracks the attachments
+(context blocks) that belong to that prompt, and all metadata is stored
+as text properties on the buffer content.
 
-### Text Properties
+### Attachments
 
-| Text Region             | Property                                                                                                       | Value                        |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `crush> ` prompt marker | `crush-prompt-id` + `read-only`                                                                                | Unique ID for the prompt     |
-| User input after prompt | `crush-prompt-id`                                                                                              | Same ID as the prompt marker |
-| Attachment blocks       | `crush-attachment-id` + `crush-prompt-id` + `crush-region-type 'attachment` + `crush-filename` + `crush-lines` | Metadata for the attachment  |
-| Response text           | `crush-response-to` + `crush-region-type 'response`                                                            | The prompt ID being answered |
+Insert context from a source buffer with:
+
+- `C-c c a` (`crush-insert-selection`) — the active region
+- `C-c C-b` (`crush-insert-buffer`) — the entire buffer
+- `C-c C-p` (`crush-insert-filepath`) — the file path as a link
+
+Each attachment is a markdown fenced code block with a
+`**Attachment: <relpath> (lines N-M)**` header (paths relative to the
+project root); `crush-insert-filepath` inserts a
+`[relpath](relpath)` link instead. The metadata properties behind
+this, plus the API for retrieving prompts/attachments programmatically,
+are documented in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Header Line Display
 
@@ -354,47 +214,11 @@ The header line shows the current model and the region type at point:
 model: deepseek-v4-flash   region: response
 ```
 
-The region type updates as the cursor moves: `prompt` on the input line, `attachment` on context blocks, `reasoning` on chain-of-thought text, `tool` on tool blocks, `response` on the final answer, and `plain` elsewhere. The model is the effective backend model (`crush-model` if set, else the backend default).
-
-### Attachments
-
-When you insert context via:
-
-- `C-c c a` (`crush-insert-selection`)
-- `C-c C-b` (`crush-insert-buffer`)
-- `C-c C-p` (`crush-insert-filepath`)
-
-Each attachment is tagged with text properties that persist in the buffer: `crush-attachment-id` (unique ID), `crush-prompt-id` (the pending prompt), `crush-region-type` (`attachment`), `crush-filename` (path relative to the project root), and `crush-lines` (line range, when the attachment is a selection block). `crush-insert-filepath` inserts a markdown link `[relpath](relpath)` instead of a code block (no `crush-lines`).
-
-### History Retrieval Functions
-
-```elisp
-;; Get prompt ID at current point
-(crush-get-prompt-at-point)
-;; => "20260805-091012-abc123"
-
-;; Get all attachment regions for a specific prompt
-(crush-get-attachments-for-prompt "20260805-091012-abc123")
-;; => ((start end "attach-id-1") (start end "attach-id-2"))
-
-;; Get all prompt IDs in buffer
-(crush-get-all-prompts)
-;; => ("20260805-091012-abc123" "20260805-091000-xyz789")
-```
-
-### Programmatic Access
-
-Text properties can be accessed directly:
-
-```elisp
-;; Get property at point
-(get-text-property (point) 'crush-prompt-id)
-(get-text-property (point) 'crush-attachment-id)
-(get-text-property (point) 'crush-filename)
-(get-text-property (point) 'crush-lines)
-(get-text-property (point) 'crush-region-type)
-(get-text-property (point) 'crush-response-to)
-```
+The region type updates as the cursor moves: `prompt` on the input
+line, `attachment` on context blocks, `reasoning` on chain-of-thought
+text, `tool` on tool blocks, `response` on the final answer, and
+`plain` elsewhere. The model is the effective backend model
+(`crush-model` if set, else the backend default).
 
 ## Rendering
 
@@ -419,6 +243,13 @@ When `crush-debug-mode` is non-nil (default), commands, input, output, and senti
 ```
 
 For the hyper backend, each request logs a `request:` line with the URL, model, HTTP status, content type, and whether a token was sent (never the token itself). A non-2xx status is surfaced in the buffer as `[crush-hyper error: HTTP <code> from <url>]` instead of a generic connection error.
+
+## Contributing
+
+Bug reports, patches, and pull requests are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow (test + format
+gate) and [ARCHITECTURE.md](ARCHITECTURE.md) to get oriented in the
+code. Ideas are tracked in [TODO.md](TODO.md).
 
 ## License
 

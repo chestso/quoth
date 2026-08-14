@@ -377,6 +377,23 @@ to `plain'."
           (should (string= (crush--region-label-at-point) "response"))))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/region-label-tool-output ()
+  "The nested `tool-output' region resolves to its symbol name, not the
+prompt fallback, even though it carries `crush-prompt-id'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((start (point-max)))
+            (let ((inhibit-read-only t))
+              (insert "raw-output-text"))
+            (put-text-property start (point)
+                               'crush-region-type 'tool-output)
+            (put-text-property start (point)
+                               'crush-prompt-id crush--prompt-id))
+          (goto-char (- (point) 5))
+          (should (string= (crush--region-label-at-point) "tool-output"))))
+    (crush-test--cleanup)))
+
 (ert-deftest crush-test/region-label-falls-back-to-plain ()
   "Regions with neither a region type nor a prompt ID resolve to `plain'."
   (unwind-protect
