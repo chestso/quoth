@@ -150,6 +150,13 @@ Buffer-local.")
   "The currently running Crush process, if any.
 Buffer-local.")
 
+(defvar-local crush--tool-continuation nil
+  "Continuation messages for an in-flight tool loop, or nil.
+A list of structured message alists (assistant with `tool_calls'
+followed by `role: \"tool\"' messages) appended to the request
+history when the tool loop sends a follow-up.  Reset to nil when
+the tool loop finishes or the buffer is cleared.")
+
 ;;; The facade stream protocol (state, progress, error pane) lives in
 ;;; `crush-stream.el'; crush.el requires and transitions it.
 
@@ -242,6 +249,10 @@ and `crush-interrupt' dispatch through it.  Buffer-local.")
 
 (declare-function markdown-mode "markdown-mode" ())
 (declare-function crush-xxh3-hash64 "crush-xxh3" (input))
+(declare-function crush-backend--tool-calls "crush-backend" (backend process))
+(declare-function crush-backend--tool-results "crush-backend" (backend tool-calls))
+(defvar crush-tools-enabled t)
+(defvar crush-tool-loop-max 8)
 
 ;;; Buffer naming
 
@@ -823,6 +834,8 @@ buffer-local and never leaves via the network; only the hash is sent."
       (setq-local crush--input-start-marker nil)
       (setq-local crush--input-ring nil)
       (setq-local crush--input-ring-index 0)
+      (setq-local crush--tool-continuation nil)
+      (setq-local crush--tool-loop-count 0)
       (crush-chat-mode 1)
       (crush--install-font-lock-guard t)
       (crush--update-header-line)
@@ -939,7 +952,8 @@ FILE is the file path, START and END are the line numbers."
   "Start a reasoning region at point-max if none is active.
 Creates the reasoning overlay and the start marker on the first
 reasoning delta streamed for the current prompt.  Returns the
-overlay.  Inert (returns nil) once content has started."
+overlay.  Inert once content has started or when an active
+overlay is already open."
   (unless (or crush--reasoning-overlay
               (markerp crush--reasoning-end))
     (let ((pos (point)))
@@ -947,6 +961,7 @@ overlay.  Inert (returns nil) once content has started."
       (setq-local crush--reasoning-overlay
                   (make-overlay pos pos nil nil nil))
       (overlay-put crush--reasoning-overlay 'crush-overlay t)
+      (overlay-put crush--reasoning-overlay 'crush-reasoning t)
       (overlay-put crush--reasoning-overlay 'face 'crush-reasoning-face)
       crush--reasoning-overlay)))
 
@@ -1039,7 +1054,8 @@ TAB work through native key dispatch.  Returns the body overlay."
         (crush--freeze-region (marker-position start-m) body-start)
         (move-overlay ov body-start end-m)
         (overlay-put ov 'crush-fold-state 'collapsed)
-        (overlay-put ov 'invisible t))
+        (overlay-put ov 'invisible t)
+        (overlay-put ov 'crush-reasoning nil))
       (set-marker start-m nil)
       (set-marker end-m nil)
       ov)))
@@ -1166,10 +1182,17 @@ Runs in the crush buffer, which owns all response text."
         ;; region type.  Deltas were inserted with modification hooks
         ;; suppressed, so this is the only tagging the response gets.
         (crush--tag-response-region response-start response-end prompt-id)
-        ;; Auto-collapse streamed reasoning behind its fold marker
-        ;; while the markers are still live.
-        (when-let* ((region (crush--reasoning-region)))
-          (crush--reasoning-install-fold region))
+        ;; Auto-collapse every reasoning overlay in the response
+        ;; (there may be multiple across tool-call rounds).
+        ;; Use (point-min) instead of response-start because
+        ;; crush--response-start is relocated after tool blocks
+        ;; in crush-facade--tool-loop, so the first round's
+        ;; reasoning overlay would be outside the range.
+        (dolist (ov (overlays-in (point-min) response-end))
+          (when (and (overlay-get ov 'crush-reasoning)
+                     (not (overlay-get ov 'crush-fold-state)))
+            (crush--reasoning-install-fold
+             (cons (overlay-start ov) (overlay-end ov)))))
         (crush--reasoning-reset))
       ;; Generate new prompt ID BEFORE inserting marker
       (setq-local crush--prompt-id (crush--generate-id))
@@ -1177,6 +1200,8 @@ Runs in the crush buffer, which owns all response text."
     (setq-local crush-process nil)
     (setq-local crush--response-start nil)
     (setq-local crush--attachments nil)
+    (setq-local crush--tool-continuation nil)
+    (setq-local crush--tool-loop-count 0)
     ;; The facade owns process lifecycle: clear the backend's process
     ;; slot so `crush-backend-active-p' reads nil after completion.
     (when (and crush-active-backend
@@ -1188,13 +1213,104 @@ Runs in the crush buffer, which owns all response text."
 
 (defun crush-facade--finalize ()
   "Finalize the current response via the facade.
-Calls `crush-facade--close-response' with the response-start marker and
-current prompt ID; the backend's completion action invokes this."
-  (crush-facade--stream-transition 'done 1)
-  (let ((response-start (when (markerp crush--response-start)
-                          (marker-position crush--response-start)))
-        (prompt-id crush--prompt-id))
-    (crush-facade--close-response response-start prompt-id)))
+Checks for pending tool calls from the SSE stream; when present,
+drives the tool loop (execute, insert blocks, send follow-up).
+Otherwise closes the response and inserts a fresh prompt.  The
+backend's completion action invokes this."
+  (if (and crush-tools-enabled
+           crush-active-backend
+           crush-process
+           (let ((tcs (crush-backend--tool-calls
+                       crush-active-backend crush-process)))
+             (and (vectorp tcs) (> (length tcs) 0))))
+      (crush-facade--tool-loop)
+    (crush-facade--stream-transition 'done 1)
+    (let ((response-start (when (markerp crush--response-start)
+                            (marker-position crush--response-start)))
+          (prompt-id crush--prompt-id))
+      (crush-facade--close-response response-start prompt-id))))
+
+(defvar-local crush--tool-loop-count 0
+  "Number of tool-loop rounds executed for the current prompt.")
+
+(defun crush-facade--tool-loop ()
+  "Execute pending tool calls and send a follow-up request.
+Extracts tool calls from the transport's SSE state, executes them
+via `crush-backend--tool-results', inserts tool blocks into the
+buffer, and sends a follow-up request with the continuation
+messages.  Loops up to `crush-tool-loop-max' rounds; when the cap
+is hit or no tool calls come back, finalizes via
+`crush-facade--close-response'."
+  (if (>= crush--tool-loop-count crush-tool-loop-max)
+      (progn
+        (setq-local crush--tool-loop-count 0)
+        (setq-local crush--tool-continuation nil)
+        (crush-facade--stream-transition 'done 1)
+        (let ((response-start (when (markerp crush--response-start)
+                                (marker-position crush--response-start)))
+              (prompt-id crush--prompt-id))
+          (crush-facade--close-response response-start prompt-id)))
+    (let* ((tool-calls (crush-backend--tool-calls
+                        crush-active-backend crush-process))
+           (result (crush-backend--tool-results
+                    crush-active-backend tool-calls))
+           (assistant-msg (nth 0 result))
+           (tool-msgs (nth 1 result))
+           (blocks (nth 2 result))
+           (prompt-id crush--prompt-id)
+           (buf (current-buffer)))
+      (setq-local crush--tool-loop-count (1+ crush--tool-loop-count))
+      ;; Insert tool blocks before the response-start marker so they
+      ;; appear as part of the current response.
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
+        (dolist (block blocks)
+          (crush--tool-block-insert block prompt-id)))
+      ;; Build the continuation messages: user + assistant(tool_calls) +
+      ;; tool results.  The user message is extracted from the buffer
+      ;; (the current prompt's typed input), and the assistant + tool
+      ;; messages come from `crush-backend--tool-results'.
+      (let ((user-text (crush--user-turn-text prompt-id)))
+        (setq-local crush--tool-continuation
+                    (append (when (and user-text (> (length user-text) 0))
+                              (list (list (cons 'role "user")
+                                          (cons 'content user-text))))
+                            (list assistant-msg)
+                            tool-msgs)))
+      ;; Tag the response so far, then reset reasoning state before
+      ;; the follow-up stream starts a new response region.
+      (let ((response-start (when (markerp crush--response-start)
+                              (marker-position crush--response-start))))
+        (crush--tag-response-region response-start (point) prompt-id))
+      (crush--reasoning-reset)
+      ;; Clear the old process and set up for the follow-up.
+      (setq-local crush-process nil)
+      (setq-local crush--response-start (point-marker))
+      (crush-facade--stream-transition 'active 2)
+      (let ((real-proc (crush-backend-send-prompt
+                        crush-active-backend ""
+                        :context nil
+                        :session-id crush--session
+                        :session-uuid crush--session-uuid
+                        :continue-p crush--continue
+                        :completion (lambda ()
+                                      (when (buffer-live-p buf)
+                                        (with-current-buffer buf
+                                          (crush-facade--finalize))))
+                        :on-delta (lambda (delta kind)
+                                    (when (buffer-live-p buf)
+                                      (with-current-buffer buf
+                                        (crush-facade--append-delta delta kind))))
+                        :on-error (lambda (message)
+                                    (when (buffer-live-p buf)
+                                      (with-current-buffer buf
+                                        (crush-facade--record-error message))))
+                        :buffer buf
+                        :stderr (get-buffer-create "*crush-errors*")
+                        :continuation crush--tool-continuation)))
+        (when (and real-proc (processp real-proc))
+          (set-marker (process-mark real-proc) (point-max))
+          (setq-local crush-process real-proc))))))
 (defun crush--process-sentinel (process event)
   "Sentinel for PROCESS that handles completion and interruption for EVENT.
 Invokes the backend's stored completion action (the facade's
@@ -1279,6 +1395,12 @@ PROMPT-ID is the current prompt's ID.  The block is read-only,
 tagged `crush-region-type' `tool' with `crush-prompt-id' /
 `crush-response-to', and carries the `crush-tool-call' property
 for wire resume.  Returns the end position of the inserted block."
+  ;; When reasoning was streamed but no content delta ever arrived
+  ;; (the model went straight to tool calls), the reasoning text
+  ;; is still active and lacks a trailing newline.  Stop reasoning
+  ;; now so the tool block is visually separated from the reasoning
+  ;; and the reasoning region boundaries are correct.
+  (crush--reasoning-stop)
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t)
         (start (point-max)))
@@ -1291,7 +1413,13 @@ for wire resume.  Returns the end position of the inserted block."
           (insert (format "  exit: %s\n" exit))))
       (let ((result (plist-get tool-calls :result)))
         (when result
-          (insert (format "  output: %s\n" result)))))
+          (insert "  output:\n")
+          (insert "```\n")
+          (insert result)
+          (unless (string-suffix-p "\n" result)
+            (insert "\n"))
+          (insert "```\n")))
+      (insert "\n"))
     (let ((end (point-max)))
       (put-text-property start end 'crush-region-type 'tool)
       (put-text-property start end 'crush-prompt-id prompt-id)
@@ -1330,6 +1458,7 @@ for wire resume.  Returns the end position of the inserted block."
     (newline)
     (setq-local crush--response-start (point-marker))
     (setq-local crush--input-ring-index 0)
+    (setq-local crush--tool-loop-count 0)
     (crush-facade--send prompt context has-context)
     (setq-local crush--attachments nil)
     (goto-char (point-max))))
@@ -1359,10 +1488,15 @@ for wire resume.  Returns the end position of the inserted block."
           (let ((response-start (when (markerp crush--response-start)
                                   (marker-position crush--response-start))))
             (crush--tag-response-region response-start (point) crush--prompt-id)
-            (when-let* ((region (crush--reasoning-region)))
-              (crush--reasoning-install-fold region))
+            (dolist (ov (overlays-in response-start (point)))
+              (when (and (overlay-get ov 'crush-reasoning)
+                         (not (overlay-get ov 'crush-fold-state)))
+                (crush--reasoning-install-fold
+                 (cons (overlay-start ov) (overlay-end ov)))))
             (crush--reasoning-reset))
           (crush--insert-prompt)))
+      (setq-local crush--tool-continuation nil)
+      (setq-local crush--tool-loop-count 0)
       (goto-char (point-max))
       (message "Crush process interrupted"))))
 

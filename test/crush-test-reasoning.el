@@ -524,5 +524,121 @@ The marker's real-text keymap dispatches TAB to the toggle."
               (delete-process proc))))
       (crush-test--cleanup))))
 
+;;; Multi-round tool calls: reasoning is interleaved with tool blocks.
+;;; Each round's reasoning must be independently foldable.
+
+(ert-deftest crush-test/multi-round-reasoning-folds-independently ()
+  "Each tool round's reasoning should get its own fold."
+  (let ((default-directory crush-test--root)
+        (expected-id nil))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq expected-id crush--prompt-id)
+          (save-excursion (goto-char (point-max)) (newline))
+          (setq-local crush--response-start (point-marker))
+          ;; Round 1: reasoning then tool block (which stops reasoning).
+          (crush-facade--append-delta "round one thinking" 'reasoning)
+          (crush--reasoning-stop)
+          (crush--reasoning-reset)
+          ;; Round 2: reasoning then content, finalize.
+          (crush-facade--append-delta "round two thinking" 'reasoning)
+          (crush-facade--append-delta "answer" 'content)
+          (crush-facade--close-response
+           (marker-position crush--response-start) expected-id)
+          ;; Two fold overlays: one per reasoning round.
+          (let ((folds nil))
+            (dolist (ov (overlays-in (point-min) (point-max)))
+              (when (overlay-get ov 'crush-fold-state)
+                (push ov folds)))
+            (should (= (length folds) 2))
+            (dolist (ov folds)
+              (should (eq (overlay-get ov 'crush-fold-state) 'collapsed))
+              (should (eq (overlay-get ov 'invisible) t)))
+            ;; Both marker lines exist.
+            (goto-char (point-min))
+            (should (search-forward "... reasoning" nil t))
+            (should (search-forward "... reasoning" nil t))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/multi-round-reasoning-fold-toggles-independently ()
+  "Toggling a fold should only affect that reasoning round."
+  (let ((default-directory crush-test--root)
+        (expected-id nil))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq expected-id crush--prompt-id)
+          (save-excursion (goto-char (point-max)) (newline))
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "round one" 'reasoning)
+          (crush--reasoning-stop)
+          (crush--reasoning-reset)
+          (crush-facade--append-delta "round two" 'reasoning)
+          (crush-facade--append-delta "answer" 'content)
+          (crush-facade--close-response
+           (marker-position crush--response-start) expected-id)
+          ;; Expand the first fold.
+          (goto-char (point-min))
+          (search-forward "... reasoning")
+          (goto-char (match-beginning 0))
+          (crush-reasoning-toggle)
+          ;; First reasoning body is now visible, second still invisible.
+          (let ((fold-ovs nil))
+            (dolist (ov (overlays-in (point-min) (point-max)))
+              (when (overlay-get ov 'crush-fold-state)
+                (push ov fold-ovs)))
+            (should (= (length fold-ovs) 2))
+            (let ((expanded (cl-find-if (lambda (o) (eq (overlay-get o 'crush-fold-state) 'expanded)) fold-ovs))
+                  (collapsed (cl-find-if (lambda (o) (eq (overlay-get o 'crush-fold-state) 'collapsed)) fold-ovs)))
+              (should (overlayp expanded))
+              (should (overlayp collapsed))
+              (should-not (overlay-get expanded 'invisible))
+              (should (eq (overlay-get collapsed 'invisible) t)))))
+      (crush-test--cleanup))))
+
+;; Like the real tool-loop flow: reasoning is stopped by tool-block-insert,
+;; then response-start is relocated, then a second round streams.
+(ert-deftest crush-test/multi-round-reasoning-with-tool-blocks ()
+  "Reasoning overlays before tool blocks should be foldable."
+  (let ((default-directory crush-test--root)
+        (expected-id nil))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq expected-id crush--prompt-id)
+          (save-excursion (goto-char (point-max)) (newline))
+          (setq-local crush--response-start (point-marker))
+          ;; Round 1: reasoning then tool block insertion.
+          (crush-facade--append-delta "pre-tool thinking" 'reasoning)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1"
+                 :args-json "{\"command\":\"ls\"}"
+                 :result "<output>files</output>"
+                 :exit 0)
+           expected-id)
+          ;; Simulate tool-loop: tag response so far, reset reasoning,
+          ;; relocate response-start (like crush-facade--tool-loop does).
+          (let ((rs (marker-position crush--response-start)))
+            (crush--tag-response-region rs (point) expected-id))
+          (crush--reasoning-reset)
+          (setq-local crush--response-start (point-marker))
+          ;; Round 2: reasoning then content.
+          (crush-facade--append-delta "post-tool thinking" 'reasoning)
+          (crush-facade--append-delta "answer" 'content)
+          ;; Close with relocated response-start.
+          (crush-facade--close-response
+           (marker-position crush--response-start) expected-id)
+          ;; Both reasoning regions should have fold overlays.
+          (let ((folds nil))
+            (dolist (ov (overlays-in (point-min) (point-max)))
+              (when (overlay-get ov 'crush-fold-state)
+                (push ov folds)))
+            (should (= (length folds) 2))
+            (dolist (ov folds)
+              (should (eq (overlay-get ov 'invisible) t)))
+            ;; Both marker lines exist.
+            (goto-char (point-min))
+            (should (search-forward "... reasoning" nil t))
+            (should (search-forward "... reasoning" nil t))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test-reasoning)
 ;;; crush-test-reasoning.el ends here

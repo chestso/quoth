@@ -49,7 +49,7 @@
 ;;; work.  The order follows the dependency graph: `crush-backend'
 ;;; first, then `crush-xxh3' which it uses.
 (eval-and-compile
-  (dolist (dep '("crush-backend" "crush-xxh3"))
+  (dolist (dep '("crush-backend" "crush-xxh3" "crush-tool"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -265,7 +265,7 @@ conversation order."
          (t (setq pending nil)))))
     (nreverse messages)))
 
-(defun crush--hyper-compose-request (prompt context model &optional turns)
+(defun crush--hyper-compose-request (prompt context model &optional turns continuation)
   "Compose a chat-completions request alist for PROMPT.
 CONTEXT is optional attachment text; MODEL is the resolved model (the
 caller passes the backend's model slot, already derived from the shared
@@ -274,9 +274,12 @@ Prior (ROLE . TEXT) TURNS from the facade's history extraction ride
 between the system prompt and the new user message; with no turns the
 body carries exactly system + user (`stream: t', no tools).  History
 is disabled by the caller passing nil turns (`crush-hyper-history-limit
-0 means the facade extracts none).  When `crush-tools-enabled' is
-non-nil (the default), the request announces the `bash' tool and
-`tool_choice: \"auto\"'."
+0 means the facade extracts none).  CONTINUATION, when non-nil, is a
+list of structured message alists (assistant with `tool_calls'
+followed by `role: \"tool\"' messages) that replace the user message;
+used by the tool loop to send follow-up requests with tool results.
+When `crush-tools-enabled' is non-nil (the default), the request
+announces the `bash' tool and `tool_choice: \"auto\"'."
   (let* ((model (or model crush-hyper-default-model))
          (user-content
           (if (and context (not (string-empty-p context)))
@@ -284,19 +287,24 @@ non-nil (the default), the request announces the `bash' tool and
                       context "\n\n"
                       prompt)
             prompt))
-         (user-message
-          (list (list '(role . "user")
-                      (cons 'content user-content))))
          (messages
-          (if turns
-              (append (list (list '(role . "system")
-                                  (cons 'content crush-hyper-system-prompt)))
-                      (crush--hyper-history-messages turns)
-                      user-message)
+          (cond
+           (continuation
+            (append (list (list '(role . "system")
+                                (cons 'content crush-hyper-system-prompt)))
+                    (when turns (crush--hyper-history-messages turns))
+                    continuation))
+           (turns
+            (append (list (list '(role . "system")
+                                (cons 'content crush-hyper-system-prompt)))
+                    (crush--hyper-history-messages turns)
+                    (list (list '(role . "user")
+                                (cons 'content user-content)))))
+           (t
             (list (list '(role . "system")
                         (cons 'content crush-hyper-system-prompt))
                   (list '(role . "user")
-                        (cons 'content user-content)))))
+                        (cons 'content user-content))))))
          (body `((model . ,model)
                  (stream . t)
                  (messages . ,messages))))
@@ -695,7 +703,7 @@ Returns the curl process."
 ;;; Hyper backend methods
 
 (cl-defmethod crush-backend-send-prompt
-  ((backend crush-hyper-backend) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error)
+  ((backend crush-hyper-backend) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to BACKEND via a direct HTTP+SSE request to Hyper.
 COMPLETION is the facade's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
@@ -706,13 +714,16 @@ whereas SESSION-ID (the CLI-only session) is unused here.  The prior
 conversation is read from BUFFER via the facade's `crush--history-for',
 which enters the buffer itself, and re-sent as `user'/'assistant'
 messages; the facade's `crush-hyper-history-limit' decides whether any
-turns exist.  The backend never touches buffers itself."
+turns exist.  CONTINUATION, when non-nil, is a list of structured
+message alists that replace the user message — used by the tool loop
+to send follow-up requests with tool results.  The backend never
+touches buffers itself."
   (ignore session-id continue-p stderr)
   (let* ((history (and buffer
                        (crush--history-for buffer)))
          (body (crush--hyper-compose-request
                 prompt context (crush-hyper-backend-model backend)
-                history))
+                history continuation))
          (base-url (or (crush-hyper-backend-base-url backend)
                        (getenv "HYPER_URL")
                        crush-hyper-base-url))
@@ -724,16 +735,11 @@ turns exist.  The backend never touches buffers itself."
     (setf (crush-backend-completion-action backend) completion)
     (crush--hyper-request
      base-url token body
-     ;; The transport's on-delta callback is the facade's append-delta
-     ;; (or a no-op fallback); no buffer knowledge leaks into the backend.
      (or on-delta #'ignore)
-     ;; The done-callback is the injected completion.
      (or completion #'ignore)
-     ;; Stream errors surface through the facade's on-error callback.
      (or on-error #'ignore)
      session-id
-     x-crush-id)
-    nil))
+     x-crush-id)))
 
 (cl-defmethod crush-backend-interrupt ((backend crush-hyper-backend))
   "Interrupt the hyper request for BACKEND."
@@ -752,23 +758,24 @@ turns exist.  The backend never touches buffers itself."
   nil)
 
 (cl-defmethod crush-backend--tool-results ((_backend crush-hyper-backend) tool-calls)
-  "Build the tool-result continuation messages for TOOL-CALLS.
-Returns (assistant-tool-calls-msg . tool-result-msgs)."
+  "Build the tool-result continuation messages and display blocks for TOOL-CALLS.
+Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
   (let ((tcs-list nil)
-        (tool-msgs nil))
+        (tool-msgs nil)
+        (blocks nil))
     (when (vectorp tool-calls)
       (dotimes (i (length tool-calls))
         (let ((tc (aref tool-calls i)))
           (when tc
             (let ((id (crush--hyper-alist-get "id" tc))
                   (fn (crush--hyper-alist-get "function" tc)))
-              (ignore fn)
               (let ((name (and fn (crush--hyper-alist-get "name" fn)))
                     (args (and fn (crush--hyper-alist-get "arguments" fn))))
                 (when (and id name)
                   (let ((call (crush-make-tool-call :id id :name name)))
                     (when args
-                      (aset call 2 (crush--tool-parse-args args)))
+                      (setf (crush-tool-call-args call)
+                            (crush--tool-parse-args args)))
                     (let ((result (crush-tool-execute call)))
                       (push (list (cons 'id id)
                                   (cons 'type "function")
@@ -780,11 +787,27 @@ Returns (assistant-tool-calls-msg . tool-result-msgs)."
                       (push (list (cons 'role "tool")
                                   (cons 'tool_call_id id)
                                   (cons 'content (car result)))
-                            tool-msgs))))))))))
-    (cons (list (cons 'role "assistant")
+                            tool-msgs)
+                      (push (list :name name
+                                  :id id
+                                  :args-json (or args "")
+                                  :result (car result)
+                                  :exit (cdr result))
+                            blocks))))))))))
+    (list (list (cons 'role "assistant")
                 (cons 'content :null)
                 (cons 'tool_calls (vconcat (nreverse tcs-list))))
-          (nreverse tool-msgs))))
+          (nreverse tool-msgs)
+          (nreverse blocks))))
+
+(cl-defmethod crush-backend--tool-calls ((_backend crush-hyper-backend) process)
+  "Return the tool-calls vector from the SSE state on PROCESS, or nil.
+The SSE parser accumulates `tool_calls' deltas into the state's
+`:tool-calls' slot.  Works on deleted processes (process properties
+persist until GC)."
+  (when (processp process)
+    (let ((sse (process-get process :crush-sse)))
+      (and sse (plist-get sse :tool-calls)))))
 
 (provide 'crush-hyper-backend)
 ;;; crush-hyper-backend.el ends here

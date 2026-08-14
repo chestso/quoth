@@ -1374,5 +1374,158 @@ un-frozen, so its advancing end marker hides the next prompt under
                  (should (not (string= crush--prompt-id old-prompt-id))))))))
       (crush-test--cleanup))))
 
+;;; Tool loop: the hyper backend must execute tool calls and send
+;;; follow-up requests with the results, looping up to
+;;; `crush-tool-loop-max' rounds.
+
+(ert-deftest crush-test/hyper-tool-loop-executes-and-resends ()
+  "A tool_calls response triggers bash execution and a follow-up request.
+The first request gets tool_calls; the loop executes `echo hi', inserts
+a tool block, and sends a second request carrying the tool result.
+The second request gets a content answer and finalizes."
+  (let ((default-directory crush-test--root)
+        (crush-tools-enabled t))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq-local crush-active-backend
+                      (crush-make-hyper-backend
+                       :buffer (current-buffer)
+                       :working-directory default-directory
+                       :token "tok"
+                       :model "m"))
+          (let ((result
+                 (crush-test--with-hyper-server
+                  'tool-call
+                  (lambda (base)
+                    (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                    (let ((_buf (current-buffer)))
+                      (goto-char (point-max))
+                      (insert "ls")
+                      (crush-send-input)
+                      (let ((dl (+ (float-time) 10)))
+                        (while (and (< (float-time) dl)
+                                    (< (length (crush-get-all-prompts)) 2))
+                          (accept-process-output nil 0.1) (sit-for 0.02)))
+                      (let ((found nil)
+                            (dl2 (+ (float-time) 6)))
+                        (while (and (< (float-time) dl2) (not found))
+                          (accept-process-output nil 0.1) (sit-for 0.02)
+                          (setq found (save-excursion
+                                        (goto-char (point-min))
+                                        (search-forward "tool:" nil t))))
+                        (should found))
+                      (let ((found nil)
+                            (dl3 (+ (float-time) 6)))
+                        (while (and (< (float-time) dl3) (not found))
+                          (accept-process-output nil 0.1) (sit-for 0.02)
+                          (setq found (save-excursion
+                                        (goto-char (point-min))
+                                        (search-forward "tool-result-ack" nil t))))
+                        (should found)))))))
+            (let ((requests (nth 1 result)))
+              (should (= (length requests) 2))
+              (let* ((r1 (nth 0 requests))
+                     (m1 (crush--hyper-alist-get "messages"
+                                                 (json-read-from-string (nth 3 r1)))))
+                (should (= (length m1) 2))
+                (should (string= (crush--hyper-alist-get "content" (aref m1 1))
+                                 "ls")))
+              (let* ((r2 (nth 1 requests))
+                     (m2 (crush--hyper-alist-get "messages"
+                                                 (json-read-from-string (nth 3 r2)))))
+                (should (>= (length m2) 4))
+                (should (string= (crush--hyper-alist-get "role" (aref m2 2))
+                                 "assistant"))
+                (should (string= (crush--hyper-alist-get "role" (aref m2 3))
+                                 "tool"))))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-tool-loop-cap-stops-and-finalizes ()
+  "The tool loop stops after `crush-tool-loop-max' rounds and finalizes.
+Uses a server that always returns tool_calls; the loop should hit
+the cap, insert a final prompt, and stop sending requests."
+  (let ((default-directory crush-test--root)
+        (crush-tools-enabled t)
+        (crush-tool-loop-max 2))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq-local crush-active-backend
+                      (crush-make-hyper-backend
+                       :buffer (current-buffer)
+                       :working-directory default-directory
+                       :token "tok"
+                       :model "m"))
+          (let ((result
+                 (crush-test--with-hyper-server
+                  'tool-call-loop
+                  (lambda (base)
+                    (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                    (let ((_buf (current-buffer)))
+                      (goto-char (point-max))
+                      (insert "go")
+                      (crush-send-input)
+                      (let ((dl (+ (float-time) 10)))
+                        (while (and (< (float-time) dl)
+                                    (< (length (crush-get-all-prompts)) 2))
+                          (accept-process-output nil 0.1) (sit-for 0.02)))
+                      (let ((found nil)
+                            (dl2 (+ (float-time) 6)))
+                        (while (and (< (float-time) dl2) (not found))
+                          (accept-process-output nil 0.1) (sit-for 0.02)
+                          (setq found (save-excursion
+                                        (goto-char (point-min))
+                                        (search-forward "crush> " nil t)
+                                        (search-forward "crush> " nil t))))
+                        (should found)))))))
+            ;; Should have sent exactly crush-tool-loop-max + 1 requests
+            ;; (initial + 2 tool-loop rounds), then finalized.
+            (let ((requests (nth 1 result)))
+              (should (= (length requests) 3)))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-tool-loop-finalizes-after-content-answer ()
+  "After a tool loop round, a content answer finalizes normally.
+The first request gets tool_calls; the follow-up gets a content
+answer; the buffer should have a new prompt and the response tagged."
+  (let ((default-directory crush-test--root)
+        (crush-tools-enabled t))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq-local crush-active-backend
+                      (crush-make-hyper-backend
+                       :buffer (current-buffer)
+                       :working-directory default-directory
+                       :token "tok"
+                       :model "m"))
+          (let ((old-prompt-id crush--prompt-id))
+            (crush-test--with-hyper-server
+             'tool-call
+             (lambda (base)
+               (setf (crush-hyper-backend-base-url crush-active-backend) base)
+               (let ((_buf (current-buffer)))
+                 (goto-char (point-max))
+                 (insert "ls")
+                 (crush-send-input)
+                 (let ((dl (+ (float-time) 10)))
+                   (while (and (< (float-time) dl)
+                               (< (length (crush-get-all-prompts)) 2))
+                     (accept-process-output nil 0.1) (sit-for 0.02)))
+                 (let ((found nil)
+                       (dl2 (+ (float-time) 6)))
+                   (while (and (< (float-time) dl2) (not found))
+                     (accept-process-output nil 0.1) (sit-for 0.02)
+                     (setq found (save-excursion
+                                   (goto-char (point-min))
+                                   (search-forward "tool-result-ack" nil t))))
+                   (should found)))))
+            ;; New prompt was inserted after finalization.
+            (should (not (string= crush--prompt-id old-prompt-id)))
+            ;; Response is tagged with the old prompt ID.
+            (goto-char (point-min))
+            (should (search-forward "tool-result-ack" nil t))
+            (should (eq (get-text-property (match-beginning 0) 'crush-region-type)
+                        'response))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here

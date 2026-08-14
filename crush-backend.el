@@ -59,7 +59,7 @@ optional line range. Paths are relative to the project root. Use this context
 to answer the prompt."
   "Preamble used before attached context by both backends.")
 
-(cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p completion buffer stderr on-delta on-error)
+(cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.
 COMPLETION is a zero-argument closure (the facade's continuation) that
 the backend must invoke exactly once when the response stream finishes.
@@ -67,7 +67,11 @@ BUFFER is the crush buffer the backend may associate its transport
 process with, and STDERR is the stderr buffer; both are passed purely
 as data objects, never read or switched to.  ON-DELTA is a (DELTA
 KIND) callback that consumes streamed output, and ON-ERROR receives
-stream error messages, for backends that stream (hyper).")
+stream error messages, for backends that stream (hyper).
+CONTINUATION, when non-nil, is a list of structured message alists
+(assistant with `tool_calls' followed by `role: \"tool\"' messages)
+that replace the user message in the request body; used by the
+tool loop to send follow-up requests with tool results.")
 
 (cl-defgeneric crush-backend-interrupt (backend)
   "Interrupt the currently running operation on BACKEND.")
@@ -83,13 +87,24 @@ stream error messages, for backends that stream (hyper).")
 ACTION is `allow', `allow-session', or `deny'.")
 
 (cl-defgeneric crush-backend--tool-results (backend tool-calls)
-  "Build the tool-result messages for TOOL-CALLS from BACKEND's buffer.
+  "Build the tool-result messages and display blocks for TOOL-CALLS.
 TOOL-CALLS is a vector of tool-call alists from the SSE stream,
 accumulated by `crush--hyper-sse-merge-tool-calls'.  Returns a
-list of message alists ready to be appended to the conversation
-history: an assistant message with `tool_calls' followed by
-`role: \"tool\"' messages with the results."
+list (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS) where
+ASSISTANT-MSG is the assistant message carrying `tool_calls',
+TOOL-RESULT-MSGS is a list of `role: \"tool\"' messages, and
+TOOL-BLOCKS is a list of plists (:name :id :args-json :result
+:exit) for `crush--tool-block-insert'."
   (ignore backend tool-calls)
+  nil)
+
+(cl-defgeneric crush-backend--tool-calls (backend process)
+  "Return the accumulated tool-calls vector from BACKEND's PROCESS, or nil.
+PROCESS is the transport process returned by `crush-backend-send-prompt'.
+For streaming backends, the SSE state on PROCESS carries the
+`:tool-calls' vector accumulated by the parser; non-streaming
+backends return nil."
+  (ignore backend process)
   nil)
 
 (provide 'crush-backend)

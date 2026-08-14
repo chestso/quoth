@@ -282,6 +282,36 @@ def main():
                 except ValueError:
                     conn.sendall(content_frame("first").encode())
                     conn.sendall(sse("[DONE]").encode())
+            elif mode == "tool-call-loop":
+                # Always emit tool_calls, never a content answer.
+                # Exercises the loop cap: the client should stop after
+                # `crush-tool-loop-max' rounds and finalize.
+                conn.sendall(sse_ok.encode())
+                tc_frame = json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_loop",
+                                            "function": {
+                                                "name": "bash",
+                                                "arguments": json.dumps(
+                                                    {"command": "echo loop"}
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ]
+                    }
+                )
+                conn.sendall(sse(tc_frame).encode())
+                conn.sendall(sse("[DONE]").encode())
             else:  # ok-stream, slow
                 conn.sendall(sse_ok.encode())
                 for d in deltas:
