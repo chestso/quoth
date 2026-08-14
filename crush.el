@@ -1205,17 +1205,60 @@ TAB binding."
       (when (commandp fallback)
         (call-interactively fallback)))))
 
-(defun crush--reasoning-region ()
-  "Return (START . END) of the reasoning region, or nil.
-Uses `crush--reasoning-end' when content began, else falls back to
-the end of the response (point-max) for reasoning-only streams."
-  (when (markerp crush--reasoning-start)
-    (let ((start (marker-position crush--reasoning-start))
-          (end (if (markerp crush--reasoning-end)
+(defun crush--reasoning-regions ()
+  "Return the list of reasoning regions, or nil.
+When content never began, the reasoning region is the span from
+`crush--reasoning-start' to `crush--reasoning-end' (or point-max).
+When at least one content delta arrived (or a tool block re-tagged),
+the full-response span is scanned: reasoning covers the runs between
+the response start and each tool block or the content start, tool
+blocks stay `tool', and the trailing content stays `response'."
+  (if (not (markerp crush--reasoning-start))
+      nil
+    (let ((end (if (markerp crush--reasoning-end)
                    (marker-position crush--reasoning-end)
                  (point-max))))
-      (when (> end start)
-        (cons start end)))))
+      (if (and (markerp crush--reasoning-end)
+               (< end (point-max)))
+          ;; Content already began: the reasoning span runs from the
+          ;; response start up to the first tool block or the content
+          ;; start, whichever comes first.  Everything after it stays
+          ;; `response'; tool blocks stay `tool'.
+          (let ((limit (or (when-let ((first (car (crush--tool-block-bounds))))
+                             (car first))
+                           end))
+                (pos (marker-position crush--reasoning-start)))
+            (when (< pos limit)
+              (list (cons pos limit))))
+        ;; No content yet: reasoning runs from start to the answer
+        ;; boundary (tool block or point-max).
+        (let ((list nil)
+              (pos (marker-position crush--reasoning-start)))
+          (dolist (tb (crush--tool-block-bounds))
+            (when (and (>= (car tb) pos) (< (cdr tb) (point-max)))
+              (when (< pos (car tb))
+                (setq list (cons (cons pos (car tb)) list)))
+              (setq pos (cdr tb))))
+          (when (< pos (point-max))
+            (setq list (cons (cons pos (point-max)) list)))
+          (nreverse list))))))
+
+(defun crush--tool-block-bounds ()
+  "Return the list of (START . END) tool blocks in the current buffer.
+A tool block is a span tagged `crush-region-type' `tool' (starting at
+its text after the trailing newline).  Blocks run from `response-start'
+to `(point-max)'; search from `(point-min)'."
+  (let ((pos (point-min))
+        (list nil))
+    (while (setq pos (text-property-any pos (point-max)
+                                        'crush-region-type 'tool))
+      (let ((end (or (next-single-property-change pos 'crush-region-type
+                                                  nil (point-max))
+                     (point-max))))
+        (when (> end pos)
+          (setq list (cons (cons pos end) list))
+          (setq pos end))))
+    (nreverse list)))
 
 (defun crush--reasoning-reset ()
   "Reset per-prompt reasoning state after finalize or interrupt.
@@ -1238,16 +1281,33 @@ reasoning sub-span retagged `reasoning').  Shared by
 the response are tagged `tool' and carry the `crush-tool-call'
 property for wire resume."
   (when (and response-start (> response-end response-start))
-    (put-text-property response-start response-end
-                       'crush-prompt-id prompt-id)
-    (put-text-property response-start response-end
-                       'crush-response-to prompt-id)
-    (put-text-property response-start response-end
-                       'crush-region-type 'response)
-    (let ((reasoning-region (crush--reasoning-region)))
-      (when reasoning-region
-        (let ((rs (car reasoning-region))
-              (re (cdr reasoning-region)))
+    (let ((inhibit-read-only t))
+      ;; Tag the response span, but never overwrite existing `tool'
+      ;; regions (the tool loop tags its blocks `tool' before this runs).
+      (let ((pos response-start)
+            (tb (crush--tool-block-bounds)))
+        (dolist (block tb)
+          (let ((bs (car block))
+                (be (cdr block)))
+            (when (and (>= bs response-start) (<= be response-end))
+              (when (< pos bs)
+                (put-text-property pos bs
+                                   'crush-prompt-id prompt-id)
+                (put-text-property pos bs
+                                   'crush-response-to prompt-id)
+                (put-text-property pos bs
+                                   'crush-region-type 'response))
+              (setq pos be))))
+        (when (< pos response-end)
+          (put-text-property pos response-end
+                             'crush-prompt-id prompt-id)
+          (put-text-property pos response-end
+                             'crush-response-to prompt-id)
+          (put-text-property pos response-end
+                             'crush-region-type 'response)))
+      (dolist (region (crush--reasoning-regions))
+        (let ((rs (car region))
+              (re (cdr region)))
           (when (and (>= rs response-start) (<= re response-end))
             (put-text-property rs re
                                'crush-prompt-id prompt-id)

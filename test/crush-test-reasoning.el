@@ -672,5 +672,73 @@ open (`crush--response-start' at point-max after a newline)."
             (should (search-forward "…" nil t))))
       (crush-test--cleanup))))
 
+;;; 97. Region tagging: reasoning + tool blocks in one response
+;;;
+;;; `crush--tag-response-region' must tag the content-before-toolblock
+;;; span, the tool blocks, and the content-after-toolblock span so the
+;;; header line shows the right region type at any point.  Regression
+;;; for the header-line region label showing "plain"/"prompt" instead
+;;; of "tool" when point sat on a tool block (the old code derived the
+;;; reasoning sub-span only from the reasoning overlay, which ends
+;;; before the first tool block, and never re-tagged the response).
+
+(ert-deftest crush-test/tools-reasoning-tags-content-and-tools ()
+  "A response with reasoning, tool blocks, and final content tags every
+span: reasoning on the CoT text, tool on the tool blocks, response on
+the final content."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "think hard" 'reasoning)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1" :args-json "{\"command\":\"ls\"}"
+                 :result "<output>files</output>" :exit 0)
+           crush--prompt-id)
+          (crush-facade--append-delta "final answer" 'content)
+          ;; The finalize flow tags the full response through point-max.
+          (goto-char (point-max))
+          (newline)
+          (crush--tag-response-region (marker-position crush--response-start)
+                                      (point) crush--prompt-id)
+          (goto-char (point-min))
+          (search-forward "think")
+          (should (eq (get-text-property (match-beginning 0) 'crush-region-type)
+                      'reasoning))
+          (search-forward "tool: bash")
+          (should (eq (get-text-property (match-beginning 0) 'crush-region-type)
+                      'tool))
+          (search-forward "final answer")
+          (should (eq (get-text-property (match-beginning 0) 'crush-region-type)
+                      'response)))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tools-reasoning-tags-tool-blocks-tagged ()
+  "The tool block itself carries `crush-region-type' tool even when
+the response has reasoning, so the header line shows region: tool."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "think" 'reasoning)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1" :args-json "{\"command\":\"ls\"}"
+                 :result "<output>files</output>" :exit 0)
+           crush--prompt-id)
+          (goto-char (point-max))
+          (newline)
+          (crush--tag-response-region (marker-position crush--response-start)
+                                      (point) crush--prompt-id)
+          (goto-char (point-min))
+          (search-forward "tool: bash")
+          (should (eq (get-text-property (match-beginning 0) 'crush-region-type)
+                      'tool))
+          (should (string= (crush--region-label-at-point) "tool")))
+      (crush-test--cleanup))))
+
 (provide 'crush-test-reasoning)
 ;;; crush-test-reasoning.el ends here

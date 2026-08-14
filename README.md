@@ -161,7 +161,7 @@ The hyper backend supports tool calls when `crush-tools-enabled` is non-nil (the
 
 **command:** `{"command":"ls"}`  
 **exit:** `0`  
-**output:**  
+**output:**
 
 ```
 <command>ls</command>
@@ -348,13 +348,13 @@ Each prompt is assigned a unique ID when the `crush> ` prompt is created, before
 
 ### Header Line Display
 
-The header line shows the prompt ID at point and attachment count:
+The header line shows the current model and the region type at point:
 
 ```
-Prompt: 20260805-091012-abc123 (2 attach)
+model: deepseek-v4-flash   region: response
 ```
 
-The ID changes based on where your cursor is - if you move to an older prompt or response, the header line shows that prompt's ID.
+The region type updates as the cursor moves: `prompt` on the input line, `attachment` on context blocks, `reasoning` on chain-of-thought text, `tool` on tool blocks, `response` on the final answer, and `plain` elsewhere. The model is the effective backend model (`crush-model` if set, else the backend default).
 
 ### Attachments
 

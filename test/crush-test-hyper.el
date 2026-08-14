@@ -1527,5 +1527,57 @@ answer; the buffer should have a new prompt and the response tagged."
                         'response))))
       (crush-test--cleanup))))
 
+(ert-deftest crush-test/hyper-tool-loop-header-shows-region-tool ()
+  "After a tool round-trip, the header line shows `region: tool' when
+point is on the tool block and `region: response' on the final content."
+  (let ((default-directory crush-test--root)
+        (crush-tools-enabled t)
+        (buf (crush-test--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local crush-active-backend
+                      (crush-make-hyper-backend
+                       :buffer buf
+                       :working-directory default-directory
+                       :token "tok"
+                       :model "m"))
+          (crush-test--with-hyper-server
+           'tool-call
+           (lambda (base)
+             (setf (crush-hyper-backend-base-url crush-active-backend) base)
+             (goto-char (point-max))
+             (insert "ls")
+             (crush-send-input)
+             (let ((dl (+ (float-time) 10)))
+               (while (and (< (float-time) dl)
+                           (< (length (crush-get-all-prompts)) 2))
+                 (accept-process-output nil 0.1) (sit-for 0.02)))
+             (let ((found nil)
+                   (dl2 (+ (float-time) 6)))
+               (while (and (< (float-time) dl2) (not found))
+                 (accept-process-output nil 0.1) (sit-for 0.02)
+                 (setq found (save-excursion
+                               (goto-char (point-min))
+                               (search-forward "tool-result-ack" nil t))))
+               (should found)))))
+      ;; Point on the first tool region: header shows tool.
+      (with-current-buffer buf
+        (let ((tool-pos (text-property-any (point-min) (point-max)
+                                           'crush-region-type 'tool)))
+          (should tool-pos)
+          (when tool-pos
+            (goto-char tool-pos)
+            (crush--update-header-line)
+            (should (string-match-p "region: tool" (format "%s" header-line-format)))))
+        (let ((resp-pos (text-property-any (point-min) (point-max)
+                                           'crush-region-type 'response)))
+          (should resp-pos)
+          (when resp-pos
+            (goto-char resp-pos)
+            (crush--update-header-line)
+            (should (string-match-p "region: response"
+                                    (format "%s" header-line-format))))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here
