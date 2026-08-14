@@ -118,7 +118,11 @@ The hyper backend is stateful: each request re-sends the buffer's completed exch
 
 When `crush-hyper-thinking` is non-nil, Hyper's internal thinking mode is enabled. `crush-hyper-reasoning-effort` selects the reasoning level (`low`, `medium`, `high`, `max`); nil uses the model default.
 
-Reasoning ("chain-of-thought") text streams into the buffer as it is received, tagged as a reasoning region and highlighted with a background derived from the theme's `region` face (so markdown text colors stay visible). When the response finishes, the reasoning is auto-collapsed behind a dim `... reasoning (N lines, M chars)` marker; press `TAB` or `C-c c r` to expand or re-collapse it. Works identically in GUI and terminal frames.
+### crush-reasoning-preview-lines
+
+Number of reasoning lines to show in the collapsed preview (default 10). When the reasoning region exceeds this, the first N lines are shown with a `…` ellipsis toggle; the remainder is hidden behind an invisible overlay. Press `TAB` or `C-c c r` on the ellipsis to expand or re-collapse. Set to 0 to always collapse with no preview.
+
+Reasoning ("chain-of-thought") text streams into the buffer as it is received, tagged as a reasoning region and highlighted with a background derived from the theme's `region` face (so markdown text colors stay visible). When the response finishes, reasoning longer than `crush-reasoning-preview-lines` lines (default 10) is auto-collapsed: the first 10 lines are shown as a preview, and the rest is hidden behind a `…` ellipsis; press `TAB` or `C-c c r` to expand or re-collapse it. Reasoning of 10 lines or fewer stays fully visible with no fold. Works identically in GUI and terminal frames.
 
 Reasoning is a display aid and is excluded from model-visible history by default; set `crush-hyper-history-include-reasoning` to `t` to re-send it as the `reasoning_content` field on the assistant message (per [HYPER-API.md §3.4](HYPER-API.md)).
 
@@ -151,12 +155,46 @@ The hyper backend is stateful: prior conversation from the buffer's tagged regio
 
 Each buffer also owns an opaque session UUID (rotated by `C-c c k`), whose XXH3-64 hash is sent as the `x-session-id` / `x-session-affinity` headers on every hyper request, enabling server-side prefix/token caching (HYPER-API.md §3.1). The raw UUID never leaves the machine; only the 16-hex hash goes over TLS. Disable with `crush-hyper-session-cache-p` (default t).
 
+#### Tool calls
+
+The hyper backend supports tool calls when `crush-tools-enabled` is non-nil (the default). When the model calls a tool, the tool block is rendered in the buffer as markdown:
+
+```
+**🔧 tool: bash**
+
+**command:** `{"command":"ls"}`
+
+**exit:** `0`
+
+**output:**
+```
+```
+<command>ls</command>
+<output>
+crush.el
+</output>
+<exit_code>0</exit_code>
+```
+```
+
+The output is enclosed in a fenced code block whose fence length is one backtick longer than the longest run of backticks in the output, so nested fences never break the block. The tool block is read-only and tagged `crush-region-type 'tool'`.
+
+Tools run without confirmation (`yolo` mode). Up to `crush-tool-loop-max` (default 8) consecutive tool-call rounds are supported per prompt; the loop stops after that limit or when the model produces a content answer instead of tool calls.
+
+#### Configuration
+
+- `crush-tools-enabled` — toggle tool support (default `t`)
+- `crush-tool-loop-max` — maximum tool-call rounds per prompt (default 8)
+- `crush-tool-timeout` — maximum seconds a tool command may run (default 60)
+- `crush-tool-max-output` — maximum characters of tool output to display (default 30000)
+- `crush-bash-program` — shell to use for the `bash` tool (default nil, uses `shell-file-name`)
+
 #### Current limitations
 
 - Manual token only (`crush-hyper-token`); OAuth device flow is planned.
-- No model catalog, no tool calls.
+- No model catalog.
 - Interrupt is a stub; the "still running" guard does not block during hyper requests, so avoid typing another prompt mid-stream.
-- `crush-backend-grant-permission` is a no-op (no tool execution to authorize yet).
+- `crush-backend-grant-permission` is a no-op (tools run without confirmation).
 
 ### Run backend
 
