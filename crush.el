@@ -636,23 +636,30 @@ Each element is (START END ATTACHMENT-ID)."
 (defun crush-get-response-text (prompt-id)
   "Return the assistant answer text for PROMPT-ID, or nil.
 The text tagged `crush-response-to' equal to PROMPT-ID, excluding the
-streamed reasoning (CoT) span and the reasoning-fold marker line.
-Reasoning streams before the answer, so the answer is everything after
-the reasoning region.  Returns nil when no such region exists."
+streamed reasoning (CoT) span, the reasoning-fold marker line, and any
+tool blocks (display decoration around tool results).  Reasoning
+streams before the answer, and tool blocks may interrupt it, so the
+answer is the concatenation of the non-reasoning, non-tool runs.
+Returns nil when no such region exists."
   (let ((pos (text-property-any (point-min) (point-max)
                                 'crush-response-to prompt-id)))
     (when pos
       (let* ((end (or (next-single-property-change pos 'crush-response-to
                                                    nil (point-max))
                       (point-max)))
-             (reasoning-start (text-property-any pos end
-                                                 'crush-region-type 'reasoning))
-             (answer-start (or (and reasoning-start
-                                    (next-single-property-change
-                                     reasoning-start 'crush-region-type nil end))
-                               pos)))
-        (string-trim
-         (buffer-substring-no-properties answer-start end))))))
+             (chunks nil)
+             (p pos))
+        ;; Walk the response, skipping reasoning and tool spans.
+        (while (< p end)
+          (let ((type (get-text-property p 'crush-region-type))
+                (run-end (or (next-single-property-change p 'crush-region-type
+                                                          nil end)
+                             end)))
+            (unless (memq type '(reasoning tool tool-output))
+              (push (buffer-substring-no-properties p run-end) chunks))
+            (setq p run-end)))
+        (let ((text (string-join (nreverse chunks) "")))
+          (string-trim text))))))
 
 (defun crush-get-reasoning-text (prompt-id)
   "Return the streamed reasoning (CoT) text for PROMPT-ID, or nil.
@@ -776,23 +783,38 @@ keeps the backend buffer-free."
 
 (defun crush--tool-turn-text (prompt-id)
   "Return the tool-call exchange text for PROMPT-ID, or nil.
-The region tagged `crush-region-type' `tool' within the response
-region for PROMPT-ID.  Returns nil when no tool calls were made."
+The raw tool result (the nested `crush-region-type' `tool-output'
+span) within the response region for PROMPT-ID, falling back to the
+decorated `tool' span for buffers created before the nested region
+existed.  Returns nil when no tool calls were made."
   (let ((pos (text-property-any (point-min) (point-max)
                                 'crush-response-to prompt-id)))
     (when pos
-      (let ((end (or (next-single-property-change pos 'crush-response-to
-                                                  nil (point-max))
-                     (point-max))))
-        (let ((ts (text-property-any pos end 'crush-region-type 'tool)))
-          (when ts
-            (let ((te (or (next-single-property-change ts 'crush-region-type
-                                                       nil end)
-                          end)))
+      (let* ((end (or (next-single-property-change pos 'crush-response-to
+                                                   nil (point-max))
+                      (point-max)))
+             (raw-pos (text-property-any pos end
+                                         'crush-region-type 'tool-output)))
+        (if raw-pos
+            ;; Raw result (the wire `role: "tool"' content).
+            (let ((raw-end (or (next-single-property-change raw-pos 'crush-region-type
+                                                            nil end)
+                               end)))
               (let ((text (string-trim
-                           (buffer-substring-no-properties ts te))))
+                           (buffer-substring-no-properties raw-pos raw-end))))
                 (when (> (length text) 0)
-                  text)))))))))
+                  text)))
+          ;; Fallback: pre-nested-region buffers carry only the
+          ;; decorated `tool' span.
+          (when (text-property-any pos end 'crush-region-type 'tool)
+            (let ((ts (text-property-any pos end 'crush-region-type 'tool)))
+              (let ((te (or (next-single-property-change ts 'crush-region-type
+                                                         nil end)
+                            end)))
+                (let ((text (string-trim
+                             (buffer-substring-no-properties ts te))))
+                  (when (> (length text) 0)
+                    text))))))))))
 
 (defun crush--install-font-lock-guard (&optional enable)
   "Protect read-only boundaries from font-lock in the current buffer.
@@ -1278,33 +1300,30 @@ PROMPT-ID is applied to both regions.  Applies `crush-prompt-id',
 `crush-response-to' and `crush-region-type' (`response', with the
 reasoning sub-span retagged `reasoning').  Shared by
 `crush-facade--finalize' and `crush-interrupt'.  Tool regions within
-the response are tagged `tool' and carry the `crush-tool-call'
-property for wire resume."
+the response are tagged `tool' (and their nested raw-result span
+`tool-output') and carry the `crush-tool-call' property for wire
+resume."
   (when (and response-start (> response-end response-start))
     (let ((inhibit-read-only t))
-      ;; Tag the response span, but never overwrite existing `tool'
-      ;; regions (the tool loop tags its blocks `tool' before this runs).
-      (let ((pos response-start)
-            (tb (crush--tool-block-bounds)))
-        (dolist (block tb)
-          (let ((bs (car block))
-                (be (cdr block)))
-            (when (and (>= bs response-start) (<= be response-end))
-              (when (< pos bs)
-                (put-text-property pos bs
-                                   'crush-prompt-id prompt-id)
-                (put-text-property pos bs
-                                   'crush-response-to prompt-id)
-                (put-text-property pos bs
-                                   'crush-region-type 'response))
-              (setq pos be))))
-        (when (< pos response-end)
-          (put-text-property pos response-end
-                             'crush-prompt-id prompt-id)
-          (put-text-property pos response-end
-                             'crush-response-to prompt-id)
-          (put-text-property pos response-end
-                             'crush-region-type 'response)))
+      ;; Tag the response span, but never overwrite existing `tool' or
+      ;; `tool-output' regions: the tool loop tags its blocks before
+      ;; this runs, and the nested `tool-output' raw result is the wire
+      ;; `role: "tool"' content that must survive re-tagging.
+      (let ((pos response-start))
+        (while (< pos response-end)
+          (let ((type (get-text-property pos 'crush-region-type))
+                (run-end (or (next-single-property-change pos 'crush-region-type
+                                                          nil response-end)
+                             response-end)))
+            (if (memq type '(tool tool-output))
+                (setq pos run-end)
+              (put-text-property pos run-end
+                                 'crush-prompt-id prompt-id)
+              (put-text-property pos run-end
+                                 'crush-response-to prompt-id)
+              (put-text-property pos run-end
+                                 'crush-region-type 'response)
+              (setq pos run-end)))))
       (dolist (region (crush--reasoning-regions))
         (let ((rs (car region))
               (re (cdr region)))
@@ -1567,7 +1586,9 @@ for wire resume.  Returns the end position of the inserted block."
   (crush--reasoning-stop)
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t)
-        (start (point-max)))
+        (start (point-max))
+        (raw-start nil)
+        (raw-end nil))
     (save-excursion
       (goto-char start)
       (insert (format "**🔧 tool: %s**\n\n" (plist-get tool-calls :name)))
@@ -1580,9 +1601,11 @@ for wire resume.  Returns the end position of the inserted block."
           (let ((fence (crush--fence-str result)))
             (insert "**output:**\n")
             (insert fence "\n")
+            (setq raw-start (point))
             (insert result)
             (unless (string-suffix-p "\n" result)
               (insert "\n"))
+            (setq raw-end (point))
             (insert fence "\n"))))
       (insert "\n"))
     (let ((end (point-max)))
@@ -1593,6 +1616,16 @@ for wire resume.  Returns the end position of the inserted block."
                          (list :id (plist-get tool-calls :id)
                                :name (plist-get tool-calls :name)
                                :args-json (plist-get tool-calls :args-json)))
+      ;; Nested region: the raw tool result (the wire `role: "tool"`
+      ;; content) sits between the output label's opening fence and the
+      ;; closing fence.  Tag it separately so history extraction can
+      ;; send the raw `<command>/<output>/<exit_code>' without the
+      ;; display decoration.  Carries the same prompt/response tags so
+      ;; it survives re-tagging and persistence.
+      (when raw-start
+        (put-text-property raw-start raw-end 'crush-region-type 'tool-output)
+        (put-text-property raw-start raw-end 'crush-prompt-id prompt-id)
+        (put-text-property raw-start raw-end 'crush-response-to prompt-id))
       (crush--freeze-region start end)
       end)))
 

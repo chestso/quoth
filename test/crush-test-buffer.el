@@ -1612,6 +1612,94 @@ It is being sent when the history is extracted."
                            (cons 'user "first prompt"))))))
     (crush-test--cleanup)))
 
+;;; Helper: seed an exchange that carries a tool call.
+(defun crush-test--seed-tool-exchange (prompt-text answer-text tool-calls)
+  "Seed an exchange: PROMPT-TEXT as the user input, ANSWER-TEXT as the
+assistant answer, and TOOL-CALLS as a list of plists (:name :id
+:args-json :result :exit) rendered as tool blocks before the answer,
+tagged the way the streaming machinery tags them.  Returns the
+completed prompt's ID."
+  (let ((prompt-id crush--prompt-id))
+    (goto-char (point-max))
+    (insert prompt-text)
+    (goto-char (point-max))
+    (newline)
+    (let ((response-start (point)))
+      (dolist (tc tool-calls)
+        (crush--tool-block-insert tc prompt-id))
+      (let ((inhibit-read-only t))
+        (insert answer-text))
+      (crush--tag-response-region response-start (point) prompt-id))
+    (goto-char (point-max))
+    (newline)
+    (setq-local crush--prompt-id (crush--generate-id))
+    (crush--insert-prompt)
+    prompt-id))
+
+(ert-deftest crush-test/answer-text-excludes-tool-blocks ()
+  "`crush-get-response-text' must not include the rendered tool block
+in the assistant answer.  The tool blocks are display decoration around
+the raw tool result; the assistant turn carries only the model's own
+answer text."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-tool-exchange
+                     "run ls"
+                     "Here is the listing: AGENTS.md"
+                     (list (list :name "bash" :id "call_1"
+                                 :args-json "{\"command\":\"ls\"}"
+                                 :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
+                                 :exit 0)))))
+            (let ((answer (crush-get-response-text id)))
+              (should (string-match-p "Here is the listing: AGENTS.md" answer))
+              (should-not (string-match-p "tool:" answer))
+              (should-not (string-match-p "<command>" answer))
+              (should-not (string-match-p "<output>" answer))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/tool-turn-text-returns-raw-output ()
+  "`crush--tool-turn-text' returns the raw `<command>/<output>/<exit_code>'
+tool result for the wire, not the rendered decoration."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-tool-exchange
+                     "run ls"
+                     "Here is the listing"
+                     (list (list :name "bash" :id "call_1"
+                                 :args-json "{\"command\":\"ls\"}"
+                                 :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
+                                 :exit 0)))))
+            (let ((tool-text (crush--tool-turn-text id)))
+              (should (stringp tool-text))
+              (should (string-match-p "<command>ls</command>" tool-text))
+              (should (string-match-p "<output>" tool-text))
+              (should (string-match-p "<exit_code>0</exit_code>" tool-text))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-turns-tool-exchange ()
+  "A completed exchange with a tool call emits user, assistant (no
+tool block), and tool (raw result) turns, in that order."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-tool-exchange
+                     "run ls"
+                     "Listing done"
+                     (list (list :name "bash" :id "call_1"
+                                 :args-json "{\"command\":\"ls\"}"
+                                 :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
+                                 :exit 0)))))
+            (ignore id)
+            (let ((turns (crush--history-turns crush--prompt-id)))
+              (should (equal (nth 0 turns) (cons 'user "run ls")))
+              (should (equal (nth 1 turns) (cons 'assistant "Listing done")))
+              (should (stringp (cdr (nth 2 turns))))
+              (should (string-match-p "<command>ls</command>" (cdr (nth 2 turns))))
+              (should (= (length turns) 3))))))
+    (crush-test--cleanup)))
+
 (ert-deftest crush-test/history-turns-includes-multiple-exchanges ()
   "Two completed exchanges both appear, oldest first."
   (unwind-protect
