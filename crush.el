@@ -98,6 +98,15 @@ Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
 ;;; `crush-process' are the shared buffer-local state owned by the
 ;;; facade (defined below); backends must not touch them.
 
+(defcustom crush-reasoning-preview-lines 10
+  "Number of reasoning lines to show in the collapsed preview.
+When a reasoning region contains more than this many lines, the first
+N lines are shown as a preview and the rest are hidden behind a `…'
+ellipsis toggle.  Set to 0 to always collapse with no preview.
+Must be a non-negative integer."
+  :type 'integer
+  :group 'crush)
+
 (defcustom crush-hyper-history-limit 200
   "Maximum number of prior prompts sent as history by the hyper backend.
 0 disables history entirely (each prompt is a single request).  Only
@@ -997,108 +1006,170 @@ reasoning.  Inert when no reasoning is active or it already ended."
 TAB / RET (and mouse-1 on GUIs, ignored harmlessly in TUI) toggle
 `crush-reasoning-toggle'.")
 
-(defun crush--reasoning-build-marker (start end)
-  "Return the propertized reasoning fold marker for region START..END.
-The marker is `... reasoning (N lines, M chars)' carrying the toggle
-keymap and `crush-fold-mark'."
-  (propertize
-   (format "... reasoning (%d lines, %d chars)"
-           (count-lines start end) (- end start))
-   'keymap crush--reasoning-fold-keymap
-   'crush-fold-mark t))
-
 (defun crush--reasoning-install-fold (region)
   "Install the reasoning fold on REGION (START . END) of current buffer.
-Snaps the reasoning region to whole lines and auto-collapses it: a
-marker line `... reasoning (N lines, M chars)' becomes real buffer
-text carrying the toggle keymap and `crush-fold-mark', and the
-reasoning body below it is hidden by an `invisible' overlay.  A
-marker overlay paints the marker line with `crush-reasoning-face'
-so the collapsed state keeps the reasoning background (font-lock
-strips text-property faces, so the face must live on an overlay).
-Markers keep the region shift-immune when the marker line is
-inserted.  Real marker text makes the cursor land on it and lets
-TAB work through native key dispatch.  Returns the body overlay."
+When the reasoning is `crush-reasoning-preview-lines' lines or fewer,
+the overlay stays visible with no fold.  When it exceeds that, the
+first N lines are shown via a preview overlay, a `…' (U+2026) ellipsis
+is inserted as real text carrying the toggle keymap and
+`crush-fold-mark', and the remaining lines are hidden by an
+`invisible' body overlay.  Returns the body overlay, or nil."
   (let* ((start (car region))
          (end (cdr region))
          (start-m (copy-marker start))
          (end-m (copy-marker end t))
          (ov (car (cl-remove-if-not
                    (lambda (o) (overlay-get o 'crush-overlay))
-                   (overlays-in start end)))))
+                   (overlays-in start end))))
+         (preview-lines (or crush-reasoning-preview-lines 10)))
     (when (and (overlayp ov) (> end start))
-      ;; Snap to whole lines so collapsing leaves a clean single
-      ;; blank separation instead of dangling partial lines.
       (save-excursion
         (goto-char start-m)
         (beginning-of-line)
-        (set-marker start-m (point))
-        (goto-char end-m)
-        (end-of-line)
-        (set-marker end-m (point)))
-      (let ((inhibit-read-only t)
-            (inhibit-modification-hooks t)
-            body-start)
-        (save-excursion
-          (goto-char start-m)
-          (insert (crush--reasoning-build-marker
-                   (marker-position start-m) (marker-position end-m)))
-          (setq body-start (point)))
-        ;; Paint the marker line with the reasoning face via an
-        ;; overlay (font-lock would strip a text-property face).
-        (let ((mark-ov (make-overlay start-m body-start nil t)))
-          (overlay-put mark-ov 'crush-overlay t)
-          (overlay-put mark-ov 'face 'crush-reasoning-face))
-        ;; Freeze the marker text so it is read-only like the rest of
-        ;; the frozen response.
-        (crush--freeze-region (marker-position start-m) body-start)
-        (move-overlay ov body-start end-m)
-        (overlay-put ov 'crush-fold-state 'collapsed)
-        (overlay-put ov 'invisible t)
-        (overlay-put ov 'crush-reasoning nil))
-      (set-marker start-m nil)
-      (set-marker end-m nil)
-      ov)))
+        (set-marker start-m (point)))
+      (let ((total-lines (count-lines start-m end-m)))
+        (if (<= total-lines preview-lines)
+            (progn
+              (overlay-put ov 'crush-reasoning nil)
+              (set-marker start-m nil)
+              (set-marker end-m nil)
+              nil)
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t)
+                (preview-end nil)
+                (ellipsis-end nil))
+            (save-excursion
+              (goto-char start-m)
+              (forward-line (1- preview-lines))
+              (end-of-line)
+              (setq preview-end (point)))
+            (save-excursion
+              (goto-char preview-end)
+              (insert "\n" (propertize "…"
+                                       'keymap crush--reasoning-fold-keymap
+                                       'crush-fold-mark t))
+              (setq ellipsis-end (point)))
+            (let ((preview-ov (make-overlay start-m preview-end
+                                            nil nil nil)))
+              (overlay-put preview-ov 'crush-overlay t)
+              (overlay-put preview-ov 'crush-reasoning-preview t)
+              (overlay-put preview-ov 'face 'crush-reasoning-face)
+              (crush--freeze-region (marker-position start-m)
+                                    ellipsis-end)
+              (move-overlay ov ellipsis-end end-m)
+              (overlay-put ov 'crush-fold-state 'collapsed)
+              (overlay-put ov 'invisible t)
+              (overlay-put ov 'crush-reasoning nil)
+              (overlay-put ov 'crush-reasoning-origin
+                           (marker-position start-m))
+              (set-marker start-m nil)
+              (set-marker end-m nil)
+              ov)))))))
 
 (defun crush-reasoning-toggle ()
   "Toggle the reasoning fold at point.
-When point is on a reasoning fold marker (real text), expand it;
-when inside an expanded reasoning region, collapse it; when inside
-a collapsed (hidden) region, expand it.  Otherwise signal a
-message.  Triggered by TAB / RET on the marker (real text keymap),
-by `C-c c r', or directly."
+When point is on the `…' ellipsis or inside a collapsed (hidden)
+reasoning body, expand it.  When inside an expanded reasoning
+region, collapse it (re-install the preview).  Otherwise signal
+a message.  Triggered by TAB / RET on the ellipsis (real text
+keymap), by `C-c c r', or directly."
   (interactive)
   (if (get-text-property (point) 'crush-fold-mark)
-      ;; On the marker text: the body overlay starts right after it.
-      (let ((ov (car (cl-remove-if-not
-                      (lambda (o) (overlay-get o 'crush-fold-state))
-                      (overlays-in (point) (1+ (line-end-position)))))))
-        (when (overlayp ov)
-          (let ((inhibit-read-only t)
-                (inhibit-modification-hooks t))
-            (delete-region (line-beginning-position) (overlay-start ov)))
-          ;; Remove the marker-line face overlay.
-          (dolist (mo (overlays-in (line-beginning-position) (point)))
-            (when (overlay-get mo 'crush-overlay)
-              (delete-overlay mo)))
-          (overlay-put ov 'crush-fold-state 'expanded)
-          (overlay-put ov 'invisible nil)
-          (message "Reasoning expanded")))
+      (crush--reasoning-expand)
     (let ((ov (cl-find-if
                (lambda (o) (overlay-get o 'crush-fold-state))
                (overlays-at (point)))))
       (if (not (overlayp ov))
           (message "No reasoning fold at point")
         (if (eq (overlay-get ov 'crush-fold-state) 'collapsed)
-            ;; Point inside the hidden body: expand.
-            (progn
-              (overlay-put ov 'crush-fold-state 'expanded)
-              (overlay-put ov 'invisible nil)
-              (message "Reasoning expanded"))
-          ;; Collapse: hide the body behind a marker line.
-          (crush--reasoning-install-fold
-           (cons (overlay-start ov) (overlay-end ov)))
-          (message "Reasoning collapsed"))))))
+            (crush--reasoning-expand)
+          (crush--reasoning-collapse ov))))))
+
+(defun crush--reasoning-expand ()
+  "Expand the reasoning fold closest to point.
+Searches backward from point for the `…' ellipsis, then the adjacent
+body and preview overlays.  Deletes the ellipsis and preview overlay,
+extends the body overlay to cover the full reasoning region, and makes
+it visible."
+  (let* ((ellipsis-pos (save-excursion
+                         (when (search-backward "…" nil t)
+                           (point)))))
+    (unless ellipsis-pos
+      (setq ellipsis-pos (save-excursion
+                           (goto-char (point-min))
+                           (when (search-forward "…" nil t)
+                             (1- (point))))))
+    (let ((body-ov (when ellipsis-pos
+                     (car (cl-remove-if-not
+                           (lambda (o)
+                             (and (overlay-get o 'crush-fold-state)
+                                  (= (overlay-start o)
+                                     (1+ ellipsis-pos))))
+                           (overlays-in (point-min) (point-max))))))
+          (preview-ov (when ellipsis-pos
+                        (car (cl-remove-if-not
+                              (lambda (o)
+                                (and (overlay-get o 'crush-reasoning-preview)
+                                     (= (overlay-end o)
+                                        (1- ellipsis-pos))))
+                              (overlays-in (point-min) (point-max)))))))
+      (when (and (overlayp body-ov) (overlayp preview-ov) ellipsis-pos)
+        (let ((inhibit-read-only t)
+              (inhibit-modification-hooks t)
+              (preview-start (overlay-start preview-ov))
+              (full-end (overlay-end body-ov)))
+          (overlay-put body-ov 'crush-reasoning-origin preview-start)
+          (goto-char ellipsis-pos)
+          (delete-region ellipsis-pos (1+ (point)))
+          (delete-overlay preview-ov)
+          (move-overlay body-ov preview-start full-end)
+          (overlay-put body-ov 'crush-fold-state 'expanded)
+          (overlay-put body-ov 'invisible nil)
+          (message "Reasoning expanded"))))))
+
+(defun crush--reasoning-collapse (body-ov)
+  "Collapse the reasoning body overlay BODY-OV.
+Re-installs the preview overlay and `…' ellipsis, hiding the body
+beyond `crush-reasoning-preview-lines' lines."
+  (let* ((origin (overlay-get body-ov 'crush-reasoning-origin))
+         (full-end (overlay-end body-ov))
+         (preview-lines (or crush-reasoning-preview-lines 10))
+         (start-m (copy-marker (or origin (overlay-start body-ov))))
+         (end-m (copy-marker full-end t)))
+    (save-excursion
+      (goto-char start-m)
+      (beginning-of-line)
+      (set-marker start-m (point)))
+    (let ((total-lines (count-lines start-m end-m)))
+      (when (> total-lines preview-lines)
+        (let ((inhibit-read-only t)
+              (inhibit-modification-hooks t)
+              (preview-end nil)
+              (ellipsis-end nil))
+          (save-excursion
+            (goto-char start-m)
+            (forward-line (1- preview-lines))
+            (end-of-line)
+            (setq preview-end (point)))
+          (save-excursion
+            (goto-char preview-end)
+            (insert "\n" (propertize "…"
+                                     'keymap crush--reasoning-fold-keymap
+                                     'crush-fold-mark t))
+            (setq ellipsis-end (point)))
+          (let ((preview-ov (make-overlay start-m preview-end
+                                          nil nil nil)))
+            (overlay-put preview-ov 'crush-overlay t)
+            (overlay-put preview-ov 'crush-reasoning-preview t)
+            (overlay-put preview-ov 'face 'crush-reasoning-face)
+            (crush--freeze-region (marker-position start-m)
+                                  ellipsis-end)
+            (move-overlay body-ov ellipsis-end end-m)
+            (overlay-put body-ov 'crush-fold-state 'collapsed)
+            (overlay-put body-ov 'invisible t)
+            (message "Reasoning collapsed")))))
+    (set-marker start-m nil)
+    (set-marker end-m nil)))
 
 (defun crush--reasoning-tab ()
   "Handle TAB in crush chat buffers.
