@@ -945,7 +945,7 @@ overlay.  Inert (returns nil) once content has started."
     (let ((pos (point)))
       (setq-local crush--reasoning-start (copy-marker pos nil))
       (setq-local crush--reasoning-overlay
-                  (make-overlay pos pos nil t))
+                  (make-overlay pos pos nil nil nil))
       (overlay-put crush--reasoning-overlay 'crush-overlay t)
       (overlay-put crush--reasoning-overlay 'face 'crush-reasoning-face)
       crush--reasoning-overlay)))

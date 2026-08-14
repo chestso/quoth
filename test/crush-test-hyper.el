@@ -1323,5 +1323,56 @@ The SSE state carries them and the parser reports them."
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
+(ert-deftest crush-test/hyper-wire-reasoning-tool-no-prompt-swallow ()
+  "Reasoning followed by tool_calls (no content) must not swallow the next prompt.
+The reasoning overlay's rear-advance must not eat the `crush> ' prompt
+inserted at finalization.  This reproduces the bug where a reasoning-only
+stream (reasoning + tool_calls, no content delta) leaves the overlay
+un-frozen, so its advancing end marker hides the next prompt under
+`invisible t'."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((old-prompt-id crush--prompt-id))
+            (crush-test--with-hyper-server
+             'reasoning-tool
+             (lambda (base)
+               (save-excursion (goto-char (point-max)) (newline))
+               (setq-local crush--response-start (point-marker))
+               (let ((buf (current-buffer)))
+                 (let ((proc (crush--hyper-request
+                              base "tok" (crush--hyper-compose-request "hi" nil "m")
+                              (crush-test--hyper-on-delta buf)
+                              (crush-test--hyper-completion buf))))
+                   (let ((deadline (+ (float-time) 6)))
+                     (while (and (process-live-p proc)
+                                 (null (process-get proc :crush-finished))
+                                 (< (float-time) deadline))
+                       (accept-process-output nil 0.1)
+                       (sit-for 0.02)))))
+               ;; Wait for the fold overlay to appear (finalize installs it).
+               (let ((deadline (+ (float-time) 6)))
+                 (while (and (< (float-time) deadline)
+                             (not (cl-some (lambda (o)
+                                             (overlay-get o 'crush-fold-state))
+                                           (overlays-in (point-min) (point-max)))))
+                   (accept-process-output nil 0.1)
+                   (sit-for 0.02)))
+               ;; The reasoning text should be present (folded).
+               (goto-char (point-min))
+               (should (search-forward "think step hidden" nil t))
+               ;; The new prompt must be visible (not invisible).
+               (goto-char (point-max))
+               (should (search-backward "crush> " nil t))
+               (let ((prompt-pos (point)))
+                 (should (not (get-char-property prompt-pos 'invisible)))
+                 ;; The fold overlay must not cover the prompt.
+                 (dolist (ov (overlays-in (point-min) (point-max)))
+                   (when (overlay-get ov 'crush-fold-state)
+                     (should (<= (overlay-end ov) prompt-pos))))
+                 ;; New prompt ID was generated.
+                 (should (not (string= crush--prompt-id old-prompt-id))))))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here

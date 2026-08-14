@@ -207,6 +207,38 @@ def main():
                 except ValueError:
                     conn.sendall(content_frame("first").encode())
                 conn.sendall(sse("[DONE]").encode())
+            elif mode == "reasoning-tool":
+                # Reasoning followed by tool_calls with no content delta,
+                # then [DONE].  Exercises the reasoning-only overlay
+                # finalization path (no content delta to freeze it).
+                conn.sendall(sse_ok.encode())
+                conn.sendall(reasoning_frame("think step ").encode())
+                conn.sendall(reasoning_frame("hidden").encode())
+                tc_frame = json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_rt",
+                                            "function": {
+                                                "name": "bash",
+                                                "arguments": json.dumps(
+                                                    {"command": "echo hi"}
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ]
+                    }
+                )
+                conn.sendall(sse(tc_frame).encode())
+                conn.sendall(sse("[DONE]").encode())
             elif mode == "tool-call":
                 # Tool-call round-trip: first request emits tool_calls
                 # with finish_reason; subsequent requests carry role:tool
