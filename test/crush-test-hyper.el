@@ -64,6 +64,56 @@
   "Capture slot for `crush-test/hyper-send-injects-completion'.")
 
 ;;; 91. Hyper backend: request composition
+(ert-deftest crush-test/hyper-history-messages-tool-pair ()
+  "A tool turn carrying id/name/args emits the assistant tool_calls
+declaration followed by the tool result with the matching id, per the
+OpenAI function-calling message shape."
+  (let ((msgs (crush--hyper-history-messages
+               '((user . "run ls")
+                 (assistant . "Listing done")
+                 (tool "call_1" "bash" "{\"command\":\"ls\"}"
+                       . "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>")))))
+    (should (= (length msgs) 4))
+    ;; user
+    (should (string= (cdr (assoc 'role (nth 0 msgs))) "user"))
+    ;; assistant answer
+    (should (string= (cdr (assoc 'role (nth 1 msgs))) "assistant"))
+    (should (string= (cdr (assoc 'content (nth 1 msgs))) "Listing done"))
+    ;; assistant tool_calls declaration
+    (let ((tc-msg (nth 2 msgs)))
+      (should (string= (cdr (assoc 'role tc-msg)) "assistant"))
+      (should (eq (cdr (assoc 'content tc-msg)) :null))
+      (let ((tcs (cdr (assoc 'tool_calls tc-msg))))
+        (should (vectorp tcs))
+        (should (= (length tcs) 1))
+        (let ((tc (aref tcs 0)))
+          (should (string= (cdr (assoc 'id tc)) "call_1"))
+          (should (string= (cdr (assoc 'type tc)) "function"))
+          (let ((fn (cdr (assoc 'function tc))))
+            (should (string= (cdr (assoc 'name fn)) "bash"))
+            (should (string= (cdr (assoc 'arguments fn)) "{\"command\":\"ls\"}"))))))
+    ;; tool result with matching id
+    (let ((tool-msg (nth 3 msgs)))
+      (should (string= (cdr (assoc 'role tool-msg)) "tool"))
+      (should (string= (cdr (assoc 'tool_call_id tool-msg)) "call_1"))
+      (should (string-match-p "<command>ls</command>"
+                              (cdr (assoc 'content tool-msg)))))))
+
+(ert-deftest crush-test/hyper-history-messages-legacy-tool-fallback ()
+  "A bare (tool . text) turn without metadata keeps the legacy
+`tool_call_id: unknown' emission."
+  (let ((msgs (crush--hyper-history-messages
+               '((user . "run ls")
+                 (assistant . "Listing done")
+                 (tool . "<raw>")))))
+    (should (= (length msgs) 3))
+    (let ((tool-msg (nth 2 msgs)))
+      (should (string= (cdr (assoc 'role tool-msg)) "tool"))
+      (should (string= (cdr (assoc 'tool_call_id tool-msg)) "unknown"))
+      (should (string= (cdr (assoc 'content tool-msg)) "<raw>")))))
+
+;;; 91. Hyper backend: request composition
+
 
 (ert-deftest crush-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
@@ -1577,6 +1627,86 @@ point is on the tool block and `region: response' on the final content."
             (crush--update-header-line)
             (should (string-match-p "region: response"
                                     (format "%s" header-line-format))))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-history-replays-tool-pair-with-real-id ()
+  "A follow-up request replays the tool call as an OpenAI-conformant
+pair: an assistant message carrying the persisted tool_calls id, and a
+tool result whose tool_call_id matches it.  The live tool loop already
+sends correct ids; this pins the history-replay path."
+  (let ((default-directory crush-test--root)
+        (crush-tools-enabled t))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setq-local crush-active-backend
+                        (crush-make-hyper-backend
+                         :buffer buf
+                         :working-directory default-directory
+                         :token "tok"
+                         :model "m"))
+            (let ((result
+                   (crush-test--with-hyper-server
+                    'tool-call
+                    (lambda (base)
+                      (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                      (goto-char (point-max))
+                      (insert "ls")
+                      (crush-send-input)
+                      (let ((dl (+ (float-time) 10)))
+                        (while (and (< (float-time) dl)
+                                    (< (length (crush-get-all-prompts)) 2))
+                          (accept-process-output nil 0.1) (sit-for 0.02)))
+                      (let ((found nil)
+                            (dl2 (+ (float-time) 6)))
+                        (while (and (< (float-time) dl2) (not found))
+                          (accept-process-output nil 0.1) (sit-for 0.02)
+                          (setq found (save-excursion
+                                        (goto-char (point-min))
+                                        (search-forward "tool-result-ack" nil t))))
+                        (should found))
+                      ;; Second prompt: history now includes the tool call.
+                      (goto-char (point-max))
+                      (insert "hello")
+                      (crush-send-input)
+                      (let ((dl3 (+ (float-time) 6))
+                            (done nil))
+                        (while (and (< (float-time) dl3) (not done))
+                          (accept-process-output nil 0.1) (sit-for 0.02)
+                          (setq done (save-excursion
+                                       (goto-char (point-min))
+                                       (search-forward "tool-result-ack" nil t)))))))))
+              (let ((requests (nth 1 result)))
+                (should (>= (length requests) 3))
+                ;; Find a request whose messages contain the tool role.
+                (let ((found nil))
+                  (dolist (req requests)
+                    (let* ((body (json-read-from-string (nth 3 req)))
+                           (msgs (crush--hyper-alist-get "messages" body))
+                           (tool-idx nil))
+                      (let ((i 0))
+                        (while (and (null tool-idx) (< i (length msgs)))
+                          (when (string= (crush--hyper-alist-get "role" (aref msgs i))
+                                         "tool")
+                            (setq tool-idx i))
+                          (setq i (1+ i))))
+                      (when (and tool-idx (not found))
+                        (setq found (cons msgs tool-idx)))))
+                  (should found)
+                  (let* ((msgs (car found))
+                         (tool-idx (cdr found))
+                         ;; The pair is (assistant-with-tool_calls, tool).
+                         (assistant-msg (aref msgs (1- tool-idx)))
+                         (tool-msg (aref msgs tool-idx)))
+                    (should (string= (crush--hyper-alist-get "role" assistant-msg)
+                                     "assistant"))
+                    (let ((tcs (crush--hyper-alist-get "tool_calls" assistant-msg)))
+                      (should (vectorp tcs))
+                      (should (= (length tcs) 1))
+                      (let ((tc (aref tcs 0)))
+                        (should (string-match-p "call_" (crush--hyper-alist-get "id" tc)))
+                        (should (string= (crush--hyper-alist-get "tool_call_id" tool-msg)
+                                         (crush--hyper-alist-get "id" tc)))))))))))
       (crush-test--cleanup))))
 
 (provide 'crush-test-hyper)

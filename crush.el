@@ -746,9 +746,9 @@ is the first prompt in the buffer."
             (let ((resp-text (crush-get-response-text id)))
               (when resp-text
                 (push (cons 'assistant resp-text) turns)))
-            (let ((tool-text (crush--tool-turn-text id)))
-              (when tool-text
-                (push (cons 'tool tool-text) turns)))
+            (let ((tool-turn (crush--tool-turn id)))
+              (when tool-turn
+                (push tool-turn turns)))
             (when (and (boundp 'crush-hyper-history-include-reasoning)
                        crush-hyper-history-include-reasoning)
               (let ((reasoning-text (crush-get-reasoning-text id)))
@@ -815,6 +815,40 @@ existed.  Returns nil when no tool calls were made."
                              (buffer-substring-no-properties ts te))))
                   (when (> (length text) 0)
                     text))))))))))
+
+(defun crush--tool-call-meta (prompt-id)
+  "Return (ID NAME ARGS) for PROMPT-ID's first tool call, or nil.
+Reads the block's `crush-tool-call' text property (a plist of :id
+:name :args-json) within the response region for PROMPT-ID.  Returns
+nil when the block predates the property or no call exists."
+  (let ((pos (text-property-any (point-min) (point-max)
+                                'crush-response-to prompt-id)))
+    (when pos
+      (let ((end (or (next-single-property-change pos 'crush-response-to
+                                                  nil (point-max))
+                     (point-max))))
+        (let ((ts (text-property-any pos end
+                                     'crush-region-type 'tool)))
+          (when ts
+            (let ((plist (get-text-property ts 'crush-tool-call)))
+              (when plist
+                (list (plist-get plist :id)
+                      (plist-get plist :name)
+                      (plist-get plist :args-json))))))))))
+
+(defun crush--tool-turn (prompt-id)
+  "Return the tool turn for PROMPT-ID as a cons, or nil.
+When the call metadata (id/name/args) is available the turn is a
+plist-style cons `(tool ID NAME ARGS . TEXT)' carrying the raw result
+TEXT; without metadata it falls back to the legacy bare `(tool .
+TEXT)' cons.  TEXT is the raw `<command>/<output>/<exit_code>' result,
+or the decorated block for pre-nested-region buffers."
+  (let ((text (crush--tool-turn-text prompt-id)))
+    (when text
+      (let ((meta (crush--tool-call-meta prompt-id)))
+        (if meta
+            (cons 'tool (append meta (list text)))
+          (cons 'tool text))))))
 
 (defun crush--install-font-lock-guard (&optional enable)
   "Protect read-only boundaries from font-lock in the current buffer.

@@ -1695,9 +1695,67 @@ tool block), and tool (raw result) turns, in that order."
             (let ((turns (crush--history-turns crush--prompt-id)))
               (should (equal (nth 0 turns) (cons 'user "run ls")))
               (should (equal (nth 1 turns) (cons 'assistant "Listing done")))
-              (should (stringp (cdr (nth 2 turns))))
-              (should (string-match-p "<command>ls</command>" (cdr (nth 2 turns))))
-              (should (= (length turns) 3))))))
+              (should (= (length turns) 3))
+              ;; Tool turn carries (id name args . raw-output).
+              (should (eq (car (nth 2 turns)) 'tool))
+              (should (string-match-p "<command>ls</command>"
+                                      (nth 4 (nth 2 turns))))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-turns-carries-tool-metadata ()
+  "The tool turn carries the call's id, name, and args from the
+`crush-tool-call' property, as a plist-style cons: (tool id name args
+. raw-output)."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-tool-exchange
+                     "run ls"
+                     "Listing done"
+                     (list (list :name "bash" :id "call_1"
+                                 :args-json "{\"command\":\"ls\"}"
+                                 :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
+                                 :exit 0)))))
+            (ignore id)
+            (let ((turns (crush--history-turns crush--prompt-id)))
+              (should (= (length turns) 3))
+              (should (eq (car (nth 2 turns)) 'tool))
+              (should (string= (nth 1 (nth 2 turns)) "call_1"))
+              (should (string= (nth 2 (nth 2 turns)) "bash"))
+              (should (string= (nth 3 (nth 2 turns)) "{\"command\":\"ls\"}"))
+              (let ((cdr-t (nth 4 (nth 2 turns))))
+                (should (string-match-p "<command>ls</command>" cdr-t))
+                (should-not (string-match-p "tool:" cdr-t)))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/history-turns-legacy-tool-fallback ()
+  "A tool block without `crush-tool-call' metadata falls back to a bare
+(tool . text) turn so legacy buffers still replay."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "run ls")
+          (goto-char (point-max))
+          (newline)
+          (let ((response-start (point)))
+            (let ((inhibit-read-only t))
+              (insert "**tool block**\nraw")
+              (put-text-property response-start (+ response-start 6)
+                                 'crush-region-type 'tool)
+              (put-text-property response-start (+ response-start 14)
+                                 'crush-promp-id nil)
+              (put-text-property response-start (point) 'crush-prompt-id crush--prompt-id)
+              (put-text-property response-start (point) 'crush-response-to crush--prompt-id))
+            (crush--tag-response-region response-start (point) crush--prompt-id))
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--prompt-id (crush--generate-id))
+          (crush--insert-prompt)
+          (let ((turns (crush--history-turns crush--prompt-id)))
+            (should (= (length turns) 3))
+            (should (eq (car (nth 2 turns)) 'tool))
+            (should (stringp (cdr (nth 2 turns)))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-includes-multiple-exchanges ()
