@@ -166,6 +166,7 @@ The hyper backend supports tool calls when `crush-tools-enabled` is non-nil (the
 
 **output:**
 ```
+
 ```
 <command>ls</command>
 <output>
@@ -173,7 +174,8 @@ crush.el
 </output>
 <exit_code>0</exit_code>
 ```
-```
+
+````
 
 The output is enclosed in a fenced code block whose fence length is one backtick longer than the longest run of backticks in the output, so nested fences never break the block. The tool block is read-only and tagged `crush-region-type 'tool'`.
 
@@ -240,7 +242,7 @@ To continue a specific session by ID, set `crush--session`:
 
 ```elisp
 (setq-local crush--session "abc123")
-```
+````
 
 This passes `--session abc123` to Crush, which:
 

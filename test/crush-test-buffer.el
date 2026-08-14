@@ -320,14 +320,123 @@
 
 ;;; 18. Header line display
 
-(ert-deftest crush-test/header-line-shows-prompt-id ()
-  "Header line should show prompt ID."
+;;; Header line repurposed (Phase: model + region at point): the
+;;; obsolete `crush-test/header-line-shows-prompt-id' test asserting
+;;; the old "Prompt: <id>" header was deleted; the current contract is
+;;; covered by the 18b tests below.
+
+;;; 18b. Header line: model and region type at point
+
+(ert-deftest crush-test/region-label-prompts-and-placeholders ()
+  "`crush--region-label-at-point' maps every region type to a label.
+The fresh buffer has a prompt marker at point-min with type nil, so it
+must resolve to `prompt' (pending prompt) rather than falling through
+to `plain'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should header-line-format)
-          (should (string-match-p crush--prompt-id (format "%s" header-line-format)))))
+          (goto-char (point-min))
+          (should (string= (crush--region-label-at-point) "prompt"))))
     (crush-test--cleanup)))
+
+(ert-deftest crush-test/region-label-in-input-without-prompt-id ()
+  "Typed input carries the prompt ID even though its region type is nil."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "hello world")
+          (should (null (get-text-property (- (point) 1) 'crush-region-type)))
+          (should (string= (crush--region-label-at-point) "prompt"))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/region-label-attachment ()
+  "Attachment regions resolve to `attachment'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (insert "attach-region-text"))
+          (put-text-property (- (point) 18) (point)
+                             'crush-region-type 'attachment)
+          (goto-char (- (point) 9))
+          (should (string= (crush--region-label-at-point) "attachment"))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/region-label-response ()
+  "Response regions resolve to `response'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((start (point-max)))
+            (let ((inhibit-read-only t))
+              (insert "response-text"))
+            (put-text-property start (point)
+                               'crush-region-type 'response))
+          (goto-char (- (point) 5))
+          (should (string= (crush--region-label-at-point) "response"))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/region-label-falls-back-to-plain ()
+  "Regions with neither a region type nor a prompt ID resolve to `plain'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (narrow-to-region (point-min) (point-max))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/header-model-falls-back-to-hyper-default ()
+  "Effective model falls back to `crush-hyper-default-model' for hyper
+backends with a nil model slot; plain (run) backends yield nil."
+  (let ((crush-model nil))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            ;; The default `crush-test--fresh-buffer' is a run backend with
+            ;; a nil model slot; the effective model must be nil, not the
+            ;; hyper default.
+            (should (null (crush--header-model)))
+            ;; A hyper backend with a nil model slot uses the default.
+            (setq-local crush-active-backend
+                        (crush-make-hyper-backend
+                         :buffer buf
+                         :working-directory default-directory
+                         :base-url crush-hyper-base-url
+                         :token crush-hyper-token))
+            (should (string= (crush--header-model) crush-hyper-default-model))
+            ;; A hyper backend with an explicit model uses it.
+            (setq-local crush-active-backend
+                        (crush-make-hyper-backend
+                         :buffer buf
+                         :working-directory default-directory
+                         :base-url crush-hyper-base-url
+                         :token crush-hyper-token
+                         :model "my-model"))
+            (should (string= (crush--header-model) "my-model"))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/header-model-uses-backend-slot ()
+  "`crush--header-model' reads the backend model slot; a run backend
+with a model slot uses that model."
+  (let ((crush-model "claude-sonnet-4-20250514"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (should (string= (crush--header-model) "claude-sonnet-4-20250514"))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/header-line-shows-model-and-region ()
+  "The header line shows both the current model and the region type
+at point."
+  (let ((crush-model "my-model"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (crush--update-header-line)
+            (let ((h (format "%s" header-line-format)))
+              (should (string-match-p "my-model" h))
+              (should (string-match-p "region: prompt" h)))))
+      (crush-test--cleanup))))
 
 ;;; 19. Prompt marker has prompt-id property
 

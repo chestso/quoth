@@ -448,19 +448,37 @@ Only logs when `crush-debug-mode' is non-nil."
           (setq-local crush--input-ring-index (1- crush--input-ring-index))
           (insert (ring-ref crush--input-ring crush--input-ring-index)))))))
 
-(defun crush--count-attachments-for-prompt (prompt-id)
-  "Count attachments for PROMPT-ID in current buffer."
-  (length (crush-get-attachments-for-prompt prompt-id)))
+(defun crush--header-model ()
+  "Return the effective model name for the header line, or nil.
+Reads the backend's model slot (derived from `crush-model' at buffer
+init); falls back to `crush-hyper-default-model' for hyper backends."
+  (let ((model (cond
+                ((crush-hyper-backend-p crush-active-backend)
+                 (crush-hyper-backend-model crush-active-backend))
+                ((crush-run-backend-p crush-active-backend)
+                 (crush-run-backend-model crush-active-backend))
+                (t nil))))
+    (or model
+        (and (crush-hyper-backend-p crush-active-backend)
+             crush-hyper-default-model))))
+
+(defun crush--region-label-at-point ()
+  "Return a human label for the `crush-region-type' at point."
+  (pcase (get-text-property (point) 'crush-region-type)
+    ('attachment "attachment")
+    ('response "response")
+    ('reasoning "reasoning")
+    ('tool "tool")
+    (_ (if (crush-get-prompt-at-point) "prompt" "plain"))))
 
 (defun crush--update-header-line ()
-  "Update header line with current prompt ID and attachment count."
-  (let* ((prompt-id (or (crush-get-prompt-at-point) crush--prompt-id))
-         (attach-count (crush--count-attachments-for-prompt prompt-id))
-         (attach-str (if (> attach-count 0)
-                         (format " (%d attach)" attach-count)
-                       "")))
+  "Update header line with the current model and region type at point."
+  (let* ((model (crush--header-model))
+         (region (crush--region-label-at-point))
+         (model-str (if model (format "model: %s" model) "model: -"))
+         (region-str (format "region: %s" region)))
     (setq header-line-format
-          (list (propertize (format "Prompt: %s%s" prompt-id attach-str)
+          (list (propertize (format "%s   %s" model-str region-str)
                             'face 'bold)))))
 
 (defun crush--after-change (beg end _len)
