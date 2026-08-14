@@ -232,5 +232,74 @@ That directory becomes `default-directory' for the call."
       (should (search-forward "tool: bash" nil t))
       (should (search-forward "echo hi" nil t)))))
 
+;;; 4. Tool-block buffer formatting
+
+(ert-deftest crush-test/tool-block-renders-as-markdown ()
+  "`crush--tool-block-insert' should render a tool block as valid markdown.
+The tool name is bold, command/exit are inline code, and output is a
+fenced code block."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1"
+                 :args-json "{\"command\":\"ls\"}"
+                 :result "<output>AGENTS.md\ncrush.el</output>"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "\\*\\*🔧 tool: bash\\*\\*" content))
+            (should (string-match-p "\\*\\*command:\\*\\* `" content))
+            (should (string-match-p "\\*\\*exit:\\*\\* `0`" content))
+            (should (string-match-p "\\*\\*output:\\*\\*\n```" content))
+            (should (string-match-p "```\n$" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-read-only-and-tagged ()
+  "Tool blocks should be read-only and tagged `crush-region-type' tool."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1"
+                 :args-json "{\"command\":\"ls\"}"
+                 :result "<output>files</output>"
+                 :exit 0)
+           crush--prompt-id)
+          (goto-char (point-min))
+          (search-forward "tool: bash")
+          (goto-char (match-beginning 0))
+          (should (eq (get-text-property (point) 'crush-region-type) 'tool))
+          (should (get-text-property (point) 'read-only))
+          (should-error (insert "x") :type 'text-read-only))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-no-result-no-output-section ()
+  "Tool blocks without a result should omit the output section."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1"
+                 :args-json "{\"command\":\"ls\"}"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should-not (string-match-p "output" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-no-exit-no-exit-line ()
+  "Tool blocks without an exit code should omit the exit line."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1"
+                 :args-json "{\"command\":\"ls\"}")
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should-not (string-match-p "exit" content))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test-tools)
 ;;; crush-test-tools.el ends here

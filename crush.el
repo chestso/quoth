@@ -1406,14 +1406,14 @@ for wire resume.  Returns the end position of the inserted block."
         (start (point-max)))
     (save-excursion
       (goto-char start)
-      (insert (format "⛏ tool: %s\n" (plist-get tool-calls :name)))
-      (insert (format "  command: %s\n" (or (plist-get tool-calls :args-json) "")))
+      (insert (format "**🔧 tool: %s**\n\n" (plist-get tool-calls :name)))
+      (insert (format "**command:** `%s`\n" (or (plist-get tool-calls :args-json) "")))
       (let ((exit (plist-get tool-calls :exit)))
         (when exit
-          (insert (format "  exit: %s\n" exit))))
+          (insert (format "**exit:** `%s`\n" exit))))
       (let ((result (plist-get tool-calls :result)))
         (when result
-          (insert "  output:\n")
+          (insert "**output:**\n")
           (insert "```\n")
           (insert result)
           (unless (string-suffix-p "\n" result)
