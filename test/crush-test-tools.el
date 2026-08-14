@@ -301,5 +301,63 @@ fenced code block."
             (should-not (string-match-p "exit" content))))
       (crush-test--cleanup))))
 
+;;; 5. Fence escaping: protect against nested fences in tool output
+
+(ert-deftest crush-test/fence-str-empty-output ()
+  "Empty output uses the default 3-backtick fence."
+  (should (string= (crush--fence-str "") "```")))
+
+(ert-deftest crush-test/fence-str-no-backticks ()
+  "Output without backticks uses the default 3-backtick fence."
+  (should (string= (crush--fence-str "hello\nworld") "```")))
+
+(ert-deftest crush-test/fence-str-single-backtick ()
+  "Output with a single backtick uses 3-backtick fence (minimum)."
+  (should (string= (crush--fence-str "`code`") "```")))
+
+(ert-deftest crush-test/fence-str-three-backticks ()
+  "Output with 3 backticks in a row uses 4-backtick fence."
+  (should (string= (crush--fence-str "```code```") "````")))
+
+(ert-deftest crush-test/fence-str-longest-run ()
+  "The fence is one more than the longest backtick run."
+  (should (string= (crush--fence-str "`a` ```b``` 'c'") "````")))
+
+(ert-deftest crush-test/fence-str-many-backticks ()
+  "A long backtick run produces a longer fence."
+  (should (string= (crush--fence-str "`````") "``````")))
+
+(ert-deftest crush-test/tool-block-escapes-nested-fences ()
+  "Tool output containing fences should use a longer fence to not break."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1"
+                 :args-json "{\"command\":\"ls\"}"
+                 :result "regular output with ```nested``` fence"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "\\*\\*output:\\*\\*\n````" content))
+            (should (string-match-p "````\n$" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-safe-with-triple-backtick ()
+  "Default 3-backtick fence is safe when output has no backticks."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "bash" :id "call_1"
+                 :args-json "{\"command\":\"ls\"}"
+                 :result "plain output"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "\\*\\*output:\\*\\*\n```\n" content))
+            (should (string-match-p "\n```\n$" content))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test-tools)
 ;;; crush-test-tools.el ends here

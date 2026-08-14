@@ -1459,6 +1459,21 @@ crush buffer, which owns all streamed output."
         (setq-local crush--continue t)
         (setq-local crush--response-start (point-marker))))))
 
+(defun crush--fence-str (text)
+  "Return a markdown fence string long enough to enclose TEXT.
+Scan TEXT for the longest run of consecutive backtick (`` ` ``)
+characters and return one more backtick than that, with a minimum
+of 3 (the standard markdown fenced-code-block delimiter)."
+  (let ((max-run 0)
+        (run 0))
+    (dotimes (i (length text))
+      (if (eq (aref text i) ?\`)
+          (setq run (1+ run))
+        (setq max-run (max max-run run))
+        (setq run 0)))
+    (setq max-run (max max-run run))
+    (make-string (max 3 (1+ max-run)) ?\`)))
+
 (defun crush--tool-block-insert (tool-calls prompt-id)
   "Insert a tool-call block for TOOL-CALLS into the buffer.
 TOOL-CALLS is a plist of :name :id :args-json :result :exit.
@@ -1484,12 +1499,13 @@ for wire resume.  Returns the end position of the inserted block."
           (insert (format "**exit:** `%s`\n" exit))))
       (let ((result (plist-get tool-calls :result)))
         (when result
-          (insert "**output:**\n")
-          (insert "```\n")
-          (insert result)
-          (unless (string-suffix-p "\n" result)
-            (insert "\n"))
-          (insert "```\n")))
+          (let ((fence (crush--fence-str result)))
+            (insert "**output:**\n")
+            (insert fence "\n")
+            (insert result)
+            (unless (string-suffix-p "\n" result)
+              (insert "\n"))
+            (insert fence "\n"))))
       (insert "\n"))
     (let ((end (point-max)))
       (put-text-property start end 'crush-region-type 'tool)
