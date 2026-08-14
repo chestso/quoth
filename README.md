@@ -20,9 +20,9 @@ See [TODO.md](TODO.md) for the full project goal and roadmap.
 
 ## Important: Permission Behavior
 
-The default **hyper** backend (direct provider interaction) does not execute local tools, so no permissions are issued. The optional `crush run` backend, however, **auto-approves all permissions**: tools like `edit`, `write`, and `bash` execute immediately without prompting for user confirmation. This is functionally equivalent to running `crush --yolo`.
+Both backends currently run tools without confirmation. The hyper backend (default) executes the `bash` tool immediately when the model calls it, and the `crush run` backend auto-approves all permissions, including `edit`, `write`, and `bash`. This is functionally equivalent to running `crush --yolo`.
 
-Permission prompts for tool execution in direct mode are on the roadmap. See the [TODO.md](TODO.md) roadmap for details.
+Interactive permission prompts for tool execution are on the roadmap. See the [TODO.md](TODO.md) roadmap for details.
 
 ## Installing
 
@@ -75,7 +75,7 @@ Which crush backend to use:
 (setq crush-backend-type 'hyper)
 ```
 
-- `hyper` (default) — direct HTTP access to the Charm Hyper gateway, bypassing the CLI entirely; the package's primary mode of operation (see [Hyper backend](#hyper-backend)). Requires only `curl`. OAuth, history, and tool calls are still on the roadmap.
+- `hyper` (default) — direct HTTP access to the Charm Hyper gateway, bypassing the CLI entirely; the package's primary mode of operation (see [Hyper backend](#hyper-backend)). Requires only `curl`. Supports conversation history, tool calls, and session caching. OAuth is still on the roadmap.
 - `run` — standalone `crush run` mode (compatibility with the Crush CLI). Each prompt spawns a new process. Fully implemented.
 
 ### crush-hyper-base-url
@@ -110,7 +110,7 @@ Request tuning: timeout in seconds, `max_tokens` (default 64000), and sampling t
 
 ### crush-hyper-history-limit / crush-hyper-history-include-reasoning
 
-The hyper backend is stateful: each request re-sends the buffer's completed exchanges as `user` and `assistant` messages before the new prompt, so the model sees the whole conversation. The conversation is read from the buffer's tagged regions at send time — nothing is stored client- or server-side (`x-session-id` affinity headers are still on the roadmap). `crush-hyper-history-limit` (default 200) caps how many prior exchanges are sent (the most recent ones are always retained); set it to `0` to disable history and get phase-1 stateless per-prompt requests.
+The hyper backend is stateful: each request re-sends the buffer's completed exchanges as `user` and `assistant` messages before the new prompt, so the model sees the whole conversation. The conversation is read from the buffer's tagged regions at send time — nothing is stored client- or server-side. `crush-hyper-history-limit` (default 200) caps how many prior exchanges are sent (the most recent ones are always retained); set it to `0` to disable history and get phase-1 stateless per-prompt requests.
 
 `crush-hyper-history-include-reasoning` (default nil) controls whether streamed chain-of-thought rides along in history: off, the assistant turn carries only the answer; on, the CoT is re-sent as the `reasoning_content` field of the assistant message, which is what Hyper requires for thinking turns carried across requests.
 
@@ -121,8 +121,6 @@ When `crush-hyper-thinking` is non-nil, Hyper's internal thinking mode is enable
 ### crush-reasoning-preview-lines
 
 Number of reasoning lines to show in the collapsed preview (default 10). When the reasoning region exceeds this, the first N lines are shown with a `…` ellipsis toggle; the remainder is hidden behind an invisible overlay. Press `TAB` or `C-c c r` on the ellipsis to expand or re-collapse. Set to 0 to always collapse with no preview.
-
-Reasoning ("chain-of-thought") text streams into the buffer as it is received, tagged as a reasoning region and highlighted with a background derived from the theme's `region` face (so markdown text colors stay visible). When the response finishes, reasoning longer than `crush-reasoning-preview-lines` lines (default 10) is auto-collapsed: the first 10 lines are shown as a preview, and the rest is hidden behind a `…` ellipsis; press `TAB` or `C-c c r` to expand or re-collapse it. Reasoning of 10 lines or fewer stays fully visible with no fold. Works identically in GUI and terminal frames.
 
 Reasoning is a display aid and is excluded from model-visible history by default; set `crush-hyper-history-include-reasoning` to `t` to re-send it as the `reasoning_content` field on the assistant message (per [HYPER-API.md §3.4](HYPER-API.md)).
 
