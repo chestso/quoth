@@ -159,9 +159,9 @@ The hyper backend supports tool calls when `crush-tools-enabled` is non-nil (the
 
 **🔧 tool: bash**
 
-**command:** `{"command":"ls"}`
-**exit:** `0`
-**output:**
+**command:** `{"command":"ls"}`  
+**exit:** `0`  
+**output:**  
 
 ```
 <command>ls</command>
