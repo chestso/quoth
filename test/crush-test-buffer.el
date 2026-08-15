@@ -73,6 +73,16 @@ then EOF; a pipe process stays alive to accept that without erroring
                                  :sentinel #'ignore)))
     proc))
 
+;;; C2 rename-contract: the protocol is provider-named.
+
+(ert-deftest crush-test/provider-rename-contract ()
+  "The backend protocol has been renamed to provider.
+`crush-provider-p' exists and the old `crush-backend-p' does not."
+  (should (fboundp 'crush-provider-p))
+  (should-not (fboundp 'crush-backend-p))
+  (should (fboundp 'crush-provider-send-prompt))
+  (should-not (fboundp 'crush-backend-send-prompt)))
+
 (defun crush-test--simulate-facade-response (content &optional reasoning)
   "Append CONTENT as streamed deltas and finalize the response.
 Mimics the post-`crush-send-input' state: `crush--response-start'
@@ -418,8 +428,8 @@ backends with a nil model slot."
             ;; slot the effective model must be the hyper default.
             (should (string= (crush--header-model) crush-hyper-default-model))
             ;; A hyper backend with an explicit model uses it.
-            (setq-local crush-active-backend
-                        (crush-make-hyper-backend
+            (setq-local crush-active-provider
+                        (crush-make-hyper-provider
                          :buffer buf
                          :working-directory default-directory
                          :base-url crush-hyper-base-url
@@ -428,7 +438,7 @@ backends with a nil model slot."
             (should (string= (crush--header-model) "my-model"))))
       (crush-test--cleanup))))
 
-(ert-deftest crush-test/header-model-uses-backend-slot ()
+(ert-deftest crush-test/header-model-uses-provider-slot ()
   "`crush--header-model' reads the backend model slot set at init."
   (let ((crush-model "claude-sonnet-4-20250514"))
     (unwind-protect
@@ -531,8 +541,8 @@ at point."
                 (crush-send-input))
               ;; Simulate stream completion: invoke the facade finalize
               ;; continuation directly (no process, filter, or sentinel).
-              (let ((completion (crush-backend-completion-action
-                                 crush-active-backend)))
+              (let ((completion (crush-provider-completion-action
+                                 crush-active-provider)))
                 (should (functionp completion))
                 (funcall completion))
               (when (process-live-p fake-proc)
@@ -710,7 +720,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
 
 (ert-deftest crush-test/debug-logs-output ()
   "Streamed content via the facade inserts into the buffer and finalizes.
-The debug *crush-debug* logging is the transport's job (crush-backend);
+The debug *crush-debug* logging is the transport's job (crush-provider);
 the facade owns insertion.  This replaces the deleted
 `crush--output-filter' test that asserted filter-level logging."
   (unwind-protect

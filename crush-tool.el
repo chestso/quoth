@@ -41,9 +41,8 @@
 ;; for the full design.
 ;;
 ;; Tool execution policy is yolo for v1: tool calls run without
-;; prompt, matching the run backend's auto-approve behavior (`crush
-;; run' is functionally `--yolo').  Future `ask' / `allowlist' values
-;; arrive with a real permission policy (tracked in TODO.md).
+;; prompt.  Future `ask' / `allowlist' values arrive with a real
+;; permission policy (tracked in TODO.md).
 
 ;;; Code:
 
@@ -89,7 +88,7 @@ The error result says the command timed out and was killed."
 (defcustom crush-tool-policy 'yolo
   "Tool execution policy.
 The only value in v1 is `yolo': tool calls run without prompt,
-matching the run backend's auto-approve behavior.  `ask' and
+tool calls run without prompt.  `ask' and
 `allowlist' arrive with the permission policy (TODO.md)."
   :type '(choice (const yolo))
   :group 'crush-tool)

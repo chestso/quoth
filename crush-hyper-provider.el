@@ -1,4 +1,4 @@
-;;; crush-hyper-backend.el --- Charm Hyper backend for crush  -*- lexical-binding: t; -*-
+;;; crush-hyper-provider.el --- Charm Hyper provider for crush  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
@@ -46,10 +46,10 @@
 ;;; and its batch child's `load-path' excludes the package directory.
 ;;; Prefer `require'; fall back to loading the siblings from this
 ;;; file's own directory so both flycheck and package-installed loads
-;;; work.  The order follows the dependency graph: `crush-backend'
+;;; work.  The order follows the dependency graph: `crush-provider'
 ;;; first, then `crush-xxh3' which it uses.
 (eval-and-compile
-  (dolist (dep '("crush-backend" "crush-xxh3" "crush-tool"))
+  (dolist (dep '("crush-provider" "crush-xxh3" "crush-tool"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -217,10 +217,10 @@ for the value; nil omits the header."
 (declare-function crush-tool-execute "crush-tool" (tool-call))
 (declare-function crush--tool-parse-args "crush-tool" (args-json))
 
-(cl-defstruct (crush-hyper-backend
-               (:include crush-backend (type 'hyper))
+(cl-defstruct (crush-hyper-provider
+               (:include crush-provider (type 'hyper))
                (:constructor nil)
-               (:constructor crush-make-hyper-backend
+               (:constructor crush-make-hyper-provider
                              (&key buffer working-directory base-url token model
                                    &aux (type 'hyper) (completion-action nil)))
                (:copier nil))
@@ -729,8 +729,8 @@ Returns the curl process."
     proc))
 ;;; Hyper backend methods
 
-(cl-defmethod crush-backend-send-prompt
-  ((backend crush-hyper-backend) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error continuation)
+(cl-defmethod crush-provider-send-prompt
+  ((backend crush-hyper-provider) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to BACKEND via a direct HTTP+SSE request to Hyper.
 COMPLETION is the facade's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
@@ -749,17 +749,17 @@ touches buffers itself."
   (let* ((history (and buffer
                        (crush--history-for buffer)))
          (body (crush--hyper-compose-request
-                prompt context (crush-hyper-backend-model backend)
+                prompt context (crush-hyper-provider-model backend)
                 history continuation))
-         (base-url (or (crush-hyper-backend-base-url backend)
+         (base-url (or (crush-hyper-provider-base-url backend)
                        (getenv "HYPER_URL")
                        crush-hyper-base-url))
          (token (crush-hyper--resolve-token
-                 (or (crush-hyper-backend-token backend) crush-hyper-token)))
+                 (or (crush-hyper-provider-token backend) crush-hyper-token)))
          (session-id (and crush-hyper-session-cache-p session-uuid
                           (crush-xxh3-hash64 session-uuid)))
          (x-crush-id (crush-hyper--x-crush-id)))
-    (setf (crush-backend-completion-action backend) completion)
+    (setf (crush-provider-completion-action backend) completion)
     (crush--hyper-request
      base-url token body
      (or on-delta #'ignore)
@@ -768,23 +768,23 @@ touches buffers itself."
      session-id
      x-crush-id)))
 
-(cl-defmethod crush-backend-interrupt ((backend crush-hyper-backend))
+(cl-defmethod crush-provider-interrupt ((backend crush-hyper-provider))
   "Interrupt the hyper request for BACKEND."
-  (crush-backend-cleanup backend))
+  (crush-provider-cleanup backend))
 
-(cl-defmethod crush-backend-active-p ((_backend crush-hyper-backend))
+(cl-defmethod crush-provider-active-p ((_backend crush-hyper-provider))
   "Return non-nil while a hyper request is in flight for BACKEND."
   nil)
 
-(cl-defmethod crush-backend-cleanup ((_backend crush-hyper-backend))
+(cl-defmethod crush-provider-cleanup ((_backend crush-hyper-provider))
   "Clean up any hyper request resources; phase 1 has none to kill."
   nil)
 
-(cl-defmethod crush-backend-grant-permission ((_backend crush-hyper-backend) _permission-id _action)
+(cl-defmethod crush-provider-grant-permission ((_backend crush-hyper-provider) _permission-id _action)
   "No permissions are issued in phase 1."
   nil)
 
-(cl-defmethod crush-backend--tool-results ((_backend crush-hyper-backend) tool-calls)
+(cl-defmethod crush-provider--tool-results ((_backend crush-hyper-provider) tool-calls)
   "Build the tool-result continuation messages and display blocks for TOOL-CALLS.
 Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
   (let ((tcs-list nil)
@@ -827,7 +827,7 @@ Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
           (nreverse tool-msgs)
           (nreverse blocks))))
 
-(cl-defmethod crush-backend--tool-calls ((_backend crush-hyper-backend) process)
+(cl-defmethod crush-provider--tool-calls ((_backend crush-hyper-provider) process)
   "Return the tool-calls vector from the SSE state on PROCESS, or nil.
 The SSE parser accumulates `tool_calls' deltas into the state's
 `:tool-calls' slot.  Works on deleted processes (process properties
@@ -836,5 +836,5 @@ persist until GC)."
     (let ((sse (process-get process :crush-sse)))
       (and sse (plist-get sse :tool-calls)))))
 
-(provide 'crush-hyper-backend)
-;;; crush-hyper-backend.el ends here
+(provide 'crush-hyper-provider)
+;;; crush-hyper-provider.el ends here

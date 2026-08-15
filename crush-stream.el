@@ -45,7 +45,7 @@
 ;;; Prefer `require'; fall back to loading the sibling from this file's
 ;;; own directory so both flycheck and package-installed loads work.
 (eval-and-compile
-  (dolist (dep '("crush-backend"))
+  (dolist (dep '("crush-provider"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -53,7 +53,7 @@
               (or buffer-file-name load-file-name default-directory)))
             nil t))))
 
-(defvar crush-active-backend nil
+(defvar crush-active-provider nil
   "The active crush backend for this buffer; defined in `crush.el'.
 Declared here so the compiler accepts the free reference in
 `crush-facade--stream-progress'.")
@@ -83,9 +83,9 @@ as the runnable-pipeline/inflight/blocked count for UI consumers."
   (let* ((state (or crush--stream-state
                     (list :status 'idle :error nil :count 1)))
          (count (or (plist-get state :count)
-                    (when (and crush-active-backend
-                               (crush-backend-p crush-active-backend))
-                      (crush-backend-application-count crush-active-backend))
+                    (when (and crush-active-provider
+                               (crush-provider-p crush-active-provider))
+                      (crush-provider-application-count crush-active-provider))
                     1)))
     (plist-put (copy-sequence state) :applications count)))
 

@@ -480,8 +480,8 @@ open (`crush--response-start' at point-max after a newline)."
                   ;; The transport process is the interrupt target; the
                   ;; pipe process cannot be interrupted, so mock the kill.
                   (setq-local crush-process proc)
-                  (setq-local crush-active-backend
-                              (crush-make-hyper-backend
+                  (setq-local crush-active-provider
+                              (crush-make-hyper-provider
                                :buffer (current-buffer)
                                :working-directory default-directory))
                   (cl-letf (((symbol-function 'interrupt-process)
@@ -528,8 +528,8 @@ open (`crush--response-start' at point-max after a newline)."
                   ;; The transport process is the interrupt target; the
                   ;; pipe process cannot be interrupted, so mock the kill.
                   (setq-local crush-process proc)
-                  (setq-local crush-active-backend
-                              (crush-make-hyper-backend
+                  (setq-local crush-active-provider
+                              (crush-make-hyper-provider
                                :buffer (current-buffer)
                                :working-directory default-directory))
                   (cl-letf (((symbol-function 'interrupt-process)

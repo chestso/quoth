@@ -1,4 +1,4 @@
-;;; crush-backend.el --- crush backend protocol  -*- lexical-binding: t; -*-
+;;; crush-provider.el --- crush provider protocol  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
@@ -30,15 +30,15 @@
 
 ;;; Commentary:
 
-;; Shared backend protocol for crush.el: the `crush-backend' base struct
-;; and the `crush-backend-*' generic functions implemented by
-;; `crush-hyper-backend.el' (direct HTTP to the Charm Hyper gateway).
+;; Shared backend protocol for crush.el: the `crush-provider' base struct
+;; and the `crush-provider-*' generic functions implemented by
+;; `crush-hyper-provider.el' (direct HTTP to the Charm Hyper gateway).
 
 ;;; Code:
 
 (require 'cl-lib)
 
-(cl-defstruct (crush-backend
+(cl-defstruct (crush-provider
                (:constructor nil)
                (:copier nil))
   "Base structure for a crush backend."
@@ -58,7 +58,7 @@ optional line range. Paths are relative to the project root. Use this context
 to answer the prompt."
   "Preamble used before attached context by both backends.")
 
-(cl-defgeneric crush-backend-send-prompt (backend prompt &key context session-id continue-p completion buffer stderr on-delta on-error continuation)
+(cl-defgeneric crush-provider-send-prompt (backend prompt &key context session-id continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.
 COMPLETION is a zero-argument closure (the facade's continuation) that
 the backend must invoke exactly once when the response stream finishes.
@@ -72,20 +72,20 @@ CONTINUATION, when non-nil, is a list of structured message alists
 that replace the user message in the request body; used by the
 tool loop to send follow-up requests with tool results.")
 
-(cl-defgeneric crush-backend-interrupt (backend)
+(cl-defgeneric crush-provider-interrupt (backend)
   "Interrupt the currently running operation on BACKEND.")
 
-(cl-defgeneric crush-backend-active-p (backend)
+(cl-defgeneric crush-provider-active-p (backend)
   "Return non-nil if BACKEND has an active operation.")
 
-(cl-defgeneric crush-backend-cleanup (backend)
+(cl-defgeneric crush-provider-cleanup (backend)
   "Clean up any resources held by BACKEND.")
 
-(cl-defgeneric crush-backend-grant-permission (backend permission-id action)
+(cl-defgeneric crush-provider-grant-permission (backend permission-id action)
   "Respond to a permission request on BACKEND identified by PERMISSION-ID.
 ACTION is `allow', `allow-session', or `deny'.")
 
-(cl-defgeneric crush-backend--tool-results (backend tool-calls)
+(cl-defgeneric crush-provider--tool-results (backend tool-calls)
   "Build the tool-result messages and display blocks for TOOL-CALLS.
 TOOL-CALLS is a vector of tool-call alists from the SSE stream,
 accumulated by `crush--hyper-sse-merge-tool-calls'.  Returns a
@@ -97,14 +97,14 @@ TOOL-BLOCKS is a list of plists (:name :id :args-json :result
   (ignore backend tool-calls)
   nil)
 
-(cl-defgeneric crush-backend--tool-calls (backend process)
+(cl-defgeneric crush-provider--tool-calls (backend process)
   "Return the accumulated tool-calls vector from BACKEND's PROCESS, or nil.
-PROCESS is the transport process returned by `crush-backend-send-prompt'.
+PROCESS is the transport process returned by `crush-provider-send-prompt'.
 For streaming backends, the SSE state on PROCESS carries the
 `:tool-calls' vector accumulated by the parser; non-streaming
 backends return nil."
   (ignore backend process)
   nil)
 
-(provide 'crush-backend)
-;;; crush-backend.el ends here
+(provide 'crush-provider)
+;;; crush-provider.el ends here

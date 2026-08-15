@@ -239,17 +239,17 @@ Buffer-local.")
 
 ;;; Backend abstraction
 
-;;; The `crush-backend' base struct and the `crush-backend-*' protocol
-;;; live in `crush-backend.el'; the concrete backend in
-;;; `crush-hyper-backend.el' (direct HTTP to the Charm Hyper gateway).
+;;; The `crush-provider' base struct and the `crush-provider-*' protocol
+;;; live in `crush-provider.el'; the concrete backend in
+;;; `crush-hyper-provider.el' (direct HTTP to the Charm Hyper gateway).
 ;;; The dependency files sit next to this file but are not guaranteed to
 ;;; be on `load-path': package.el adds the package dir, while direct
 ;;; `load' or flycheck's batch byte-compile do not.  Try `require'
 ;;; first, then fall back to loading from this file's own directory so
 ;;; both setups work.
 (eval-and-compile
-  (dolist (dep '("crush-backend" "crush-xxh3" "crush-stream"
-                 "crush-hyper-backend" "crush-tool"))
+  (dolist (dep '("crush-provider" "crush-xxh3" "crush-stream"
+                 "crush-hyper-provider" "crush-tool"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -260,14 +260,14 @@ Buffer-local.")
               (or buffer-file-name load-file-name default-directory)))
             nil t))))
 
-(defvar crush-active-backend nil
+(defvar crush-active-provider nil
   "The active crush backend for this buffer (facade-owned).
 Set during buffer initialization; the facade's `crush-facade--send'
 and `crush-interrupt' dispatch through it.  Buffer-local.")
 (declare-function markdown-mode "markdown-mode" ())
 (declare-function crush-xxh3-hash64 "crush-xxh3" (input))
-(declare-function crush-backend--tool-calls "crush-backend" (backend process))
-(declare-function crush-backend--tool-results "crush-backend" (backend tool-calls))
+(declare-function crush-provider--tool-calls "crush-provider" (backend process))
+(declare-function crush-provider--tool-results "crush-provider" (backend tool-calls))
 (defvar crush-tools-enabled t)
 (defvar crush-tool-loop-max 8)
 
@@ -460,10 +460,10 @@ Only logs when `crush-debug-mode' is non-nil."
   "Return the effective model name for the header line, or nil.
 Reads the backend's model slot (derived from `crush-model' at buffer
 init); falls back to `crush-hyper-default-model' for hyper backends."
-  (let ((model (and (crush-hyper-backend-p crush-active-backend)
-                    (crush-hyper-backend-model crush-active-backend))))
+  (let ((model (and (crush-hyper-provider-p crush-active-provider)
+                    (crush-hyper-provider-model crush-active-provider))))
     (or model
-        (and (crush-hyper-backend-p crush-active-backend)
+        (and (crush-hyper-provider-p crush-active-provider)
              crush-hyper-default-model))))
 
 (defun crush--region-label-at-point ()
@@ -918,7 +918,7 @@ buffer-local and never leaves via the network; only the hash is sent."
       (setq-local crush--attachments nil)
       (setq-local crush--response-start nil)
       (setq-local crush--pending-context nil)
-      (setq-local crush-active-backend nil)
+      (setq-local crush-active-provider nil)
       (setq-local crush--prompt-start-marker nil)
       (setq-local crush--input-start-marker nil)
       (setq-local crush--input-ring nil)
@@ -941,8 +941,8 @@ buffer-local and never leaves via the network; only the hash is sent."
                        default-directory)))
       (setq-local crush--project-root
                   (crush--canonical-root default-directory))
-      (setq-local crush-active-backend
-                  (crush-make-hyper-backend
+      (setq-local crush-active-provider
+                  (crush-make-hyper-provider
                    :buffer buf
                    :working-directory default-directory
                    :base-url crush-hyper-base-url
@@ -1402,10 +1402,10 @@ drives the tool loop (execute, insert blocks, send follow-up).
 Otherwise closes the response and inserts a fresh prompt.  The
 backend's completion action invokes this."
   (if (and crush-tools-enabled
-           crush-active-backend
+           crush-active-provider
            crush-process
-           (let ((tcs (crush-backend--tool-calls
-                       crush-active-backend crush-process)))
+           (let ((tcs (crush-provider--tool-calls
+                       crush-active-provider crush-process)))
              (and (vectorp tcs) (> (length tcs) 0))))
       (crush-facade--tool-loop)
     (crush-facade--stream-transition 'done 1)
@@ -1420,7 +1420,7 @@ backend's completion action invokes this."
 (defun crush-facade--tool-loop ()
   "Execute pending tool calls and send a follow-up request.
 Extracts tool calls from the transport's SSE state, executes them
-via `crush-backend--tool-results', inserts tool blocks into the
+via `crush-provider--tool-results', inserts tool blocks into the
 buffer, and sends a follow-up request with the continuation
 messages.  Loops up to `crush-tool-loop-max' rounds; when the cap
 is hit or no tool calls come back, finalizes via
@@ -1434,10 +1434,10 @@ is hit or no tool calls come back, finalizes via
                                 (marker-position crush--response-start)))
               (prompt-id crush--prompt-id))
           (crush-facade--close-response response-start prompt-id)))
-    (let* ((tool-calls (crush-backend--tool-calls
-                        crush-active-backend crush-process))
-           (result (crush-backend--tool-results
-                    crush-active-backend tool-calls))
+    (let* ((tool-calls (crush-provider--tool-calls
+                        crush-active-provider crush-process))
+           (result (crush-provider--tool-results
+                    crush-active-provider tool-calls))
            (assistant-msg (nth 0 result))
            (tool-msgs (nth 1 result))
            (blocks (nth 2 result))
@@ -1453,7 +1453,7 @@ is hit or no tool calls come back, finalizes via
       ;; Build the continuation messages: user + assistant(tool_calls) +
       ;; tool results.  The user message is extracted from the buffer
       ;; (the current prompt's typed input), and the assistant + tool
-      ;; messages come from `crush-backend--tool-results'.
+      ;; messages come from `crush-provider--tool-results'.
       (let ((user-text (crush--user-turn-text prompt-id)))
         (setq-local crush--tool-continuation
                     (append (when (and user-text (> (length user-text) 0))
@@ -1471,8 +1471,8 @@ is hit or no tool calls come back, finalizes via
       (setq-local crush-process nil)
       (setq-local crush--response-start (point-marker))
       (crush-facade--stream-transition 'active 2)
-      (let ((real-proc (crush-backend-send-prompt
-                        crush-active-backend ""
+      (let ((real-proc (crush-provider-send-prompt
+                        crush-active-provider ""
                         :context nil
                         :session-id crush--session
                         :session-uuid crush--session-uuid
@@ -1531,8 +1531,8 @@ backends signal stream completion without touching buffers.  Runs in the
 crush buffer, which owns all streamed output."
   (let ((buf (current-buffer)))
     (crush-facade--stream-transition 'active 2)
-    (let ((real-proc (crush-backend-send-prompt
-                      crush-active-backend prompt
+    (let ((real-proc (crush-provider-send-prompt
+                      crush-active-provider prompt
                       :context (when has-context context)
                       :session-id crush--session
                       :session-uuid crush--session-uuid

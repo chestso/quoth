@@ -12,7 +12,7 @@ if [ -n "$MD_DIR" ]; then
 fi
 
 echo "=== Byte-compile ==="
-for f in crush.el crush-backend.el crush-stream.el crush-hyper-backend.el crush-xxh3.el crush-tool.el; do
+for f in crush.el crush-provider.el crush-stream.el crush-hyper-provider.el crush-xxh3.el crush-tool.el; do
 	emacs --batch -L . -f batch-byte-compile "$f" 2>&1 | grep -v "site-start" || true
 done
 

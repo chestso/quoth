@@ -1,4 +1,4 @@
-;;; crush-test-hyper.el --- Hyper backend tests for crush  -*- lexical-binding: t; -*-
+;;; crush-test-hyper.el --- Hyper provider tests for crush  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
@@ -63,7 +63,7 @@
 (defvar crush-test--captured-completion nil
   "Capture slot for `crush-test/hyper-send-injects-completion'.")
 
-;;; 91. Hyper backend: request composition
+;;; 91. Hyper provider: request composition
 (ert-deftest crush-test/hyper-history-messages-tool-pair ()
   "A tool turn carrying id/name/args emits the assistant tool_calls
 declaration followed by the tool result with the matching id, per the
@@ -112,7 +112,7 @@ OpenAI function-calling message shape."
       (should (string= (cdr (assoc 'tool_call_id tool-msg)) "unknown"))
       (should (string= (cdr (assoc 'content tool-msg)) "<raw>")))))
 
-;;; 91. Hyper backend: request composition
+;;; 91. Hyper provider: request composition
 
 
 (ert-deftest crush-test/hyper-compose-no-context ()
@@ -178,7 +178,7 @@ It is byte-identical, with no `tools' or `tool_choice' key."
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
-;;; 92. Hyper backend: SSE parser
+;;; 92. Hyper provider: SSE parser
 
 (defun crush-test--sse-state ()
   "Return a fresh, empty SSE parser state."
@@ -491,14 +491,14 @@ Repeated sends resolve to the same value."
                                     :noquery t)))
               ((symbol-function 'crush--history-for) (lambda (_b) nil)))
       (unwind-protect
-          (let ((backend (crush-make-hyper-backend
+          (let ((backend (crush-make-hyper-provider
                           :buffer (current-buffer)
                           :base-url "http://127.0.0.1:1"
                           :token "tok")))
-            (crush-backend-send-prompt backend "hi")
+            (crush-provider-send-prompt backend "hi")
             (should (string-match-p "[0-9a-f]\\{16\\}" (or captured "")))
             (let ((first captured))
-              (crush-backend-send-prompt backend "hi")
+              (crush-provider-send-prompt backend "hi")
               (should (string= first captured))))
         (crush-test--cleanup)))))
 
@@ -565,20 +565,19 @@ non-nil."
                                     :noquery t)))
               ((symbol-function 'crush--history-for) (lambda (_b) nil)))
       (unwind-protect
-          (let ((backend (crush-make-hyper-backend
+          (let ((backend (crush-make-hyper-provider
                           :buffer (current-buffer)
                           :base-url "http://127.0.0.1:1"
                           :token "tok"))
                 (crush-hyper-session-cache-p nil))
-            (crush-backend-send-prompt
+            (crush-provider-send-prompt
              backend "hi" :session-uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
             (should (null captured-session)))
         (crush-test--cleanup)))))
 
 (ert-deftest crush-test/hyper-method-hashes-session-uuid-when-enabled ()
-  "With the cache gate on, the method passes the XXH3-64 hash.
-This is of the session UUID, which matching the run backend's
-`--session' would not."
+  "With the cache gate on, the method passes the XXH3-64 hash
+of the session UUID as the cache-affinity session id."
   (let ((captured-session nil))
     (cl-letf (((symbol-function 'crush--hyper-request)
                (lambda (&rest args)
@@ -587,17 +586,17 @@ This is of the session UUID, which matching the run backend's
                                     :noquery t)))
               ((symbol-function 'crush--history-for) (lambda (_b) nil)))
       (unwind-protect
-          (let ((backend (crush-make-hyper-backend
+          (let ((backend (crush-make-hyper-provider
                           :buffer (current-buffer)
                           :base-url "http://127.0.0.1:1"
                           :token "tok"))
                 (crush-hyper-session-cache-p t))
-            (crush-backend-send-prompt
+            (crush-provider-send-prompt
              backend "hi" :session-uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
             (should (string= captured-session "db22027126414ba6")))
         (crush-test--cleanup)))))
 
-;;; 92b. Hyper backend: token resolution
+;;; 92b. Hyper provider: token resolution
 
 (defun crush-test--hyper-on-delta (buf)
   "Return the facade append-delta closure for BUF (buffer-aware)."
@@ -671,15 +670,15 @@ This is of the session UUID, which matching the run backend's
       (should (string= (crush-hyper--resolve-token crush-hyper-token)
                        "sk-hyper-default")))))
 
-(ert-deftest crush-test/hyper-token-backend-slot-beats-custom ()
+(ert-deftest crush-test/hyper-token-provider-slot-beats-custom ()
   "A token on the backend struct wins over `crush-hyper-token'."
-  (let ((backend (crush-make-hyper-backend
+  (let ((backend (crush-make-hyper-provider
                   :buffer (current-buffer)
                   :base-url "http://127.0.0.1:1"
                   :token "sk-hyper-slot")))
     (let ((crush-hyper-token "sk-hyper-custom"))
       (let ((token (crush-hyper--resolve-token
-                    (or (crush-hyper-backend-token backend)
+                    (or (crush-hyper-provider-token backend)
                         crush-hyper-token))))
         (should (string= token "sk-hyper-slot"))))))
 
@@ -695,13 +694,13 @@ on stream completion instead of finalizing or touching buffers itself."
                  (setq crush-test--captured-completion (nth 4 args))
                  (make-pipe-process :name "crush-hyper-test-fake"
                                     :noquery t))))
-      (let ((backend (crush-make-hyper-backend
+      (let ((backend (crush-make-hyper-provider
                       :buffer (current-buffer)
                       :base-url base
                       :token "tok")))
         (unwind-protect
             (progn
-              (crush-backend-send-prompt
+              (crush-provider-send-prompt
                backend "hi" :completion injected)
               ;; The backend must have threaded the injected completion
               ;; into the transport instead of a buffer-based finalizer:
@@ -1071,11 +1070,11 @@ messages array is [system, prior-user, prior-assistant, current]."
                       (insert "first")
                       (save-excursion (goto-char (point-max)) (newline))
                       (setq-local crush--response-start (point-marker))
-                      (let ((backend (crush-make-hyper-backend
+                      (let ((backend (crush-make-hyper-provider
                                       :buffer buf
                                       :base-url base
                                       :token "tok")))
-                        (crush-backend-send-prompt
+                        (crush-provider-send-prompt
                          backend "first"
                          :completion (crush-test--hyper-completion buf)
                          :on-delta (crush-test--hyper-on-delta buf)
@@ -1094,11 +1093,11 @@ messages array is [system, prior-user, prior-assistant, current]."
                       (insert "second")
                       (goto-char (point-max))
                       (setq-local crush--response-start (point-marker))
-                      (let ((backend (crush-make-hyper-backend
+                      (let ((backend (crush-make-hyper-provider
                                       :buffer buf
                                       :base-url base
                                       :token "tok")))
-                        (crush-backend-send-prompt
+                        (crush-provider-send-prompt
                          backend "second"
                          :completion (crush-test--hyper-completion buf)
                          :on-delta (crush-test--hyper-on-delta buf)
@@ -1144,8 +1143,8 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
-          (setq-local crush-active-backend
-                      (crush-make-hyper-backend
+          (setq-local crush-active-provider
+                      (crush-make-hyper-provider
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
@@ -1154,7 +1153,7 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
                  (crush-test--with-hyper-server
                   'history
                   (lambda (base)
-                    (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                    (setf (crush-hyper-provider-base-url crush-active-provider) base)
                     (let ((_buf (current-buffer)))
                       (goto-char (point-max))
                       (insert "hi")
@@ -1199,8 +1198,8 @@ The second request is a plain [system, user]."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
-          (setq-local crush-active-backend
-                      (crush-make-hyper-backend
+          (setq-local crush-active-provider
+                      (crush-make-hyper-provider
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
@@ -1210,7 +1209,7 @@ The second request is a plain [system, user]."
                    (crush-test--with-hyper-server
                     'history
                     (lambda (base)
-                      (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                      (setf (crush-hyper-provider-base-url crush-active-provider) base)
                       (let ((_buf (current-buffer)))
                         (goto-char (point-max))
                         (insert "hi")
@@ -1285,8 +1284,8 @@ The second request is a plain [system, user]."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
-          (setq-local crush-active-backend
-                      (crush-make-hyper-backend
+          (setq-local crush-active-provider
+                      (crush-make-hyper-provider
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
@@ -1296,7 +1295,7 @@ The second request is a plain [system, user]."
                    (crush-test--with-hyper-server
                     'reasoning-history
                     (lambda (base)
-                      (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                      (setf (crush-hyper-provider-base-url crush-active-provider) base)
                       (let ((_buf (current-buffer)))
                         ;; Turn 1 through the real send path: reasoning
                         ;; deltas stream, finalize tags them.
@@ -1436,8 +1435,8 @@ The second request gets a content answer and finalizes."
         (crush-tools-enabled t))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
-          (setq-local crush-active-backend
-                      (crush-make-hyper-backend
+          (setq-local crush-active-provider
+                      (crush-make-hyper-provider
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
@@ -1446,7 +1445,7 @@ The second request gets a content answer and finalizes."
                  (crush-test--with-hyper-server
                   'tool-call
                   (lambda (base)
-                    (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                    (setf (crush-hyper-provider-base-url crush-active-provider) base)
                     (let ((_buf (current-buffer)))
                       (goto-char (point-max))
                       (insert "ls")
@@ -1498,8 +1497,8 @@ the cap, insert a final prompt, and stop sending requests."
         (crush-tool-loop-max 2))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
-          (setq-local crush-active-backend
-                      (crush-make-hyper-backend
+          (setq-local crush-active-provider
+                      (crush-make-hyper-provider
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
@@ -1508,7 +1507,7 @@ the cap, insert a final prompt, and stop sending requests."
                  (crush-test--with-hyper-server
                   'tool-call-loop
                   (lambda (base)
-                    (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                    (setf (crush-hyper-provider-base-url crush-active-provider) base)
                     (let ((_buf (current-buffer)))
                       (goto-char (point-max))
                       (insert "go")
@@ -1540,8 +1539,8 @@ answer; the buffer should have a new prompt and the response tagged."
         (crush-tools-enabled t))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
-          (setq-local crush-active-backend
-                      (crush-make-hyper-backend
+          (setq-local crush-active-provider
+                      (crush-make-hyper-provider
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
@@ -1550,7 +1549,7 @@ answer; the buffer should have a new prompt and the response tagged."
             (crush-test--with-hyper-server
              'tool-call
              (lambda (base)
-               (setf (crush-hyper-backend-base-url crush-active-backend) base)
+               (setf (crush-hyper-provider-base-url crush-active-provider) base)
                (let ((_buf (current-buffer)))
                  (goto-char (point-max))
                  (insert "ls")
@@ -1584,8 +1583,8 @@ point is on the tool block and `region: response' on the final content."
         (buf (crush-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
-          (setq-local crush-active-backend
-                      (crush-make-hyper-backend
+          (setq-local crush-active-provider
+                      (crush-make-hyper-provider
                        :buffer buf
                        :working-directory default-directory
                        :token "tok"
@@ -1593,7 +1592,7 @@ point is on the tool block and `region: response' on the final content."
           (crush-test--with-hyper-server
            'tool-call
            (lambda (base)
-             (setf (crush-hyper-backend-base-url crush-active-backend) base)
+             (setf (crush-hyper-provider-base-url crush-active-provider) base)
              (goto-char (point-max))
              (insert "ls")
              (crush-send-input)
@@ -1638,8 +1637,8 @@ sends correct ids; this pins the history-replay path."
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            (setq-local crush-active-backend
-                        (crush-make-hyper-backend
+            (setq-local crush-active-provider
+                        (crush-make-hyper-provider
                          :buffer buf
                          :working-directory default-directory
                          :token "tok"
@@ -1648,7 +1647,7 @@ sends correct ids; this pins the history-replay path."
                    (crush-test--with-hyper-server
                     'tool-call
                     (lambda (base)
-                      (setf (crush-hyper-backend-base-url crush-active-backend) base)
+                      (setf (crush-hyper-provider-base-url crush-active-provider) base)
                       (goto-char (point-max))
                       (insert "ls")
                       (crush-send-input)

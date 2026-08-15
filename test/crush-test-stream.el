@@ -59,10 +59,10 @@
 (declare-function crush-test--buffer-name "crush-test")
 
 (defun crush-test--send-capturing-completion ()
-  "Send a prompt in a fresh buffer with `crush-backend-send-prompt' mocked.
+  "Send a prompt in a fresh buffer with `crush-provider-send-prompt' mocked.
 Returns the completion action the facade injected."
   (let ((captured-completion nil))
-    (cl-letf (((symbol-function 'crush-backend-send-prompt)
+    (cl-letf (((symbol-function 'crush-provider-send-prompt)
                (lambda (_backend _prompt &rest args)
                  (setq captured-completion (plist-get args :completion)))))
       (with-current-buffer (crush-test--fresh-buffer)
@@ -176,8 +176,8 @@ fake instead of spawning curl."
               (call-interactively #'crush-send-input)
               ;; Capture the injected completion from the backend slot
               ;; (the facade stores it there on send).
-              (setq completion (crush-backend-completion-action
-                                crush-active-backend))
+              (setq completion (crush-provider-completion-action
+                                crush-active-provider))
               (funcall thunk fake completion))))
       (when (process-live-p fake)
         (delete-process fake))
