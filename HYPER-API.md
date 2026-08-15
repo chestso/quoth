@@ -8,10 +8,10 @@ in Crush. The gateway's OpenAI-compatible chat-completions API lives
 under `/v1`; tokens (`sk-hyper-` prefixed) come from the Hyper
 Dashboard.
 
-crush.el consumes this API through the hyper backend (`crush-backend-type
-'hyper`): curl subprocess transport with SSE parsed in the process filter
-(see the transport section in `crush-hyper-backend.el` and the integration
-fixture `test/hyper-server.py`).
+crush.el consumes this API through the hyper provider: the reusable
+OpenAI client (`crush-openai.el`) runs a curl subprocess transport with SSE
+parsed in the process filter (see the integration fixture
+`test/hyper-server.py`).
 
 Source of truth: [`internal/agent/hyper/`](https://github.com/charmbracelet/crush/tree/main/internal/agent/hyper),
 [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go),

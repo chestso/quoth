@@ -12,17 +12,13 @@ Everything else follows from that wish. The conversation lives in a real buffer,
 
 crush.el's primary mode of operation is **direct provider interaction**: it talks to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE (no separate CLI binary needed). A dedicated Emacs buffer sends prompts and streams the model's response, including chain-of-thought reasoning. On top of that, any buffer selection can be used as context: the selection is formatted as a markdown fenced code block with the file path and line numbers (relative to the project root), then inserted into the crush buffer before the prompt as an attachment.
 
-A compatibility backend drives the [Crush CLI](https://github.com/charmbracelet/crush) (`crush run`) for users who prefer it; it is not required for the default provider mode.
-
 Each project gets its own crush buffer (see [Per-Project Buffers](#per-project-buffers)), so work in different projects stays isolated.
 
 See [TODO.md](TODO.md) for the full project goal and roadmap.
 
 ## Important: Permission Behavior
 
-Both backends currently run tools without confirmation. The hyper backend (default) executes the `bash` tool immediately when the model calls it, and the `crush run` backend auto-approves all permissions, including `edit`, `write`, and `bash`. This is functionally equivalent to running `crush --yolo`.
-
-Interactive permission prompts for tool execution are on the roadmap. See the [TODO.md](TODO.md) roadmap for details.
+Tool calls run without confirmation: the provider executes the `bash` tool immediately when the model calls it. Interactive permission prompts for tool execution are on the roadmap. See the [TODO.md](TODO.md) roadmap for details.
 
 ## Installing
 
@@ -35,7 +31,7 @@ Not yet on MELPA. For now, clone and load manually:
   :hook (prog-mode . crush-minor-mode))
 ```
 
-Requires Emacs 28.1+. The package spans several files (`crush.el` plus `crush-backend.el`, `crush-stream.el`, `crush-run-backend.el`, `crush-hyper-backend.el`), so point `load-path` at the package directory. For manual `require`s, load `crush` last to get the full file set loaded. The default hyper backend requires only `curl`; the optional `run` backend requires the `crush` binary.
+Requires Emacs 28.1+. The package spans several files (`crush.el` plus `crush-provider.el`, `crush-openai.el`, `crush-stream.el`, `crush-hyper-provider.el`, `crush-tools.el`), so point `load-path` at the package directory. For manual `require`s, load `crush` last to get the full file set loaded. The provider requires only `curl`.
 
 ## Configuration
 
@@ -47,7 +43,7 @@ Set the default model for Crush:
 (setq crush-model "claude-sonnet-4-20250514")
 ```
 
-When set, the model is used as the hyper request model (default backend) or passed to `crush run --model` (run backend). When `nil` (default), each backend falls back to its own default (`crush-hyper-default-model` for hyper, or the CLI's configured model).
+When set, the model is used for requests. When `nil` (default), the provider falls back to `crush-openai-default-model` (the shared default).
 
 ### crush-working-directory
 
@@ -58,25 +54,6 @@ Set the working directory used by crush (resolves selections relative to it):
 ```
 
 When `nil` (default), uses the project root if available, otherwise `default-directory`.
-
-### crush-args
-
-Additional command-line arguments passed to the Crush CLI (run backend only):
-
-```elisp
-(setq crush-args '("--verbose"))
-```
-
-### crush-backend-type
-
-Which crush backend to use:
-
-```elisp
-(setq crush-backend-type 'hyper)
-```
-
-- `hyper` (default) — direct HTTP access to the Charm Hyper gateway, bypassing the CLI entirely; the package's primary mode of operation (see the [hyper backend](ARCHITECTURE.md#hyper-backend-primary)). Requires only `curl`. Supports conversation history, tool calls, and session caching. OAuth is still on the roadmap.
-- `run` — standalone `crush run` mode (compatibility with the Crush CLI). Each prompt spawns a new process. Fully implemented.
 
 ### crush-hyper-base-url
 
@@ -100,23 +77,23 @@ The value may also be a string (used verbatim) or a function of no arguments ret
 
 Set it to `nil` to request without a token (useful for local gateways). A missing authinfo entry signals an error with setup instructions rather than silently sending no token.
 
-### Model selection for hyper
+### Model selection
 
-The hyper backend uses `crush-model` (the shared model defcustom), falling back to the constant `crush-hyper-default-model` (`deepseek-v4-flash`). Request-level `max_tokens`, `temperature`, and `thinking`/`reasoning_effort` are controlled by the defcustoms below.
+The provider uses `crush-model` (the shared model defcustom), falling back to `crush-openai-default-model` (`deepseek-v4-flash`). Request-level `max_tokens`, `temperature`, and `thinking`/`reasoning_effort` are controlled by the defcustoms below.
 
-### crush-hyper-timeout / crush-hyper-max-tokens / crush-hyper-temperature
+### crush-openai-timeout / crush-openai-max-tokens / crush-openai-temperature
 
 Request tuning: timeout in seconds, `max_tokens` (default 64000), and sampling temperature (nil means unset).
 
 ### crush-hyper-history-limit / crush-hyper-history-include-reasoning
 
-The hyper backend is stateful: each request re-sends the buffer's completed exchanges — `user`, `assistant`, and `tool` turns — before the new prompt, so the model sees the whole conversation. Tool calls replay in the OpenAI function-calling shape: an assistant `tool_calls` declaration followed by the tool result with the matching `tool_call_id` (only the raw `<command>/<output>/<exit_code>` result and the stored call id travel, never the rendered tool block). The conversation is read from the buffer's tagged regions at send time — nothing is stored client- or server-side. `crush-hyper-history-limit` (default 200) caps how many prior exchanges are sent (the most recent ones are always retained); set it to `0` to disable history and get phase-1 stateless per-prompt requests.
+The provider is stateful: each request re-sends the buffer's completed exchanges — `user`, `assistant`, and `tool` turns — before the new prompt, so the model sees the whole conversation. Tool calls replay in the OpenAI function-calling shape: an assistant `tool_calls` declaration followed by the tool result with the matching `tool_call_id` (only the raw `<command>/<output>/<exit_code>` result and the stored call id travel, never the rendered tool block). The conversation is read from the buffer's tagged regions at send time — nothing is stored client- or server-side. `crush-hyper-history-limit` (default 200) caps how many prior exchanges are sent (the most recent ones are always retained); set it to `0` to disable history and get stateless per-prompt requests.
 
-`crush-hyper-history-include-reasoning` (default nil) controls whether streamed chain-of-thought rides along in history: off, the assistant turn carries only the answer; on, the CoT is re-sent as the `reasoning_content` field of the assistant message, which is what Hyper requires for thinking turns carried across requests.
+`crush-hyper-history-include-reasoning` (default nil) controls whether streamed chain-of-thought rides along in history: off, the assistant turn carries only the answer; on, the CoT is re-sent as the `reasoning_content` field of the assistant message, which is what the gateway requires for thinking turns carried across requests.
 
-### crush-hyper-thinking / crush-hyper-reasoning-effort
+### crush-openai-thinking / crush-openai-reasoning-effort
 
-When `crush-hyper-thinking` is non-nil, Hyper's internal thinking mode is enabled. `crush-hyper-reasoning-effort` selects the reasoning level (`low`, `medium`, `high`, `max`); nil uses the model default.
+When `crush-openai-thinking` is non-nil, the gateway's internal thinking mode is enabled. `crush-openai-reasoning-effort` selects the reasoning level (`low`, `medium`, `high`, `max`); nil uses the model default.
 
 ### crush-reasoning-preview-lines
 
@@ -130,24 +107,24 @@ When non-nil (default), log commands, input, output, and sentinel events to a `*
 
 ## Architecture
 
-crush.el talks to providers through a small backend abstraction
-(`crush-backend-*` protocol): the **hyper backend** (default) is direct
-HTTP streaming against the [Charm Hyper gateway](HYPER-API.md) — no CLI
-binary needed — and the **run backend** drives the `crush run` CLI for
-compatibility. Both are wired into the same facade, so the chat buffer
-behaves identically whichever backend is active.
+crush.el talks to providers through a small provider protocol
+(`crush-provider-*`): the concrete **hyper provider** (default) talks
+directly to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE — no
+CLI binary needed — using the reusable OpenAI client in
+`crush-openai.el` for request composition and streaming, and the local
+`bash` tool in `crush-tools.el`. The chat buffer behaves identically
+whichever provider is active.
 
 Details — how requests are composed and streamed, session continuity,
-tool-call replay, buffer metadata and read-only internals, the CLI's
-stdin semantics, and a hacking guide — live in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+tool-call replay, buffer metadata and read-only internals, and a
+hacking guide — live in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Usage
 
 ### Crush buffer (chat mode)
 
 - `M-x crush` — open the crush interaction buffer for the current project (or directory); each project gets its own buffer, named after the project root (e.g. `*crush:crush.el*`)
-- Type a prompt and press `RET` to send it to the active backend (provider or CLI)
+- Type a prompt and press `RET` to send it to the active provider
 - `M-p` / `M-n` — navigate input history (previous/next input)
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point; otherwise normal TAB
 - `C-c c i` — interrupt the running crush process
@@ -161,7 +138,7 @@ Each project (or directory, when not in a project) is bound to its own crush buf
 
 - Buffer names are derived from the project root, e.g. `*crush:myproject*`. When two distinct roots share a basename, a numeric suffix keeps them separate: `*crush:myproject(2)*`.
 - `M-x crush` and the `crush-minor-mode` commands (`C-c C-s`, `C-c C-b`, `C-c C-p`, `C-c C-c`) always target the buffer for the current buffer's project or directory, so context and prompts never leak between projects.
-- Follow-up prompts in a project's buffer continue that project's session (`--continue`), because Crush tracks sessions per working directory; the input history ring is also per project buffer.
+- Follow-up prompts in a project's buffer continue that project's session (session continuity via the provider's session id); the input history ring is also per project buffer.
 
 ### Source buffers (minor mode)
 
@@ -217,8 +194,8 @@ model: deepseek-v4-flash   region: response
 The region type updates as the cursor moves: `prompt` on the input
 line, `attachment` on context blocks, `reasoning` on chain-of-thought
 text, `tool` on tool blocks, `response` on the final answer, and
-`plain` elsewhere. The model is the effective backend model
-(`crush-model` if set, else the backend default).
+`plain` elsewhere. The model is the effective provider model
+(`crush-model` if set, else the provider default).
 
 ## Rendering
 
@@ -236,13 +213,13 @@ Stderr from Crush is routed to a separate `*crush-errors*` buffer to keep the ma
 
 ## Debug Logging
 
-When `crush-debug-mode` is non-nil (default), commands, input, output, and sentinel events are logged to a `*crush-debug*` buffer. This is useful for diagnosing issues with the backend integration. Disable with:
+When `crush-debug-mode` is non-nil (default), commands, input, output, and sentinel events are logged to a `*crush-debug*` buffer. This is useful for diagnosing issues with the provider integration. Disable with:
 
 ```elisp
 (setq crush-debug-mode nil)
 ```
 
-For the hyper backend, each request logs a `request:` line with the URL, model, HTTP status, content type, and whether a token was sent (never the token itself). A non-2xx status is surfaced in the buffer as `[crush-hyper error: HTTP <code> from <url>]` instead of a generic connection error.
+For the hyper provider, each request logs a `request:` line with the URL, model, HTTP status, content type, and whether a token was sent (never the token itself). A non-2xx status is surfaced in the buffer as `[crush-hyper error: HTTP <code> from <url>]` instead of a generic connection error.
 
 ## Contributing
 

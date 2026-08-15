@@ -23,7 +23,7 @@ Before opening an issue:
    - `crush.el` version or the commit you're on
    - Whether `markdown-mode` is installed (many read-only / font
      rendering bugs only reproduce with it)
-   - The backend in use (`crush-backend-type`: `hyper` default or `run`)
+   - The provider in use (hyper, via the Charm Hyper gateway)
    - A minimal repro: steps, expected behavior, actual behavior
    - If a request failed, the request/response log (attach the
      `*crush-debug*` buffer contents; never paste tokens)
@@ -57,8 +57,8 @@ changes before you push.
   confirm the full suite is green (the package follows this flow
   strictly).
 - Tests are ERT, organized by topic under `test/` (`crush-test-buffer.el`,
-  `crush-test-hyper.el`, `crush-test-backend.el`, ...). Harness helpers
-  (`crush-test--with-mock`, `crush-test--with-hyper-server`) travel
+  `crush-test-hyper.el`, `crush-test-openai.el`, `crush-test-tools.el`, ...).
+  Harness helpers (`crush-test--with-hyper-server`) travel
   with their topic file.
 - New behavior gets a test; the suite currently runs 300+ tests in
   ~20 seconds.

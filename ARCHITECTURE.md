@@ -1,7 +1,7 @@
 # crush.el Architecture
 
 Developer-facing documentation for the crush.el codebase: how the
-package is structured, how each backend works, how the chat buffer
+package is structured, how each provider works, how the chat buffer
 tracks its content, and how to hack on it. User-facing documentation
 lives in [README.md](README.md).
 
@@ -9,60 +9,61 @@ lives in [README.md](README.md).
 
 ```
 crush.el/               # Package root
-  crush.el              # Core: config, backend protocol include, chat mode, helpers, commands
-  crush-backend.el      # Backend protocol: base struct + crush-backend-* generics
+  crush.el              # Core: config, provider protocol include, chat mode, helpers, commands
+  crush-provider.el     # Provider protocol: base struct + crush-provider-* generics
+  crush-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
   crush-stream.el       # Facade stream protocol: stream state, progress, error pane
-  crush-run-backend.el  # `crush run` CLI backend (struct, defcustoms, methods)
-  crush-hyper-backend.el  # Direct HTTP backend to the Charm Hyper gateway (compose, SSE, curl transport)
+  crush-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over crush-openai)
   crush-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
-  crush-tool.el         # Tool-call machinery: bash tool, tool loop, permissions
+  crush-tools.el        # Local tool implementations: the bash tool (registers into the tool registry)
   test/                 # ERT test suite (see "Hacking" below)
 ```
 
-Dependency direction: `crush-backend.el` has no dependencies; the two
-backend files require it; `crush-stream.el` requires `crush-backend`;
-`crush-xxh3.el` has no dependencies (pure math); `crush-hyper-backend.el`
-requires `crush-backend` + `crush-xxh3`; `crush-tool.el` requires
-`crush-backend` but stays buffer- and backend-unaware; `crush.el`
-requires all six. Shared runtime plumbing (`crush--output-filter`,
-`crush--process-sentinel`, `crush-facade--append-delta`,
-`crush--debug-log`) stays in `crush.el` — the backends call it through
+Dependency direction: `crush-provider.el` has no dependencies;
+`crush-openai.el` requires `crush-provider` (for the context preamble);
+`crush-stream.el` requires `crush-provider`; `crush-xxh3.el` has no
+dependencies (pure math); `crush-hyper-provider.el` requires
+`crush-provider` + `crush-openai` + `crush-xxh3`; `crush-tools.el`
+requires `crush-openai` and registers its bash tool into the tool
+registry at load; `crush.el` requires all six. Shared runtime plumbing
+(`crush-facade--append-delta`, `crush-facade--record-error`,
+`crush--debug-log`) stays in `crush.el` — the providers call it through
 buffer-local process references and `declare-function` stubs.
 
-## Backend Abstraction
+## Provider Abstraction
 
-All provider/CLI interaction goes through a backend protocol
-(`crush-backend-send-prompt`, `crush-backend-interrupt`,
-`crush-backend-active-p`, `crush-backend-cleanup`,
-`crush-backend-grant-permission`). The protocol and shared base struct
-live in `crush-backend.el`; each backend is a dedicated,
+All provider interaction goes through a provider protocol
+(`crush-provider-send-prompt`, `crush-provider-interrupt`,
+`crush-provider-active-p`, `crush-provider-cleanup`,
+`crush-provider-grant-permission`). The protocol and shared base struct
+live in `crush-provider.el`; the concrete provider is a dedicated,
 buffer-unaware file:
 
-- `crush-hyper-backend.el` — the default implementation: direct HTTP
-  access to the Charm Hyper gateway (see below).
-- `crush-run-backend.el` — the compatibility CLI backend. Spawns
-  `crush run --quiet` per prompt.
+- `crush-hyper-provider.el` — the default implementation: direct HTTP
+  to the Charm Hyper gateway (see below).
 
 `cl-defstruct` + `cl-defgeneric`/`cl-defmethod` provide the protocol.
-The shared `crush-backend` base struct has slots `buffer`,
-`working-directory`, `type`; each backend adds its own slots (the run
-backend owns the CLI-related defcustoms and a `process` slot; the
-hyper backend owns the hyper defcustoms and its request params).
+The shared `crush-provider` base struct has slots `buffer`,
+`working-directory`, `type`; the hyper provider adds its own slots
+(base URL, token, model).
 
-## Hyper backend (primary)
+## Hyper provider (primary)
 
-The hyper backend (default) is crush.el's **primary mode of
+The hyper provider (default) is crush.el's **primary mode of
 operation**: it posts the prompt to Hyper's OpenAI-compatible
 chat-completions endpoint (`POST {base-url}/chat/completions`, base URL
 defaulting to `https://hyper.charm.land/v1`) and streams the response
-directly. It does **not** spawn `crush run`, so it does not need the
-Crush CLI installed — only `curl` (used the same way gptel and plz.el
-use it).
+directly. It needs no `crush` binary — only `curl` (used the same way
+gptel and plz.el use it). The HTTP+SSE wire work is implemented once in
+the reusable OpenAI client `crush-openai.el`; the provider is a thin
+shim supplying hyper config (base URL, token, session-affinity hash,
+x-crush-id) and mapping the provider protocol onto the client's
+`crush-openai-compose-request` and `crush-openai-request`.
 
 ### How it works
 
-1. `crush-backend-send-prompt` composes the request body
-   (`crush--hyper-compose-request`: messages array with a minimal
+1. `crush-provider-send-prompt` composes the request body via
+   `crush-openai-compose-request` (messages array with a minimal
    system prompt, the user prompt, model, and `stream: t`) and fires a
    `curl --config -` subprocess; the config (URL, `request = POST`,
    JSON content-type, bearer auth header, and `data-binary = @-`) plus
@@ -80,7 +81,7 @@ use it).
 
 ### Session continuity
 
-The hyper backend is stateful: prior conversation from the buffer's
+The hyper provider is stateful: prior conversation from the buffer's
 tagged regions is folded into each request's messages array as
 `[system, prior-user, prior-assistant, ..., current-user]`. Set
 `crush-hyper-history-limit` to `0` for stateless per-prompt requests.
@@ -144,71 +145,8 @@ produces a content answer instead of tool calls.
 - No model catalog.
 - Interrupt is a stub; the "still running" guard does not block during
   hyper requests, so avoid typing another prompt mid-stream.
-- `crush-backend-grant-permission` is a no-op (tools run without
+- `crush-provider-grant-permission` is a no-op (tools run without
   confirmation).
-
-## Run backend (compatibility)
-
-The run backend (`crush-backend-type 'run`) drives the **Crush CLI**
-instead: each prompt spawns a new `crush run` process and streams its
-stdout into the crush buffer. It requires the `crush` binary on
-`exec-path` (`crush-program`).
-
-### How it works
-
-1. `crush-backend-send-prompt` builds the command line:
-   `crush run --quiet [--model M] [--session ID | --continue] [prompt]`.
-   `--quiet` suppresses the spinner; stderr goes to the `*crush-errors*`
-   buffer. `--session` takes precedence over `--continue`.
-2. Output is streamed into the buffer by `crush--output-filter` at the
-   process mark; on exit the sentinel runs the facade's completion —
-   tagging the response, freezing it read-only, and inserting a fresh
-   `crush> ` prompt. There is no persistent process.
-
-### How context reaches the model
-
-`crush run` treats stdin as opaque text: the CLI reads all of it and
-prepends it verbatim to the prompt, separated by a blank line. It does
-not parse attachment headers, `(lines N-M)` ranges, fence languages, or
-links, and it never reads or slices the referenced files. With
-attachments the backend writes `preamble + attachment blocks + prompt`
-to the process's stdin (the prompt is the last stdin line) and closes
-it with EOF, because `crush run` reads all of stdin before it starts.
-
-So the blocks crush.el inserts are plain markdown in the LLM message.
-The `**Attachment:**` header and line range are hints for the model —
-it may re-read a specific range with its `view` tool, or just reason
-over the text it was given.
-
-### Session continuity
-
-The run backend sends only the current prompt (and any attached context
-blocks) on each invocation; it keeps no conversation state of its own.
-Continuity is delegated to the CLI's session store: every prompt is
-persisted there, and each new invocation tells the CLI which session to
-resume.
-
-The link between prompts lives entirely in two buffer-local variables:
-
-- `crush--continue` — set to `t` by the run backend immediately after
-  the first prompt is spawned. It is passed to the next invocation as
-  `--continue`, which resumes the most recent session for the working
-  directory — in practice, the prior conversation travels along with
-  the new prompt.
-- `crush--session` — a manual session id, passed as `--session <id>`;
-  takes precedence over `--continue` and resumes a specific session
-  instead.
-
-Session IDs can be: full UUID, full XXH3 hash, or hash prefix. List
-sessions with `crush session list --json`. Clear manual selection with
-`(setq-local crush--session nil)`.
-
-### Assuming permissions
-
-`crush run` auto-approves every tool permission — functionally `--yolo`
-(see README's [Important: Permission Behavior](README.md#important-permission-behavior)).
-There is no prompt-by-prompt approval in the run backend;
-`crush-backend-grant-permission` is a no-op.
 
 ## Chat Buffer Composition
 
@@ -325,8 +263,8 @@ Always run it before committing.
 
 - `crush-` prefix: public commands, defcustoms, defgroup, faces.
 - `crush--` prefix: internal functions, state variables, markers.
-- Backend protocol names: `crush-backend-*` generics; per-backend
-  structs `crush-(run|hyper)-backend`.
+- Provider protocol names: `crush-provider-*` generics; the concrete
+  provider struct is `crush-hyper-provider`.
 - Test names: `crush-test/<topic>` under `ert-deftest`; helpers
   `crush-test--...`, traveling with their topic file.
 - Docstrings follow checkdoc conventions.
