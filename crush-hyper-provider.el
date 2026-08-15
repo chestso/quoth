@@ -183,15 +183,16 @@ COMPLETION is the facade's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
 errors.  SESSION-UUID is the buffer's opaque session identifier; when
 `crush-hyper-session-cache-p' is non-nil it is hashed (XXH3-64) and
-sent as the x-session-id / x-session-affinity cache-affinity headers,
-whereas SESSION-ID (the CLI-only session) is unused here.  The prior
-conversation is read from BUFFER via the facade's `crush--history-for',
-which enters the buffer itself, and re-sent as `user'/'assistant'
-messages; the facade's `crush-hyper-history-limit' decides whether any
-turns exist.  CONTINUATION, when non-nil, is a list of structured
-message alists that replace the user message — used by the tool loop
-to send follow-up requests with tool results.  The backend never
-touches buffers itself."
+sent as the x-session-id / x-session-affinity cache-affinity headers.
+The prior conversation is read from BUFFER via the facade's
+`crush--history-for', which enters the buffer itself, and re-sent as
+`user'/'assistant' messages; `crush-hyper-history-include-reasoning'
+controls whether reasoning turns are replayed, and the facade's
+`crush-hyper-history-limit' decides whether any turns exist.
+CONTINUATION, when non-nil, is a list of structured message alists
+that replace the user message — used by the tool loop to send
+follow-up requests with tool results.  The provider never touches
+buffers itself."
   (ignore session-id continue-p stderr)
   (let* ((history (and buffer
                        (crush--history-for buffer)))

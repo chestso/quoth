@@ -1707,5 +1707,28 @@ sends correct ids; this pins the history-replay path."
                                          (crush--openai-alist-get "id" tc)))))))))))
       (crush-test--cleanup))))
 
+;;; C5. The hyper provider is a thin shim over the OpenAI client.
+
+(ert-deftest crush-test/hyper-provider-is-thin-shim ()
+  "The hyper provider must not reimplement the OpenAI wire layer.
+It delegates to `crush-openai-compose-request' and
+`crush-openai-request', and defines no SSE/curl wire functions of its
+own (those live in crush-openai.el)."
+  (let* ((lib (or (locate-library "crush-hyper-provider")
+                  (expand-file-name "crush-hyper-provider.el"
+                                    (file-name-directory
+                                     (locate-library "crush-test")))))
+         (file (if (string-suffix-p ".elc" lib)
+                   (replace-regexp-in-string "\\.elc\\'" ".el" lib)
+                 lib))
+         (src (with-temp-buffer
+                (insert-file-contents file)
+                (buffer-string))))
+    (should (string-match-p "crush-openai-compose-request" src))
+    (should (string-match-p "crush-openai-request" src))
+    ;; No wire/transport implementation in the provider.
+    (should-not (string-match-p "defun crush--openai-\\(sse\\|curl\\|emit\\|http\\)" src))
+    (should-not (string-match-p "defun crush-openai-\\(sse\\|compose\\|request\\)" src))))
+
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here
