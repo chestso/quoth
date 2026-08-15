@@ -28,7 +28,7 @@ timeout --foreground 60 emacs --batch -L . --eval '(progn
                      (if excluded " (skipped indent)" "")))))' 2>&1 | grep -E "^  " || true
 
 echo "=== Formatting Markdown ==="
-find . -name "*.md" -not -path "./.git/*" -print0 |
+find . -name "*.md" -not -path "./.git/*" -not -path "./.crush/*" -print0 |
 	xargs -0 npx prettier --write --prose-wrap preserve 2>&1 | sed 's/^/  /'
 
 echo "=== Formatting Shell ==="
