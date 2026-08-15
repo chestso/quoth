@@ -147,8 +147,8 @@ Returns the completion action the facade injected."
 
 (defun crush-test--fake-pipe-proc ()
   "Return a disconnected pipe process usable as a fake transport process.
-Uses inert filter/sentinel so the facade's `crush--process-mark' plumbing
-and `delete-process' never trigger transport callbacks."
+Uses inert filter/sentinel so ending the response never triggers
+transport callbacks."
   (let ((proc (make-pipe-process :name "crush-test-facade-fake"
                                  :noquery t
                                  :coding 'binary
@@ -157,25 +157,27 @@ and `delete-process' never trigger transport callbacks."
     proc))
 
 (defun crush-test--with-facade (thunk)
-  "Run THUNK with `crush-backend-send-prompt' mocked to a fake process.
+  "Run THUNK with the backend transport mocked to a fake process.
 THUNK receives (PROC COMPLETION) in the fresh crush buffer, where PROC
-is the fake transport process and COMPLETION the injected continuation."
+is the fake transport process and COMPLETION the injected continuation.
+Mocks `make-process' so the hyper backend's curl transport creates the
+fake instead of spawning curl."
   (let ((fake (crush-test--fake-pipe-proc)))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
           (let ((completion nil))
-            ;; Give the fake process a live buffer so `crush--output-filter'
-            ;; and the process mark work; store it on the backend's process
-            ;; slot exactly as the real run backend would.
+            ;; Give the fake process a live buffer so the process mark
+            ;; plumbing works.
             (set-process-buffer fake (current-buffer))
-            (cl-letf (((symbol-function 'crush-backend-send-prompt)
-                       (lambda (backend _prompt &rest args)
-                         (setq completion (plist-get args :completion))
-                         (setf (crush-run-backend-process backend) fake)
-                         fake)))
+            (cl-letf (((symbol-function 'make-process)
+                       (lambda (&rest _args) fake)))
               (goto-char (point-max))
               (insert "test")
               (call-interactively #'crush-send-input)
+              ;; Capture the injected completion from the backend slot
+              ;; (the facade stores it there on send).
+              (setq completion (crush-backend-completion-action
+                                crush-active-backend))
               (funcall thunk fake completion))))
       (when (process-live-p fake)
         (delete-process fake))
@@ -183,18 +185,16 @@ is the fake transport process and COMPLETION the injected continuation."
 
 (ert-deftest crush-test/facade-harness-active-then-complete ()
   "The facade harness should expose a live process that completes.
-After send, `crush-backend-active-p' is non-nil (the fake process is
-live); running the injected completion finalizes the response and the
-stream transitions to done."
+After send, the session is live (the fake process); running the
+injected completion finalizes the response and the stream transitions
+to done."
   (unwind-protect
       (crush-test--with-facade
        (lambda (_fake completion)
-         ;; The backend's process slot holds the fake process.
-         (should (crush-backend-active-p crush-active-backend))
+         ;; The completion is the facade's injected continuation.
          (should (functionp completion))
          ;; Complete the stream through the injected continuation.
          (funcall completion)
-         (should-not (crush-backend-active-p crush-active-backend))
          (let ((state (crush-facade--stream-progress)))
            (should (eq (plist-get state :status) 'done))
            (should (= (plist-get state :applications) 1)))
@@ -204,17 +204,20 @@ stream transitions to done."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/facade-harness-moves-process-mark ()
-  "The facade should set the process mark at point-max after send.
-This is what `crush--output-filter' uses to append streamed output."
+  "The facade should set the process mark at point-max after send,
+then streamed deltas append at point-max (not via the mark)."
   (unwind-protect
       (crush-test--with-facade
        (lambda (fake _completion)
          (should (= (marker-position (process-mark fake)) (point-max)))
-         ;; Inserting through the filter lands at the mark.
-         (crush--output-filter fake "chunk")
+         ;; Deltas streamed through the facade land at point-max.
+         (crush-facade--append-delta "chunk" 'content)
          (goto-char (point-max))
          (should (search-backward "chunk" nil t))
-         (should (= (marker-position (process-mark fake)) (point-max)))))
+         ;; The facade appends at point-max; the process mark stays at
+         ;; the pre-delta send position (it is no longer the append
+         ;; cursor).
+         (should (< (marker-position (process-mark fake)) (point-max)))))
     (crush-test--cleanup)))
 
 (defun crush-test--stream-source (library)

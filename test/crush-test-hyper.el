@@ -713,8 +713,7 @@ on stream completion instead of finalizing or touching buffers itself."
 
 ;;; The dummy Hyper gateway is a small Python server
 ;;; (test/hyper-server.py), started as a subprocess per test, that
-;;; captures every request to a file and streams SSE responses.  This is
-;;; the same philosophy as `test/mock-crush.sh' for the CLI.
+;;; captures every request to a file and streams SSE responses.
 
 (defun crush-test--hyper-cap-file ()
   "Return a fresh capture-file path for the hyper dummy server."

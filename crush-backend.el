@@ -32,7 +32,6 @@
 
 ;; Shared backend protocol for crush.el: the `crush-backend' base struct
 ;; and the `crush-backend-*' generic functions implemented by
-;; `crush-run-backend.el' (the `crush run' CLI) and
 ;; `crush-hyper-backend.el' (direct HTTP to the Charm Hyper gateway).
 
 ;;; Code:

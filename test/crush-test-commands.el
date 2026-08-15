@@ -383,7 +383,7 @@ It sets crush-region-type 'attachment and a project-root-relative path."
 
 
 (ert-deftest crush-test/sentinel-no-longer-fontifies ()
-  "Sentinel should tag the response but create no overlays."
+  "Finalize should tag the response but create no overlays."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -392,20 +392,14 @@ It sets crush-region-type 'attachment and a project-root-relative path."
           (goto-char (point-max))
           (newline)
           (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo '**bold** text'")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
+          ;; Stream content through the facade, then finalize.
+          (goto-char (point-max))
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "**bold** text" 'content)
+          (crush-facade--finalize)
           (goto-char (point-min))
           (should (search-forward "bold" nil t))
-          ;; No crush overlays anywhere after the sentinel
+          ;; Finalize must create no crush overlays.
           (should-not (cl-some (lambda (ov) (overlay-get ov 'crush-overlay))
                                (overlays-in (point-min) (point-max))))
           ;; The response is still tagged

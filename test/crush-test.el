@@ -69,14 +69,12 @@
 (defun crush-test--fresh-buffer ()
   "Create a fresh crush test buffer and return it.
 The buffer is bound to `crush-test--root' and deterministically named.
-Initializes with the `run' backend (pinned for the run/buffer/mock
-tests; the global default is `hyper')."
+Initializes with the default hyper backend."
   (let ((name (crush-test--buffer-name)))
     (when (get-buffer name)
       (kill-buffer name))
     (cl-letf (((symbol-function 'project-current) (lambda (&optional _dir) nil)))
-      (let ((default-directory crush-test--root)
-            (crush-backend-type 'run))
+      (let ((default-directory crush-test--root))
         (crush)))
     (get-buffer (crush-test--buffer-name))))
 
@@ -97,7 +95,7 @@ tests; the global default is `hyper')."
 ;;; fall back to this directory so flycheck and direct loads work.
 (eval-and-compile
   (dolist (dep '("crush-test-buffer" "crush-test-commands"
-                 "crush-test-backend" "crush-test-hyper"
+                 "crush-test-hyper"
                  "crush-test-reasoning" "crush-test-stream"
                  "crush-test-xxh3" "crush-test-tools"))
     (unless (require (intern dep) nil t)

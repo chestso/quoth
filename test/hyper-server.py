@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Dummy Hyper gateway server for crush tests.
 
-Mirrors what test/mock-crush.sh does for the CLI: capture every request
-and stream configurable responses, so tests exercise the real transport
-(sockets, filters) without touching the actual Hyper gateway.
+Capture every request and stream configurable responses, so tests
+exercise the real transport (sockets, filters) without touching the
+actual Hyper gateway.
 
 Usage:
   hyper-server.py <capture-file> [mode]

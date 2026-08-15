@@ -477,14 +477,15 @@ open (`crush--response-start' at point-max after a newline)."
                 (progn
                   (crush-facade--append-delta (crush-test--reasoning-lines 11)
                                               'reasoning)
+                  ;; The transport process is the interrupt target; the
+                  ;; pipe process cannot be interrupted, so mock the kill.
+                  (setq-local crush-process proc)
                   (setq-local crush-active-backend
                               (crush-make-hyper-backend
                                :buffer (current-buffer)
                                :working-directory default-directory))
-                  (cl-letf (((symbol-function 'crush-backend-interrupt)
-                             (lambda (_b) nil))
-                            ((symbol-function 'crush-backend-active-p)
-                             (lambda (_b) t)))
+                  (cl-letf (((symbol-function 'interrupt-process)
+                             (lambda (_p &optional _fg) nil)))
                     (crush-interrupt)))
               (delete-process proc)))
           (let ((ov (crush-test--reasoning-fold-overlay)))
@@ -524,14 +525,15 @@ open (`crush--response-start' at point-max after a newline)."
             (unwind-protect
                 (progn
                   (crush-facade--append-delta "think hard" 'reasoning)
+                  ;; The transport process is the interrupt target; the
+                  ;; pipe process cannot be interrupted, so mock the kill.
+                  (setq-local crush-process proc)
                   (setq-local crush-active-backend
                               (crush-make-hyper-backend
                                :buffer (current-buffer)
                                :working-directory default-directory))
-                  (cl-letf (((symbol-function 'crush-backend-interrupt)
-                             (lambda (_b) nil))
-                            ((symbol-function 'crush-backend-active-p)
-                             (lambda (_b) t)))
+                  (cl-letf (((symbol-function 'interrupt-process)
+                             (lambda (_p &optional _fg) nil)))
                     (crush-interrupt)))
               (delete-process proc)))
           (let ((start (save-excursion

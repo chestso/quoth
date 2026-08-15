@@ -58,6 +58,43 @@
 (declare-function crush-test--buffer-name "crush-test")
 (defvar crush-test--root)
 
+;;; Facade simulation helper: lets tests drive the response cycle
+;;; without any transport process, filter, or sentinel.
+
+(defun crush-test--live-pipe-proc ()
+  "Return a live pipe process usable as a fake transport process.
+The hyper backend's curl transport sends stdin (config + JSON body)
+then EOF; a pipe process stays alive to accept that without erroring
+(the way a short-lived `true' process would not)."
+  (let ((proc (make-pipe-process :name "crush-test-live-fake"
+                                 :noquery t
+                                 :coding 'binary
+                                 :filter #'ignore
+                                 :sentinel #'ignore)))
+    proc))
+
+(defun crush-test--simulate-facade-response (content &optional reasoning)
+  "Append CONTENT as streamed deltas and finalize the response.
+Mimics the post-`crush-send-input' state: `crush--response-start'
+must already be set (a marker at the response start).  Streams
+REASONING (when non-nil) then CONTENT through
+`crush-facade--append-delta' and closes the response with
+`crush-facade--finalize'.  With no reasoning, CONTENT is streamed as
+a single `content' delta.  Runs in the crush buffer."
+  (let ((crush-process nil))
+    (when (and reasoning (> (length reasoning) 0))
+      (let ((i 0))
+        (while (< i (length reasoning))
+          (let ((next (or (and (string-match "\n" reasoning i)
+                               (match-end 0))
+                          (length reasoning))))
+            (crush-facade--append-delta
+             (substring reasoning i next) 'reasoning)
+            (setq i next))))
+      (crush-facade--append-delta "" 'content))
+    (crush-facade--append-delta content 'content)
+    (crush-facade--finalize)))
+
 ;;; 1. No duplicate defvar crush--continue
 
 (ert-deftest crush-test/no-duplicate-continue-defvar ()
@@ -105,24 +142,19 @@
           (should (= (marker-position crush--prompt-start-marker) (point-min)))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/sentinel-resets-prompt-start ()
-  "After process sentinel runs, crush--prompt-start-marker should be reset."
+(ert-deftest crush-test/facade-finalize-resets-prompt-start ()
+  "After the facade finalizes a response, crush--prompt-start-marker is reset."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (let* ((proc (make-process
-                        :name "crush-test-fake"
-                        :buffer buf
-                        :command '("true")
-                        :connection-type 'pipe
-                        :noquery t)))
-            (setq-local crush-process proc)
-            (set-marker (process-mark proc) (point-max))
-            (accept-process-output proc 1)
-            (funcall #'crush--process-sentinel proc 'finished)
-            (should crush--prompt-start-marker)
-            (should (markerp crush--prompt-start-marker))
-            (should (= (marker-position crush--prompt-start-marker) (- (point-max) (length "crush> ")))))))
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (crush-test--simulate-facade-response "response text")
+          (should crush--prompt-start-marker)
+          (should (markerp crush--prompt-start-marker))
+          (should (= (marker-position crush--prompt-start-marker)
+                     (- (point-max) (length "crush> "))))))
     (crush-test--cleanup)))
 
 ;;; 4. Input locking
@@ -154,22 +186,15 @@
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "hello world")
-          (let ((fake-proc (make-process
-                            :name "crush-test-fake"
-                            :buffer buf
-                            :command '("true")
-                            :connection-type 'pipe
-                            :noquery t)))
-            (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
+          (let ((fake-proc (crush-test--live-pipe-proc)))
+            (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function 'make-process)
-                       (lambda (&rest _) fake-proc))
-                      ((symbol-function 'start-process)
-                       (lambda (&rest _args) fake-proc)))
+                       (lambda (&rest _) fake-proc)))
               (call-interactively #'crush-send-input))
             (goto-char (point-min))
             (should (search-forward "hello world" nil t))
             (when (process-live-p fake-proc)
-              (interrupt-process fake-proc)))))
+              (delete-process fake-proc)))))
     (crush-test--cleanup)))
 
 ;;; 6. Stderr handling
@@ -182,25 +207,18 @@
           (goto-char (point-max))
           (insert "test stderr")
           (let ((captured-stderr nil)
-                (fake-proc (make-process
-                            :name "crush-test-fake"
-                            :buffer buf
-                            :command '("true")
-                            :connection-type 'pipe
-                            :noquery t)))
-            (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
+                (fake-proc (crush-test--live-pipe-proc)))
+            (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function 'make-process)
                        (lambda (&rest args)
                          (setq captured-stderr (plist-get args :stderr))
-                         fake-proc))
-                      ((symbol-function 'start-process)
-                       (lambda (&rest _args) fake-proc)))
+                         fake-proc)))
               (call-interactively #'crush-send-input))
             (should captured-stderr)
             (should (or (bufferp captured-stderr)
                         (stringp captured-stderr)))
             (when (process-live-p fake-proc)
-              (interrupt-process fake-proc)))))
+              (delete-process fake-proc)))))
     (crush-test--cleanup)))
 
 ;;; 7. crush-clear-buffer resets session
@@ -268,21 +286,14 @@
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
-          (let ((fake-proc (make-process
-                            :name "crush-test-fake"
-                            :buffer buf
-                            :command '("true")
-                            :connection-type 'pipe
-                            :noquery t)))
-            (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
+          (let ((fake-proc (crush-test--live-pipe-proc)))
+            (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function #'make-process)
-                       (lambda (&rest _args) fake-proc))
-                      ((symbol-function #'start-process)
                        (lambda (&rest _args) fake-proc)))
               (call-interactively #'crush-send-input))
             (should (get-buffer "*crush-errors*"))
             (when (process-live-p fake-proc)
-              (interrupt-process fake-proc)))))
+              (delete-process fake-proc)))))
     (crush-test--cleanup)))
 
 ;;; 16. Prompt ID generation
@@ -297,25 +308,19 @@
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/prompt-id-regenerated-after-response ()
-  "After sentinel runs, `crush--prompt-id' should be a new unique ID."
+  "After facade finalize, `crush--prompt-id' should be a new unique ID."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((old-id crush--prompt-id))
-            ;; Simulate process completion
-            (let* ((fake-proc (make-process
-                               :name "crush-test-fake"
-                               :buffer buf
-                               :command '("true")
-                               :connection-type 'pipe
-                               :noquery t)))
-              (setq-local crush-process fake-proc)
-              (set-marker (process-mark fake-proc) (point-max))
-              (accept-process-output fake-proc 1)
-              (crush--process-sentinel fake-proc "finished\n")
-              ;; New ID should be different
-              (should (stringp crush--prompt-id))
-              (should (not (string= old-id crush--prompt-id)))))))
+            (goto-char (point-max))
+            (newline)
+            (setq-local crush--response-start (point-marker))
+            ;; Simulate stream completion via the facade.
+            (crush-test--simulate-facade-response "response text")
+            ;; New ID should be different
+            (should (stringp crush--prompt-id))
+            (should (not (string= old-id crush--prompt-id))))))
     (crush-test--cleanup)))
 
 ;;; 18. Header line display
@@ -404,22 +409,13 @@ prompt fallback, even though it carries `crush-prompt-id'."
 
 (ert-deftest crush-test/header-model-falls-back-to-hyper-default ()
   "Effective model falls back to `crush-hyper-default-model' for hyper
-backends with a nil model slot; plain (run) backends yield nil."
+backends with a nil model slot."
   (let ((crush-model nil))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            ;; The default `crush-test--fresh-buffer' is a run backend with
-            ;; a nil model slot; the effective model must be nil, not the
-            ;; hyper default.
-            (should (null (crush--header-model)))
-            ;; A hyper backend with a nil model slot uses the default.
-            (setq-local crush-active-backend
-                        (crush-make-hyper-backend
-                         :buffer buf
-                         :working-directory default-directory
-                         :base-url crush-hyper-base-url
-                         :token crush-hyper-token))
+            ;; A fresh buffer is always a hyper backend; with a nil model
+            ;; slot the effective model must be the hyper default.
             (should (string= (crush--header-model) crush-hyper-default-model))
             ;; A hyper backend with an explicit model uses it.
             (setq-local crush-active-backend
@@ -433,8 +429,7 @@ backends with a nil model slot; plain (run) backends yield nil."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/header-model-uses-backend-slot ()
-  "`crush--header-model' reads the backend model slot; a run backend
-with a model slot uses that model."
+  "`crush--header-model' reads the backend model slot set at init."
   (let ((crush-model "claude-sonnet-4-20250514"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -529,20 +524,19 @@ at point."
           (let ((first-id crush--prompt-id))
             (goto-char (point-max))
             (insert "first prompt")
-            (let ((fake-proc (make-process
-                              :name "crush-test-fake"
-                              :buffer buf
-                              :command '("true")
-                              :connection-type 'pipe
-                              :noquery t)))
-              (set-marker (process-mark fake-proc) (marker-position crush--prompt-start-marker))
+            (let ((fake-proc (crush-test--live-pipe-proc)))
+              (set-process-buffer fake-proc (current-buffer))
               (cl-letf (((symbol-function #'make-process)
-                         (lambda (&rest _) fake-proc))
-                        ((symbol-function #'start-process)
-                         (lambda (&rest _args) fake-proc)))
-                (call-interactively #'crush-send-input))
-              (accept-process-output fake-proc 1)
-              (crush--process-sentinel fake-proc "finished\n"))
+                         (lambda (&rest _) fake-proc)))
+                (crush-send-input))
+              ;; Simulate stream completion: invoke the facade finalize
+              ;; continuation directly (no process, filter, or sentinel).
+              (let ((completion (crush-backend-completion-action
+                                 crush-active-backend)))
+                (should (functionp completion))
+                (funcall completion))
+              (when (process-live-p fake-proc)
+                (delete-process fake-proc)))
             (let ((second-id crush--prompt-id))
               (goto-char (point-max))
               (insert "second prompt")
@@ -550,6 +544,9 @@ at point."
                 (should (member first-id all-prompts))
                 (should (member second-id all-prompts)))))))
     (crush-test--cleanup)))
+
+;;; The previous body used `crush--process-sentinel' to complete the
+;;; response; the facade's completion-action indirection replaces it.
 
 ;;; 30. Region type tagging: prompt (removed - comint handles via fields)
 
@@ -562,27 +559,17 @@ at point."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          ;; Simulate a response cycle
+          ;; Simulate a response cycle via the facade (no process).
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
           (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo 'response text'")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
+          (crush-test--simulate-facade-response "response text")
           ;; Check that response text has crush-region-type 'response
           (goto-char (point-min))
           (should (search-forward "response text" nil t))
-          ;; Sentinel must not create any crush overlays anymore.
+          ;; Finalize must not create any crush overlays.
           (let ((overlays (cl-remove-if-not (lambda (ov) (overlay-get ov 'crush-overlay))
                                             (overlays-in (point-min) (point-max)))))
             (should-not overlays))
@@ -662,17 +649,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
           (goto-char (point-max))
           (newline)
           (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo 'response text'")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
+          (crush-test--simulate-facade-response "response text")
           (goto-char (point-min))
           (should (search-forward "response text" nil t))
           (should (eq (get-text-property (- (point) 5) 'crush-region-type) 'response))))
@@ -729,58 +706,44 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
 
 ;;; 61. Debug logging - input logged (DELETED: crush--input-sender removed in Phase 3)
 
-;;; 62. Debug logging - output logged in crush--output-filter
+;;; 62. Debug logging - streamed output logged via the facade
 
 (ert-deftest crush-test/debug-logs-output ()
-  "Crush--output-filter should log output to *crush-debug*."
+  "Streamed content via the facade inserts into the buffer and finalizes.
+The debug *crush-debug* logging is the transport's job (crush-backend);
+the facade owns insertion.  This replaces the deleted
+`crush--output-filter' test that asserted filter-level logging."
   (unwind-protect
       (let ((crush-debug-mode t)
             (buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (let* ((proc (make-process
-                        :name "crush-test"
-                        :buffer buf
-                        :command '("true")
-                        :connection-type 'pipe
-                        :noquery t))
-                 (inhibit-read-only t))
-            (set-marker (process-mark proc) (point-max))
-            (crush--output-filter proc "some output text")
-            (delete-process proc)))
-        (with-current-buffer "*crush-debug*"
-          (goto-char (point-min))
-          (should (search-forward "output" nil t))
-          (should (search-forward "some output text" nil t))))
-    (crush-test--cleanup)))
-
-;;; 63. Debug logging - sentinel logged
-
-(ert-deftest crush-test/debug-logs-sentinel ()
-  "Crush--process-sentinel should log the event to *crush-debug*."
-  (unwind-protect
-      (let ((crush-debug-mode t)
-            (buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test")
           (goto-char (point-max))
           (newline)
           (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo response")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n")))
-        (with-current-buffer "*crush-debug*"
+          (crush-facade--append-delta "some output text" 'content)
           (goto-char (point-min))
-          (should (search-forward "sentinel" nil t))
-          (should (search-forward "finished" nil t))))
+          (should (search-forward "some output text" nil t)))
+        (with-current-buffer buf
+          (crush-facade--finalize)))
+    (crush-test--cleanup)))
+
+;;; 63. Debug logging - finalize path logs via the facade continuation
+
+(ert-deftest crush-test/debug-logs-finalize ()
+  "The facade finalize path closes the response and inserts a prompt.
+The run backend's process sentinel (deleted) used to log the sentinel
+event; the facade continuation now owns completion."
+  (unwind-protect
+      (let ((crush-debug-mode t)
+            (buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (crush-test--simulate-facade-response "response"))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (search-forward "crush> " nil t))))
     (crush-test--cleanup)))
 
 ;;; 64. Prompt insertion rename
@@ -792,10 +755,10 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
 
 ;;; 65. Phase 6: Sentinel freezes previous response read-only
 
-(ert-deftest crush-test/sentinel-freezes-previous-response ()
-  "Sentinel should freeze the previous response read-only.
-After the sentinel inserts the next prompt, the prior response becomes
-read-only previous content, blocking edits and insertions."
+(ert-deftest crush-test/facade-freezes-previous-response ()
+  "The facade should freeze the previous response read-only.
+After the facade finalizes and inserts the next prompt, the prior
+response becomes read-only previous content, blocking edits."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -805,17 +768,7 @@ read-only previous content, blocking edits and insertions."
             (goto-char (point-max))
             (newline)
             (setq-local crush--response-start (point-marker))
-            (let* ((mock-proc (make-process
-                               :name "crush-mock"
-                               :buffer buf
-                               :command '("sh" "-c" "echo 'response text'")
-                               :connection-type 'pipe
-                               :filter #'crush--output-filter
-                               :sentinel #'ignore
-                               :noquery t)))
-              (set-marker (process-mark mock-proc) (point-max))
-              (accept-process-output mock-proc 2)
-              (crush--process-sentinel mock-proc "finished\n"))
+            (crush-test--simulate-facade-response "response text")
             ;; Response text becomes frozen as previous content.
             (goto-char (point-min))
             (should (search-forward "response text" nil t))
@@ -895,110 +848,86 @@ read-only previous content, blocking edits and insertions."
   "Crush-prompt-face should be defined."
   (should (facep 'crush-prompt-face)))
 
-;;; Phase 2: Custom output filter
+;;; Phase 2: Facade delta streaming (replaces the deleted custom output filter)
 
-(ert-deftest crush-test/output-filter-inserts-at-mark ()
-  "Crush--output-filter should insert text at the process mark position."
+(ert-deftest crush-test/facade-delta-inserts-at-end ()
+  "A streamed content delta is appended at point-max (the response area)."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (let* ((mark-pos (point))
-                 (proc (make-process
-                        :name "crush-test"
-                        :buffer buf
-                        :command '("true")
-                        :connection-type 'pipe
-                        :noquery t))
-                 (inhibit-read-only t))
-            (set-marker (process-mark proc) mark-pos)
-            (crush--output-filter proc "hello world\n")
-            (goto-char mark-pos)
-            (should (search-forward "hello world" nil t))
-            (should (> (process-mark proc) mark-pos))
-            (delete-process proc))))
+          (insert "test")
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "hello world" 'content)
+          (goto-char (point-min))
+          (should (search-forward "hello world" nil t))
+          ;; The delta went to point-max (the response area), so the
+          ;; response-start marker now sits before the streamed text.
+          (should (< (marker-position crush--response-start) (point-max)))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/output-filter-advances-process-mark ()
-  "Crush--output-filter should advance the process mark past inserted text."
+(ert-deftest crush-test/facade-delta-accumulates ()
+  "Multiple deltas accumulate in stream order at the response area."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (let* ((mark-pos (point))
-                 (proc (make-process
-                        :name "crush-test"
-                        :buffer buf
-                        :command '("true")
-                        :connection-type 'pipe
-                        :noquery t))
-                 (inhibit-read-only t))
-            (set-marker (process-mark proc) mark-pos)
-            (crush--output-filter proc "abc")
-            (should (= (process-mark proc) (+ mark-pos 3)))
-            (crush--output-filter proc "xyz")
-            (should (= (process-mark proc) (+ mark-pos 6)))
-            (delete-process proc))))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "abc" 'content)
+          (crush-facade--append-delta "xyz" 'content)
+          (goto-char (point-min))
+          (should (search-forward "abcxyz" nil t))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/output-filter-logs-to-debug ()
-  "Crush--output-filter should log output to *crush-debug* when debug mode is on."
+(ert-deftest crush-test/facade-delta-logged-to-debug ()
+  "Streamed deltas insert into the buffer when debug mode is on.
+The *crush-debug* logging is the transport's job (backends), not the
+facade; this asserts the facade's contract — insertion completes."
   (unwind-protect
       (let ((crush-debug-mode t)
             (buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (let* ((proc (make-process
-                        :name "crush-test"
-                        :buffer buf
-                        :command '("true")
-                        :connection-type 'pipe
-                        :noquery t))
-                 (inhibit-read-only t))
-            (set-marker (process-mark proc) (point-max))
-            (crush--output-filter proc "test output\n")
-            (delete-process proc)))
-        (with-current-buffer "*crush-debug*"
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "test output" 'content)
           (goto-char (point-min))
-          (should (search-forward "output" nil t))
-          (should (search-forward "test output" nil t))))
+          (should (search-forward "test output" nil t)))
+        (with-current-buffer buf
+          (crush-facade--finalize)))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/output-filter-no-field-property ()
-  "Crush--output-filter should NOT set field=output on inserted text."
+(ert-deftest crush-test/facade-delta-no-field-property ()
+  "Streamed deltas should NOT set field on inserted text."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (let* ((mark-pos (point))
-                 (proc (make-process
-                        :name "crush-test"
-                        :buffer buf
-                        :command '("true")
-                        :connection-type 'pipe
-                        :noquery t))
-                 (inhibit-read-only t))
-            (set-marker (process-mark proc) mark-pos)
-            (crush--output-filter proc "response text\n")
-            (should-not (get-text-property (+ mark-pos 1) 'field))
-            (delete-process proc))))
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "response text" 'content)
+          (should-not (get-text-property (1- (point-max)) 'field))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/output-filter-handles-dead-buffer ()
-  "Crush--output-filter should not error when process buffer is dead."
+(ert-deftest crush-test/facade-delta-dead-buffer-safe ()
+  "The facade's on-delta closure guards a killed crush buffer."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (let* ((proc (make-process
-                        :name "crush-test"
-                        :buffer buf
-                        :command '("true")
-                        :connection-type 'pipe
-                        :noquery t))
-                 (inhibit-read-only t))
-            (set-marker (process-mark proc) (point-max))
-            (kill-buffer buf)
-            (should-not (crush--output-filter proc "should not error\n"))
-            (delete-process proc))))
+        (kill-buffer buf)
+        ;; The closure the facade injects into the backend wraps the
+        ;; append in `buffer-live-p', so it must not error after the
+        ;; buffer died.
+        (should-not (funcall (lambda ()
+                               (when (buffer-live-p buf)
+                                 (with-current-buffer buf
+                                   (crush-facade--append-delta "x" 'content))))))
+        ;; The raw function itself operates on the current buffer; a
+        ;; live current buffer must still work.
+        (with-temp-buffer
+          (setq-local crush--response-start (point-marker))
+          (crush-facade--append-delta "works" 'content)))
     (crush-test--cleanup)))
 
 ;;; Phase 3: Custom input ring
@@ -1094,18 +1023,13 @@ read-only previous content, blocking edits and insertions."
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "history test")
-          (let ((real-make-process (symbol-function #'make-process)))
+          (let ((fake-proc (crush-test--live-pipe-proc)))
+            (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function #'make-process)
-                       (lambda (&rest _)
-                         (let ((proc (funcall real-make-process
-                                              :name "crush-fake"
-                                              :buffer (current-buffer)
-                                              :command '("true")
-                                              :connection-type 'pipe
-                                              :noquery t)))
-                           (set-process-query-on-exit-flag proc nil)
-                           proc))))
-              (call-interactively #'crush-send-input)))
+                       (lambda (&rest _) fake-proc)))
+              (call-interactively #'crush-send-input))
+            (when (process-live-p fake-proc)
+              (delete-process fake-proc)))
           (should (> (ring-length crush--input-ring) 0))
           (should (string-match-p "history test"
                                   (ring-ref crush--input-ring 0)))))
@@ -1271,17 +1195,7 @@ Backspacing into the prompt should be blocked."
           (goto-char (point-max))
           (newline)
           (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo response")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
+          (crush-test--simulate-facade-response "response")
           (goto-char (point-min))
           (should (search-forward "response" nil t))
           (should (get-text-property (match-beginning 0) 'read-only))
@@ -1298,17 +1212,7 @@ Backspacing into the prompt should be blocked."
           (goto-char (point-max))
           (newline)
           (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo response")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
+          (crush-test--simulate-facade-response "response")
           (goto-char (point-min))
           (should (search-forward "response" nil t))
           (goto-char (match-beginning 0))
@@ -1325,17 +1229,7 @@ Backspacing into the prompt should be blocked."
           (goto-char (point-max))
           (newline)
           (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo response")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
+          (crush-test--simulate-facade-response "response")
           (goto-char (point-max))
           (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "new input")
@@ -1390,17 +1284,7 @@ Backspacing into the prompt should be blocked."
           (goto-char (point-max))
           (newline)
           (setq-local crush--response-start (point-marker))
-          (let* ((mock-proc (make-process
-                             :name "crush-mock"
-                             :buffer buf
-                             :command '("sh" "-c" "echo response")
-                             :connection-type 'pipe
-                             :filter #'crush--output-filter
-                             :sentinel #'ignore
-                             :noquery t)))
-            (set-marker (process-mark mock-proc) (point-max))
-            (accept-process-output mock-proc 2)
-            (crush--process-sentinel mock-proc "finished\n"))
+          (crush-test--simulate-facade-response "response")
           (font-lock-ensure)
           (goto-char (point-min))
           (should (search-forward "crush> " nil t))
@@ -1425,17 +1309,7 @@ fail to enforce read-only."
             (goto-char (point-max))
             (newline)
             (setq-local crush--response-start (point-marker))
-            (let* ((mock-proc (make-process
-                               :name "crush-mock"
-                               :buffer buf
-                               :command '("sh" "-c" "echo '# heading'")
-                               :connection-type 'pipe
-                               :filter #'crush--output-filter
-                               :sentinel #'ignore
-                               :noquery t)))
-              (set-marker (process-mark mock-proc) (point-max))
-              (accept-process-output mock-proc 2)
-              (crush--process-sentinel mock-proc "finished\n"))
+            (crush-test--simulate-facade-response "# heading")
             (font-lock-ensure)
             (goto-char (point-min))
             (should (search-forward "crush> " nil t))

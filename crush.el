@@ -1,4 +1,4 @@
-;;; crush.el --- Interact with Crush CLI  -*- lexical-binding: t; -*-
+;;; crush.el --- Chat with AI providers from GNU Emacs  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
@@ -32,22 +32,15 @@
 
 ;; crush.el is a GNU Emacs package for direct provider interaction: a
 ;; dedicated interactive buffer that sends structured prompts to AI
-;; models over HTTP and receives streamed responses.  The primary
-;; backend (default) talks to the Charm Hyper gateway
-;; (https://hyper.charm.land) via streaming chat completions; a
-;; compatibility backend drives the Crush CLI (https://github.com/
-;; charmbracelet/crush) `crush run' instead.
+;; models over HTTP and receives streamed responses.  The backend talks
+;; to the Charm Hyper gateway (https://hyper.charm.land) via streaming
+;; chat completions.
 ;;
 ;; In addition to the dedicated chat buffer, any buffer selection can
 ;; be used as context.  The selection is formatted as a markdown fenced
 ;; code block with the file path and line numbers, then inserted
 ;; into the crush buffer where the user can add additional context
 ;; about what to do with it.
-;;
-;; IMPORTANT: the optional `run' backend auto-approves all tool
-;; permissions (functionally `crush --yolo'); the default `hyper'
-;; backend executes no local tools.  See CRUSH-SPEC.md for details on
-;; the CLI's permission behavior.
 ;;
 ;; See TODO.md for the full project goal and roadmap.
 
@@ -63,7 +56,7 @@
 ;;; Configuration
 
 (defgroup crush nil
-  "Interact with Crush CLI from GNU Emacs."
+  "Chat with AI providers from GNU Emacs."
   :group 'tools
   :prefix "crush-")
 
@@ -83,11 +76,11 @@ window width on every line the reasoning covers."
   :group 'crush)
 
 (defcustom crush-model nil
-  "Model to use for Crush requests (both backends).
-When nil, the backends fall back to their defaults: the Crush CLI's
-configured model, or `crush-hyper-default-model' for hyper.  The facade
-passes this into the backend's model slot at buffer initialization.
-Should be a model name like `claude-sonnet-4-20250514' or `gpt-4o'."
+  "Model to use for Crush requests.
+When nil, the backend falls back to `crush-hyper-default-model'.  The
+facade passes this into the backend's model slot at buffer
+initialization.  Should be a model name like
+`claude-sonnet-4-20250514' or `gpt-4o'."
   :type '(choice (const nil) string)
   :group 'crush)
 
@@ -116,16 +109,33 @@ sent in full."
   :group 'crush)
 
 (defcustom crush--continue nil
-  "Whether to pass --continue to the Crush CLI.
-When non-nil, the next prompt continues the active session in the folder.
+  "Whether the next prompt continues the conversation session.
+When non-nil, the next prompt continues the active session.
 Set to nil by `crush-clear-buffer' so the next prompt starts a fresh
 session.
 Buffer-local."
   :type 'boolean
   :group 'crush)
 
+(defcustom crush-working-directory nil
+  "Working directory for the crush provider.
+When nil, uses the project root if `project-current' is non-nil,
+otherwise `default-directory'."
+  :type '(choice (const nil) directory)
+  :group 'crush)
+
+(defcustom crush-input-ring-size 32
+  "Maximum number of prompts stored in the input ring."
+  :type 'integer
+  :group 'crush)
+
+(defcustom crush-debug-mode t
+  "When non-nil, log commands, input, and output to a *crush-debug* buffer."
+  :type 'boolean
+  :group 'crush)
+
 (defcustom crush--session nil
-  "Session ID to pass to the Crush CLI via --session.
+  "Session ID to pass to the provider.
 When non-nil, continues a specific session by ID.
 Takes precedence over `crush--continue'.
 Buffer-local."
@@ -211,7 +221,7 @@ Buffer-local.")
 (defvar crush--project-root nil
   "Canonical project root (or `default-directory') this buffer serves.
 Set at initialization; determines the buffer name and the working
-directory for the Crush CLI.  Buffer-local.")
+directory for the crush provider.  Buffer-local.")
 
 (defvar crush--input-ring nil
   "Ring of previously entered prompts.
@@ -230,8 +240,7 @@ Buffer-local.")
 ;;; Backend abstraction
 
 ;;; The `crush-backend' base struct and the `crush-backend-*' protocol
-;;; live in `crush-backend.el'; the concrete backends in
-;;; `crush-run-backend.el' (the `crush run' CLI) and
+;;; live in `crush-backend.el'; the concrete backend in
 ;;; `crush-hyper-backend.el' (direct HTTP to the Charm Hyper gateway).
 ;;; The dependency files sit next to this file but are not guaranteed to
 ;;; be on `load-path': package.el adds the package dir, while direct
@@ -240,7 +249,7 @@ Buffer-local.")
 ;;; both setups work.
 (eval-and-compile
   (dolist (dep '("crush-backend" "crush-xxh3" "crush-stream"
-                 "crush-run-backend" "crush-hyper-backend" "crush-tool"))
+                 "crush-hyper-backend" "crush-tool"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -255,7 +264,6 @@ Buffer-local.")
   "The active crush backend for this buffer (facade-owned).
 Set during buffer initialization; the facade's `crush-facade--send'
 and `crush-interrupt' dispatch through it.  Buffer-local.")
-
 (declare-function markdown-mode "markdown-mode" ())
 (declare-function crush-xxh3-hash64 "crush-xxh3" (input))
 (declare-function crush-backend--tool-calls "crush-backend" (backend process))
@@ -452,12 +460,8 @@ Only logs when `crush-debug-mode' is non-nil."
   "Return the effective model name for the header line, or nil.
 Reads the backend's model slot (derived from `crush-model' at buffer
 init); falls back to `crush-hyper-default-model' for hyper backends."
-  (let ((model (cond
-                ((crush-hyper-backend-p crush-active-backend)
-                 (crush-hyper-backend-model crush-active-backend))
-                ((crush-run-backend-p crush-active-backend)
-                 (crush-run-backend-model crush-active-backend))
-                (t nil))))
+  (let ((model (and (crush-hyper-backend-p crush-active-backend)
+                    (crush-hyper-backend-model crush-active-backend))))
     (or model
         (and (crush-hyper-backend-p crush-active-backend)
              crush-hyper-default-model))))
@@ -938,19 +942,12 @@ buffer-local and never leaves via the network; only the hash is sent."
       (setq-local crush--project-root
                   (crush--canonical-root default-directory))
       (setq-local crush-active-backend
-                  (pcase crush-backend-type
-                    (`hyper (crush-make-hyper-backend
-                             :buffer buf
-                             :working-directory default-directory
-                             :base-url crush-hyper-base-url
-                             :token crush-hyper-token
-                             :model crush-model))
-                    (_ (crush-make-run-backend
-                        :buffer buf
-                        :working-directory default-directory
-                        :program crush-program
-                        :args crush-args
-                        :model crush-model))))
+                  (crush-make-hyper-backend
+                   :buffer buf
+                   :working-directory default-directory
+                   :base-url crush-hyper-base-url
+                   :token crush-hyper-token
+                   :model crush-model))
       ;; Mark initialized only after mode setup so the flag is not wiped
       ;; by the parent mode (which calls kill-all-local-variables).
       (setq-local crush--initialized t))))
@@ -1020,18 +1017,6 @@ FILE is the file path, START and END are the line numbers."
          (lang (crush--lang-from-extension (file-name-nondirectory relative-file))))
     (format "**Attachment: %s (lines %d-%d)**\n\n```%s\n%s\n```"
             relative-file start-line end-line lang selected-text)))
-
-(defun crush--output-filter (proc string)
-  "Insert STRING from PROC into the crush buffer at the process mark."
-  (crush--debug-log 'output string)
-  (when (buffer-live-p (process-buffer proc))
-    (with-current-buffer (process-buffer proc)
-      (let ((inhibit-read-only t)
-            (mark (process-mark proc)))
-        (save-excursion
-          (goto-char mark)
-          (insert string)
-          (set-marker mark (point)))))))
 
 (defun crush--reasoning-start-region ()
   "Start a reasoning region at point-max if none is active.
@@ -1406,11 +1391,6 @@ Runs in the crush buffer, which owns all response text."
     (setq-local crush--attachments nil)
     (setq-local crush--tool-continuation nil)
     (setq-local crush--tool-loop-count 0)
-    ;; The facade owns process lifecycle: clear the backend's process
-    ;; slot so `crush-backend-active-p' reads nil after completion.
-    (when (and crush-active-backend
-               (crush-run-backend-p crush-active-backend))
-      (setf (crush-run-backend-process crush-active-backend) nil))
     (crush--input-ring-write)
     (crush--update-header-line)
     (goto-char (point-max))))
@@ -1515,21 +1495,6 @@ is hit or no tool calls come back, finalizes via
         (when (and real-proc (processp real-proc))
           (set-marker (process-mark real-proc) (point-max))
           (setq-local crush-process real-proc))))))
-(defun crush--process-sentinel (process event)
-  "Sentinel for PROCESS that handles completion and interruption for EVENT.
-Invokes the backend's stored completion action (the facade's
-continuation) when injected; otherwise falls back to
-`crush-facade--finalize' (the run backend's legacy path)."
-  (when (buffer-live-p (process-buffer process))
-    (with-current-buffer (process-buffer process)
-      (let* ((event-str (if (stringp event) event (format "%s" event))))
-        (crush--debug-log 'sentinel (format "%s" event-str))
-        (let ((completion-action
-               (and crush-active-backend
-                    (crush-backend-completion-action crush-active-backend))))
-          (if (functionp completion-action)
-              (funcall completion-action)
-            (crush-facade--finalize)))))))
 
 ;;; Major mode commands
 
@@ -1666,7 +1631,7 @@ for wire resume.  Returns the end position of the inserted block."
       end)))
 
 (defun crush-send-input ()
-  "Send the current prompt to the Crush CLI."
+  "Send the current prompt to the provider."
   (interactive)
   (when (and crush-process (process-live-p crush-process))
     (user-error "Crush is still running; interrupt with C-c c i"))
@@ -1702,10 +1667,6 @@ for wire resume.  Returns the end position of the inserted block."
   (interactive)
   (let ((interrupted nil))
     (cond
-     ((and crush-active-backend (crush-backend-active-p crush-active-backend))
-      (crush-backend-interrupt crush-active-backend)
-      (setq-local crush-process nil)
-      (setq interrupted t))
      (crush-process
       (interrupt-process crush-process)
       (setq-local crush-process nil)
@@ -1819,7 +1780,7 @@ Creates a buffer if none exists, switches to it, and prepares it for input."
 
 ;;;###autoload
 (define-minor-mode crush-minor-mode
-  "Minor mode for sending buffer content to the Crush CLI.
+  "Minor mode for sending buffer content to the crush provider.
 
 When enabled, provides keybindings under the `C-c C-' prefix for
 sending selections, whole buffers, and file paths to the Crush
