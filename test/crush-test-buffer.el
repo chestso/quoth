@@ -418,7 +418,7 @@ prompt fallback, even though it carries `crush-prompt-id'."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/header-model-falls-back-to-hyper-default ()
-  "Effective model falls back to `crush-hyper-default-model' for hyper
+  "Effective model falls back to `crush-openai-default-model' for hyper
 backends with a nil model slot."
   (let ((crush-model nil))
     (unwind-protect
@@ -426,7 +426,7 @@ backends with a nil model slot."
           (with-current-buffer buf
             ;; A fresh buffer is always a hyper backend; with a nil model
             ;; slot the effective model must be the hyper default.
-            (should (string= (crush--header-model) crush-hyper-default-model))
+            (should (string= (crush--header-model) crush-openai-default-model))
             ;; A hyper backend with an explicit model uses it.
             (setq-local crush-active-provider
                         (crush-make-hyper-provider

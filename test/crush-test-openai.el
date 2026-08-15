@@ -1,0 +1,215 @@
+;;; crush-test-openai.el --- OpenAI client tests for crush  -*- lexical-binding: t; -*-
+;;; Copyright (C) 2026 Thomas Christensen
+
+;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
+;;; URL: https://github.com/thomasc1971/crush.el
+;;; Version: 0.1.0
+;;; Package-Requires: ((emacs "28.1"))
+;;; Keywords: tools, ai, convenience
+
+;;; This file is not part of GNU Emacs.
+
+;;; Permission is hereby granted, free of charge, to any person obtaining a copy
+;;; of this software and associated documentation files (the "Software"), to deal
+;;; in the Software without restriction, including without limitation the rights
+;;; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+;;; copies of the Software, and to permit persons to whom the Software is
+;;; furnished to do so, subject to the following conditions:
+
+;;; The above copyright notice and this permission notice shall be included in all
+;;; copies or substantial portions of the Software.
+
+;;; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+;;; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+;;; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+;;; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+;;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+;;; SOFTWARE.
+
+;;; Commentary:
+;;; The reusable OpenAI chat-completions client (crush-openai.el): request
+;;; composition, history building, SSE parsing, and the wire helpers.
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+
+;;; flycheck byte-compiles this file in isolation, and its batch child's
+;;; `load-path' excludes the package root and test dir.  Prefer
+;;; `require'; fall back to loading each dep from this file's directory
+;;; or its parent (the package root) so flycheck and package loads work.
+(eval-and-compile
+  (dolist (dep '("crush-openai"))
+    (unless (require (intern dep) nil t)
+      (let* ((base (file-name-directory
+                    (or buffer-file-name load-file-name default-directory)))
+             (dirs (list base (expand-file-name ".." base)))
+             (loaded nil))
+        (dolist (dir dirs)
+          (unless loaded
+            (let ((file (expand-file-name (concat dep ".el") dir)))
+              (when (file-exists-p file)
+                (load file nil t)
+                (setq loaded t)))))))))
+
+(defvar crush-tools-enabled t)
+
+;;; 1. Request composition
+
+(ert-deftest crush-test/openai-compose-no-context ()
+  "Without context, messages should be system + user with just the prompt."
+  (let* ((req (crush-openai-compose-request "Hello" nil "m"))
+         (msgs (alist-get 'messages req)))
+    (should (string= (alist-get 'model req) "m"))
+    (should (eq (alist-get 'stream req) t))
+    (should (= (length msgs) 2))
+    (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
+    (should (string= (crush--openai-alist-get "role" (nth 1 msgs)) "user"))
+    (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "Hello"))))
+
+(ert-deftest crush-test/openai-compose-with-context-merges-preamble ()
+  "With context, the user message should carry preamble + context + prompt."
+  (let* ((req (crush-openai-compose-request "Do the thing" "**Attachment: foo**" "m"))
+         (user-content (crush--openai-alist-get
+                        "content"
+                        (nth 1 (alist-get 'messages req)))))
+    (should (string-match-p "The following markdown fenced code blocks" user-content))
+    (should (string-match-p "\\*\\*Attachment: foo\\*\\*" user-content))
+    (should (string-match-p "Do the thing$" user-content))))
+
+(ert-deftest crush-test/openai-compose-respects-options ()
+  "Optional max-tokens, temperature, thinking, and effort land in the body."
+  (let ((crush-openai-max-tokens 1234)
+        (crush-openai-temperature 0.5)
+        (crush-openai-thinking t)
+        (crush-openai-reasoning-effort "high"))
+    (let ((req (crush-openai-compose-request "P" nil "my-model")))
+      (should (= (alist-get 'max_tokens req) 1234))
+      (should (= (alist-get 'temperature req) 0.5))
+      (should (eq (alist-get 'thinking req) t))
+      (should (string= (alist-get 'reasoning_effort req) "high")))))
+
+(ert-deftest crush-test/openai-compose-tools-by-default ()
+  "With `crush-tools-enabled' t the body announces the bash tool.
+The default is non-nil, so `tool_choice' is `auto'."
+  (let ((req (crush-openai-compose-request "P" nil "m")))
+    (should (assq 'tools req))
+    (should (equal (alist-get 'tool_choice req) "auto"))
+    (let ((tools (alist-get 'tools req)))
+      (should (vectorp tools))
+      (should (= (length tools) 1))
+      (should (equal (cdr (assq 'name (cdr (assq 'function (aref tools 0)))))
+                     "bash")))))
+
+(ert-deftest crush-test/openai-compose-no-tools-when-disabled ()
+  "With `crush-tools-enabled' nil the body has no `tools' or `tool_choice'."
+  (let ((crush-tools-enabled nil))
+    (let ((req (crush-openai-compose-request "P" nil "m")))
+      (should-not (assq 'tools req))
+      (should-not (assq 'tool_choice req)))))
+
+(ert-deftest crush-test/openai-compose-continuation-replaces-user ()
+  "A non-nil CONTINUATION replaces the user message with follow-up msgs."
+  (let ((msgs (alist-get 'messages
+                         (crush-openai-compose-request
+                          "P" nil "m" nil
+                          '(((role . "assistant") (content . :null)
+                             (tool_calls . [(id . "c1")]))
+                            ((role . "tool") (tool_call_id . "c1")
+                             (content . "ok")))))))
+    (should (= (length msgs) 3))  ; system + assistant + tool
+    (should (string= (cdr (assoc 'role (nth 1 msgs))) "assistant"))
+    (should (string= (cdr (assoc 'tool_call_id (nth 2 msgs))) "c1"))))
+
+;;; 2. History messages
+
+(ert-deftest crush-test/openai-history-tool-pair ()
+  "A tool turn with id/name/args emits assistant tool_calls + tool result."
+  (let ((msgs (crush-openai-history-messages
+               '((user . "run ls")
+                 (assistant . "Listing done")
+                 (tool "call_1" "bash" "{\"command\":\"ls\"}"
+                       . "<command>ls</command>\n<exit_code>0</exit_code>")))))
+    (should (= (length msgs) 4))
+    (should (string= (cdr (assoc 'role (nth 0 msgs))) "user"))
+    (should (string= (cdr (assoc 'content (nth 1 msgs))) "Listing done"))
+    (let ((tc-msg (nth 2 msgs)))
+      (should (eq (cdr (assoc 'content tc-msg)) :null))
+      (let ((tcs (cdr (assoc 'tool_calls tc-msg))))
+        (should (vectorp tcs))
+        (let ((tc (aref tcs 0)))
+          (should (string= (cdr (assoc 'id tc)) "call_1"))
+          (should (string= (cdr (assoc 'name (cdr (assoc 'function tc))))
+                           "bash")))))
+    (let ((tool-msg (nth 3 msgs)))
+      (should (string= (cdr (assoc 'role tool-msg)) "tool"))
+      (should (string= (cdr (assoc 'tool_call_id tool-msg)) "call_1")))))
+
+(ert-deftest crush-test/openai-history-legacy-tool-fallback ()
+  "A bare (tool . TEXT) turn falls back to `tool_call_id: unknown'."
+  (let ((msgs (crush-openai-history-messages
+               '((user . "run ls")
+                 (tool . "<raw>")))))
+    (let ((tool-msg (car (last msgs))))
+      (should (string= (cdr (assoc 'role tool-msg)) "tool"))
+      (should (string= (cdr (assoc 'tool_call_id tool-msg)) "unknown"))
+      (should (string= (cdr (assoc 'content tool-msg)) "<raw>")))))
+
+(ert-deftest crush-test/openai-history-reasoning-folded ()
+  "A reasoning turn after an assistant turn folds into reasoning_content."
+  (let ((msgs (crush-openai-history-messages
+               '((assistant . "short answer")
+                 (reasoning . "deep chain of thought")))))
+    (should (= (length msgs) 1))
+    (let ((msg (car msgs)))
+      (should (string= (cdr (assoc 'content msg)) "short answer"))
+      (should (string= (cdr (assoc 'reasoning_content msg))
+                       "deep chain of thought")))))
+
+;;; 3. SSE parser
+
+(defun crush-test-openai--sse-state ()
+  "Return a fresh, empty SSE parser state."
+  (list :pending "" :done nil :tool-calls nil))
+
+(ert-deftest crush-test/openai-sse-parser-single-delta ()
+  "One complete delta event yields one content delta."
+  (let* ((state (crush-test-openai--sse-state))
+         (result (crush-openai-sse-feed
+                  state
+                  "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+         (deltas (car result)))
+    (should (equal (nth 0 (car deltas)) 'content))
+    (should (string= (nth 1 (car deltas)) "hi"))
+    (should-not (plist-get (cdr result) :done))))
+
+(ert-deftest crush-test/openai-sse-parser-done ()
+  "[DONE] marks the stream finished."
+  (let* ((state (crush-test-openai--sse-state))
+         (result (crush-openai-sse-feed state "data: [DONE]\n\n"))
+         (new-state (cdr result)))
+    (should (plist-get new-state :done))))
+
+(ert-deftest crush-test/openai-sse-parser-tool-calls ()
+  "A tool_calls delta is accumulated into the state's :tool-calls vector."
+  (let* ((state (crush-test-openai--sse-state))
+         (result (crush-openai-sse-feed
+                  state
+                  "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}]}}]}\n\n"))
+         (new-state (cdr result))
+         (tcs (plist-get new-state :tool-calls)))
+    (should (vectorp tcs))
+    (should (= (length tcs) 1))
+    (should (string= (crush--openai-alist-get "id" (aref tcs 0)) "c1"))))
+
+(ert-deftest crush-test/openai-alist-get-handles-both-key-types ()
+  "`crush--openai-alist-get' finds values by symbol or string key."
+  (let ((a '((role . "system") ("content" . "hi"))))
+    (should (string= (crush--openai-alist-get 'role a) "system"))
+    (should (string= (crush--openai-alist-get "role" a) "system"))
+    (should (string= (crush--openai-alist-get 'content a) "hi"))))
+
+(provide 'crush-test-openai)
+;;; crush-test-openai.el ends here

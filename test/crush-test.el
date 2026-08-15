@@ -95,7 +95,7 @@ Initializes with the default hyper backend."
 ;;; fall back to this directory so flycheck and direct loads work.
 (eval-and-compile
   (dolist (dep '("crush-test-buffer" "crush-test-commands"
-                 "crush-test-hyper"
+                 "crush-test-openai" "crush-test-hyper"
                  "crush-test-reasoning" "crush-test-stream"
                  "crush-test-xxh3" "crush-test-tools"))
     (unless (require (intern dep) nil t)

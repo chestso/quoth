@@ -77,7 +77,7 @@ window width on every line the reasoning covers."
 
 (defcustom crush-model nil
   "Model to use for Crush requests.
-When nil, the backend falls back to `crush-hyper-default-model'.  The
+When nil, the backend falls back to `crush-openai-default-model'.  The
 facade passes this into the backend's model slot at buffer
 initialization.  Should be a model name like
 `claude-sonnet-4-20250514' or `gpt-4o'."
@@ -240,15 +240,16 @@ Buffer-local.")
 ;;; Backend abstraction
 
 ;;; The `crush-provider' base struct and the `crush-provider-*' protocol
-;;; live in `crush-provider.el'; the concrete backend in
-;;; `crush-hyper-provider.el' (direct HTTP to the Charm Hyper gateway).
+;;; live in `crush-provider.el'; the reusable OpenAI client in
+;;; `crush-openai.el'; the concrete provider in `crush-hyper-provider.el'
+;;; (direct HTTP to the Charm Hyper gateway).
 ;;; The dependency files sit next to this file but are not guaranteed to
 ;;; be on `load-path': package.el adds the package dir, while direct
 ;;; `load' or flycheck's batch byte-compile do not.  Try `require'
 ;;; first, then fall back to loading from this file's own directory so
 ;;; both setups work.
 (eval-and-compile
-  (dolist (dep '("crush-provider" "crush-xxh3" "crush-stream"
+  (dolist (dep '("crush-provider" "crush-openai" "crush-xxh3" "crush-stream"
                  "crush-hyper-provider" "crush-tool"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
@@ -459,12 +460,12 @@ Only logs when `crush-debug-mode' is non-nil."
 (defun crush--header-model ()
   "Return the effective model name for the header line, or nil.
 Reads the backend's model slot (derived from `crush-model' at buffer
-init); falls back to `crush-hyper-default-model' for hyper backends."
+init); falls back to `crush-openai-default-model' for hyper backends."
   (let ((model (and (crush-hyper-provider-p crush-active-provider)
                     (crush-hyper-provider-model crush-active-provider))))
     (or model
         (and (crush-hyper-provider-p crush-active-provider)
-             crush-hyper-default-model))))
+             crush-openai-default-model))))
 
 (defun crush--region-label-at-point ()
   "Return a human label for the `crush-region-type' at point.

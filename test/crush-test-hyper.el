@@ -68,7 +68,7 @@
   "A tool turn carrying id/name/args emits the assistant tool_calls
 declaration followed by the tool result with the matching id, per the
 OpenAI function-calling message shape."
-  (let ((msgs (crush--hyper-history-messages
+  (let ((msgs (crush-openai-history-messages
                '((user . "run ls")
                  (assistant . "Listing done")
                  (tool "call_1" "bash" "{\"command\":\"ls\"}"
@@ -102,7 +102,7 @@ OpenAI function-calling message shape."
 (ert-deftest crush-test/hyper-history-messages-legacy-tool-fallback ()
   "A bare (tool . text) turn without metadata keeps the legacy
 `tool_call_id: unknown' emission."
-  (let ((msgs (crush--hyper-history-messages
+  (let ((msgs (crush-openai-history-messages
                '((user . "run ls")
                  (assistant . "Listing done")
                  (tool . "<raw>")))))
@@ -118,19 +118,19 @@ OpenAI function-calling message shape."
 (ert-deftest crush-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
   (let ((crush-model nil))
-    (let* ((req (crush--hyper-compose-request "Hello" nil "m"))
+    (let* ((req (crush-openai-compose-request "Hello" nil "m"))
            (msgs (alist-get 'messages req)))
       (should (string= (alist-get 'model req) "m"))
       (should (eq (alist-get 'stream req) t))
       (should (= (length msgs) 2))
-      (should (string= (crush--hyper-alist-get "role" (nth 0 msgs)) "system"))
-      (should (string= (crush--hyper-alist-get "role" (nth 1 msgs)) "user"))
-      (should (string= (crush--hyper-alist-get "content" (nth 1 msgs)) "Hello")))))
+      (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
+      (should (string= (crush--openai-alist-get "role" (nth 1 msgs)) "user"))
+      (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "Hello")))))
 
 (ert-deftest crush-test/hyper-compose-with-context-merges-preamble ()
   "With context, the user message should carry preamble + context + prompt."
-  (let* ((req (crush--hyper-compose-request "Do the thing" "**Attachment: foo**" "m"))
-         (user-content (crush--hyper-alist-get "content"
+  (let* ((req (crush-openai-compose-request "Do the thing" "**Attachment: foo**" "m"))
+         (user-content (crush--openai-alist-get "content"
                                                (nth 1 (alist-get 'messages req)))))
     (should (string-match-p "The following markdown fenced code blocks" user-content))
     (should (string-match-p "\\*\\*Attachment: foo\\*\\*" user-content))
@@ -139,13 +139,13 @@ OpenAI function-calling message shape."
 (ert-deftest crush-test/hyper-compose-respects-defcustoms ()
   "Model, max-tokens, temperature, thinking, reasoning-effort should land in body."
   (let ((crush-model "my-model")
-        (crush-hyper-max-tokens 1234)
-        (crush-hyper-temperature 0.5)
-        (crush-hyper-thinking t)
-        (crush-hyper-reasoning-effort "high"))
+        (crush-openai-max-tokens 1234)
+        (crush-openai-temperature 0.5)
+        (crush-openai-thinking t)
+        (crush-openai-reasoning-effort "high"))
     ;; The model is resolved by the caller (the facade passes the backend
     ;; model slot derived from `crush-model'); compose uses it directly.
-    (let ((req (crush--hyper-compose-request "P" nil crush-model)))
+    (let ((req (crush-openai-compose-request "P" nil crush-model)))
       (should (string= (alist-get 'model req) "my-model"))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
@@ -155,13 +155,13 @@ OpenAI function-calling message shape."
 (ert-deftest crush-test/hyper-compose-model-default ()
   "When no model is set, the crush default model is used."
   (let ((crush-model nil))
-    (should (string= (alist-get 'model (crush--hyper-compose-request "P" nil nil))
-                     crush-hyper-default-model))))
+    (should (string= (alist-get 'model (crush-openai-compose-request "P" nil nil))
+                     crush-openai-default-model))))
 
 (ert-deftest crush-test/hyper-compose-tools-by-default ()
   "With `crush-tools-enabled' t the body announces the bash tool.
 The default is non-nil, so `tool_choice' is `auto'."
-  (let ((req (crush--hyper-compose-request "P" nil "m")))
+  (let ((req (crush-openai-compose-request "P" nil "m")))
     (should (assq 'tools req))
     (should (equal (alist-get 'tool_choice req) "auto"))
     (let ((tools (alist-get 'tools req)))
@@ -174,7 +174,7 @@ The default is non-nil, so `tool_choice' is `auto'."
   "With `crush-tools-enabled' nil the body matches the pre-tools format.
 It is byte-identical, with no `tools' or `tool_choice' key."
   (let ((crush-tools-enabled nil))
-    (let ((req (crush--hyper-compose-request "P" nil "m")))
+    (let ((req (crush-openai-compose-request "P" nil "m")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
@@ -186,7 +186,7 @@ It is byte-identical, with no `tools' or `tool_choice' key."
 
 (ert-deftest crush-test/sse-parser-single-delta ()
   "A single data event should yield its content delta."
-  (let* ((result (crush--hyper-sse-feed
+  (let* ((result (crush-openai-sse-feed
                   (crush-test--sse-state)
                   "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"))
          (deltas (car result)))
@@ -200,7 +200,7 @@ It is byte-identical, with no `tools' or `tool_choice' key."
                  "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n"
                  "data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n"
                  "data: [DONE]\n\n"))
-         (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
+         (result (crush-openai-sse-feed (crush-test--sse-state) chunk)))
     (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
                    '((content . "one") (content . "two"))))
     (should (plist-get (cdr result) :done))))
@@ -208,9 +208,9 @@ It is byte-identical, with no `tools' or `tool_choice' key."
 (ert-deftest crush-test/sse-parser-chunk-split-mid-line ()
   "Events split across chunk boundaries should still parse."
   (let* ((state (crush-test--sse-state))
-         (r1 (crush--hyper-sse-feed state "data: {\"choices\":[{\"delta\":{\"con"))
-         (r2 (crush--hyper-sse-feed (cdr r1) "tent\":\"abc\"}}]}\n\n"))
-         (r3 (crush--hyper-sse-feed (cdr r2) "data: [DONE]\n\n")))
+         (r1 (crush-openai-sse-feed state "data: {\"choices\":[{\"delta\":{\"con"))
+         (r2 (crush-openai-sse-feed (cdr r1) "tent\":\"abc\"}}]}\n\n"))
+         (r3 (crush-openai-sse-feed (cdr r2) "data: [DONE]\n\n")))
     (should (equal (car r1) nil))
     (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car r2))
                    '((content . "abc"))))
@@ -218,7 +218,7 @@ It is byte-identical, with no `tools' or `tool_choice' key."
 
 (ert-deftest crush-test/sse-parser-crlf ()
   "CRLF line endings should be handled."
-  (let* ((result (crush--hyper-sse-feed
+  (let* ((result (crush-openai-sse-feed
                   (crush-test--sse-state)
                   "data: {\"choices\":[{\"delta\":{\"content\":\"CR\"}}]}\r\n\r\n")))
     (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
@@ -229,13 +229,13 @@ It is byte-identical, with no `tools' or `tool_choice' key."
   (let* ((chunk (concat "data: {\"choices\":[{\"delta\":{\"content\":\"line"
                         "\"}}]}\n"
                         "data: {\"choices\":[{\"delta\":{\"content\":\" two\"}}]}\n\n"))
-         (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
+         (result (crush-openai-sse-feed (crush-test--sse-state) chunk)))
     (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
                    '((content . "line") (content . " two"))))))
 
 (ert-deftest crush-test/sse-parser-reasoning-delta ()
   "A reasoning_content delta should yield a reasoning-typed delta."
-  (let* ((result (crush--hyper-sse-feed
+  (let* ((result (crush-openai-sse-feed
                   (crush-test--sse-state)
                   "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n")))
     (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
@@ -249,13 +249,13 @@ which region each delta belongs to."
   (let* ((chunk (concat
                  "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n"
                  "data: {\"choices\":[{\"delta\":{\"content\":\"seen\"}}]}\n\n"))
-         (result (crush--hyper-sse-feed (crush-test--sse-state) chunk)))
+         (result (crush-openai-sse-feed (crush-test--sse-state) chunk)))
     (should (equal (mapcar (lambda (d) (cons (nth 0 d) (nth 1 d))) (car result))
                    '((reasoning . "think") (content . "seen"))))))
 
 (ert-deftest crush-test/sse-tool-calls-delta ()
   "A tool_calls delta should yield a (tool_calls nil ORIG) delta."
-  (let* ((result (crush--hyper-sse-feed
+  (let* ((result (crush-openai-sse-feed
                   (crush-test--sse-state)
                   (concat "data: {\"choices\":[{\"delta\":"
                           "{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\","
@@ -271,23 +271,23 @@ which region each delta belongs to."
   (let* ((s1 (crush-test--sse-state))
          (json1 (json-encode '((choices . [((delta (tool_calls . [((index . 0) (id . "call_x") (function (name . "bash") (arguments . "part1")))])))]))))
          (json2 (json-encode '((choices . [((delta (tool_calls . [((index . 0) (function (arguments . "part2")))])))]))))
-         (r1 (crush--hyper-sse-feed
+         (r1 (crush-openai-sse-feed
               s1 (concat "data: " json1 "\n\n")))
-         (r2 (crush--hyper-sse-feed
+         (r2 (crush-openai-sse-feed
               (cdr r1) (concat "data: " json2 "\n\n"))))
     (let ((tcs (plist-get (cdr r2) :tool-calls)))
       (should (vectorp tcs))
       (should (>= (length tcs) 1))
-      (let ((args (crush--hyper-alist-get
+      (let ((args (crush--openai-alist-get
                    "arguments"
-                   (crush--hyper-alist-get
+                   (crush--openai-alist-get
                     "function"
                     (aref tcs 0)))))
         (should (string= args "part1part2"))))))
 
 (ert-deftest crush-test/sse-mixed-content-and-tool-calls ()
   "A chunk with both content and tool_calls should yield both deltas."
-  (let* ((result (crush--hyper-sse-feed
+  (let* ((result (crush-openai-sse-feed
                   (crush-test--sse-state)
                   (concat "data: {\"choices\":[{\"delta\":"
                           "{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\","
@@ -302,7 +302,7 @@ which region each delta belongs to."
 
 (ert-deftest crush-test/sse-parser-error-payload ()
   "An error data payload should set done and surface the message."
-  (let* ((result (crush--hyper-sse-feed
+  (let* ((result (crush-openai-sse-feed
                   (crush-test--sse-state)
                   "data: {\"error\":\"boom\"}\n\n")))
     (should (plist-get (cdr result) :done))
@@ -312,11 +312,11 @@ which region each delta belongs to."
   "With `:on-event', the callback sees every raw payload.
 It fires for each complete `data:' event, in order, before dispatch."
   (let ((events nil))
-    (let* ((result (crush--hyper-sse-feed
+    (let* ((result (crush-openai-sse-feed
                     (crush-test--sse-state)
                     "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n"
                     :on-event (lambda (payload) (push payload events))))
-           (more (crush--hyper-sse-feed
+           (more (crush-openai-sse-feed
                   (cdr result)
                   "data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n"
                   :on-event (lambda (payload) (push payload events)))))
@@ -331,15 +331,15 @@ An unterminated fragment (no blank line) is not an event; `[DONE]'
 is, with its raw text."
   (let* ((events nil)
          (on-event (lambda (payload) (push payload events))))
-    (let* ((partial (crush--hyper-sse-feed
+    (let* ((partial (crush-openai-sse-feed
                      (crush-test--sse-state)
                      "data: {\"choices\":[{\"delta\":{\"con"
                      :on-event on-event))
-           (a (crush--hyper-sse-feed
+           (a (crush-openai-sse-feed
                (cdr partial)
                "tent\":\"x\"}}]}\n\n"
                :on-event on-event))
-           (b (crush--hyper-sse-feed
+           (b (crush-openai-sse-feed
                (cdr a)
                "data: [DONE]\n\n"
                :on-event on-event)))
@@ -357,7 +357,7 @@ regardless of formatting."
                   "\"finish_reason\":\"stop\"}],"
                   "\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":70,"
                   "\"total_tokens\":90}}")))
-    (should (crush--hyper-event-worth-pretty-p payload))))
+    (should (crush--openai-event-worth-pretty-p payload))))
 
 (ert-deftest crush-test/sse-event-worth-pretty-long-content ()
   "A delta with long content (>= 40 chars) is pretty-printed.
@@ -366,7 +366,7 @@ Large streamed chunks stay readable in the debug log."
                   "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\""
                   (make-string 40 ?a)
                   "\"},\"finish_reason\":null}]}")))
-    (should (crush--hyper-event-worth-pretty-p payload))))
+    (should (crush--openai-event-worth-pretty-p payload))))
 
 (ert-deftest crush-test/sse-event-not-worth-pretty-short-delta ()
   "A short per-token delta stays compact.
@@ -374,7 +374,7 @@ It is not pretty-printed, keeping the debug log bounded during streams."
   (dolist (payload '("{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"We\"},\"finish_reason\":null}]}"
                      "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Hello\"},\"finish_reason\":null}]}"
                      "data: [DONE]"))
-    (should-not (crush--hyper-event-worth-pretty-p payload))))
+    (should-not (crush--openai-event-worth-pretty-p payload))))
 
 
 
@@ -393,7 +393,7 @@ chunks and silently discarding any event split across them."
                 (proc (make-pipe-process :name "crush-hyper-test-filter"
                                          :noquery t
                                          :coding 'binary)))
-            (process-put proc :crush-sse (crush--hyper-sse-new-state))
+            (process-put proc :crush-sse (crush-openai-sse-new-state))
             (process-put proc :crush-on-delta
                          (crush-test--hyper-on-delta target))
             (process-put proc :crush-done-callback #'ignore)
@@ -404,11 +404,11 @@ chunks and silently discarding any event split across them."
             (process-put proc :crush-model "m")
             (process-put proc :crush-token-p nil)
             ;; Chunk 1: HTTP head plus the first half of a JSON SSE event.
-            (crush--hyper-curl-filter
+            (crush--openai-curl-filter
              proc "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: {\"choices\":[{\"delta\":{\"con")
             ;; Chunk 2: the rest of the event plus [DONE].  With the bug
             ;; this chunk's `:pending' was lost, so \"hi\" never streamed.
-            (crush--hyper-curl-filter
+            (crush--openai-curl-filter
              proc "tent\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
             (with-current-buffer target
               (goto-char (point-min))
@@ -417,7 +417,7 @@ chunks and silently discarding any event split across them."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-transport-timeout-in-curl-config ()
-  "`crush-hyper-timeout' should reach the curl config as max-time."
+  "`crush-openai-timeout' should reach the curl config as max-time."
   (let ((received nil)
         (proc (make-pipe-process :name "crush-hyper-test-cap" :noquery t)))
     (unwind-protect
@@ -426,10 +426,10 @@ chunks and silently discarding any event split across them."
                   ((symbol-function 'process-send-string)
                    (lambda (_p string) (push string received)))
                   ((symbol-function 'process-send-eof) #'ignore))
-          (let ((crush-hyper-timeout 45))
-            (crush--hyper-request
+          (let ((crush-openai-timeout 45))
+            (crush-openai-request
              "http://127.0.0.1:1" "tok"
-             (crush--hyper-compose-request "hi" nil "m")
+             (crush-openai-compose-request "hi" nil "m")
              #'ignore #'ignore)))
       (delete-process proc))
     (should (string-match-p "max-time = 45"
@@ -449,9 +449,9 @@ XXH3-64 hash."
                   ((symbol-function 'process-send-string)
                    (lambda (_p string) (push string received)))
                   ((symbol-function 'process-send-eof) #'ignore))
-          (crush--hyper-request
+          (crush-openai-request
            "http://127.0.0.1:1" "tok"
-           (crush--hyper-compose-request "hi" nil "m")
+           (crush-openai-compose-request "hi" nil "m")
            #'ignore #'ignore nil (crush-xxh3-hash64 uuid)))
       (delete-process proc))
     (let ((config (mapconcat #'identity (nreverse received) "\n")))
@@ -471,9 +471,9 @@ XXH3-64 hash."
                   ((symbol-function 'process-send-string)
                    (lambda (_p string) (push string received)))
                   ((symbol-function 'process-send-eof) #'ignore))
-          (crush--hyper-request
+          (crush-openai-request
            "http://127.0.0.1:1" "tok"
-           (crush--hyper-compose-request "hi" nil "m")
+           (crush-openai-compose-request "hi" nil "m")
            #'ignore #'ignore))
       (delete-process proc))
     (should (string-match-p
@@ -484,7 +484,7 @@ XXH3-64 hash."
   "The default setting passes a stable per-machine ID.
 Repeated sends resolve to the same value."
   (let ((captured nil))
-    (cl-letf (((symbol-function 'crush--hyper-request)
+    (cl-letf (((symbol-function 'crush-openai-request)
                (lambda (_base _tok _body _on _cb &optional _err _sess id)
                  (setq captured id)
                  (make-pipe-process :name "crush-hyper-test-fake"
@@ -525,9 +525,9 @@ non-nil."
                               ((symbol-function 'process-send-string)
                                (lambda (_p string) (push string received)))
                               ((symbol-function 'process-send-eof) #'ignore))
-                      (crush--hyper-request
+                      (crush-openai-request
                        "http://127.0.0.1:1" "tok"
-                       (crush--hyper-compose-request "hi" nil "m")
+                       (crush-openai-compose-request "hi" nil "m")
                        #'ignore #'ignore nil nil id))
                   (delete-process proc))
                 (mapconcat #'identity (nreverse received) "\n"))))
@@ -546,9 +546,9 @@ non-nil."
                   ((symbol-function 'process-send-string)
                    (lambda (_p string) (push string received)))
                   ((symbol-function 'process-send-eof) #'ignore))
-          (crush--hyper-request
+          (crush-openai-request
            "http://127.0.0.1:1" "tok"
-           (crush--hyper-compose-request "hi" nil "m")
+           (crush-openai-compose-request "hi" nil "m")
            #'ignore #'ignore))
       (delete-process proc))
     (let ((config (mapconcat #'identity (nreverse received) "\n")))
@@ -558,7 +558,7 @@ non-nil."
 (ert-deftest crush-test/hyper-method-gates-session-id-on-defcustom ()
   "The session hash is computed only when the cache gate is on.\nWith the gate off, nil is passed for the session headers."
   (let ((captured-session nil))
-    (cl-letf (((symbol-function 'crush--hyper-request)
+    (cl-letf (((symbol-function 'crush-openai-request)
                (lambda (&rest args)
                  (setq captured-session (nth 6 args))
                  (make-pipe-process :name "crush-hyper-test-fake"
@@ -579,7 +579,7 @@ non-nil."
   "With the cache gate on, the method passes the XXH3-64 hash
 of the session UUID as the cache-affinity session id."
   (let ((captured-session nil))
-    (cl-letf (((symbol-function 'crush--hyper-request)
+    (cl-letf (((symbol-function 'crush-openai-request)
                (lambda (&rest args)
                  (setq captured-session (nth 6 args))
                  (make-pipe-process :name "crush-hyper-test-fake"
@@ -689,7 +689,7 @@ on stream completion instead of finalizing or touching buffers itself."
   (let ((crush-test--captured-completion nil)
         (injected (lambda () (setq crush-test--captured-completion 'called)))
         (base "http://127.0.0.1:1"))
-    (cl-letf (((symbol-function 'crush--hyper-request)
+    (cl-letf (((symbol-function 'crush-openai-request)
                (lambda (&rest args)
                  (setq crush-test--captured-completion (nth 4 args))
                  (make-pipe-process :name "crush-hyper-test-fake"
@@ -788,9 +788,9 @@ Returns the capture output."
   (let* ((result (crush-test--with-hyper-server
                   'ok-stream
                   (lambda (base)
-                    (let ((proc (crush--hyper-request
+                    (let ((proc (crush-openai-request
                                  base "tok-rf"
-                                 (crush--hyper-compose-request "hi" nil "m")
+                                 (crush-openai-compose-request "hi" nil "m")
                                  #'ignore #'ignore nil
                                  (crush-xxh3-hash64
                                   "f47ac10b-58cc-4372-a567-0e02b2c3d479"))))
@@ -820,8 +820,8 @@ Returns the capture output."
       (should (string= (cdr (assoc "x-session-affinity" headers))
                        "db22027126414ba6"))
       (let ((decoded (json-read-from-string body)))
-        (should (string= (crush--hyper-alist-get "model" decoded) "m"))
-        (should (eq (crush--hyper-alist-get "stream" decoded) t))))))
+        (should (string= (crush--openai-alist-get "model" decoded) "m"))
+        (should (eq (crush--openai-alist-get "stream" decoded) t))))))
 
 (ert-deftest crush-test/hyper-wire-streams-deltas-into-buffer ()
   "The transport should insert streamed deltas into the crush buffer."
@@ -835,8 +835,8 @@ Returns the capture output."
                (save-excursion (goto-char (point-max)) (newline))
                (setq-local crush--response-start (point-marker))
                (let ((buf (current-buffer)))
-                 (let ((proc (crush--hyper-request
-                              base "tok" (crush--hyper-compose-request "hi" nil "m")
+                 (let ((proc (crush-openai-request
+                              base "tok" (crush-openai-compose-request "hi" nil "m")
                               (crush-test--hyper-on-delta buf)
                               (crush-test--hyper-completion buf))))
                    (let ((deadline (+ (float-time) 6)))
@@ -874,8 +874,8 @@ Returns the capture output."
                (save-excursion (goto-char (point-max)) (newline))
                (setq-local crush--response-start (point-marker))
                (let ((buf (current-buffer)))
-                 (let ((proc (crush--hyper-request
-                              base "tok" (crush--hyper-compose-request "hi" nil "m")
+                 (let ((proc (crush-openai-request
+                              base "tok" (crush-openai-compose-request "hi" nil "m")
                               (crush-test--hyper-on-delta buf)
                               (crush-test--hyper-completion buf))))
                    (let ((deadline (+ (float-time) 6)))
@@ -938,8 +938,8 @@ Returns the capture output."
            'error-http
            (lambda (base)
              (setq-local crush--response-start (point-marker))
-             (let ((proc (crush--hyper-request
-                          base "tok" (crush--hyper-compose-request "hi" nil "m")
+             (let ((proc (crush-openai-request
+                          base "tok" (crush-openai-compose-request "hi" nil "m")
                           (crush-test--hyper-on-delta (current-buffer))
                           (crush-test--hyper-completion (current-buffer))
                           (crush-test--hyper-on-error (current-buffer)))))
@@ -962,8 +962,8 @@ Returns the capture output."
            'not-found
            (lambda (base)
              (setq-local crush--response-start (point-marker))
-             (let* ((proc (crush--hyper-request
-                           base "tok" (crush--hyper-compose-request "hi" nil "m")
+             (let* ((proc (crush-openai-request
+                           base "tok" (crush-openai-compose-request "hi" nil "m")
                            (crush-test--hyper-on-delta (current-buffer))
                            (crush-test--hyper-completion (current-buffer))
                            (crush-test--hyper-on-error (current-buffer))))
@@ -989,9 +989,9 @@ Returns the capture output."
            'ok-stream
            (lambda (base)
              (setq-local crush--response-start (point-marker))
-             (let ((proc (crush--hyper-request
+             (let ((proc (crush-openai-request
                           base "sk-hyper-supersecret"
-                          (crush--hyper-compose-request "hi" nil "m")
+                          (crush-openai-compose-request "hi" nil "m")
                           (crush-test--hyper-on-delta (current-buffer))
                           (crush-test--hyper-completion (current-buffer)))))
                (let ((deadline (+ (float-time) 6)))
@@ -1022,36 +1022,36 @@ Returns the capture output."
 
 (ert-deftest crush-test/hyper-history-compose-prepends-turns ()
   "Prior turns ride before the new user message."
-  (let* ((req (crush--hyper-compose-request
+  (let* ((req (crush-openai-compose-request
                "second" nil "m"
                '((user . "first") (assistant . "one"))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 4))
-    (should (string= (crush--hyper-alist-get "role" (nth 0 msgs)) "system"))
-    (should (string= (crush--hyper-alist-get "content" (nth 1 msgs)) "first"))
-    (should (string= (crush--hyper-alist-get "role" (nth 2 msgs)) "assistant"))
-    (should (string= (crush--hyper-alist-get "content" (nth 2 msgs)) "one"))
-    (should (string= (crush--hyper-alist-get "content" (nth 3 msgs)) "second"))))
+    (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
+    (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "first"))
+    (should (string= (crush--openai-alist-get "role" (nth 2 msgs)) "assistant"))
+    (should (string= (crush--openai-alist-get "content" (nth 2 msgs)) "one"))
+    (should (string= (crush--openai-alist-get "content" (nth 3 msgs)) "second"))))
 
 (ert-deftest crush-test/hyper-history-compose-plain-with-no-turns ()
   "With no prior turns the request is exactly system + user.
 This covers the first prompt, or a limit of 0."
-  (let* ((req (crush--hyper-compose-request "second" nil "m" nil))
+  (let* ((req (crush-openai-compose-request "second" nil "m" nil))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 2))
-    (should (string= (crush--hyper-alist-get "content" (nth 1 msgs))
+    (should (string= (crush--openai-alist-get "content" (nth 1 msgs))
                      "second"))))
 
 (ert-deftest crush-test/hyper-history-compose-drops-junk-turns ()
   "Unrecognized roles and empty text never reach the messages array."
-  (let* ((req (crush--hyper-compose-request
+  (let* ((req (crush-openai-compose-request
                "hi" nil "m"
                '((user . "a") (reasoning . "hidden") (assistant . "")
                  (user . "   "))))
          (msgs (alist-get 'messages req)))
     ;; system + the single meaningful user turn + new user.
     (should (= (length msgs) 3))
-    (should (string= (crush--hyper-alist-get "content" (nth 1 msgs)) "a"))))
+    (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "a"))))
 
 (ert-deftest crush-test/hyper-history-wire-roundtrip ()
   "A second prompt is sent with the prior user+assistant turns as history.
@@ -1116,23 +1116,23 @@ messages array is [system, prior-user, prior-assistant, current]."
               (should (= (length requests) 2))
               (let* ((req (nth 0 requests))
                      (body (json-read-from-string (nth 3 req)))
-                     (msgs (crush--hyper-alist-get "messages" body)))
+                     (msgs (crush--openai-alist-get "messages" body)))
                 (should (= (length msgs) 2))
-                (should (string= (crush--hyper-alist-get "content" (aref msgs 1))
+                (should (string= (crush--openai-alist-get "content" (aref msgs 1))
                                  "first")))
               (let* ((req (nth 1 requests))
                      (body (json-read-from-string (nth 3 req)))
-                     (msgs (crush--hyper-alist-get "messages" body)))
+                     (msgs (crush--openai-alist-get "messages" body)))
                 (should (= (length msgs) 4))
-                (should (string= (crush--hyper-alist-get "role" (aref msgs 0))
+                (should (string= (crush--openai-alist-get "role" (aref msgs 0))
                                  "system"))
-                (should (string= (crush--hyper-alist-get "content" (aref msgs 1))
+                (should (string= (crush--openai-alist-get "content" (aref msgs 1))
                                  "first"))
-                (should (string= (crush--hyper-alist-get "role" (aref msgs 2))
+                (should (string= (crush--openai-alist-get "role" (aref msgs 2))
                                  "assistant"))
-                (should (string= (crush--hyper-alist-get "content" (aref msgs 2))
+                (should (string= (crush--openai-alist-get "content" (aref msgs 2))
                                  "first"))
-                (should (string= (crush--hyper-alist-get "content" (aref msgs 3))
+                (should (string= (crush--openai-alist-get "content" (aref msgs 3))
                                  "second"))))))
       (crush-test--cleanup))))
 
@@ -1175,20 +1175,20 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
             (let ((requests (nth 1 result)))
               (should (= (length requests) 2))
               (let* ((r1 (nth 0 requests))
-                     (m1 (crush--hyper-alist-get "messages"
+                     (m1 (crush--openai-alist-get "messages"
                                                  (json-read-from-string (nth 3 r1)))))
                 (should (= (length m1) 2))
-                (should (string= (crush--hyper-alist-get "content" (aref m1 1))
+                (should (string= (crush--openai-alist-get "content" (aref m1 1))
                                  "hi")))
               (let* ((r2 (nth 1 requests))
-                     (m2 (crush--hyper-alist-get "messages"
+                     (m2 (crush--openai-alist-get "messages"
                                                  (json-read-from-string (nth 3 r2)))))
                 (should (= (length m2) 4))
-                (should (string= (crush--hyper-alist-get "content" (aref m2 1))
+                (should (string= (crush--openai-alist-get "content" (aref m2 1))
                                  "hi"))
-                (should (string= (crush--hyper-alist-get "role" (aref m2 2))
+                (should (string= (crush--openai-alist-get "role" (aref m2 2))
                                  "assistant"))
-                (should (string= (crush--hyper-alist-get "content" (aref m2 3))
+                (should (string= (crush--openai-alist-get "content" (aref m2 3))
                                  "hello"))))))
       (crush-test--cleanup))))
 
@@ -1231,29 +1231,29 @@ The second request is a plain [system, user]."
               (let ((requests (nth 1 result)))
                 (should (= (length requests) 2))
                 (let* ((r2 (nth 1 requests))
-                       (m2 (crush--hyper-alist-get "messages"
+                       (m2 (crush--openai-alist-get "messages"
                                                    (json-read-from-string (nth 3 r2)))))
                   (should (= (length m2) 2))
-                  (should (string= (crush--hyper-alist-get "content" (aref m2 1))
+                  (should (string= (crush--openai-alist-get "content" (aref m2 1))
                                    "hello")))))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-history-compose-excluded-stays-plain ()
   "Excluded reasoning: the assistant message has only `content'."
-  (let* ((req (crush--hyper-compose-request
+  (let* ((req (crush-openai-compose-request
                "hello" nil "m"
                '((user . "first")
                  (assistant . "answer"))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 4))
     (let ((a (nth 2 msgs)))
-      (should (string= (crush--hyper-alist-get "role" a) "assistant"))
-      (should (string= (crush--hyper-alist-get "content" a) "answer"))
+      (should (string= (crush--openai-alist-get "role" a) "assistant"))
+      (should (string= (crush--openai-alist-get "content" a) "answer"))
       (should-not (assoc 'reasoning_content a)))))
 
 (ert-deftest crush-test/hyper-history-compose-reasoning-wire-shape ()
   "Included reasoning yields one assistant message.\nIt carries both `content' and `reasoning_content'; there is no\nstandalone reasoning message."
-  (let* ((req (crush--hyper-compose-request
+  (let* ((req (crush-openai-compose-request
                "hello" nil "m"
                '((user . "first")
                  (assistant . "answer")
@@ -1261,19 +1261,19 @@ The second request is a plain [system, user]."
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 4))
     (let ((a (nth 2 msgs)))
-      (should (string= (crush--hyper-alist-get "role" a) "assistant"))
-      (should (string= (crush--hyper-alist-get "content" a) "answer"))
-      (should (string= (crush--hyper-alist-get "reasoning_content" a)
+      (should (string= (crush--openai-alist-get "role" a) "assistant"))
+      (should (string= (crush--openai-alist-get "content" a) "answer"))
+      (should (string= (crush--openai-alist-get "reasoning_content" a)
                        "trace")))
     ;; No message has role "reasoning".
     (should-not (cl-some (lambda (m)
-                           (string= (crush--hyper-alist-get "role" m)
+                           (string= (crush--openai-alist-get "role" m)
                                     "reasoning"))
                          msgs))))
 
 (ert-deftest crush-test/hyper-history-compose-reasoning-orphan-dropped ()
   "A `reasoning' record with no preceding assistant turn is dropped."
-  (let* ((req (crush--hyper-compose-request
+  (let* ((req (crush-openai-compose-request
                "hello" nil "m"
                '((reasoning . "stray"))))
          (msgs (alist-get 'messages req)))
@@ -1320,15 +1320,15 @@ The second request is a plain [system, user]."
               (let ((requests (nth 1 result)))
                 (should (>= (length requests) 2))
                 (let* ((r2 (nth 1 requests))
-                       (m2 (crush--hyper-alist-get "messages"
+                       (m2 (crush--openai-alist-get "messages"
                                                    (json-read-from-string (nth 3 r2)))))
                   (should (= (length m2) 4))
                   (let ((a (aref m2 2)))
-                    (should (string= (crush--hyper-alist-get "role" a)
+                    (should (string= (crush--openai-alist-get "role" a)
                                      "assistant"))
-                    (should (string= (crush--hyper-alist-get "content" a)
+                    (should (string= (crush--openai-alist-get "content" a)
                                      "answer out"))
-                    (should (string= (crush--hyper-alist-get "reasoning_content" a)
+                    (should (string= (crush--openai-alist-get "reasoning_content" a)
                                      "think step hidden"))))))))
       (crush-test--cleanup))))
 
@@ -1343,8 +1343,8 @@ The SSE state carries them and the parser reports them."
            (lambda (base)
              (setq-local crush--response-start (point-marker))
              (let ((buf (current-buffer)))
-               (let ((proc (crush--hyper-request
-                            base "tok" (crush--hyper-compose-request "hi" nil "m")
+               (let ((proc (crush-openai-request
+                            base "tok" (crush-openai-compose-request "hi" nil "m")
                             (crush-test--hyper-on-delta buf)
                             (lambda ()
                               (with-current-buffer buf
@@ -1360,14 +1360,14 @@ The SSE state carries them and the parser reports them."
                    (let ((tcs (plist-get sse :tool-calls)))
                      (should (vectorp tcs))
                      (should (>= (length tcs) 1))
-                     (should (string= (crush--hyper-alist-get "id" (aref tcs 0))
+                     (should (string= (crush--openai-alist-get "id" (aref tcs 0))
                                       "call_abc")))))))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-compose-disabled-tools-no-key ()
   "With `crush-tools-enabled' nil the body lacks the tool keys.\nNeither `tools' nor `tool_choice' appears."
   (let ((crush-tools-enabled nil))
-    (let ((req (crush--hyper-compose-request "P" nil "m")))
+    (let ((req (crush-openai-compose-request "P" nil "m")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
@@ -1388,8 +1388,8 @@ un-frozen, so its advancing end marker hides the next prompt under
                (save-excursion (goto-char (point-max)) (newline))
                (setq-local crush--response-start (point-marker))
                (let ((buf (current-buffer)))
-                 (let ((proc (crush--hyper-request
-                              base "tok" (crush--hyper-compose-request "hi" nil "m")
+                 (let ((proc (crush-openai-request
+                              base "tok" (crush-openai-compose-request "hi" nil "m")
                               (crush-test--hyper-on-delta buf)
                               (crush-test--hyper-completion buf))))
                    (let ((deadline (+ (float-time) 6)))
@@ -1473,18 +1473,18 @@ The second request gets a content answer and finalizes."
             (let ((requests (nth 1 result)))
               (should (= (length requests) 2))
               (let* ((r1 (nth 0 requests))
-                     (m1 (crush--hyper-alist-get "messages"
+                     (m1 (crush--openai-alist-get "messages"
                                                  (json-read-from-string (nth 3 r1)))))
                 (should (= (length m1) 2))
-                (should (string= (crush--hyper-alist-get "content" (aref m1 1))
+                (should (string= (crush--openai-alist-get "content" (aref m1 1))
                                  "ls")))
               (let* ((r2 (nth 1 requests))
-                     (m2 (crush--hyper-alist-get "messages"
+                     (m2 (crush--openai-alist-get "messages"
                                                  (json-read-from-string (nth 3 r2)))))
                 (should (>= (length m2) 4))
-                (should (string= (crush--hyper-alist-get "role" (aref m2 2))
+                (should (string= (crush--openai-alist-get "role" (aref m2 2))
                                  "assistant"))
-                (should (string= (crush--hyper-alist-get "role" (aref m2 3))
+                (should (string= (crush--openai-alist-get "role" (aref m2 3))
                                  "tool"))))))
       (crush-test--cleanup))))
 
@@ -1680,11 +1680,11 @@ sends correct ids; this pins the history-replay path."
                 (let ((found nil))
                   (dolist (req requests)
                     (let* ((body (json-read-from-string (nth 3 req)))
-                           (msgs (crush--hyper-alist-get "messages" body))
+                           (msgs (crush--openai-alist-get "messages" body))
                            (tool-idx nil))
                       (let ((i 0))
                         (while (and (null tool-idx) (< i (length msgs)))
-                          (when (string= (crush--hyper-alist-get "role" (aref msgs i))
+                          (when (string= (crush--openai-alist-get "role" (aref msgs i))
                                          "tool")
                             (setq tool-idx i))
                           (setq i (1+ i))))
@@ -1696,15 +1696,15 @@ sends correct ids; this pins the history-replay path."
                          ;; The pair is (assistant-with-tool_calls, tool).
                          (assistant-msg (aref msgs (1- tool-idx)))
                          (tool-msg (aref msgs tool-idx)))
-                    (should (string= (crush--hyper-alist-get "role" assistant-msg)
+                    (should (string= (crush--openai-alist-get "role" assistant-msg)
                                      "assistant"))
-                    (let ((tcs (crush--hyper-alist-get "tool_calls" assistant-msg)))
+                    (let ((tcs (crush--openai-alist-get "tool_calls" assistant-msg)))
                       (should (vectorp tcs))
                       (should (= (length tcs) 1))
                       (let ((tc (aref tcs 0)))
-                        (should (string-match-p "call_" (crush--hyper-alist-get "id" tc)))
-                        (should (string= (crush--hyper-alist-get "tool_call_id" tool-msg)
-                                         (crush--hyper-alist-get "id" tc)))))))))))
+                        (should (string-match-p "call_" (crush--openai-alist-get "id" tc)))
+                        (should (string= (crush--openai-alist-get "tool_call_id" tool-msg)
+                                         (crush--openai-alist-get "id" tc)))))))))))
       (crush-test--cleanup))))
 
 (provide 'crush-test-hyper)
