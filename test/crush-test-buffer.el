@@ -490,7 +490,6 @@ at point."
             (should (string= prompt-id crush--prompt-id)))))
     (crush-test--cleanup)))
 
-
 (ert-deftest crush-test/response-has-response-to-property ()
   "Response text should have crush-response-to property linking to prompt."
   (unwind-protect
@@ -761,7 +760,6 @@ event; the facade continuation now owns completion."
 (ert-deftest crush-test/insert-prompt-renamed ()
   "Crush--insert-prompt should be defined (renamed from crush--insert-prompt-marker)."
   (should (fboundp 'crush--insert-prompt)))
-
 
 ;;; 65. Phase 6: Sentinel freezes previous response read-only
 
@@ -1053,7 +1051,6 @@ facade; this asserts the facade's contract — insertion completes."
           (should-not (get-buffer-process (current-buffer)))))
     (crush-test--cleanup)))
 
-
 (ert-deftest crush-test/input-previous-inserts-from-ring ()
   "\\[crush--input-previous] inserts the previous ring input."
   (unwind-protect
@@ -1105,8 +1102,6 @@ There is no separate `crush-mode' major mode."
           (should (derived-mode-p 'text-mode))
           (should-not (derived-mode-p 'comint-mode))))
     (crush-test--cleanup)))
-
-
 
 (ert-deftest crush-test/prompt-has-crush-prompt-face ()
   "The prompt text should have crush-prompt-face."
@@ -1460,8 +1455,6 @@ right after the prompt inherits `read-only' and Emacs signals
     (should (equal (alist-get "/tmp/x/foo/" crush--root-buffer-alist nil nil #'equal)
                    "*crush:foo*"))))
 
-
-
 ;;; 33. Conversation history extraction: tagged regions -> turns
 
 ;;; These tests pin the contract of the facade's history extraction:
@@ -1802,6 +1795,66 @@ dropped."
               (delete-region rs (1+ rs)))
             (should-not (equal (crush--history-turns crush--prompt-id)
                                '((user . "first") (assistant . "reply")))))))
+    (crush-test--cleanup)))
+
+;;; 100. Undo: programmatic changes are not undoable
+
+(ert-deftest crush-test/undo-init-leaves-empty-list ()
+  "Fresh buffer init should leave an empty undo list."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (null buffer-undo-list))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/undo-user-typing-records-entries ()
+  "User typing at the prompt should be recorded in the undo list."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (null buffer-undo-list))
+          (goto-char (point-max))
+          (insert "hello")
+          (should buffer-undo-list)
+          (should (consp buffer-undo-list))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/undo-response-cycle-not-recorded ()
+  "Stream deltas, finalize, and prompt insertion should not record undo."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (null buffer-undo-list))
+          (goto-char (point-max))
+          (insert "test")
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          ;; Clear undo entries from the setup typing so we can test
+          ;; that the response cycle alone records nothing.
+          (setq buffer-undo-list nil)
+          (crush-test--simulate-facade-response "response text")
+          ;; Programmatic changes should not have recorded undo.
+          (should (null buffer-undo-list))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/undo-after-response-user-typing-is-undoable ()
+  "User typing after a response cycle should still be undoable."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "test")
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (setq buffer-undo-list nil)
+          (crush-test--simulate-facade-response "response text")
+          (should (null buffer-undo-list))
+          (goto-char (point-max))
+          (insert "new input")
+          (should buffer-undo-list)
+          (should (consp buffer-undo-list))))
     (crush-test--cleanup)))
 
 (provide 'crush-test-buffer)

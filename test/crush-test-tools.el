@@ -57,7 +57,6 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
-
 (defun crush-test--tool-call (name &optional args-json)
   "Return a `crush-tool-call' for NAME with ARGS-JSON (or nil)."
   (let ((call (crush-make-openai-tool-call :id "call_test" :name name)))

@@ -236,7 +236,6 @@ Buffer-local.")
   (expand-file-name "crush-history" user-emacs-directory)
   "File where input history is persisted.")
 
-
 ;;; Backend abstraction
 
 ;;; The `crush-provider' base struct and the `crush-provider-*' protocol
@@ -781,6 +780,7 @@ is the first prompt in the buffer."
                 (setq i (1+ i)))
               (seq-subseq limited i))
           limited)))))
+
 (defun crush--history-for (buffer)
   "Return BUFFER's history without its pending prompt.
 The pending prompt is the one about to be sent (its ID lives in
@@ -935,6 +935,7 @@ buffer-local and never leaves via the network; only the hash is sent."
             (inhibit-modification-hooks t))
         (erase-buffer)
         (crush--insert-prompt))
+      (setq-local buffer-undo-list nil)
       (crush--input-ring-read)
       (setq-local default-directory
                   (file-name-as-directory
@@ -1396,6 +1397,7 @@ Runs in the crush buffer, which owns all response text."
     (setq-local crush--tool-loop-count 0)
     (crush--input-ring-write)
     (crush--update-header-line)
+    (setq-local buffer-undo-list nil)
     (goto-char (point-max))))
 
 (defun crush-facade--finalize ()
@@ -1695,6 +1697,7 @@ for wire resume.  Returns the end position of the inserted block."
           (crush--insert-prompt)))
       (setq-local crush--tool-continuation nil)
       (setq-local crush--tool-loop-count 0)
+      (setq-local buffer-undo-list nil)
       (goto-char (point-max))
       (message "Crush process interrupted"))))
 
@@ -1713,7 +1716,8 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (crush--reasoning-reset)
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (crush--insert-prompt)))
+    (crush--insert-prompt))
+  (setq-local buffer-undo-list nil))
 
 ;;; Minor mode commands
 

@@ -57,7 +57,6 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
-
 (ert-deftest crush-test/xxh3-empty-string ()
   "The empty string hashes to zeebo/xxh3's value (2d06800538d394c2)."
   (should (string= (crush-xxh3-hash64 "") "2d06800538d394c2")))

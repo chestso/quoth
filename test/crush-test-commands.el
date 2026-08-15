@@ -381,7 +381,6 @@ It sets crush-region-type 'attachment and a project-root-relative path."
               (should (string= (get-text-property (match-beginning 0) 'crush-filename) "file.go")))))
       (crush-test--cleanup))))
 
-
 (ert-deftest crush-test/sentinel-no-longer-fontifies ()
   "Finalize should tag the response but create no overlays."
   (unwind-protect

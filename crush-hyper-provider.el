@@ -123,13 +123,6 @@ model-visible history."
   :type 'boolean
   :group 'crush)
 
-
-
-
-
-
-
-
 (defcustom crush-hyper-x-crush-id t
   "Value for the x-crush-id header on hyper requests.
 

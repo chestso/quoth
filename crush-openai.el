@@ -684,5 +684,6 @@ Returns the curl process."
     (process-send-string proc payload)
     (process-send-eof proc)
     proc))
+
 (provide 'crush-openai)
 ;;; crush-openai.el ends here

@@ -110,7 +110,6 @@ OpenAI function-calling message shape."
 
 ;;; 91. Hyper provider: request composition
 
-
 (ert-deftest crush-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
   (let ((crush-model nil))
@@ -127,7 +126,7 @@ OpenAI function-calling message shape."
   "With context, the user message should carry preamble + context + prompt."
   (let* ((req (crush-openai-compose-request "Do the thing" "**Attachment: foo**" "m"))
          (user-content (crush--openai-alist-get "content"
-                                               (nth 1 (alist-get 'messages req)))))
+                                                (nth 1 (alist-get 'messages req)))))
     (should (string-match-p "The following markdown fenced code blocks" user-content))
     (should (string-match-p "\\*\\*Attachment: foo\\*\\*" user-content))
     (should (string-match-p "Do the thing$" user-content))))
@@ -371,9 +370,6 @@ It is not pretty-printed, keeping the debug log bounded during streams."
                      "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Hello\"},\"finish_reason\":null}]}"
                      "data: [DONE]"))
     (should-not (crush--openai-event-worth-pretty-p payload))))
-
-
-
 
 ;;; 92c. Hyper transport: filter state persistence and curl config
 
@@ -1172,13 +1168,13 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
               (should (= (length requests) 2))
               (let* ((r1 (nth 0 requests))
                      (m1 (crush--openai-alist-get "messages"
-                                                 (json-read-from-string (nth 3 r1)))))
+                                                  (json-read-from-string (nth 3 r1)))))
                 (should (= (length m1) 2))
                 (should (string= (crush--openai-alist-get "content" (aref m1 1))
                                  "hi")))
               (let* ((r2 (nth 1 requests))
                      (m2 (crush--openai-alist-get "messages"
-                                                 (json-read-from-string (nth 3 r2)))))
+                                                  (json-read-from-string (nth 3 r2)))))
                 (should (= (length m2) 4))
                 (should (string= (crush--openai-alist-get "content" (aref m2 1))
                                  "hi"))
@@ -1228,7 +1224,7 @@ The second request is a plain [system, user]."
                 (should (= (length requests) 2))
                 (let* ((r2 (nth 1 requests))
                        (m2 (crush--openai-alist-get "messages"
-                                                   (json-read-from-string (nth 3 r2)))))
+                                                    (json-read-from-string (nth 3 r2)))))
                   (should (= (length m2) 2))
                   (should (string= (crush--openai-alist-get "content" (aref m2 1))
                                    "hello")))))))
@@ -1317,7 +1313,7 @@ The second request is a plain [system, user]."
                 (should (>= (length requests) 2))
                 (let* ((r2 (nth 1 requests))
                        (m2 (crush--openai-alist-get "messages"
-                                                   (json-read-from-string (nth 3 r2)))))
+                                                    (json-read-from-string (nth 3 r2)))))
                   (should (= (length m2) 4))
                   (let ((a (aref m2 2)))
                     (should (string= (crush--openai-alist-get "role" a)
@@ -1470,13 +1466,13 @@ The second request gets a content answer and finalizes."
               (should (= (length requests) 2))
               (let* ((r1 (nth 0 requests))
                      (m1 (crush--openai-alist-get "messages"
-                                                 (json-read-from-string (nth 3 r1)))))
+                                                  (json-read-from-string (nth 3 r1)))))
                 (should (= (length m1) 2))
                 (should (string= (crush--openai-alist-get "content" (aref m1 1))
                                  "ls")))
               (let* ((r2 (nth 1 requests))
                      (m2 (crush--openai-alist-get "messages"
-                                                 (json-read-from-string (nth 3 r2)))))
+                                                  (json-read-from-string (nth 3 r2)))))
                 (should (>= (length m2) 4))
                 (should (string= (crush--openai-alist-get "role" (aref m2 2))
                                  "assistant"))

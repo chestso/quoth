@@ -54,7 +54,6 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
-
 ;;; Helper
 
 (defconst crush-test--root
