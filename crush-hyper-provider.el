@@ -162,16 +162,16 @@ for the value; nil omits the header."
                              (&key buffer working-directory base-url token model
                                    &aux (type 'hyper) (completion-action nil)))
                (:copier nil))
-  "Backend that talks to the Charm Hyper gateway via HTTP+SSE."
+  "Provider that talks to the Charm Hyper gateway via HTTP+SSE."
   base-url
   token
   model)
 
-;;; Hyper backend methods
+;;; Hyper provider methods
 
 (cl-defmethod crush-provider-send-prompt
-  ((backend crush-hyper-provider) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error continuation)
-  "Send PROMPT to BACKEND via a direct HTTP+SSE request to Hyper.
+  ((provider crush-hyper-provider) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error continuation)
+  "Send PROMPT to PROVIDER via a direct HTTP+SSE request to Hyper.
 COMPLETION is the facade's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
 errors.  SESSION-UUID is the buffer's opaque session identifier; when
@@ -190,17 +190,17 @@ buffers itself."
   (let* ((history (and buffer
                        (crush--history-for buffer)))
          (body (crush-openai-compose-request
-                prompt context (crush-hyper-provider-model backend)
+                prompt context (crush-hyper-provider-model provider)
                 history continuation))
-         (base-url (or (crush-hyper-provider-base-url backend)
+         (base-url (or (crush-hyper-provider-base-url provider)
                        (getenv "HYPER_URL")
                        crush-hyper-base-url))
          (token (crush-hyper--resolve-token
-                 (or (crush-hyper-provider-token backend) crush-hyper-token)))
+                 (or (crush-hyper-provider-token provider) crush-hyper-token)))
          (session-id (and crush-hyper-session-cache-p session-uuid
                           (crush-xxh3-hash64 session-uuid)))
          (x-crush-id (crush-hyper--x-crush-id)))
-    (setf (crush-provider-completion-action backend) completion)
+    (setf (crush-provider-completion-action provider) completion)
     (crush-openai-request
      base-url token body
      (or on-delta #'ignore)
@@ -209,23 +209,23 @@ buffers itself."
      session-id
      x-crush-id)))
 
-(cl-defmethod crush-provider-interrupt ((backend crush-hyper-provider))
-  "Interrupt the hyper request for BACKEND."
-  (crush-provider-cleanup backend))
+(cl-defmethod crush-provider-interrupt ((provider crush-hyper-provider))
+  "Interrupt the hyper request for PROVIDER."
+  (crush-provider-cleanup provider))
 
-(cl-defmethod crush-provider-active-p ((_backend crush-hyper-provider))
-  "Return non-nil while a hyper request is in flight for BACKEND."
+(cl-defmethod crush-provider-active-p ((_provider crush-hyper-provider))
+  "Return non-nil while a hyper request is in flight for PROVIDER."
   nil)
 
-(cl-defmethod crush-provider-cleanup ((_backend crush-hyper-provider))
+(cl-defmethod crush-provider-cleanup ((_provider crush-hyper-provider))
   "Clean up any hyper request resources; phase 1 has none to kill."
   nil)
 
-(cl-defmethod crush-provider-grant-permission ((_backend crush-hyper-provider) _permission-id _action)
+(cl-defmethod crush-provider-grant-permission ((_provider crush-hyper-provider) _permission-id _action)
   "No permissions are issued in phase 1."
   nil)
 
-(cl-defmethod crush-provider--tool-results ((_backend crush-hyper-provider) tool-calls)
+(cl-defmethod crush-provider--tool-results ((_provider crush-hyper-provider) tool-calls)
   "Build the tool-result continuation messages and display blocks for TOOL-CALLS.
 Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
   (let ((tcs-list nil)
@@ -268,7 +268,7 @@ Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
           (nreverse tool-msgs)
           (nreverse blocks))))
 
-(cl-defmethod crush-provider--tool-calls ((_backend crush-hyper-provider) process)
+(cl-defmethod crush-provider--tool-calls ((_provider crush-hyper-provider) process)
   "Return the tool-calls vector from the SSE state on PROCESS, or nil.
 The SSE parser accumulates `tool_calls' deltas into the state's
 `:tool-calls' slot.  Works on deleted processes (process properties

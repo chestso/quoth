@@ -252,7 +252,7 @@ Returns the alists in conversation order."
 (defun crush-openai-compose-request (prompt context model &optional turns continuation)
   "Compose a chat-completions request alist for PROMPT.
 CONTEXT is optional attachment text; MODEL is the resolved model (the
-caller passes the backend's model slot, already derived from the shared
+caller passes the provider's model slot, already derived from the shared
 `crush-model' defcustom).  Falls back to `crush-openai-default-model'.
 Prior (ROLE . TEXT) TURNS from the facade's history extraction ride
 between the system prompt and the new user message; with no turns the
@@ -628,7 +628,7 @@ finishes; ON-ERROR (optional) receives a stream error message;
 SESSION-ID, when non-nil, is the XXH3-64 of the buffer's session UUID,
 sent as x-session-id / x-session-affinity for prefix caching.
 X-CRUSH-ID, when non-nil, is sent as the x-crush-id header (matching
-the Crush CLI's per-machine ID).  The backend never touches buffers.
+the Crush CLI's per-machine ID).  The provider never touches buffers.
 Returns the curl process."
   (let* ((payload (json-encode body))
          (config (concat

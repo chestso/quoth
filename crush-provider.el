@@ -30,7 +30,7 @@
 
 ;;; Commentary:
 
-;; Shared backend protocol for crush.el: the `crush-provider' base struct
+;; Shared provider protocol for crush.el: the `crush-provider' base struct
 ;; and the `crush-provider-*' generic functions implemented by
 ;; `crush-hyper-provider.el' (direct HTTP to the Charm Hyper gateway).
 
@@ -41,13 +41,13 @@
 (cl-defstruct (crush-provider
                (:constructor nil)
                (:copier nil))
-  "Base structure for a crush backend."
+  "Base structure for a crush provider."
   buffer
   completion-action
   working-directory
   ;; Application count: the number of pipeline applications (runnable,
-  ;; inflight, blocked) this backend accounts for.  The facade reads it
-  ;; via stream progress; a value of 0 means the backend is idle.
+  ;; inflight, blocked) this provider accounts for.  The facade reads it
+  ;; via stream progress; a value of 0 means the provider is idle.
   (application-count 1)
   (type nil))
 
@@ -56,36 +56,36 @@
 user's editor. Each block has a header line indicating the source file and
 optional line range. Paths are relative to the project root. Use this context
 to answer the prompt."
-  "Preamble used before attached context by both backends.")
+  "Preamble used before attached context by both providers.")
 
-(cl-defgeneric crush-provider-send-prompt (backend prompt &key context session-id continue-p completion buffer stderr on-delta on-error continuation)
-  "Send PROMPT to BACKEND with optional CONTEXT, SESSION-ID, and CONTINUE-P.
+(cl-defgeneric crush-provider-send-prompt (provider prompt &key context session-id continue-p completion buffer stderr on-delta on-error continuation)
+  "Send PROMPT to PROVIDER with optional CONTEXT, SESSION-ID, and CONTINUE-P.
 COMPLETION is a zero-argument closure (the facade's continuation) that
-the backend must invoke exactly once when the response stream finishes.
-BUFFER is the crush buffer the backend may associate its transport
+the provider must invoke exactly once when the response stream finishes.
+BUFFER is the crush buffer the provider may associate its transport
 process with, and STDERR is the stderr buffer; both are passed purely
 as data objects, never read or switched to.  ON-DELTA is a (DELTA
 KIND) callback that consumes streamed output, and ON-ERROR receives
-stream error messages, for backends that stream (hyper).
+stream error messages, for providers that stream (hyper).
 CONTINUATION, when non-nil, is a list of structured message alists
 (assistant with `tool_calls' followed by `role: \"tool\"' messages)
 that replace the user message in the request body; used by the
 tool loop to send follow-up requests with tool results.")
 
-(cl-defgeneric crush-provider-interrupt (backend)
-  "Interrupt the currently running operation on BACKEND.")
+(cl-defgeneric crush-provider-interrupt (provider)
+  "Interrupt the currently running operation on PROVIDER.")
 
-(cl-defgeneric crush-provider-active-p (backend)
-  "Return non-nil if BACKEND has an active operation.")
+(cl-defgeneric crush-provider-active-p (provider)
+  "Return non-nil if PROVIDER has an active operation.")
 
-(cl-defgeneric crush-provider-cleanup (backend)
-  "Clean up any resources held by BACKEND.")
+(cl-defgeneric crush-provider-cleanup (provider)
+  "Clean up any resources held by PROVIDER.")
 
-(cl-defgeneric crush-provider-grant-permission (backend permission-id action)
-  "Respond to a permission request on BACKEND identified by PERMISSION-ID.
+(cl-defgeneric crush-provider-grant-permission (provider permission-id action)
+  "Respond to a permission request on PROVIDER identified by PERMISSION-ID.
 ACTION is `allow', `allow-session', or `deny'.")
 
-(cl-defgeneric crush-provider--tool-results (backend tool-calls)
+(cl-defgeneric crush-provider--tool-results (provider tool-calls)
   "Build the tool-result messages and display blocks for TOOL-CALLS.
 TOOL-CALLS is a vector of tool-call alists from the SSE stream,
 accumulated by `crush--hyper-sse-merge-tool-calls'.  Returns a
@@ -94,16 +94,16 @@ ASSISTANT-MSG is the assistant message carrying `tool_calls',
 TOOL-RESULT-MSGS is a list of `role: \"tool\"' messages, and
 TOOL-BLOCKS is a list of plists (:name :id :args-json :result
 :exit) for `crush--tool-block-insert'."
-  (ignore backend tool-calls)
+  (ignore provider tool-calls)
   nil)
 
-(cl-defgeneric crush-provider--tool-calls (backend process)
-  "Return the accumulated tool-calls vector from BACKEND's PROCESS, or nil.
+(cl-defgeneric crush-provider--tool-calls (provider process)
+  "Return the accumulated tool-calls vector from PROVIDER's PROCESS, or nil.
 PROCESS is the transport process returned by `crush-provider-send-prompt'.
-For streaming backends, the SSE state on PROCESS carries the
+For streaming providers, the SSE state on PROCESS carries the
 `:tool-calls' vector accumulated by the parser; non-streaming
-backends return nil."
-  (ignore backend process)
+providers return nil."
+  (ignore provider process)
   nil)
 
 (provide 'crush-provider)

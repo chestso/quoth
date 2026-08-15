@@ -138,7 +138,7 @@ OpenAI function-calling message shape."
         (crush-openai-temperature 0.5)
         (crush-openai-thinking t)
         (crush-openai-reasoning-effort "high"))
-    ;; The model is resolved by the caller (the facade passes the backend
+    ;; The model is resolved by the caller (the facade passes the provider
     ;; model slot derived from `crush-model'); compose uses it directly.
     (let ((req (crush-openai-compose-request "P" nil crush-model)))
       (should (string= (alist-get 'model req) "my-model"))
@@ -483,14 +483,14 @@ Repeated sends resolve to the same value."
                                     :noquery t)))
               ((symbol-function 'crush--history-for) (lambda (_b) nil)))
       (unwind-protect
-          (let ((backend (crush-make-hyper-provider
-                          :buffer (current-buffer)
-                          :base-url "http://127.0.0.1:1"
-                          :token "tok")))
-            (crush-provider-send-prompt backend "hi")
+          (let ((provider (crush-make-hyper-provider
+                           :buffer (current-buffer)
+                           :base-url "http://127.0.0.1:1"
+                           :token "tok")))
+            (crush-provider-send-prompt provider "hi")
             (should (string-match-p "[0-9a-f]\\{16\\}" (or captured "")))
             (let ((first captured))
-              (crush-provider-send-prompt backend "hi")
+              (crush-provider-send-prompt provider "hi")
               (should (string= first captured))))
         (crush-test--cleanup)))))
 
@@ -557,13 +557,13 @@ non-nil."
                                     :noquery t)))
               ((symbol-function 'crush--history-for) (lambda (_b) nil)))
       (unwind-protect
-          (let ((backend (crush-make-hyper-provider
-                          :buffer (current-buffer)
-                          :base-url "http://127.0.0.1:1"
-                          :token "tok"))
+          (let ((provider (crush-make-hyper-provider
+                           :buffer (current-buffer)
+                           :base-url "http://127.0.0.1:1"
+                           :token "tok"))
                 (crush-hyper-session-cache-p nil))
             (crush-provider-send-prompt
-             backend "hi" :session-uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+             provider "hi" :session-uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
             (should (null captured-session)))
         (crush-test--cleanup)))))
 
@@ -578,13 +578,13 @@ of the session UUID as the cache-affinity session id."
                                     :noquery t)))
               ((symbol-function 'crush--history-for) (lambda (_b) nil)))
       (unwind-protect
-          (let ((backend (crush-make-hyper-provider
-                          :buffer (current-buffer)
-                          :base-url "http://127.0.0.1:1"
-                          :token "tok"))
+          (let ((provider (crush-make-hyper-provider
+                           :buffer (current-buffer)
+                           :base-url "http://127.0.0.1:1"
+                           :token "tok"))
                 (crush-hyper-session-cache-p t))
             (crush-provider-send-prompt
-             backend "hi" :session-uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+             provider "hi" :session-uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
             (should (string= captured-session "db22027126414ba6")))
         (crush-test--cleanup)))))
 
@@ -663,20 +663,20 @@ of the session UUID as the cache-affinity session id."
                        "sk-hyper-default")))))
 
 (ert-deftest crush-test/hyper-token-provider-slot-beats-custom ()
-  "A token on the backend struct wins over `crush-hyper-token'."
-  (let ((backend (crush-make-hyper-provider
-                  :buffer (current-buffer)
-                  :base-url "http://127.0.0.1:1"
-                  :token "sk-hyper-slot")))
+  "A token on the provider struct wins over `crush-hyper-token'."
+  (let ((provider (crush-make-hyper-provider
+                   :buffer (current-buffer)
+                   :base-url "http://127.0.0.1:1"
+                   :token "sk-hyper-slot")))
     (let ((crush-hyper-token "sk-hyper-custom"))
       (let ((token (crush-hyper--resolve-token
-                    (or (crush-hyper-provider-token backend)
+                    (or (crush-hyper-provider-token provider)
                         crush-hyper-token))))
         (should (string= token "sk-hyper-slot"))))))
 
 (ert-deftest crush-test/hyper-send-injects-completion ()
-  "Crush-backend-send-prompt for hyper should use the injected completion.
-The completion is the facade's continuation; the backend must invoke it
+  "Crush-provider-send-prompt for hyper should use the injected completion.
+The completion is the facade's continuation; the provider must invoke it
 on stream completion instead of finalizing or touching buffers itself."
   (let ((crush-test--captured-completion nil)
         (injected (lambda () (setq crush-test--captured-completion 'called)))
@@ -686,21 +686,21 @@ on stream completion instead of finalizing or touching buffers itself."
                  (setq crush-test--captured-completion (nth 4 args))
                  (make-pipe-process :name "crush-hyper-test-fake"
                                     :noquery t))))
-      (let ((backend (crush-make-hyper-provider
-                      :buffer (current-buffer)
-                      :base-url base
-                      :token "tok")))
+      (let ((provider (crush-make-hyper-provider
+                       :buffer (current-buffer)
+                       :base-url base
+                       :token "tok")))
         (unwind-protect
             (progn
               (crush-provider-send-prompt
-               backend "hi" :completion injected)
-              ;; The backend must have threaded the injected completion
+               provider "hi" :completion injected)
+              ;; The provider must have threaded the injected completion
               ;; into the transport instead of a buffer-based finalizer:
               ;; running it must trigger the injected side effect.
               (should (eq crush-test--captured-completion injected)))
           (crush-test--cleanup))))))
 
-;;; 93. Hyper backend: wire integration via dummy server
+;;; 93. Hyper provider: wire integration via dummy server
 
 ;;; The dummy Hyper gateway is a small Python server
 ;;; (test/hyper-server.py), started as a subprocess per test, that
@@ -1005,7 +1005,7 @@ Returns the capture output."
                  (should-not (search-forward "sk-hyper-supersecret" nil t)))))))
       (crush-test--cleanup))))
 
-;;; 94. Hyper backend: conversation history
+;;; 94. Hyper provider: conversation history
 
 ;;; Prior turns always ride in the composed request body as
 ;;; [system, prior-user, prior-assistant, ..., current-user]; with no
@@ -1062,12 +1062,12 @@ messages array is [system, prior-user, prior-assistant, current]."
                       (insert "first")
                       (save-excursion (goto-char (point-max)) (newline))
                       (setq-local crush--response-start (point-marker))
-                      (let ((backend (crush-make-hyper-provider
-                                      :buffer buf
-                                      :base-url base
-                                      :token "tok")))
+                      (let ((provider (crush-make-hyper-provider
+                                       :buffer buf
+                                       :base-url base
+                                       :token "tok")))
                         (crush-provider-send-prompt
-                         backend "first"
+                         provider "first"
                          :completion (crush-test--hyper-completion buf)
                          :on-delta (crush-test--hyper-on-delta buf)
                          :on-error (crush-test--hyper-on-error buf)
@@ -1085,12 +1085,12 @@ messages array is [system, prior-user, prior-assistant, current]."
                       (insert "second")
                       (goto-char (point-max))
                       (setq-local crush--response-start (point-marker))
-                      (let ((backend (crush-make-hyper-provider
-                                      :buffer buf
-                                      :base-url base
-                                      :token "tok")))
+                      (let ((provider (crush-make-hyper-provider
+                                       :buffer buf
+                                       :base-url base
+                                       :token "tok")))
                         (crush-provider-send-prompt
-                         backend "second"
+                         provider "second"
                          :completion (crush-test--hyper-completion buf)
                          :on-delta (crush-test--hyper-on-delta buf)
                          :on-error (crush-test--hyper-on-error buf)
@@ -1414,7 +1414,7 @@ un-frozen, so its advancing end marker hides the next prompt under
                  (should (not (string= crush--prompt-id old-prompt-id))))))))
       (crush-test--cleanup))))
 
-;;; Tool loop: the hyper backend must execute tool calls and send
+;;; Tool loop: the hyper provider must execute tool calls and send
 ;;; follow-up requests with the results, looping up to
 ;;; `crush-tool-loop-max' rounds.
 

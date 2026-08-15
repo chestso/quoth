@@ -32,7 +32,7 @@
 
 ;; crush.el is a GNU Emacs package for direct provider interaction: a
 ;; dedicated interactive buffer that sends structured prompts to AI
-;; models over HTTP and receives streamed responses.  The backend talks
+;; models over HTTP and receives streamed responses.  The provider talks
 ;; to the Charm Hyper gateway (https://hyper.charm.land) via streaming
 ;; chat completions.
 ;;
@@ -77,8 +77,8 @@ window width on every line the reasoning covers."
 
 (defcustom crush-model nil
   "Model to use for Crush requests.
-When nil, the backend falls back to `crush-openai-default-model'.  The
-facade passes this into the backend's model slot at buffer
+When nil, the provider falls back to `crush-openai-default-model'.  The
+facade passes this into the provider's model slot at buffer
 initialization.  Should be a model name like
 `claude-sonnet-4-20250514' or `gpt-4o'."
   :type '(choice (const nil) string)
@@ -89,7 +89,7 @@ initialization.  Should be a model name like
 ;;; `crush--continue', `crush--session-uuid', `crush--session-id',
 ;;; `crush--response-start', `crush--pending-context', and
 ;;; `crush-process' are the shared buffer-local state owned by the
-;;; facade (defined below); backends must not touch them.
+;;; facade (defined below); providers must not touch them.
 
 (defcustom crush-reasoning-preview-lines 10
   "Number of reasoning lines to show in the collapsed preview.
@@ -101,7 +101,7 @@ Must be a non-negative integer."
   :group 'crush)
 
 (defcustom crush-hyper-history-limit 200
-  "Maximum number of prior prompts sent as history by the hyper backend.
+  "Maximum number of prior prompts sent as history by the hyper provider.
 0 disables history entirely (each prompt is a single request).  Only
 the last LIMIT complete exchanges are sent; the current turn is always
 sent in full."
@@ -145,14 +145,14 @@ Buffer-local."
 (defvar-local crush--session-uuid nil
   "Opaque UUID identifying this crush buffer's session.
 Generated in `crush--init-buffer' and rotated by `crush-clear-buffer'.
-The hyper backend hashes it (XXH3-64) for the x-session-id /
+The hyper provider hashes it (XXH3-64) for the x-session-id /
 x-session-affinity cache-affinity headers; the raw UUID is never sent
 to the network.  Persistence (as a file-local) is Phase 2 roadmap work.
 Buffer-local.")
 
 (defvar-local crush--session-id nil
   "The 16-hex XXH3-64 of `crush--session-uuid'.
-Computed lazily by the hyper backend on request; kept here so the hash
+Computed lazily by the hyper provider on request; kept here so the hash
 is stable for the session's life, and to trace as `SESS' in the debug
 log.  Buffer-local.")
 
@@ -201,7 +201,7 @@ Buffer-local.")
 
 (defvar crush--reasoning-start nil
   "Marker at the start of the current reasoning region, or nil.
-Set by the hyper backend on the first reasoning delta streamed for
+Set by the hyper provider on the first reasoning delta streamed for
 the current prompt.  Buffer-local.")
 
 (defvar crush--reasoning-end nil
@@ -261,13 +261,13 @@ Buffer-local.")
             nil t))))
 
 (defvar crush-active-provider nil
-  "The active crush backend for this buffer (facade-owned).
+  "The active crush provider for this buffer (facade-owned).
 Set during buffer initialization; the facade's `crush-facade--send'
 and `crush-interrupt' dispatch through it.  Buffer-local.")
 (declare-function markdown-mode "markdown-mode" ())
 (declare-function crush-xxh3-hash64 "crush-xxh3" (input))
-(declare-function crush-provider--tool-calls "crush-provider" (backend process))
-(declare-function crush-provider--tool-results "crush-provider" (backend tool-calls))
+(declare-function crush-provider--tool-calls "crush-provider" (provider process))
+(declare-function crush-provider--tool-results "crush-provider" (provider tool-calls))
 
 ;;; Buffer naming
 
@@ -456,8 +456,8 @@ Only logs when `crush-debug-mode' is non-nil."
 
 (defun crush--header-model ()
   "Return the effective model name for the header line, or nil.
-Reads the backend's model slot (derived from `crush-model' at buffer
-init); falls back to `crush-openai-default-model' for hyper backends."
+Reads the provider's model slot (derived from `crush-model' at buffer
+init); falls back to `crush-openai-default-model' for hyper providers."
   (let ((model (and (crush-hyper-provider-p crush-active-provider)
                     (crush-hyper-provider-model crush-active-provider))))
     (or model
@@ -786,7 +786,7 @@ is the first prompt in the buffer."
 The pending prompt is the one about to be sent (its ID lives in
 BUFFER's `crush--prompt-id'); the transcript stops at the last
 completed exchange.  Entering BUFFER is this function's job, which
-keeps the backend buffer-free."
+keeps the provider buffer-free."
   (with-current-buffer buffer
     (crush--history-turns crush--prompt-id)))
 
@@ -1405,7 +1405,7 @@ Runs in the crush buffer, which owns all response text."
 Checks for pending tool calls from the SSE stream; when present,
 drives the tool loop (execute, insert blocks, send follow-up).
 Otherwise closes the response and inserts a fresh prompt.  The
-backend's completion action invokes this."
+provider's completion action invokes this."
   (if (and crush-tools-enabled
            crush-active-provider
            crush-process
@@ -1505,7 +1505,7 @@ is hit or no tool calls come back, finalizes via
 
 (defun crush-facade--append-delta (delta kind)
   "Append streamed DELTA of KIND (`content' or `reasoning') to the buffer.
-The facade's buffer-aware consumer for streaming backends inserts at
+The facade's buffer-aware consumer for streaming providers inserts at
 point-max, the growing response area, and drives the reasoning overlay:
 the first reasoning delta opens the region, later ones extend it, the
 first content delta freezes it, and the cursor moves along reasoning
@@ -1530,9 +1530,9 @@ Runs in the crush buffer (the facade's `:on-delta' closure enters it)."
       (goto-char (point-max)))))
 
 (defun crush-facade--send (prompt context has-context)
-  "Send PROMPT (with optional CONTEXT when HAS-CONTEXT) via the active backend.
-Injects the facade's continuation as the backend's completion action so
-backends signal stream completion without touching buffers.  Runs in the
+  "Send PROMPT (with optional CONTEXT when HAS-CONTEXT) via the active provider.
+Injects the facade's continuation as the provider's completion action so
+providers signal stream completion without touching buffers.  Runs in the
 crush buffer, which owns all streamed output."
   (let ((buf (current-buffer)))
     (crush-facade--stream-transition 'active 2)

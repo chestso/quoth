@@ -68,7 +68,7 @@
 (defun crush-test--fresh-buffer ()
   "Create a fresh crush test buffer and return it.
 The buffer is bound to `crush-test--root' and deterministically named.
-Initializes with the default hyper backend."
+Initializes with the default hyper provider."
   (let ((name (crush-test--buffer-name)))
     (when (get-buffer name)
       (kill-buffer name))

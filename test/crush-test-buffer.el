@@ -63,7 +63,7 @@
 
 (defun crush-test--live-pipe-proc ()
   "Return a live pipe process usable as a fake transport process.
-The hyper backend's curl transport sends stdin (config + JSON body)
+The hyper provider's curl transport sends stdin (config + JSON body)
 then EOF; a pipe process stays alive to accept that without erroring
 (the way a short-lived `true' process would not)."
   (let ((proc (make-pipe-process :name "crush-test-live-fake"
@@ -76,7 +76,7 @@ then EOF; a pipe process stays alive to accept that without erroring
 ;;; C2 rename-contract: the protocol is provider-named.
 
 (ert-deftest crush-test/provider-rename-contract ()
-  "The backend protocol has been renamed to provider.
+  "The provider protocol has been renamed to provider.
 `crush-provider-p' exists and the old `crush-backend-p' does not."
   (should (fboundp 'crush-provider-p))
   (should-not (fboundp 'crush-backend-p))
@@ -419,15 +419,15 @@ prompt fallback, even though it carries `crush-prompt-id'."
 
 (ert-deftest crush-test/header-model-falls-back-to-hyper-default ()
   "Effective model falls back to `crush-openai-default-model' for hyper
-backends with a nil model slot."
+providers with a nil model slot."
   (let ((crush-model nil))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            ;; A fresh buffer is always a hyper backend; with a nil model
+            ;; A fresh buffer is always a hyper provider; with a nil model
             ;; slot the effective model must be the hyper default.
             (should (string= (crush--header-model) crush-openai-default-model))
-            ;; A hyper backend with an explicit model uses it.
+            ;; A hyper provider with an explicit model uses it.
             (setq-local crush-active-provider
                         (crush-make-hyper-provider
                          :buffer buf
@@ -439,7 +439,7 @@ backends with a nil model slot."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/header-model-uses-provider-slot ()
-  "`crush--header-model' reads the backend model slot set at init."
+  "`crush--header-model' reads the provider model slot set at init."
   (let ((crush-model "claude-sonnet-4-20250514"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -624,7 +624,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
         (let ((old-id crush--prompt-id)
               (response-start (point-marker)))
           ;; The facade continuation is exactly what crush-send-input
-          ;; injects into the backend.
+          ;; injects into the provider.
           (let ((buf (current-buffer)))
             (funcall (lambda ()
                        (when (buffer-live-p buf)
@@ -740,7 +740,7 @@ the facade owns insertion.  This replaces the deleted
 
 (ert-deftest crush-test/debug-logs-finalize ()
   "The facade finalize path closes the response and inserts a prompt.
-The run backend's process sentinel (deleted) used to log the sentinel
+The run provider's process sentinel (deleted) used to log the sentinel
 event; the facade continuation now owns completion."
   (unwind-protect
       (let ((crush-debug-mode t)
@@ -892,7 +892,7 @@ response becomes read-only previous content, blocking edits."
 
 (ert-deftest crush-test/facade-delta-logged-to-debug ()
   "Streamed deltas insert into the buffer when debug mode is on.
-The *crush-debug* logging is the transport's job (backends), not the
+The *crush-debug* logging is the transport's job (providers), not the
 facade; this asserts the facade's contract — insertion completes."
   (unwind-protect
       (let ((crush-debug-mode t)
@@ -924,7 +924,7 @@ facade; this asserts the facade's contract — insertion completes."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (kill-buffer buf)
-        ;; The closure the facade injects into the backend wraps the
+        ;; The closure the facade injects into the provider wraps the
         ;; append in `buffer-live-p', so it must not error after the
         ;; buffer died.
         (should-not (funcall (lambda ()
@@ -1460,7 +1460,7 @@ right after the prompt inherits `read-only' and Emacs signals
 ;;; These tests pin the contract of the facade's history extraction:
 ;;; `crush--history-turns' reads the buffer's tagged regions (prompt
 ;;; markers, user input, responses, reasoning) and produces the (ROLE
-;;; . TEXT) conversation that the hyper backend re-sends.  Role tags
+;;; . TEXT) conversation that the hyper provider re-sends.  Role tags
 ;;; (`crush-role') are applied by `crush--insert-prompt' /
 ;;; `crush--after-change' (user) and `crush--tag-response-region'
 ;;; (assistant/reasoning); the turns builder groups the buffer by

@@ -63,7 +63,7 @@
 Returns the completion action the facade injected."
   (let ((captured-completion nil))
     (cl-letf (((symbol-function 'crush-provider-send-prompt)
-               (lambda (_backend _prompt &rest args)
+               (lambda (_provider _prompt &rest args)
                  (setq captured-completion (plist-get args :completion)))))
       (with-current-buffer (crush-test--fresh-buffer)
         (goto-char (point-max))
@@ -141,7 +141,7 @@ Returns the completion action the facade injected."
 ;;; Physics-free facade harness
 
 ;;; A fake process that never actually runs a subprocess: `crush-facade--send'
-;;; calls the real backend transport against a dummy pipe process, so all the
+;;; calls the real provider transport against a dummy pipe process, so all the
 ;;; buffer plumbing (process mark, response-start marker, stream state) runs
 ;;; without spawning anything.
 
@@ -157,10 +157,10 @@ transport callbacks."
     proc))
 
 (defun crush-test--with-facade (thunk)
-  "Run THUNK with the backend transport mocked to a fake process.
+  "Run THUNK with the provider transport mocked to a fake process.
 THUNK receives (PROC COMPLETION) in the fresh crush buffer, where PROC
 is the fake transport process and COMPLETION the injected continuation.
-Mocks `make-process' so the hyper backend's curl transport creates the
+Mocks `make-process' so the hyper provider's curl transport creates the
 fake instead of spawning curl."
   (let ((fake (crush-test--fake-pipe-proc)))
     (unwind-protect
@@ -174,7 +174,7 @@ fake instead of spawning curl."
               (goto-char (point-max))
               (insert "test")
               (call-interactively #'crush-send-input)
-              ;; Capture the injected completion from the backend slot
+              ;; Capture the injected completion from the provider slot
               ;; (the facade stores it there on send).
               (setq completion (crush-provider-completion-action
                                 crush-active-provider))

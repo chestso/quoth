@@ -54,7 +54,7 @@
             nil t))))
 
 (defvar crush-active-provider nil
-  "The active crush backend for this buffer; defined in `crush.el'.
+  "The active crush provider for this buffer; defined in `crush.el'.
 Declared here so the compiler accepts the free reference in
 `crush-facade--stream-progress'.")
 
