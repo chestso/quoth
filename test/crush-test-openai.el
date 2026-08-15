@@ -129,13 +129,11 @@ The default is non-nil, so `tool_choice' is `auto'."
   "A tool turn with id/name/args emits assistant tool_calls + tool result."
   (let ((msgs (crush-openai-history-messages
                '((user . "run ls")
-                 (assistant . "Listing done")
                  (tool "call_1" "bash" "{\"command\":\"ls\"}"
                        . "<command>ls</command>\n<exit_code>0</exit_code>")))))
-    (should (= (length msgs) 4))
+    (should (= (length msgs) 3))
     (should (string= (cdr (assoc 'role (nth 0 msgs))) "user"))
-    (should (string= (cdr (assoc 'content (nth 1 msgs))) "Listing done"))
-    (let ((tc-msg (nth 2 msgs)))
+    (let ((tc-msg (nth 1 msgs)))
       (should (eq (cdr (assoc 'content tc-msg)) :null))
       (let ((tcs (cdr (assoc 'tool_calls tc-msg))))
         (should (vectorp tcs))
@@ -143,7 +141,7 @@ The default is non-nil, so `tool_choice' is `auto'."
           (should (string= (cdr (assoc 'id tc)) "call_1"))
           (should (string= (cdr (assoc 'name (cdr (assoc 'function tc))))
                            "bash")))))
-    (let ((tool-msg (nth 3 msgs)))
+    (let ((tool-msg (nth 2 msgs)))
       (should (string= (cdr (assoc 'role tool-msg)) "tool"))
       (should (string= (cdr (assoc 'tool_call_id tool-msg)) "call_1")))))
 

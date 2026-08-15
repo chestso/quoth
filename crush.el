@@ -748,12 +748,16 @@ is the first prompt in the buffer."
             (let ((user-text (crush--user-turn-text id)))
               (when user-text
                 (push (cons 'user user-text) turns)))
-            (let ((resp-text (crush-get-response-text id)))
-              (when resp-text
-                (push (cons 'assistant resp-text) turns)))
             (let ((tool-turn (crush--tool-turn id)))
-              (when tool-turn
-                (push tool-turn turns)))
+              (if tool-turn
+                  (push tool-turn turns)
+                ;; No tool turn: emit the assistant text as a plain
+                ;; message.  When a tool turn exists, the
+                ;; crush-openai-history-messages function emits the
+                ;; proper assistant(tool_calls) + tool pair instead.
+                (let ((resp-text (crush-get-response-text id)))
+                  (when resp-text
+                    (push (cons 'assistant resp-text) turns)))))
             (when (and (boundp 'crush-hyper-history-include-reasoning)
                        crush-hyper-history-include-reasoning)
               (let ((reasoning-text (crush-get-reasoning-text id)))

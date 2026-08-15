@@ -1580,8 +1580,9 @@ tool result for the wire, not the rendered decoration."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-tool-exchange ()
-  "A completed exchange with a tool call emits user, assistant (no
-tool block), and tool (raw result) turns, in that order."
+  "A completed exchange with a tool call emits user and tool
+(raw result) turns; the assistant turn is omitted because the
+tool-call pair already covers the assistant response."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1595,18 +1596,18 @@ tool block), and tool (raw result) turns, in that order."
             (ignore id)
             (let ((turns (crush--history-turns crush--prompt-id)))
               (should (equal (nth 0 turns) (cons 'user "run ls")))
-              (should (equal (nth 1 turns) (cons 'assistant "Listing done")))
-              (should (= (length turns) 3))
+              (should (= (length turns) 2))
               ;; Tool turn carries (id name args . raw-output).
-              (should (eq (car (nth 2 turns)) 'tool))
+              (should (eq (car (nth 1 turns)) 'tool))
               (should (string-match-p "<command>ls</command>"
-                                      (nth 4 (nth 2 turns))))))))
+                                      (nth 4 (nth 1 turns))))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-carries-tool-metadata ()
   "The tool turn carries the call's id, name, and args from the
 `crush-tool-call' property, as a plist-style cons: (tool id name args
-. raw-output)."
+. raw-output).  The assistant turn is omitted when a tool exchange
+exists."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1619,19 +1620,20 @@ tool block), and tool (raw result) turns, in that order."
                                  :exit 0)))))
             (ignore id)
             (let ((turns (crush--history-turns crush--prompt-id)))
-              (should (= (length turns) 3))
-              (should (eq (car (nth 2 turns)) 'tool))
-              (should (string= (nth 1 (nth 2 turns)) "call_1"))
-              (should (string= (nth 2 (nth 2 turns)) "bash"))
-              (should (string= (nth 3 (nth 2 turns)) "{\"command\":\"ls\"}"))
-              (let ((cdr-t (nth 4 (nth 2 turns))))
+              (should (= (length turns) 2))
+              (should (eq (car (nth 1 turns)) 'tool))
+              (should (string= (nth 1 (nth 1 turns)) "call_1"))
+              (should (string= (nth 2 (nth 1 turns)) "bash"))
+              (should (string= (nth 3 (nth 1 turns)) "{\"command\":\"ls\"}"))
+              (let ((cdr-t (nth 4 (nth 1 turns))))
                 (should (string-match-p "<command>ls</command>" cdr-t))
                 (should-not (string-match-p "tool:" cdr-t)))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-legacy-tool-fallback ()
   "A tool block without `crush-tool-call' metadata falls back to a bare
-(tool . text) turn so legacy buffers still replay."
+(tool . text) turn so legacy buffers still replay.  The assistant turn
+is omitted when a tool turn exists."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1654,9 +1656,9 @@ tool block), and tool (raw result) turns, in that order."
           (setq-local crush--prompt-id (crush--generate-id))
           (crush--insert-prompt)
           (let ((turns (crush--history-turns crush--prompt-id)))
-            (should (= (length turns) 3))
-            (should (eq (car (nth 2 turns)) 'tool))
-            (should (stringp (cdr (nth 2 turns)))))))
+            (should (= (length turns) 2))
+            (should (eq (car (nth 1 turns)) 'tool))
+            (should (stringp (cdr (nth 1 turns)))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-includes-multiple-exchanges ()

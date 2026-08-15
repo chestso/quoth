@@ -70,17 +70,13 @@ declaration followed by the tool result with the matching id, per the
 OpenAI function-calling message shape."
   (let ((msgs (crush-openai-history-messages
                '((user . "run ls")
-                 (assistant . "Listing done")
                  (tool "call_1" "bash" "{\"command\":\"ls\"}"
                        . "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>")))))
-    (should (= (length msgs) 4))
+    (should (= (length msgs) 3))
     ;; user
     (should (string= (cdr (assoc 'role (nth 0 msgs))) "user"))
-    ;; assistant answer
-    (should (string= (cdr (assoc 'role (nth 1 msgs))) "assistant"))
-    (should (string= (cdr (assoc 'content (nth 1 msgs))) "Listing done"))
     ;; assistant tool_calls declaration
-    (let ((tc-msg (nth 2 msgs)))
+    (let ((tc-msg (nth 1 msgs)))
       (should (string= (cdr (assoc 'role tc-msg)) "assistant"))
       (should (eq (cdr (assoc 'content tc-msg)) :null))
       (let ((tcs (cdr (assoc 'tool_calls tc-msg))))
@@ -93,7 +89,7 @@ OpenAI function-calling message shape."
             (should (string= (cdr (assoc 'name fn)) "bash"))
             (should (string= (cdr (assoc 'arguments fn)) "{\"command\":\"ls\"}"))))))
     ;; tool result with matching id
-    (let ((tool-msg (nth 3 msgs)))
+    (let ((tool-msg (nth 2 msgs)))
       (should (string= (cdr (assoc 'role tool-msg)) "tool"))
       (should (string= (cdr (assoc 'tool_call_id tool-msg)) "call_1"))
       (should (string-match-p "<command>ls</command>"
