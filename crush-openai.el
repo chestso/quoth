@@ -219,7 +219,7 @@ Returns the alists in conversation order."
                                  tail))))
                 (when (and (stringp id) (stringp name))
                   (push (list (cons 'role "assistant")
-                              (cons 'content :null)
+                              (cons 'content nil)
                               (cons 'tool_calls
                                     (vector
                                      (list (cons 'id id)

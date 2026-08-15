@@ -78,7 +78,7 @@ OpenAI function-calling message shape."
     ;; assistant tool_calls declaration
     (let ((tc-msg (nth 1 msgs)))
       (should (string= (cdr (assoc 'role tc-msg)) "assistant"))
-      (should (eq (cdr (assoc 'content tc-msg)) :null))
+      (should (eq (cdr (assoc 'content tc-msg)) nil))
       (let ((tcs (cdr (assoc 'tool_calls tc-msg))))
         (should (vectorp tcs))
         (should (= (length tcs) 1))

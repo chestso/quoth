@@ -115,7 +115,7 @@ The default is non-nil, so `tool_choice' is `auto'."
   (let ((msgs (alist-get 'messages
                          (crush-openai-compose-request
                           "P" nil "m" nil
-                          '(((role . "assistant") (content . :null)
+                          '(((role . "assistant") (content . nil)
                              (tool_calls . [(id . "c1")]))
                             ((role . "tool") (tool_call_id . "c1")
                              (content . "ok")))))))
@@ -134,7 +134,7 @@ The default is non-nil, so `tool_choice' is `auto'."
     (should (= (length msgs) 3))
     (should (string= (cdr (assoc 'role (nth 0 msgs))) "user"))
     (let ((tc-msg (nth 1 msgs)))
-      (should (eq (cdr (assoc 'content tc-msg)) :null))
+      (should (eq (cdr (assoc 'content tc-msg)) nil))
       (let ((tcs (cdr (assoc 'tool_calls tc-msg))))
         (should (vectorp tcs))
         (let ((tc (aref tcs 0)))
