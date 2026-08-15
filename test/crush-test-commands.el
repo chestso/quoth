@@ -424,7 +424,7 @@ It sets crush-region-type 'attachment and a project-root-relative path."
                                  (overlays-in (point-min) (point-max))))))
       (crush-test--cleanup))))
 
-;;; Phase 5: crush-chat-mode minor mode
+;;; crush-chat-mode minor mode
 
 (ert-deftest crush-test/chat-mode-is-defined ()
   "Crush-chat-mode should be defined as a minor mode."

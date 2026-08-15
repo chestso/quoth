@@ -73,11 +73,6 @@ then EOF; a pipe process stays alive to accept that without erroring
                                  :sentinel #'ignore)))
     proc))
 
-;;; (DELETED in Phase 6: crush-test/provider-rename-contract — the
-;;;  backend→provider rename is complete; asserting old names are gone
-;;;  is an anti-pattern per AGENTS.md "no backwards-compatibility
-;;;  constraint.")
-
 (defun crush-test--simulate-facade-response (content &optional reasoning)
   "Append CONTENT as streamed deltas and finalize the response.
 Mimics the post-`crush-send-input' state: `crush--response-start'
@@ -330,10 +325,7 @@ a single `content' delta.  Runs in the crush buffer."
 
 ;;; 18. Header line display
 
-;;; Header line repurposed (Phase: model + region at point): the
-;;; obsolete `crush-test/header-line-shows-prompt-id' test asserting
-;;; the old "Prompt: <id>" header was deleted; the current contract is
-;;; covered by the 18b tests below.
+;;; Header line: model + region at point
 
 ;;; 18b. Header line: model and region type at point
 
@@ -638,10 +630,8 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
                      (point)))))
     (crush-test--cleanup)))
 
-;;; (Phase 2-5 comint-era tests were deleted during the migration; the
-;;; surviving invariants are covered by the tests below.)
 
-;;; 56. Phase 7: Region-type/field reconciliation
+;;; 56. Region-type/field reconciliation
 
 (ert-deftest crush-test/response-region-type-still-set ()
   "Response text should still have crush-region-type=response."
@@ -706,10 +696,6 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
 
 ;;; 60. Debug logging - command logged in input-sender
 
-;;; 60. Debug logging - command logged (DELETED: crush--input-sender removed in Phase 3)
-
-;;; 61. Debug logging - input logged (DELETED: crush--input-sender removed in Phase 3)
-
 ;;; 62. Debug logging - streamed output logged via the facade
 
 (ert-deftest crush-test/debug-logs-output ()
@@ -756,7 +742,7 @@ event; the facade continuation now owns completion."
   "Crush--insert-prompt should be defined (renamed from crush--insert-prompt-marker)."
   (should (fboundp 'crush--insert-prompt)))
 
-;;; 65. Phase 6: Sentinel freezes previous response read-only
+;;; 65. Sentinel freezes previous response read-only
 
 (ert-deftest crush-test/facade-freezes-previous-response ()
   "The facade should freeze the previous response read-only.
@@ -781,9 +767,7 @@ response becomes read-only previous content, blocking edits."
             (should-error (insert-and-inherit "X") :type 'text-read-only)))
       (crush-test--cleanup))))
 
-;;; 66. Phase 6: crush--ensure-process uses crush--prompt-start-marker (DELETED in Phase 3: ensure-process removed)
-
-;;; 67. Phase 6: crush--insert-before-prompt uses crush--prompt-start-marker
+;;; 67. crush--insert-before-prompt uses crush--prompt-start-marker
 
 (ert-deftest crush-test/insert-before-prompt-works-without-prompt-start ()
   "Crush--insert-before-prompt should insert before crush--prompt-start-marker."
@@ -800,7 +784,7 @@ response becomes read-only previous content, blocking edits."
               (should (> (marker-position crush--prompt-start-marker) prompt-start)))))
       (crush-test--cleanup))))
 
-;;; 69. Phase 6: crush--after-change uses crush--prompt-start-marker
+;;; 69. crush--after-change uses crush--prompt-start-marker
 
 (ert-deftest crush-test/after-change-tags-without-prompt-start ()
   "Crush--after-change should tag input with prompt-id using crush--prompt-start-marker."
@@ -816,7 +800,7 @@ response becomes read-only previous content, blocking edits."
             (should (string= prompt-id crush--prompt-id)))))
     (crush-test--cleanup)))
 
-;;; Phase 0: Parallel markers
+;;; Parallel markers
 
 (ert-deftest crush-test/prompt-start-marker-set-on-init ()
   "Crush--prompt-start-marker should be set after buffer init."
@@ -826,8 +810,6 @@ response becomes read-only previous content, blocking edits."
           (should crush--prompt-start-marker)
           (should (markerp crush--prompt-start-marker))))
     (crush-test--cleanup)))
-
-;;; Phase 0 tracking tests (DELETED in Phase 4: no comint-last-prompt to track)
 
 (ert-deftest crush-test/input-start-marker-set-on-init ()
   "Crush--input-start-marker should be set after buffer init."
@@ -851,7 +833,7 @@ response becomes read-only previous content, blocking edits."
   "Crush-prompt-face should be defined."
   (should (facep 'crush-prompt-face)))
 
-;;; Phase 2: Facade delta streaming (replaces the deleted custom output filter)
+;;; Facade delta streaming
 
 (ert-deftest crush-test/facade-delta-inserts-at-end ()
   "A streamed content delta is appended at point-max (the response area)."
@@ -933,7 +915,7 @@ facade; this asserts the facade's contract — insertion completes."
           (crush-facade--append-delta "works" 'content)))
     (crush-test--cleanup)))
 
-;;; Phase 3: Custom input ring
+;;; Custom input ring
 
 (ert-deftest crush-test/custom-input-ring-initialized ()
   "Crush--input-ring should be a ring in a crush buffer."
@@ -1084,7 +1066,7 @@ facade; this asserts the facade's contract — insertion completes."
   (should (string= crush--input-ring-file-name
                    (expand-file-name "crush-history" user-emacs-directory))))
 
-;;; Phase 4: Sever comint-mode, switch to text-mode
+;;; Mode parent resolution
 
 (ert-deftest crush-test/mode-parent-is-text-mode ()
   "The crush buffer's major mode is the parent mode.
@@ -1133,7 +1115,7 @@ There is no separate `crush-mode' major mode."
           (should-not (get-text-property (match-beginning 0) 'field))))
     (crush-test--cleanup)))
 
-;;; Phase 8: Optional markdown-mode base
+;;; Optional markdown-mode base
 
 (ert-deftest crush-test/parent-mode-is-text-or-markdown ()
   "`crush--parent-mode' is either `text-mode' or `markdown-mode'."
