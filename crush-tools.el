@@ -175,8 +175,7 @@ buffer, read back by the caller."
   "Return (RESULT-TEXT . EXIT-CODE) for COMMAND in WORKING-DIR with OUTPUT.
 Truncates OUTPUT at `crush-tool-max-output' chars keeping the head
 and tail with an ellipsis line; empty output renders as `no output'.
-Success wraps the command in `<cwd>' markup so the model knows where
-it ran."
+Always includes `<cwd>' markup so the model knows where the command ran."
   (let* ((capped (crush-bash--truncate-output output))
          (exit-tag (cond
                     ((= exit-code 124) "killed")
@@ -184,8 +183,7 @@ it ran."
                     (t (number-to-string exit-code)))))
     (cons
      (concat
-      (when (and (stringp command) (string-empty-p (string-trim output)))
-        (format "<cwd>%s</cwd>\n" working-dir))
+      (format "<cwd>%s</cwd>\n" working-dir)
       (format "<command>%s</command>\n" command)
       (format "<output>\n%s\n</output>\n" capped)
       (format "<exit_code>%s</exit_code>" exit-tag))

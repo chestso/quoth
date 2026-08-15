@@ -196,6 +196,7 @@ That directory becomes `default-directory' for the call."
 (ert-deftest crush-test/bash-result-format-success ()
   "A successful run should carry `<cwd>' markup and exit code 0."
   (let* ((result (crush-bash--format-result "echo hi" "/tmp" "hi" 0)))
+    (should (string-match-p "<cwd>/tmp</cwd>" (car result)))
     (should (string-match-p "<command>echo hi</command>" (car result)))
     (should (string-match-p "<exit_code>0</exit_code>" (car result)))
     (should (= (cdr result) 0))))
