@@ -232,7 +232,6 @@ Text properties can be accessed directly:
 - `markdown-mode` (optional — installed via MELPA; the chat buffer
   falls back to `text-mode` without it, and markdown-dependent tests
   are skipped)
-- Maude: `sh test/run-tests.sh` runs everything; see below.
 
 ### Running the tests
 
