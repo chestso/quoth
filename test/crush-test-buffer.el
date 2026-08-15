@@ -73,15 +73,10 @@ then EOF; a pipe process stays alive to accept that without erroring
                                  :sentinel #'ignore)))
     proc))
 
-;;; C2 rename-contract: the protocol is provider-named.
-
-(ert-deftest crush-test/provider-rename-contract ()
-  "The provider protocol has been renamed to provider.
-`crush-provider-p' exists and the old `crush-backend-p' does not."
-  (should (fboundp 'crush-provider-p))
-  (should-not (fboundp 'crush-backend-p))
-  (should (fboundp 'crush-provider-send-prompt))
-  (should-not (fboundp 'crush-backend-send-prompt)))
+;;; (DELETED in Phase 6: crush-test/provider-rename-contract — the
+;;;  backend→provider rename is complete; asserting old names are gone
+;;;  is an anti-pattern per AGENTS.md "no backwards-compatibility
+;;;  constraint.")
 
 (defun crush-test--simulate-facade-response (content &optional reasoning)
   "Append CONTENT as streamed deltas and finalize the response.
