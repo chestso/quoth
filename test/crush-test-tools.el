@@ -44,7 +44,7 @@
 ;;; `require'; fall back to loading each dep from this file's directory
 ;;; or its parent (the package root) so flycheck and package loads work.
 (eval-and-compile
-  (dolist (dep '("crush" "crush-tool"))
+  (dolist (dep '("crush" "crush-openai" "crush-tools"))
     (unless (require (intern dep) nil t)
       (let* ((base (file-name-directory
                     (or buffer-file-name load-file-name default-directory)))
@@ -60,17 +60,17 @@
 
 (defun crush-test--tool-call (name &optional args-json)
   "Return a `crush-tool-call' for NAME with ARGS-JSON (or nil)."
-  (let ((call (crush-make-tool-call :id "call_test" :name name)))
+  (let ((call (crush-make-openai-tool-call :id "call_test" :name name)))
     (when args-json
-      (setf (crush-tool-call-args call)
-            (crush--tool-parse-args args-json)))
+      (setf (crush-openai-tool-call-args call)
+            (crush-openai-parse-tool-args args-json)))
     call))
 
 ;;; 1. Tool registry and dispatch
 
 (ert-deftest crush-test/tool-registry-has-bash ()
   "The registry should map `bash' to `crush-bash--exec'."
-  (should (equal (cdr (assoc "bash" crush-tool--registry))
+  (should (equal (cdr (assoc "bash" crush-openai-tool-registry))
                  #'crush-bash--exec)))
 
 (ert-deftest crush-test/tool-unknown-name-errors-without-process ()
@@ -79,39 +79,39 @@
     (cl-letf (((symbol-function 'make-process)
                (lambda (&rest _args) (setq spawned t) nil)))
       (let* ((call (crush-test--tool-call "nope" "{}"))
-             (result (crush-tool-execute call)))
+             (result (crush-openai-execute-tool call)))
         (should-not spawned)
         (should (string-prefix-p "<output>" (car result)))
         (should (= (cdr result) -1))))))
 
 (ert-deftest crush-test/tool-execute-returns-result-and-exit ()
-  "`crush-tool-execute' returns a result and exit code.
+  "`crush-openai-execute-tool' returns a result and exit code.
 It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
   (let* ((call (crush-test--tool-call "bash" "{\"command\":\"echo hi\"}"))
-         (result (crush-tool-execute call)))
+         (result (crush-openai-execute-tool call)))
     (should (stringp (car result)))
     (should (integerp (cdr result)))
-    (should (string= (crush-tool-call-result call) (car result)))
-    (should (= (crush-tool-call-exit call) (cdr result)))))
+    (should (string= (crush-openai-tool-call-result call) (car result)))
+    (should (= (crush-openai-tool-call-exit call) (cdr result)))))
 
 ;;; 2. Argument parsing
 
 (ert-deftest crush-test/tool-parse-args-valid ()
   "A valid args JSON should parse into a plist with keyword values."
-  (should (equal (crush--tool-parse-args
+  (should (equal (crush-openai-parse-tool-args
                   "{\"command\":\"git status\",\"working_dir\":null}")
                  '(:command "git status" :working_dir nil))))
 
 (ert-deftest crush-test/tool-parse-args-malformed ()
   "Malformed args JSON should parse to nil."
-  (should (null (crush--tool-parse-args "not json")))
-  (should (null (crush--tool-parse-args "")))
-  (should (null (crush--tool-parse-args nil))))
+  (should (null (crush-openai-parse-tool-args "not json")))
+  (should (null (crush-openai-parse-tool-args "")))
+  (should (null (crush-openai-parse-tool-args nil))))
 
 (ert-deftest crush-test/tool-parse-args-non-object ()
   "A non-object payload (array/string) should parse to nil."
-  (should (null (crush--tool-parse-args "[1,2]")))
-  (should (null (crush--tool-parse-args "\"hi\""))))
+  (should (null (crush-openai-parse-tool-args "[1,2]")))
+  (should (null (crush-openai-parse-tool-args "\"hi\""))))
 
 ;;; 3. Bash execution
 

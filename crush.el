@@ -250,7 +250,7 @@ Buffer-local.")
 ;;; both setups work.
 (eval-and-compile
   (dolist (dep '("crush-provider" "crush-openai" "crush-xxh3" "crush-stream"
-                 "crush-hyper-provider" "crush-tool"))
+                 "crush-hyper-provider" "crush-tools"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -269,8 +269,6 @@ and `crush-interrupt' dispatch through it.  Buffer-local.")
 (declare-function crush-xxh3-hash64 "crush-xxh3" (input))
 (declare-function crush-provider--tool-calls "crush-provider" (backend process))
 (declare-function crush-provider--tool-results "crush-provider" (backend tool-calls))
-(defvar crush-tools-enabled t)
-(defvar crush-tool-loop-max 8)
 
 ;;; Buffer naming
 

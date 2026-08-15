@@ -114,7 +114,74 @@ same string so the gateway sees an identical client."
   "Model used when the provider model slot and `crush-model' are both nil.")
 
 (declare-function crush--debug-log "crush.el" (category message))
-(defvar crush-tools-enabled t)
+
+;;; Tool protocol: the OpenAI function-calling shape the client speaks.
+
+(defcustom crush-tools-enabled t
+  "Announce the registered tools and allow tool-call rounds.
+When nil, requests are byte-identical to the pre-tools format with no
+`tools' key in the request body."
+  :type 'boolean
+  :group 'crush)
+
+(defcustom crush-tool-loop-max 8
+  "Tool rounds per user prompt before the loop stops.
+When the loop cap is hit, a final result tells the model to stop and
+the request finalizes."
+  :type 'integer
+  :group 'crush)
+
+(defvar crush-openai-tool-registry
+  (list)
+  "Alist mapping tool-call names to executer functions.
+An executer takes a `crush-openai-tool-call' struct whose `args' slot
+holds the parsed argument plist and returns (RESULT-TEXT . EXIT-CODE).
+Local tool files (e.g. `crush-tools.el') push their tools here at load
+time.")
+
+(cl-defstruct (crush-openai-tool-call
+               (:constructor nil)
+               (:constructor crush-make-openai-tool-call
+                             (&key id name &aux (args nil) (result nil) (exit nil))))
+  "A single tool call in flight.
+ID is the model's call id; NAME the tool name; ARGS the parsed
+argument plist (filled by the executor); RESULT the result text;
+EXIT the exit code (filled after execution)."
+  id
+  name
+  args
+  result
+  exit)
+
+(defun crush-openai-parse-tool-args (args-json)
+  "Parse ARGS-JSON (a JSON string) into a plist, or nil when malformed.
+Unknown keys are ignored; a non-alist payload yields nil."
+  (when (and (stringp args-json) (> (length args-json) 0))
+    (let ((obj (ignore-errors (json-read-from-string args-json))))
+      (when (consp obj)
+        (let (plist)
+          (pcase-dolist (`(,key . ,value) obj)
+            (let ((sym (intern (format ":%s" key))))
+              (setq plist (plist-put plist sym value))))
+          plist)))))
+
+(defun crush-openai-tool-error-result (message)
+  "Return an error (RESULT-TEXT . EXIT-CODE) pair for MESSAGE.
+Renders the error in the `<output>' slot with exit code -1."
+  (cons (format "<output>\n%s\n</output>\n<exit_code>-1</exit_code>"
+                message)
+        -1))
+
+(defun crush-openai-execute-tool (tool-call)
+  "Execute TOOL-CALL and return (RESULT-TEXT . EXIT-CODE).
+Looks up the tool name in `crush-openai-tool-registry'; an unknown
+tool yields an error result without spawning any process."
+  (let ((entry (assoc (crush-openai-tool-call-name tool-call)
+                      crush-openai-tool-registry)))
+    (if entry
+        (funcall (cdr entry) tool-call)
+      (crush-openai-tool-error-result
+       (format "unknown tool %S" (crush-openai-tool-call-name tool-call))))))
 
 (defun crush-openai-history-messages (turns)
   "Build message alists from conversation history.

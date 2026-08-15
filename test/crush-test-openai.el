@@ -211,5 +211,51 @@ The default is non-nil, so `tool_choice' is `auto'."
     (should (string= (crush--openai-alist-get "role" a) "system"))
     (should (string= (crush--openai-alist-get 'content a) "hi"))))
 
+;;; 4. Tool protocol (registry, struct, parse, error result)
+
+(defun crush-test-openai--tool-call (name args-json)
+  "Return a `crush-openai-tool-call' for NAME with ARGS-JSON (or nil)."
+  (let ((call (crush-make-openai-tool-call :id "call_test" :name name)))
+    (when args-json
+      (setf (crush-openai-tool-call-args call)
+            (crush-openai-parse-tool-args args-json)))
+    call))
+
+(ert-deftest crush-test/openai-tool-registry-exists ()
+  "The protocol owns a registry mapping tool names to executers."
+  (should (boundp 'crush-openai-tool-registry))
+  (should (listp crush-openai-tool-registry)))
+
+(ert-deftest crush-test/openai-tool-execute-dispatches ()
+  "`crush-openai-execute-tool' dispatches to the registry executer.
+A stubbed tool registered in the protocol registry is invoked."
+  (let ((crush-openai-tool-registry
+         (list (cons "testtool"
+                     (lambda (_call) (cons "stub-result" 0))))))
+    (let ((call (crush-test-openai--tool-call "testtool"
+                                              "{\"command\":\"x\"}")))
+      (let ((result (crush-openai-execute-tool call)))
+        (should (equal result (cons "stub-result" 0)))))))
+
+(ert-deftest crush-test/openai-parse-tool-args-valid ()
+  "`crush-openai-parse-tool-args' turns JSON into a keyword plist."
+  (should (equal (crush-openai-parse-tool-args
+                  "{\"command\":\"ls\",\"working_dir\":\"/tmp\"}")
+                 '(:command "ls" :working_dir "/tmp"))))
+
+(ert-deftest crush-test/openai-parse-tool-args-malformed ()
+  "Malformed or non-object arguments yield nil."
+  (should (null (crush-openai-parse-tool-args "not json")))
+  (should (null (crush-openai-parse-tool-args "")))
+  (should (null (crush-openai-parse-tool-args nil)))
+  (should (null (crush-openai-parse-tool-args "[1,2]"))))
+
+(ert-deftest crush-test/openai-tool-error-result-shape ()
+  "`crush-openai-tool-error-result' returns an error pair with exit -1."
+  (let ((result (crush-openai-tool-error-result "boom")))
+    (should (consp result))
+    (should (= (cdr result) -1))
+    (should (string-match-p "boom" (car result)))))
+
 (provide 'crush-test-openai)
 ;;; crush-test-openai.el ends here

@@ -1,4 +1,4 @@
-;;; crush-tool.el --- Tool-call machinery for crush  -*- lexical-binding: t; -*-
+;;; crush-tools.el --- Local tool implementations for crush  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
@@ -30,55 +30,31 @@
 
 ;;; Commentary:
 
-;; Tool-call machinery for crush.el: the `bash' tool implementation
-;; (each command runs in its own `bash -c' process, no shell state),
-;; the tool registry dispatching tool-call names to executers, and the
-;; v1 execution policy (`crush-tool-policy yolo': tool calls run
-;; without prompting).  The file is buffer- and backend-unaware: the
-;; facade (crush.el) drives the tool-call loop, the hyper backend
-;; announces the tool set and re-requests with tool results, and this
-;; file only executes calls and formats results.  See the source
-;; for the full design.
-;;
-;; Tool execution policy is yolo for v1: tool calls run without
-;; prompt.  Future `ask' / `allowlist' values arrive with a real
-;; permission policy (tracked in TODO.md).
+;; Local tool implementations for crush.el: the `bash' tool (each
+;; command runs in its own `bash -c' process, no shell state), the
+;; execution policy (`crush-tool-policy yolo': tool calls run without
+;; prompting), and the tool limits.  The tool *protocol* (the
+;; `crush-openai-tool-call' struct, registry, dispatch, arg parsing,
+;; and result format) lives in `crush-openai.el'; this file implements
+;; the concrete bash tool and registers it into
+;; `crush-openai-tool-registry' at load time.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'json)
-
-(defcustom crush-tool-loop-max 8
-  "Tool rounds per user prompt before the loop stops.
-When the loop cap is hit, a final result tells the model to stop and
-the request finalizes."
-  :type 'integer
-  :group 'crush)
-
-(defcustom crush-tools-enabled t
-  "Announce the `bash' tool and allow tool-call rounds.
-When nil, hyper requests are byte-identical to the pre-tools format
-with no `tools' key in the request body."
-  :type 'boolean
-  :group 'crush)
-
-(defcustom crush-bash-program nil
-  "Bash binary for tool calls.  nil means `shell-file-name'.
-Tests force a fake shell script here."
-  :type '(choice (const :tag "default shell" nil) string)
-  :group 'crush)
-
-(defcustom crush-tool-timeout 60
-  "Kill a tool call after this many seconds.
-The error result says the command timed out and was killed."
-  :type 'integer
-  :group 'crush)
-
-(defcustom crush-tool-max-output 30000
-  "Cap on tool result output, truncated head/tail with an ellipsis line."
-  :type 'integer
-  :group 'crush)
+;;; flycheck's emacs-lisp checker byte-compiles each file in isolation,
+;;; and its batch child's `load-path' excludes the package directory.
+;;; Prefer `require'; fall back to loading the sibling from this file's
+;;; own directory so both flycheck and package-installed loads work.
+(eval-and-compile
+  (dolist (dep '("crush-openai"))
+    (unless (require (intern dep) nil t)
+      (load (expand-file-name
+             (concat dep ".el")
+             (file-name-directory
+              (or buffer-file-name load-file-name default-directory)))
+            nil t))))
 
 (defgroup crush-tool nil
   "Execution policy and limits for crush tool calls."
@@ -87,40 +63,36 @@ The error result says the command timed out and was killed."
 
 (defcustom crush-tool-policy 'yolo
   "Tool execution policy.
-The only value in v1 is `yolo': tool calls run without prompt,
-tool calls run without prompt.  `ask' and
-`allowlist' arrive with the permission policy (TODO.md)."
+The only value in v1 is `yolo': tool calls run without prompt.
+`ask' and `allowlist' arrive with the permission policy (TODO.md)."
   :type '(choice (const yolo))
   :group 'crush-tool)
 
-(defcustom crush-tool--registry
-  '(("bash" . crush-bash--exec))
-  "Alist mapping tool-call names to executer functions.
-An executer takes a `crush-tool-call' struct whose `args' slot holds
-the parsed argument plist and returns (RESULT-TEXT . EXIT-CODE)."
-  :type '(alist :key-type string :value-type function)
+(defcustom crush-bash-program nil
+  "Bash binary for tool calls.  nil means `shell-file-name'.
+Tests force a fake shell script here."
+  :type '(choice (const :tag "default shell" nil) string)
   :group 'crush-tool)
 
-(cl-defstruct (crush-tool-call
-               (:constructor nil)
-               (:constructor crush-make-tool-call
-                             (&key id name &aux (args nil) (result nil) (exit nil))))
-  "A single tool call in flight.
-ID is the model's call id; NAME the tool name; ARGS the parsed
-argument plist (filled by the executor); RESULT the result text;
-EXIT the exit code (filled after execution)."
-  id
-  name
-  args
-  result
-  exit)
+(defcustom crush-tool-timeout 60
+  "Kill a tool call after this many seconds.
+The error result says the command timed out and was killed."
+  :type 'integer
+  :group 'crush-tool)
+
+(defcustom crush-tool-max-output 30000
+  "Cap on tool result output, truncated head/tail with an ellipsis line."
+  :type 'integer
+  :group 'crush-tool)
 
 (declare-function crush--debug-log "crush.el" (category message))
+(declare-function crush-openai-tool-error-result "crush-openai" (message))
+(declare-function crush-openai-tool-call-args "crush-openai" (tool-call))
 
 (defun crush-bash--exec-command (tool-call-args)
   "Return the resolved command string for TOOL-CALL-ARGS plist, or nil.
-Validates the plist from `crush--tool-parse-args': the `command'
-argument must be a non-empty string."
+Validates the plist from `crush-openai-parse-tool-args': the
+`command' argument must be a non-empty string."
   (let ((command (plist-get tool-call-args :command)))
     (and (stringp command)
          (not (string-empty-p (string-trim command)))
@@ -137,11 +109,11 @@ timeout (`crush-tool-timeout'), yields an error result with a
 negative exit code.  Logs the round to *crush-debug* (category
 `tool'); commands themselves may embed secrets, so the log line is
 the documented trade-off of the design."
-  (let ((args (crush-tool-call-args tool-call)))
+  (let ((args (crush-openai-tool-call-args tool-call)))
     (if (not (crush-bash--exec-command args))
-        (let ((result (crush--tool-error-result "missing command")))
-          (setf (crush-tool-call-result tool-call) (car result)
-                (crush-tool-call-exit tool-call) (cdr result))
+        (let ((result (crush-openai-tool-error-result "missing command")))
+          (setf (crush-openai-tool-call-result tool-call) (car result)
+                (crush-openai-tool-call-exit tool-call) (cdr result))
           result)
       (let* ((command (plist-get args :command))
              (working-dir (or (plist-get args :working_dir)
@@ -163,7 +135,7 @@ the documented trade-off of the design."
             (set-process-sentinel proc sentinel)
             (setq exit-code (crush-bash--collect proc))
             ;; Strip the process-status message Emacs appends after
-            ;; the sentinel fires (\"Process crush-bash finished\")
+            ;; the sentinel fires (\"Process crush-bash finished\").
             (goto-char (point-min))
             (when (re-search-forward
                    "\nProcess crush-bash[^\n]+\n\\'" nil t)
@@ -172,8 +144,8 @@ the documented trade-off of the design."
             (setq output (buffer-string))))
         (let* ((result (crush-bash--format-result
                         command working-dir output exit-code)))
-          (setf (crush-tool-call-result tool-call) (car result)
-                (crush-tool-call-exit tool-call) (cdr result))
+          (setf (crush-openai-tool-call-result tool-call) (car result)
+                (crush-openai-tool-call-exit tool-call) (cdr result))
           (crush--debug-log
            'tool
            (format "bash %S cwd=%s exit=%s output=%S"
@@ -181,13 +153,6 @@ the documented trade-off of the design."
                    (if (= exit-code 124) "killed" exit-code)
                    (substring output 0 (min (length output) 200))))
           result)))))
-
-(defun crush--tool-error-result (message)
-  "Return an error (RESULT-TEXT . EXIT-CODE) pair for MESSAGE.
-Renders the error in the `<output>' slot with exit code -1."
-  (cons (format "<output>\n%s\n</output>\n<exit_code>-1</exit_code>"
-                message)
-        -1))
 
 (defun crush-bash--collect (proc)
   "Collect output from PROC until exit or `crush-tool-timeout'.
@@ -242,28 +207,10 @@ command output; empty output renders as the literal string
                   (substring text 0 head-len)
                   (substring text (- (length text) tail-len))))))))
 
-(defun crush-tool-execute (tool-call)
-  "Execute TOOL-CALL and return (RESULT-TEXT . EXIT-CODE).
-Looks up the tool name in `crush-tool--registry'; an unknown tool
-yields an error result without spawning any process."
-  (let ((entry (assoc (crush-tool-call-name tool-call)
-                      crush-tool--registry)))
-    (if entry
-        (funcall (cdr entry) tool-call)
-      (crush--tool-error-result
-       (format "unknown tool %S" (crush-tool-call-name tool-call))))))
+;;; Register the bash tool into the protocol registry.
 
-(defun crush--tool-parse-args (args-json)
-  "Parse ARGS-JSON (a JSON string) into a plist, or nil when malformed.
-Unknown keys are ignored; a non-alist payload yields nil."
-  (when (and (stringp args-json) (> (length args-json) 0))
-    (let ((obj (ignore-errors (json-read-from-string args-json))))
-      (when (consp obj)
-        (let (plist)
-          (pcase-dolist (`(,key . ,value) obj)
-            (let ((sym (intern (format ":%s" key))))
-              (setq plist (plist-put plist sym value))))
-          plist)))))
+(push (cons "bash" #'crush-bash--exec)
+      crush-openai-tool-registry)
 
-(provide 'crush-tool)
-;;; crush-tool.el ends here
+(provide 'crush-tools)
+;;; crush-tools.el ends here

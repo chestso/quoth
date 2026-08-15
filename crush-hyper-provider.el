@@ -50,7 +50,7 @@
 ;;; first, then `crush-openai' (the client it delegates to), then
 ;;; `crush-xxh3' which it uses.
 (eval-and-compile
-  (dolist (dep '("crush-provider" "crush-openai" "crush-xxh3" "crush-tool"))
+  (dolist (dep '("crush-provider" "crush-openai" "crush-xxh3" "crush-tools"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -158,10 +158,9 @@ for the value; nil omits the header."
 
 (declare-function crush--debug-log "crush.el" (category message))
 (declare-function crush--history-for "crush.el" (buffer))
-(defvar crush-tools-enabled t)
-(declare-function crush-make-tool-call "crush-tool" (&rest args))
-(declare-function crush-tool-execute "crush-tool" (tool-call))
-(declare-function crush--tool-parse-args "crush-tool" (args-json))
+(declare-function crush-make-openai-tool-call "crush-openai" (&rest args))
+(declare-function crush-openai-execute-tool "crush-openai" (tool-call))
+(declare-function crush-openai-parse-tool-args "crush-openai" (args-json))
 
 (cl-defstruct (crush-hyper-provider
                (:include crush-provider (type 'hyper))
@@ -247,11 +246,11 @@ Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
               (let ((name (and fn (crush--openai-alist-get "name" fn)))
                     (args (and fn (crush--openai-alist-get "arguments" fn))))
                 (when (and id name)
-                  (let ((call (crush-make-tool-call :id id :name name)))
+                  (let ((call (crush-make-openai-tool-call :id id :name name)))
                     (when args
-                      (setf (crush-tool-call-args call)
-                            (crush--tool-parse-args args)))
-                    (let ((result (crush-tool-execute call)))
+                      (setf (crush-openai-tool-call-args call)
+                            (crush-openai-parse-tool-args args)))
+                    (let ((result (crush-openai-execute-tool call)))
                       (push (list (cons 'id id)
                                   (cons 'type "function")
                                   (cons 'function
