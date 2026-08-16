@@ -269,6 +269,7 @@ and `crush-interrupt' dispatch through it.  Buffer-local.")
 (declare-function crush-provider--tool-calls "crush-provider" (provider process))
 (declare-function crush-provider--tool-results "crush-provider" (provider tool-calls))
 (declare-function crush-process--cleanup-buffer "crush-process" (owner))
+(declare-function crush-openai-parse-tool-args "crush-openai" (args-json))
 
 ;;; Buffer naming
 
@@ -1578,6 +1579,73 @@ of 3 (the standard markdown fenced-code-block delimiter)."
     (setq max-run (max max-run run))
     (make-string (max 3 (1+ max-run)) ?\`)))
 
+(defun crush--fence-lang ()
+  "Return the language tag used for tool-output fenced blocks.
+Always `text' so tool output renders as a plain code block regardless
+of what the raw result contains."
+  "text")
+
+;;; Tool-block display decoration
+
+(defconst crush--tool-icons
+  '(("exec_command" . "🔧")
+    ("write_stdin" . "⌨️"))
+  "Alist mapping tool names to the emoji icon for their buffer header.")
+
+(defun crush--yield-ms->human (ms)
+  "Render a millisecond duration MS as a short human string.
+7500 → \"7.5s\", 60000 → \"1m\", 300 → \"300ms\".  Non-numbers pass
+through unchanged."
+  (if (not (numberp ms))
+      ms
+    (cond
+     ((<= ms 0) "0ms")
+     ((zerop (% ms 60000))
+      (format "%dm" (/ ms 60000)))
+     ((zerop (% ms 1000))
+      (format "%ds" (/ ms 1000)))
+     ((>= ms 1000)
+      (format "%ss" (replace-regexp-in-string
+                     "\\.0+\\'" ""
+                     (number-to-string (/ ms 1000.0)))))
+     (t (format "%dms" ms)))))
+
+(defun crush--tool-summary-clauses (tool args)
+  "Return the ordered display clauses for TOOL and its ARGS plist.
+Each clause is a string like \"ran `ls`\", \"in `/tmp`\", \"7.5s\",
+\"/bin/zsh\", or \"login\".  Args without a display clause are skipped."
+  (let ((clauses nil))
+    (cond
+     ((string= tool "exec_command")
+      (when (stringp (plist-get args :cmd))
+        (push (format "ran `%s`" (plist-get args :cmd)) clauses))
+      (when (stringp (plist-get args :workdir))
+        (push (format "in `%s`" (plist-get args :workdir)) clauses))
+      (when (numberp (plist-get args :yield_time_ms))
+        (push (crush--yield-ms->human (plist-get args :yield_time_ms)) clauses))
+      (when (stringp (plist-get args :shell))
+        (push (plist-get args :shell) clauses))
+      (when (eq (plist-get args :login) t)
+        (push "login" clauses)))
+     ((string= tool "write_stdin")
+      (when (integerp (plist-get args :session_id))
+        (push (format "session %d" (plist-get args :session_id)) clauses))
+      (when (stringp (plist-get args :input))
+        (push (format "wrote `%s`" (plist-get args :input)) clauses))))
+    (nreverse clauses)))
+
+(defun crush--tool-header-line (tool args id)
+  "Return the single markdown header line for TOOL, ARGS, and call ID.
+The line is bold icon + tool name, then an italic summary and the call
+id, e.g. \"**🔧 exec_command** — *ran `ls` in `/tmp` 10s bash* · call_1\"."
+  (let* ((icon (or (cdr (assoc tool crush--tool-icons)) "🛠️"))
+         (name (if (string= tool "write_stdin") "write_stdin" tool))
+         (clauses (crush--tool-summary-clauses tool args))
+         (summary (when clauses
+                    (format " — *%s*" (mapconcat #'identity clauses " "))))
+         (call (when id (format " · %s" id))))
+    (format "**%s %s**%s%s" icon name (or summary "") (or call ""))))
+
 (defun crush--tool-block-insert (tool-calls prompt-id)
   "Insert a tool-call block for TOOL-CALLS into the buffer.
 TOOL-CALLS is a plist of :name :id :args-json :result :exit.
@@ -1591,50 +1659,52 @@ for wire resume.  Returns the end position of the inserted block."
   ;; now so the tool block is visually separated from the reasoning
   ;; and the reasoning region boundaries are correct.
   (crush--reasoning-stop)
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t)
-        (start (point-max))
-        (raw-start nil)
-        (raw-end nil))
-    (save-excursion
-      (goto-char start)
-      (insert (format "**🔧 tool: %s**\n\n" (plist-get tool-calls :name)))
-      (insert (format "**command:** `%s`\n" (or (plist-get tool-calls :args-json) "")))
-      (let ((exit (plist-get tool-calls :exit)))
-        (when exit
-          (insert (format "**exit:** `%s`\n" exit))))
-      (let ((result (plist-get tool-calls :result)))
-        (when result
-          (let ((fence (crush--fence-str result)))
-            (insert "**output:**\n")
-            (insert fence "\n")
-            (setq raw-start (point))
-            (insert result)
-            (unless (string-suffix-p "\n" result)
-              (insert "\n"))
-            (setq raw-end (point))
-            (insert fence "\n"))))
-      (insert "\n"))
-    (let ((end (point-max)))
-      (put-text-property start end 'crush-region-type 'tool)
-      (put-text-property start end 'crush-prompt-id prompt-id)
-      (put-text-property start end 'crush-response-to prompt-id)
-      (put-text-property start (1- end) 'crush-tool-call
-                         (list :id (plist-get tool-calls :id)
-                               :name (plist-get tool-calls :name)
-                               :args-json (plist-get tool-calls :args-json)))
-      ;; Nested region: the raw tool result (the wire `role: "tool"`
-      ;; content) sits between the output label's opening fence and the
-      ;; closing fence.  Tag it separately so history extraction can
-      ;; send the raw `<command>/<output>/<exit_code>' without the
-      ;; display decoration.  Carries the same prompt/response tags so
-      ;; it survives re-tagging and persistence.
-      (when raw-start
-        (put-text-property raw-start raw-end 'crush-region-type 'tool-output)
-        (put-text-property raw-start raw-end 'crush-prompt-id prompt-id)
-        (put-text-property raw-start raw-end 'crush-response-to prompt-id))
-      (crush--freeze-region start end)
-      end)))
+  (let* ((name (plist-get tool-calls :name))
+         (id (plist-get tool-calls :id))
+         (args (or (and (stringp (plist-get tool-calls :args-json))
+                        (crush-openai-parse-tool-args
+                         (plist-get tool-calls :args-json)))
+                   (list))))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t)
+          (start (point-max))
+          (raw-start nil)
+          (raw-end nil))
+      (save-excursion
+        (goto-char start)
+        (insert (crush--tool-header-line name args id))
+        (insert "\n\n")
+        (let ((result (plist-get tool-calls :result)))
+          (when result
+            (let ((fence (crush--fence-str result)))
+              (insert (format "%s%s\n" fence (crush--fence-lang)))
+              (setq raw-start (point))
+              (insert result)
+              (unless (string-suffix-p "\n" result)
+                (insert "\n"))
+              (setq raw-end (point))
+              (insert fence "\n"))))
+        (insert "\n"))
+      (let ((end (point-max)))
+        (put-text-property start end 'crush-region-type 'tool)
+        (put-text-property start end 'crush-prompt-id prompt-id)
+        (put-text-property start end 'crush-response-to prompt-id)
+        (put-text-property start (1- end) 'crush-tool-call
+                           (list :id id
+                                 :name name
+                                 :args-json (plist-get tool-calls :args-json)))
+        ;; Nested region: the raw tool result (the wire `role: "tool"`
+        ;; content) sits between the output label's opening fence and the
+        ;; closing fence.  Tag it separately so history extraction can
+        ;; send the raw result without the display decoration.  Carries
+        ;; the same prompt/response tags so it survives re-tagging and
+        ;; persistence.
+        (when raw-start
+          (put-text-property raw-start raw-end 'crush-region-type 'tool-output)
+          (put-text-property raw-start raw-end 'crush-prompt-id prompt-id)
+          (put-text-property raw-start raw-end 'crush-response-to prompt-id))
+        (crush--freeze-region start end)
+        end))))
 
 (defun crush-send-input ()
   "Send the current prompt to the provider."

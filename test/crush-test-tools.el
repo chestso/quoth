@@ -284,8 +284,8 @@ It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
 
 (ert-deftest crush-test/tool-block-renders-as-markdown ()
   "`crush--tool-block-insert' should render a tool block as valid markdown.
-The tool name is bold, command/exit are inline code, and output is a
-fenced code block."
+The header carries the tool name, an icon, and a human summary; the
+output is a fenced code block tagged `text`."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -296,11 +296,47 @@ fenced code block."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*🔧 tool: exec_command\\*\\*" content))
-            (should (string-match-p "\\*\\*command:\\*\\* `" content))
-            (should (string-match-p "\\*\\*exit:\\*\\* `0`" content))
-            (should (string-match-p "\\*\\*output:\\*\\*\n```" content))
+            (should (string-match-p "\\*\\*🔧 exec_command\\*\\*" content))
+            (should (string-match-p "ran `ls`" content))
+            (should (string-match-p "call_1" content))
+            (should (string-match-p "```text\n" content))
             (should (string-match-p "```\n$" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-exec-command-summary-fields ()
+  "The exec_command summary renders all present metadata fields."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\",\"workdir\":\"/tmp\",\"yield_time_ms\":7500,\"shell\":\"/bin/zsh\",\"login\":true}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "ran `ls`" content))
+            (should (string-match-p "in `/tmp`" content))
+            (should (string-match-p "7.5s" content))
+            (should (string-match-p "/bin/zsh" content))
+            (should (string-match-p "login" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-write-stdin-summary ()
+  "The write_stdin summary renders session id and input."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "write_stdin" :id "call_2"
+                 :args-json "{\"session_id\":7,\"input\":\"hello\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "\\*\\*⌨️ write_stdin\\*\\*" content))
+            (should (string-match-p "session 7" content))
+            (should (string-match-p "wrote `hello`" content))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-read-only-and-tagged ()
@@ -315,15 +351,16 @@ fenced code block."
                  :exit 0)
            crush--prompt-id)
           (goto-char (point-min))
-          (search-forward "tool: exec_command")
+          (search-forward "🔧 exec_command")
           (goto-char (match-beginning 0))
           (should (eq (get-text-property (point) 'crush-region-type) 'tool))
           (should (get-text-property (point) 'read-only))
           (should-error (insert "x") :type 'text-read-only))
       (crush-test--cleanup))))
 
-(ert-deftest crush-test/tool-block-no-exit-no-exit-line ()
-  "Tool blocks without an exit code should omit the exit line."
+(ert-deftest crush-test/tool-block-minimal-write-stdin ()
+  "A write_stdin block with only a session id renders a minimal summary
+and no output fence."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -332,7 +369,8 @@ fenced code block."
                  :args-json "{\"session_id\":7}")
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should-not (string-match-p "exit" content))))
+            (should (string-match-p "session 7" content))
+            (should-not (string-match-p "```" content))))
       (crush-test--cleanup))))
 
 ;;; 8. Fence escaping: protect against nested fences in tool output
@@ -373,7 +411,7 @@ fenced code block."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*output:\\*\\*\n````" content))
+            (should (string-match-p "````text\n" content))
             (should (string-match-p "````\n$" content))))
       (crush-test--cleanup))))
 

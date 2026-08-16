@@ -1461,7 +1461,7 @@ The second request gets a content answer and finalizes."
                           (accept-process-output nil 0.1) (sit-for 0.02)
                           (setq found (save-excursion
                                         (goto-char (point-min))
-                                        (search-forward "tool:" nil t))))
+                                        (search-forward "call_abc" nil t))))
                         (should found))
                       (let ((found nil)
                             (dl3 (+ (float-time) 6)))
