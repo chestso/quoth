@@ -175,9 +175,10 @@ Unknown keys are ignored; a non-alist payload yields nil."
 
 (defun crush-openai-tool-error-result (message)
   "Return an error (RESULT-TEXT . EXIT-CODE) pair for MESSAGE.
-Renders the error in the `<output>' slot with exit code -1."
-  (cons (format "<output>\n%s\n</output>\n<exit_code>-1</exit_code>"
-                message)
+Renders the error in Codex's prose convention with exit code -1: a
+`Process exited with code -1' status line, then `Output:' and the
+message."
+  (cons (format "Process exited with code -1\nOutput:\n%s" message)
         -1))
 
 (defun crush-openai-execute-tool (tool-call)
@@ -363,18 +364,37 @@ the current branch, status, and recent commits."
     body))
 
 (defun crush--openai-tool-schema ()
-  "Return the tool schema vector for the `bash' tool."
-  (let ((param-props
-         `((command . ((type . "string")
-                       (description . "The shell command to execute")))
-           (working_dir . ((type . "string")
-                           (description . "Working directory (defaults to the buffer's project root)"))))))
+  "Return the tool schema vector for `exec_command' and `write_stdin'."
+  (let ((exec-props
+         `((cmd . ((type . "string")
+                   (description . "Shell command to execute")))
+           (workdir . ((type . "string")
+                       (description . "Working directory (defaults to the buffer's project root)")))
+           (yield_time_ms . ((type . "number")
+                             (description . "Wait before returning a session ID for a still-running command. Defaults 10000 ms; range 250-30000 ms.")))
+           (shell . ((type . "string")
+                     (description . "Shell binary to run the command under. Defaults to the user's default shell.")))
+           (login . ((type . "boolean")
+                     (description . "True runs the shell with -l (login) semantics; false disables them. Disabled by config by default.")))))
+        (write-props
+         `((session_id . ((type . "number")
+                          (description . "Session identifier returned by exec_command")))
+           (input . ((type . "string")
+                     (description . "Characters to write to the session's stdin; use \\x04 (EOT) to close stdin")))
+           (yield_time_ms . ((type . "number")
+                             (description . "Read window to collect fresh output after writing. Defaults 1000 ms."))))))
     `[((type . "function")
-       (function . ((name . "bash")
-                    (description . "Run a shell command in the user's environment and return its combined standard output and error, with the exit code appended. Anything can be run through bash.")
+       (function . ((name . "exec_command")
+                    (description . "Run a command and return its output plus an exit code, or a session ID when the command is still running.")
                     (parameters . ((type . "object")
-                                   (properties . ,param-props)
-                                   (required . ["command"]))))))]))
+                                   (properties . ,exec-props)
+                                   (required . ["cmd"]))))))
+      ((type . "function")
+       (function . ((name . "write_stdin")
+                    (description . "Write to a running exec_command session and return recently produced output.")
+                    (parameters . ((type . "object")
+                                   (properties . ,write-props)
+                                   (required . ["session_id"]))))))]))
 
 (defun crush-openai-sse-new-state ()
   "Return a fresh SSE parser state plist."

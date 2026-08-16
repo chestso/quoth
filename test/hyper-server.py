@@ -224,9 +224,9 @@ def main():
                                             "index": 0,
                                             "id": "call_rt",
                                             "function": {
-                                                "name": "bash",
+                                                "name": "exec_command",
                                                 "arguments": json.dumps(
-                                                    {"command": "echo hi"}
+                                                    {"cmd": "echo hi"}
                                                 ),
                                             },
                                         }
@@ -264,9 +264,9 @@ def main():
                                                     "index": 0,
                                                     "id": "call_abc",
                                                     "function": {
-                                                        "name": "bash",
+                                                        "name": "exec_command",
                                                         "arguments": json.dumps(
-                                                            {"command": "echo hi"}
+                                                            {"cmd": "echo hi"}
                                                         ),
                                                     },
                                                 }
@@ -297,9 +297,9 @@ def main():
                                             "index": 0,
                                             "id": "call_loop",
                                             "function": {
-                                                "name": "bash",
+                                                "name": "exec_command",
                                                 "arguments": json.dumps(
-                                                    {"command": "echo loop"}
+                                                    {"cmd": "echo loop"}
                                                 ),
                                             },
                                         }

@@ -155,16 +155,18 @@ OpenAI function-calling message shape."
                      crush-openai-default-model))))
 
 (ert-deftest crush-test/hyper-compose-tools-by-default ()
-  "With `crush-tools-enabled' t the body announces the bash tool.
+  "With `crush-tools-enabled' t the body announces exec_command.
 The default is non-nil, so `tool_choice' is `auto'."
   (let ((req (crush-openai-compose-request "P" nil "m")))
     (should (assq 'tools req))
     (should (equal (alist-get 'tool_choice req) "auto"))
     (let ((tools (alist-get 'tools req)))
       (should (vectorp tools))
-      (should (= (length tools) 1))
+      (should (= (length tools) 2))
       (should (equal (cdr (assq 'name (cdr (assq 'function (aref tools 0)))))
-                     "bash")))))
+                     "exec_command"))
+      (should (equal (cdr (assq 'name (cdr (assq 'function (aref tools 1)))))
+                     "write_stdin")))))
 
 (ert-deftest crush-test/hyper-compose-no-tools-when-disabled ()
   "With `crush-tools-enabled' nil the body matches the pre-tools format.

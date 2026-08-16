@@ -96,7 +96,8 @@ Initializes with the default hyper provider."
   (dolist (dep '("crush-test-buffer" "crush-test-commands"
                  "crush-test-openai" "crush-test-hyper"
                  "crush-test-reasoning" "crush-test-stream"
-                 "crush-test-xxh3" "crush-test-tools"))
+                 "crush-test-xxh3" "crush-test-tools"
+                 "crush-test-process"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")

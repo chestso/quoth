@@ -28,11 +28,11 @@
 ;;; SOFTWARE.
 
 ;;; Commentary:
-;;; Tool-call machinery tests: bash execution via real shell commands,
-;;; the tool registry, result formatting, and the tool-call struct.
-;;; Tests that need to assert "no process was spawned" use cl-letf on
-;;; make-process; tests that exercise the full exec path use real
-;;; subprocesses (sh -c).
+;;; Tool-call machinery tests: process execution via real shell commands,
+;;; the tool registry, result formatting, and the tool-call struct.  The
+;;; `exec_command' and `write_stdin' tools target `crush-process.el'
+;;; these tests exercise the full exec path through
+;;; that layer with real subprocesses.
 
 ;;; Code:
 
@@ -44,7 +44,7 @@
 ;;; `require'; fall back to loading each dep from this file's directory
 ;;; or its parent (the package root) so flycheck and package loads work.
 (eval-and-compile
-  (dolist (dep '("crush" "crush-openai" "crush-tools"))
+  (dolist (dep '("crush" "crush-openai" "crush-process" "crush-tools"))
     (unless (require (intern dep) nil t)
       (let* ((base (file-name-directory
                     (or buffer-file-name load-file-name default-directory)))
@@ -67,10 +67,15 @@
 
 ;;; 1. Tool registry and dispatch
 
-(ert-deftest crush-test/tool-registry-has-bash ()
-  "The registry should map `bash' to `crush-bash--exec'."
-  (should (equal (cdr (assoc "bash" crush-openai-tool-registry))
-                 #'crush-bash--exec)))
+(ert-deftest crush-test/tool-registry-has-exec-command ()
+  "The registry should map `exec_command' to `crush-exec-command--exec'."
+  (should (equal (cdr (assoc "exec_command" crush-openai-tool-registry))
+                 #'crush-exec-command--exec)))
+
+(ert-deftest crush-test/tool-registry-has-write-stdin ()
+  "The registry should map `write_stdin' to `crush-write-stdin--exec'."
+  (should (equal (cdr (assoc "write_stdin" crush-openai-tool-registry))
+                 #'crush-write-stdin--exec)))
 
 (ert-deftest crush-test/tool-unknown-name-errors-without-process ()
   "An unknown tool name should yield an error result and spawn nothing."
@@ -80,13 +85,13 @@
       (let* ((call (crush-test--tool-call "nope" "{}"))
              (result (crush-openai-execute-tool call)))
         (should-not spawned)
-        (should (string-prefix-p "<output>" (car result)))
+        (should (string-match-p "Process exited with code -1" (car result)))
         (should (= (cdr result) -1))))))
 
 (ert-deftest crush-test/tool-execute-returns-result-and-exit ()
   "`crush-openai-execute-tool' returns a result and exit code.
 It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
-  (let* ((call (crush-test--tool-call "bash" "{\"command\":\"echo hi\"}"))
+  (let* ((call (crush-test--tool-call "exec_command" "{\"cmd\":\"echo hi\"}"))
          (result (crush-openai-execute-tool call)))
     (should (stringp (car result)))
     (should (integerp (cdr result)))
@@ -98,8 +103,8 @@ It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
 (ert-deftest crush-test/tool-parse-args-valid ()
   "A valid args JSON should parse into a plist with keyword values."
   (should (equal (crush-openai-parse-tool-args
-                  "{\"command\":\"git status\",\"working_dir\":null}")
-                 '(:command "git status" :working_dir nil))))
+                  "{\"cmd\":\"git status\",\"workdir\":null}")
+                 '(:cmd "git status" :workdir nil))))
 
 (ert-deftest crush-test/tool-parse-args-malformed ()
   "Malformed args JSON should parse to nil."
@@ -112,127 +117,170 @@ It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
   (should (null (crush-openai-parse-tool-args "[1,2]")))
   (should (null (crush-openai-parse-tool-args "\"hi\""))))
 
-;;; 3. Bash execution
+;;; 3. exec_command execution
 
-(ert-deftest crush-test/bash-exec-captures-output ()
-  "`crush-bash--exec' should capture combined stdout and exit 0."
-  (let* ((call (crush-test--tool-call "bash" "{\"command\":\"echo hello\"}"))
-         (result (crush-bash--exec call)))
+(ert-deftest crush-test/exec-command-captures-output ()
+  "`crush-exec-command--exec' should capture combined stdout and exit 0."
+  (let* ((call (crush-test--tool-call "exec_command" "{\"cmd\":\"echo hello\"}"))
+         (result (crush-exec-command--exec call)))
     (should (string-match-p "hello" (car result)))
+    (should (string-match-p "Process exited with code 0" (car result)))
+    (should (string-match-p "Output:" (car result)))
     (should (= (cdr result) 0))))
 
-(ert-deftest crush-test/bash-exec-nonzero-exit ()
-  "A command that exits non-zero should fold the exit code into the result."
-  (let* ((call (crush-test--tool-call "bash" "{\"command\":\"exit 3\"}"))
-         (result (crush-bash--exec call)))
-    (should (string-match-p "<exit_code>3</exit_code>" (car result)))
+(ert-deftest crush-test/exec-command-nonzero-exit ()
+  "A command that exits non-zero should report its exit code in prose."
+  (let* ((call (crush-test--tool-call "exec_command" "{\"cmd\":\"exit 3\"}"))
+         (result (crush-exec-command--exec call)))
+    (should (string-match-p "Process exited with code 3" (car result)))
     (should (= (cdr result) 3))))
 
-(ert-deftest crush-test/bash-exec-missing-command-errors ()
-  "A missing or empty `command' should error without spawning."
+(ert-deftest crush-test/exec-command-missing-cmd-errors ()
+  "A missing or empty `cmd' should error without spawning."
   (let ((spawned nil))
     (cl-letf (((symbol-function 'make-process)
                (lambda (&rest _args) (setq spawned t) nil)))
-      (dolist (json '("{}" "{\"command\":\"\"}" "{\"command\":\"  \"}"))
-        (let* ((call (crush-test--tool-call "bash" json))
-               (result (crush-bash--exec call)))
-          (should (string-match-p "missing command" (car result)))
+      (dolist (json '("{}" "{\"cmd\":\"\"}" "{\"cmd\":\"  \"}"))
+        (let* ((call (crush-test--tool-call "exec_command" json))
+               (result (crush-exec-command--exec call)))
+          (should (string-match-p "Process exited with code -1" (car result)))
           (should (= (cdr result) -1))))
       (should-not spawned))))
 
-(ert-deftest crush-test/bash-exec-malformed-args-errors ()
+(ert-deftest crush-test/exec-command-malformed-args-errors ()
   "Malformed args JSON should error without spawning."
   (let ((spawned nil))
     (cl-letf (((symbol-function 'make-process)
                (lambda (&rest _args) (setq spawned t) nil)))
-      (let* ((call (crush-test--tool-call "bash" "not json"))
-             (result (crush-bash--exec call)))
-        (should (string-match-p "missing command" (car result)))
+      (let* ((call (crush-test--tool-call "exec_command" "not json"))
+             (result (crush-exec-command--exec call)))
+        (should (string-match-p "Process exited with code -1" (car result)))
         (should (= (cdr result) -1)))
       (should-not spawned))))
 
-(ert-deftest crush-test/bash-exec-uses-working-dir ()
-  "The command runs with the resolved working directory.
-That directory becomes `default-directory' for the call."
+(ert-deftest crush-test/exec-command-login-rejected-by-default ()
+  "A `login' request is rejected when not allowed by config."
+  (let ((spawned nil))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _args) (setq spawned t) nil)))
+      (let* ((call (crush-test--tool-call
+                    "exec_command"
+                    "{\"cmd\":\"echo hi\",\"login\":true}"))
+             (result (crush-exec-command--exec call)))
+        (should (string-match-p "login shell is disabled" (car result)))
+        (should (= (cdr result) -1)))
+      (should-not spawned))))
+
+(ert-deftest crush-test/exec-command-login-allowed-when-enabled ()
+  "A `login' request is honored when `crush-tool-allow-login-shell' is t."
+  (let ((crush-tool-allow-login-shell t))
+    (let* ((call (crush-test--tool-call
+                  "exec_command"
+                  "{\"cmd\":\"echo hi\",\"login\":true}"))
+           (result (crush-exec-command--exec call)))
+      (should (string-match-p "hi" (car result)))
+      (should (= (cdr result) 0)))))
+
+(ert-deftest crush-test/exec-command-shell-parameter ()
+  "A requested shell binary is used to run the command."
+  (let* ((call (crush-test--tool-call
+                "exec_command"
+                "{\"cmd\":\"echo fromsh\",\"shell\":\"/bin/sh\"}"))
+         (result (crush-exec-command--exec call)))
+    (should (string-match-p "fromsh" (car result)))
+    (should (= (cdr result) 0))))
+
+(ert-deftest crush-test/exec-command-uses-workdir ()
+  "The command runs with the resolved working directory."
   (let ((wd (make-temp-file "crush-wd" t)))
     (unwind-protect
         (let* ((call (crush-test--tool-call
-                      "bash"
-                      (format "{\"command\":\"pwd\",\"working_dir\":%S}"
+                      "exec_command"
+                      (format "{\"cmd\":\"pwd\",\"workdir\":%S}"
                               wd)))
-               (result (crush-bash--exec call)))
+               (result (crush-exec-command--exec call)))
           (should (string-match-p (regexp-quote wd) (car result))))
       (ignore-errors (delete-directory wd t)))))
 
-(ert-deftest crush-test/bash-exec-default-dir ()
-  "Without `working_dir', the command should run in `default-directory'."
-  (let ((dir (make-temp-file "crush-dir" t)))
-    (unwind-protect
-        (let ((default-directory (file-name-as-directory dir)))
-          (let* ((call (crush-test--tool-call "bash" "{\"command\":\"pwd\"}"))
-                 (result (crush-bash--exec call)))
-            (should (string-match-p (regexp-quote dir) (car result)))))
-      (ignore-errors (delete-directory dir t)))))
+(ert-deftest crush-test/exec-command-short-yield-reports-session ()
+  "A still-running command yields a session id and no exit code."
+  (let ((call (crush-test--tool-call
+               "exec_command"
+               "{\"cmd\":\"sleep 5\",\"yield_time_ms\":200}"))
+        session-id)
+    (let ((result (crush-exec-command--exec call)))
+      (should (stringp (car result)))
+      (should (string-match "Process running with session ID \\([0-9]+\\)"
+                            (car result)))
+      (setq session-id (string-to-number
+                        (match-string 1 (car result))))
+      (should (null (cdr result))))
+    (should (gethash session-id crush-process--sessions))
+    (crush-process--kill (crush-process--find session-id))))
 
-(ert-deftest crush-test/bash-exec-empty-output-no-output ()
-  "Empty output should render as the literal string `no output'."
-  (let* ((call (crush-test--tool-call "bash" "{\"command\":\"true\"}"))
-         (result (crush-bash--exec call)))
-    (should (string-match-p "no output" (car result)))
-    (should (= (cdr result) 0))))
+;;; 4. write_stdin execution
 
-(ert-deftest crush-test/bash-truncate-output ()
-  "Long output should be capped with a head/tail split and ellipsis."
+(ert-deftest crush-test/write-stdin-round-trip ()
+  "exec_command + write_stdin drive an interactive process to completion."
+  (let* ((start (crush-test--tool-call
+                 "exec_command"
+                 "{\"cmd\":\"read line; echo got:$line\",\"yield_time_ms\":200}"))
+         (start-result (crush-exec-command--exec start))
+         session-id)
+    (should (string-match "Process running with session ID \\([0-9]+\\)"
+                          (car start-result)))
+    (setq session-id (string-to-number (match-string 1 (car start-result))))
+    (let* ((write (crush-test--tool-call
+                   "write_stdin"
+                   (format "{\"session_id\":%d,\"input\":\"hello\\n\"}"
+                           session-id)))
+           (write-result (crush-write-stdin--exec write)))
+      (should (string-match-p "got:hello" (car write-result)))
+      (should (string-match-p "Process exited with code 0" (car write-result)))
+      (should (= (cdr write-result) 0)))
+    (should-not (gethash session-id crush-process--sessions))))
+
+(ert-deftest crush-test/write-stdin-unknown-session-errors ()
+  "An unknown session id yields an error result without spawning."
+  (let ((spawned nil))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _args) (setq spawned t) nil)))
+      (let* ((call (crush-test--tool-call "write_stdin" "{\"session_id\":9999}"))
+             (result (crush-write-stdin--exec call)))
+        (should (string-match-p "Process exited with code -1" (car result)))
+        (should (= (cdr result) -1)))
+      (should-not spawned))))
+
+;;; 5. Result prose formatting
+
+(ert-deftest crush-test/result-format-exit ()
+  "A finished run should carry prose status and exit code."
+  (let* ((result (crush-exec--format-result "hi" 0)))
+    (should (string-match-p "Process exited with code 0" result))
+    (should (string-match-p "Output:" result))))
+
+(ert-deftest crush-test/result-format-session ()
+  "A running command should carry a session id and no exit code."
+  (let* ((result (crush-exec--format-running "ticks" 7)))
+    (should (string-match-p "Process running with session ID 7" result))
+    (should (string-match-p "Output:" result))
+    (should-not (string-match-p "exited" result))))
+
+;;; 6. Output truncation
+
+(ert-deftest crush-test/truncate-output ()
+  "Long output should be capped with a head/tail split and an omission marker."
   (let* ((body (make-string 2000 ?x))
-         (truncated (crush-bash--truncate-output body)))
+         (truncated (crush-exec--truncate-output body)))
     (should (string= truncated body)))
   (let* ((crush-tool-max-output 50)
          (body (concat (make-string 40 ?a) (make-string 40 ?b)))
-         (truncated (crush-bash--truncate-output body)))
-    (should (string-match-p "truncated" truncated))
+         (truncated (crush-exec--truncate-output body)))
+    (should (string-match-p "omitted" truncated))
     (should (string-prefix-p (make-string 35 ?a) truncated)))
-  (should (string= (crush-bash--truncate-output "") "no output")))
+  (should (string= (crush-exec--truncate-output "") "no output")))
 
-(ert-deftest crush-test/bash-result-format-success ()
-  "A successful run should carry `<cwd>' markup and exit code 0."
-  (let* ((result (crush-bash--format-result "echo hi" "/tmp" "hi" 0)))
-    (should (string-match-p "<cwd>/tmp</cwd>" (car result)))
-    (should (string-match-p "<command>echo hi</command>" (car result)))
-    (should (string-match-p "<exit_code>0</exit_code>" (car result)))
-    (should (= (cdr result) 0))))
-
-(ert-deftest crush-test/bash-result-format-error-exit ()
-  "A non-zero exit should fold into the result text."
-  (let* ((result (crush-bash--format-result "false" "/tmp" "" 1)))
-    (should (string-match-p "<exit_code>1</exit_code>" (car result)))
-    (should (= (cdr result) 1))))
-
-(ert-deftest crush-test/bash-result-format-timeout ()
-  "A killed (timeout) run should report `exit: killed'."
-  (let* ((result (crush-bash--format-result "sleep" "/tmp" "" 124)))
-    (should (string-match-p "<exit_code>killed</exit_code>" (car result)))
-    (should (= (cdr result) 124))))
-
-(ert-deftest crush-test/bash-exec-timeout-kills ()
-  "A command exceeding `crush-tool-timeout' is killed.\nThe result reports the timeout."
-  (let ((crush-tool-timeout 1))
-    (let* ((call (crush-test--tool-call "bash" "{\"command\":\"sleep 10\"}"))
-           (result (crush-bash--exec call)))
-      (should (string-match-p "killed" (car result)))
-      (should (= (cdr result) 124)))))
-
-(ert-deftest crush-test/bash-exec-logs-to-debug ()
-  "Each bash round should log a `tool' line to *crush-debug*."
-  (let ((call (crush-test--tool-call "bash" "{\"command\":\"echo hi\"}")))
-    (crush-bash--exec call))
-  (let ((debug (get-buffer "*crush-debug*")))
-    (should (buffer-live-p debug))
-    (with-current-buffer debug
-      (goto-char (point-min))
-      (should (search-forward "tool: bash" nil t))
-      (should (search-forward "echo hi" nil t)))))
-
-;;; 4. Tool-block buffer formatting
+;;; 7. Tool-block buffer formatting
 
 (ert-deftest crush-test/tool-block-renders-as-markdown ()
   "`crush--tool-block-insert' should render a tool block as valid markdown.
@@ -242,13 +290,13 @@ fenced code block."
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
           (crush--tool-block-insert
-           (list :name "bash" :id "call_1"
-                 :args-json "{\"command\":\"ls\"}"
-                 :result "<output>AGENTS.md\ncrush.el</output>"
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\"}"
+                 :result "Process exited with code 0\nOutput:\nAGENTS.md"
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*🔧 tool: bash\\*\\*" content))
+            (should (string-match-p "\\*\\*🔧 tool: exec_command\\*\\*" content))
             (should (string-match-p "\\*\\*command:\\*\\* `" content))
             (should (string-match-p "\\*\\*exit:\\*\\* `0`" content))
             (should (string-match-p "\\*\\*output:\\*\\*\n```" content))
@@ -261,31 +309,17 @@ fenced code block."
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
           (crush--tool-block-insert
-           (list :name "bash" :id "call_1"
-                 :args-json "{\"command\":\"ls\"}"
-                 :result "<output>files</output>"
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\"}"
+                 :result "Process exited with code 0\nOutput:\nfiles"
                  :exit 0)
            crush--prompt-id)
           (goto-char (point-min))
-          (search-forward "tool: bash")
+          (search-forward "tool: exec_command")
           (goto-char (match-beginning 0))
           (should (eq (get-text-property (point) 'crush-region-type) 'tool))
           (should (get-text-property (point) 'read-only))
           (should-error (insert "x") :type 'text-read-only))
-      (crush-test--cleanup))))
-
-(ert-deftest crush-test/tool-block-no-result-no-output-section ()
-  "Tool blocks without a result should omit the output section."
-  (let ((default-directory crush-test--root))
-    (unwind-protect
-        (with-current-buffer (crush-test--fresh-buffer)
-          (crush--tool-block-insert
-           (list :name "bash" :id "call_1"
-                 :args-json "{\"command\":\"ls\"}"
-                 :exit 0)
-           crush--prompt-id)
-          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should-not (string-match-p "output" content))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-no-exit-no-exit-line ()
@@ -294,14 +328,14 @@ fenced code block."
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
           (crush--tool-block-insert
-           (list :name "bash" :id "call_1"
-                 :args-json "{\"command\":\"ls\"}")
+           (list :name "write_stdin" :id "call_2"
+                 :args-json "{\"session_id\":7}")
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should-not (string-match-p "exit" content))))
       (crush-test--cleanup))))
 
-;;; 5. Fence escaping: protect against nested fences in tool output
+;;; 8. Fence escaping: protect against nested fences in tool output
 
 (ert-deftest crush-test/fence-str-empty-output ()
   "Empty output uses the default 3-backtick fence."
@@ -333,30 +367,14 @@ fenced code block."
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
           (crush--tool-block-insert
-           (list :name "bash" :id "call_1"
-                 :args-json "{\"command\":\"ls\"}"
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\"}"
                  :result "regular output with ```nested``` fence"
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "\\*\\*output:\\*\\*\n````" content))
             (should (string-match-p "````\n$" content))))
-      (crush-test--cleanup))))
-
-(ert-deftest crush-test/tool-block-safe-with-triple-backtick ()
-  "Default 3-backtick fence is safe when output has no backticks."
-  (let ((default-directory crush-test--root))
-    (unwind-protect
-        (with-current-buffer (crush-test--fresh-buffer)
-          (crush--tool-block-insert
-           (list :name "bash" :id "call_1"
-                 :args-json "{\"command\":\"ls\"}"
-                 :result "plain output"
-                 :exit 0)
-           crush--prompt-id)
-          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*output:\\*\\*\n```\n" content))
-            (should (string-match-p "\n```\n$" content))))
       (crush-test--cleanup))))
 
 (provide 'crush-test-tools)

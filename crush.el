@@ -249,7 +249,7 @@ Buffer-local.")
 ;;; both setups work.
 (eval-and-compile
   (dolist (dep '("crush-provider" "crush-openai" "crush-xxh3" "crush-stream"
-                 "crush-hyper-provider" "crush-tools"))
+                 "crush-process" "crush-hyper-provider" "crush-tools"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -268,6 +268,7 @@ and `crush-interrupt' dispatch through it.  Buffer-local.")
 (declare-function crush-xxh3-hash64 "crush-xxh3" (input))
 (declare-function crush-provider--tool-calls "crush-provider" (provider process))
 (declare-function crush-provider--tool-results "crush-provider" (provider tool-calls))
+(declare-function crush-process--cleanup-buffer "crush-process" (owner))
 
 ;;; Buffer naming
 
@@ -1709,6 +1710,8 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (setq-local crush--continue nil)
   (crush--init-session-uuid)
   (crush-facade--stream-clear)
+  ;; Kill any live process sessions this buffer owns.
+  (crush-process--cleanup-buffer (current-buffer))
   ;; Delete all crush-overlay tagged overlays
   (dolist (ov (overlays-in (point-min) (point-max)))
     (when (overlay-get ov 'crush-overlay)
