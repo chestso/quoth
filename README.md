@@ -163,10 +163,15 @@ Keybindings (active when `crush-minor-mode` is enabled):
 
 ## Prompt IDs and Attachments
 
-Each prompt is assigned a unique ID when the `crush> ` prompt is
-created, before you type anything. This ID tracks the attachments
-(context blocks) that belong to that prompt, and all metadata is stored
-as text properties on the buffer content.
+Each prompt is assigned a unique ID when the input divider is
+inserted, before you type anything. This ID tracks the user input and
+attachments (context blocks) that belong to that prompt, and all
+metadata is stored as text properties on the buffer content.
+
+The chat buffer shows a frozen markdown horizontal divider (`---`,
+framed by blank lines) above the editable input area; everything below
+it is user input, tagged `crush-region-type 'user`. The divider itself
+is tagged `'separator` and never reaches the model.
 
 ### Attachments
 

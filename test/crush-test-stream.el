@@ -200,7 +200,7 @@ to done."
            (should (= (plist-get state :applications) 1)))
          ;; A fresh prompt was inserted.
          (goto-char (point-max))
-         (should (search-backward "crush> " nil t))))
+         (should (search-backward "---" nil t))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/facade-harness-moves-process-mark ()

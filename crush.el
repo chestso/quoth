@@ -60,9 +60,9 @@
   :group 'tools
   :prefix "crush-")
 
-(defface crush-prompt-face
+(defface crush-input-separator-face
   '((t :inherit font-lock-keyword-face))
-  "Face for the crush> prompt marker."
+  "Face for the frozen input separator line."
   :group 'crush)
 
 (defface crush-reasoning-face
@@ -189,7 +189,7 @@ Each attachment is a plist: (:id <uuid> :prompt-id <uuid> :content <string>).
 Buffer-local.")
 
 (defvar crush--prompt-start-marker nil
-  "Marker at the start of the `crush> ' prompt text.
+  "Marker at the start of the frozen input separator line.
 Buffer-local.")
 
 (defvar crush--reasoning-start nil
@@ -208,7 +208,8 @@ Carries `crush-reasoning-face' and the `crush-overlay' property so
 `crush-clear-buffer' removes it.  Buffer-local.")
 
 (defvar crush--input-start-marker nil
-  "Marker at the start of user input area (after prompt text).
+  "Marker at the start of the editable input region (right after the
+frozen input separator line).
 Buffer-local.")
 
 (defvar crush--project-root nil
@@ -460,33 +461,35 @@ init); falls back to `crush-openai-default-model' for hyper providers."
              crush-openai-default-model))))
 
 (defun crush--region-label-at-point ()
-  "Return a human label for the `crush-region-type' at point.
+  "Return the `crush-region-type' at point as a string, or nil.
 Any region type symbol maps to its name, so new region types (e.g. the
-nested `tool-output' span) label themselves without a static list.
-When no region type is set, falls back to `prompt' on prompt/input
-text and `plain' elsewhere."
+nested `tool-output' span and the input `separator') label themselves
+without a static list.  Returns nil when the point carries no region
+type, so untagged space is never mistaken for `user'."
   (let ((type (get-text-property (point) 'crush-region-type)))
-    (if (and type (symbolp type))
-        (symbol-name type)
-      (if (crush-get-prompt-at-point) "prompt" "plain"))))
+    (when (and type (symbolp type))
+      (symbol-name type))))
 
 (defun crush--update-header-line ()
   "Update header line with the current model and region type at point."
   (let* ((model (crush--header-model))
          (region (crush--region-label-at-point))
          (model-str (if model (format "model: %s" model) "model: -"))
-         (region-str (format "region: %s" region)))
+         (region-str (if region (format "region: %s" region) "region: -")))
     (setq header-line-format
           (list (propertize (format "%s   %s" model-str region-str)
                             'face 'bold)))))
 
 (defun crush--after-change (beg end _len)
-  "Tag inserted text with prompt ID if at or after the prompt marker.
-BEG and END are standard after-change hook arguments."
+  "Tag inserted text with prompt ID and `user' region type.
+Tags only text at or after the input separator marker, so edits inside
+frozen history are left untagged.  BEG and END are standard after-change
+hook arguments."
   (when (and crush--prompt-start-marker
              (markerp crush--prompt-start-marker)
              (>= beg (marker-position crush--prompt-start-marker)))
-    (put-text-property beg end 'crush-prompt-id crush--prompt-id))
+    (put-text-property beg end 'crush-prompt-id crush--prompt-id)
+    (put-text-property beg end 'crush-region-type 'user))
   (crush--update-header-line))
 
 (defun crush--lang-from-extension (filename)
@@ -574,27 +577,38 @@ Accepts optional hook arguments so it can also be used as a change hook."
       (setq pos (or (next-single-property-change pos 'read-only nil (point-max))
                     (point-max))))))
 
-(defun crush--insert-prompt ()
-  "Insert the `crush> ' prompt marker with crush-specific properties.
-Read-only is enforced via text properties.  The prompt itself and all
-previous content are frozen read-only; new text after the prompt stays
-editable."
+(defconst crush--input-separator-text "---"
+  "Text of the frozen markdown horizontal divider that precedes the
+editable input area.")
+
+(defun crush--insert-input-separator ()
+  "Insert the frozen input divider (`---') at point, framed by blank lines.
+The divider text plus all previous content are frozen read-only; the
+editable input area starts right after the divider's trailing blank
+line.  At `bobp' no blank line is inserted above the divider.
+`crush--prompt-start-marker' (insertion type t) anchors the divider's
+start so attachments and prior content can be inserted before it;
+`crush--input-start-marker' marks where typed input begins."
   (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t)
-        (start (point)))
-    (insert "crush> ")
-    (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
-    (add-text-properties
-     start (point)
-     '(read-only t
-                 front-sticky (read-only)
-                 rear-nonsticky (read-only font-lock-face)
-                 font-lock-face crush-prompt-face))
-    (crush--freeze-region (point-min) start)
-    (setq-local crush--prompt-start-marker (copy-marker start))
-    (set-marker-insertion-type crush--prompt-start-marker t)
-    (setq-local crush--input-start-marker (point-marker))
-    (set-marker-insertion-type crush--input-start-marker nil)))
+        (inhibit-modification-hooks t))
+    (unless (bobp)
+      (insert "\n"))
+    (let ((start (point)))
+      (insert crush--input-separator-text "\n\n")
+      (put-text-property start (point)
+                         'crush-region-type 'separator)
+      (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
+      (add-text-properties
+       start (point)
+       '(read-only t
+                   front-sticky (read-only)
+                   rear-nonsticky (read-only font-lock-face)
+                   font-lock-face crush-input-separator-face))
+      (crush--freeze-region (point-min) start)
+      (setq-local crush--prompt-start-marker (copy-marker start))
+      (set-marker-insertion-type crush--prompt-start-marker t)
+      (setq-local crush--input-start-marker (point-marker))
+      (set-marker-insertion-type crush--input-start-marker nil))))
 
 (defun crush-get-prompt-at-point ()
   "Return the prompt ID at or before point, or nil if not found."
@@ -683,35 +697,25 @@ no chain-of-thought."
 
 (defun crush--user-turn-text (prompt-id)
   "Return the user-side text for PROMPT-ID: typed input + attachments.
-The text is the buffer content tagged with `crush-prompt-id' PROMPT-ID
-in buffer order, including attachment regions (that context traveled
-inside the user message when sent), excluding the `crush> ' marker
-line, the response, and reasoning regions (which share the
-`crush-prompt-id' tag but belong to the assistant).  Returns nil when
-nothing remains."
+The text is the buffer content tagged `crush-region-type' `user' within
+the region tagged `crush-prompt-id' PROMPT-ID, in buffer order.  The
+frozen separator line, the response, and reasoning regions (which share
+the `crush-prompt-id' tag but belong to the assistant) are excluded.
+Returns nil when nothing remains."
   (let ((pos (text-property-any (point-min) (point-max)
                                 'crush-prompt-id prompt-id))
         (chunks nil))
     (while pos
-      ;; Chunk ends either where `crush-prompt-id' changes (the next
-      ;; prompt) or where `crush-region-type' changes (a response or
-      ;; reasoning region nested inside this prompt's text).
       (let* ((prompt-end (or (next-single-property-change pos 'crush-prompt-id
                                                           nil (point-max))
                              (point-max)))
              (type-end (or (next-single-property-change pos 'crush-region-type
                                                         nil prompt-end)
                            prompt-end))
-             (end type-end)
-             (chunk-start (if (string= (buffer-substring-no-properties
-                                        pos (min (point-max) (+ pos 7)))
-                                       "crush> ")
-                              (+ pos 7)
-                            pos)))
-        (when (and (< chunk-start end)
-                   (memq (get-text-property pos 'crush-region-type)
-                         '(nil attachment)))
-          (push (buffer-substring-no-properties chunk-start end) chunks))
+             (end type-end))
+        (when (and (< pos end)
+                   (eq (get-text-property pos 'crush-region-type) 'user))
+          (push (buffer-substring-no-properties pos end) chunks))
         (setq pos (and (< end (point-max))
                        (text-property-any end (point-max)
                                           'crush-prompt-id prompt-id)))))
@@ -1000,7 +1004,7 @@ buffer-local and never leaves via the network; only the hash is sent."
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (erase-buffer)
-        (crush--insert-prompt))
+        (crush--insert-input-separator))
       (setq-local buffer-undo-list nil)
       (crush--input-ring-read)
       (setq-local default-directory
@@ -1022,45 +1026,32 @@ buffer-local and never leaves via the network; only the hash is sent."
       ;; by the parent mode (which calls kill-all-local-variables).
       (setq-local crush--initialized t))))
 
-(defun crush--insert-before-prompt (buf formatted &optional attachment-id prompt-id filename lines)
-  "Insert FORMATTED content into BUF before the `crush> ' prompt line.
-Uses `crush--prompt-start-marker' to find the prompt position.
-If ATTACHMENT-ID and PROMPT-ID are provided, apply text properties.
-When FILENAME is provided, tag the region with `crush-filename';
-when LINES is provided, tag it with `crush-lines' (a line range string)."
+(defun crush--append-as-user-input (buf formatted &optional attachment-id prompt-id filename lines)
+  "Insert FORMATTED content into BUF as user input.
+Appends after `crush--input-start-marker' (or at point-max), tagging the
+region `crush-region-type' `user' so it reads back as typed input.
+When ATTACHMENT-ID and PROMPT-ID are provided, also apply those text
+properties.  When FILENAME is provided, tag the region with
+`crush-filename'; when LINES is provided, tag it with `crush-lines' (a
+line range string)."
   (with-current-buffer buf
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t))
-      (if (and crush--prompt-start-marker
-               (markerp crush--prompt-start-marker))
-          (let ((prompt-pos (marker-position crush--prompt-start-marker))
-                (start nil))
-            (save-excursion
-              (goto-char prompt-pos)
-              (beginning-of-line)
-              (setq start (point))
-              (insert formatted "\n\n")
-              (when (and attachment-id prompt-id)
-                (put-text-property start (point) 'crush-attachment-id attachment-id)
-                (put-text-property start (point) 'crush-prompt-id prompt-id))
-              (put-text-property start (point) 'crush-region-type 'attachment)
-              (when filename
-                (put-text-property start (point) 'crush-filename filename))
-              (when lines
-                (put-text-property start (point) 'crush-lines lines))))
-        (let ((start nil))
-          (save-excursion
-            (goto-char (point-max))
-            (setq start (point))
-            (insert formatted "\n\n")
-            (when (and attachment-id prompt-id)
-              (put-text-property start (point) 'crush-attachment-id attachment-id)
-              (put-text-property start (point) 'crush-prompt-id prompt-id))
-            (put-text-property start (point) 'crush-region-type 'attachment)
-            (when filename
-              (put-text-property start (point) 'crush-filename filename))
-            (when lines
-              (put-text-property start (point) 'crush-lines lines))))))))
+      (let ((start (if (and crush--input-start-marker
+                            (markerp crush--input-start-marker))
+                       (marker-position crush--input-start-marker)
+                     (point-max))))
+        (save-excursion
+          (goto-char start)
+          (insert formatted "\n\n")
+          (put-text-property start (point) 'crush-region-type 'user)
+          (when (and attachment-id prompt-id)
+            (put-text-property start (point) 'crush-attachment-id attachment-id)
+            (put-text-property start (point) 'crush-prompt-id prompt-id))
+          (when filename
+            (put-text-property start (point) 'crush-filename filename))
+          (when lines
+            (put-text-property start (point) 'crush-lines lines)))))))
 
 (defun crush--relative-file (file)
   "Return FILE relative to the project root or the default directory.
@@ -1395,11 +1386,15 @@ the response are tagged `tool' (and their nested raw-result span
 `tool-output') and carry the `crush-tool-call' property for wire
 resume."
   (when (and response-start (> response-end response-start))
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
       ;; Tag the response span, but never overwrite existing `tool' or
       ;; `tool-output' regions: the tool loop tags its blocks before
       ;; this runs, and the nested `tool-output' raw result is the wire
-      ;; `role: "tool"' content that must survive re-tagging.
+      ;; `role: "tool"' content that must survive re-tagging.  User
+      ;; input inside the response range (typed text before the stream
+      ;; started) is overwritten to `response': the region spans from
+      ;; `crush--response-start' onward, past the typed input.
       (let ((pos response-start))
         (while (< pos response-end)
           (let ((type (get-text-property pos 'crush-region-type))
@@ -1431,7 +1426,8 @@ resume."
 Tags the response text (including any reasoning sub-span), auto-collapses
 the reasoning fold, resets reasoning state, and inserts a fresh prompt.
 Runs in the crush buffer, which owns all response text."
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
     (save-excursion
       (goto-char (point-max))
       (newline)
@@ -1455,7 +1451,7 @@ Runs in the crush buffer, which owns all response text."
         (crush--reasoning-reset))
       ;; Generate new prompt ID BEFORE inserting marker
       (setq-local crush--prompt-id (crush--generate-id))
-      (crush--insert-prompt))
+      (crush--insert-input-separator))
     (setq-local crush-process nil)
     (setq-local crush--response-start nil)
     (setq-local crush--attachments nil)
@@ -1832,7 +1828,8 @@ for wire resume.  Returns the end position of the inserted block."
      (t
       (message "No crush process running")))
     (when interrupted
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
         (save-excursion
           (goto-char (point-max))
           (newline)
@@ -1847,7 +1844,7 @@ for wire resume.  Returns the end position of the inserted block."
                 (crush--reasoning-install-fold
                  (cons (overlay-start ov) (overlay-end ov)))))
             (crush--reasoning-reset))
-          (crush--insert-prompt)))
+          (crush--insert-input-separator)))
       (setq-local crush--tool-loop-count 0)
       (setq-local buffer-undo-list nil)
       (goto-char (point-max))
@@ -1870,7 +1867,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (crush--reasoning-reset)
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (crush--insert-prompt))
+    (crush--insert-input-separator))
   (setq-local buffer-undo-list nil))
 
 ;;; Minor mode commands
@@ -1889,7 +1886,7 @@ BEG and END are the bounds of the selection."
     (with-current-buffer buf
       (let ((attachment-id (crush--generate-id)))
         ;; Insert with text properties
-        (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id
+        (crush--append-as-user-input buf formatted attachment-id crush--prompt-id
                                      relative lines)
         ;; Update header line to show attachment count
         (crush--update-header-line)))
@@ -1913,7 +1910,7 @@ BEG and END are the bounds of the selection."
            (buf (crush--current-crush-buffer)))
       (with-current-buffer buf
         (let ((attachment-id (crush--generate-id)))
-          (crush--insert-before-prompt buf formatted attachment-id crush--prompt-id
+          (crush--append-as-user-input buf formatted attachment-id crush--prompt-id
                                        relative-file nil)
           (crush--update-header-line)))
       (switch-to-buffer-other-window buf))))

@@ -807,7 +807,7 @@ Returns the capture output."
                  (should (string= (get-text-property resp-end 'crush-response-to)
                                   old-prompt-id)))
                (goto-char (point-max))
-               (search-backward "crush> ")
+               (search-backward "---")
                (should (not (string= crush--prompt-id old-prompt-id)))))))
       (crush-test--cleanup))))
 
@@ -1036,7 +1036,7 @@ messages array is [system, prior-user, prior-assistant, current]."
                             (sit-for 0.02))))
                       ;; Turn 2: fresh prompt, send "second".
                       (setq-local crush--prompt-id (crush--generate-id))
-                      (crush--insert-prompt)
+                      (crush--insert-input-separator)
                       (goto-char (point-max))
                       (newline)
                       (insert "second")
@@ -1325,7 +1325,7 @@ The SSE state carries them and the parser reports them."
 
 (ert-deftest crush-test/hyper-wire-reasoning-tool-no-prompt-swallow ()
   "Reasoning followed by tool_calls (no content) must not swallow the next prompt.
-The reasoning overlay's rear-advance must not eat the `crush> ' prompt
+The reasoning overlay's rear-advance must not eat the input separator
 inserted at finalization.  This reproduces the bug where a reasoning-only
 stream (reasoning + tool_calls, no content delta) leaves the overlay
 un-frozen, so its advancing end marker hides the next prompt under
@@ -1363,7 +1363,7 @@ un-frozen, so its advancing end marker hides the next prompt under
                (should (search-forward "think step hidden" nil t))
                ;; The new prompt must be visible (not invisible).
                (goto-char (point-max))
-               (should (search-backward "crush> " nil t))
+               (should (search-backward "---" nil t))
                (let ((prompt-pos (point)))
                  (should (not (get-char-property prompt-pos 'invisible)))
                  ;; The fold overlay must not cover the prompt.
@@ -1474,8 +1474,8 @@ the cap, insert a final prompt, and stop sending requests."
                           (accept-process-output nil 0.1) (sit-for 0.02)
                           (setq found (save-excursion
                                         (goto-char (point-min))
-                                        (search-forward "crush> " nil t)
-                                        (search-forward "crush> " nil t))))
+                                        (search-forward "---" nil t)
+                                        (search-forward "---" nil t))))
                         (should found)))))))
             ;; Should have sent exactly crush-tool-loop-max + 1 requests
             ;; (initial + 2 tool-loop rounds), then finalized.

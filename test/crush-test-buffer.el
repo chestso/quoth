@@ -130,7 +130,107 @@ a single `content' delta.  Runs in the crush buffer."
                              expected-dir))))
       (crush-test--cleanup))))
 
-;;; 3. Prompt region management
+;;; 3. Input separator line management
+
+;;; A frozen markdown horizontal divider (`---`) replaces the old
+;;; `crush> ' prompt marker.  `crush--prompt-start-marker' sits at the
+;;; divider's start; `crush--input-start-marker' sits right after the
+;;; divider's trailing blank line, where the editable input region begins.
+;;; The divider is tagged `crush-region-type' `separator' so the header
+;;; label is honest: untagged input space reports nil, never `user'.
+
+(ert-deftest crush-test/input-separator-inserted-on-init ()
+  "A fresh buffer starts with the `---' divider, not `crush> '."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (looking-at "---\n\n"))
+          (should-not (save-excursion (search-forward "crush> " nil t)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/input-separator-is-frozen ()
+  "The divider line is read-only previous content: typing into it errors."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (get-char-property (point) 'read-only))
+          (should-error (insert-and-inherit "X") :type 'text-read-only)))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/input-separator-edge-is-editable ()
+  "The input area right after the divider's blank line stays editable."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (should-not (get-char-property (point) 'read-only))
+          (insert-and-inherit "hello")))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/markers-flank-the-separator ()
+  "`crush--prompt-start-marker' points at the divider, and
+`crush--input-start-marker' directly after its trailing blank line."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should crush--prompt-start-marker)
+          (should (markerp crush--prompt-start-marker))
+          (should (= (marker-position crush--prompt-start-marker) (point-min)))
+          (should crush--input-start-marker)
+          (should (markerp crush--input-start-marker))
+          (should (= (marker-position crush--input-start-marker) (point-max)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/separator-tagged-as-separator-region ()
+  "The divider carries `crush-region-type' `separator', not `user'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (eq (get-text-property (point) 'crush-region-type) 'separator))
+          (should-not (eq (get-text-property (point) 'crush-region-type) 'user))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/separator-region-label-shows-separator ()
+  "The header label at the divider reads `separator'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (string= (crush--region-label-at-point) "separator"))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/untagged-input-area-label-is-nil ()
+  "Untagged editable input space reports nil, never `user'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (should (null (crush--region-label-at-point)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/separator-has-blank-lines ()
+  "The divider is framed by blank lines: a blank line below it, and a
+blank line above it when it follows a response."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; Fresh buffer: divider then a blank line, no blank above.
+          (goto-char (point-min))
+          (should (looking-at "---\n\n"))
+          ;; After a response cycle the divider is preceded by a blank line.
+          (goto-char (point-max))
+          (newline)
+          (setq-local crush--response-start (point-marker))
+          (crush-test--simulate-facade-response "response text")
+          (goto-char (point-max))
+          (search-backward "---")
+          (should (string-match-p "\n\n---\n\n" (buffer-substring-no-properties
+                                                 (max (point-min) (- (point) 2))
+                                                 (min (point-max) (+ (point) 5)))))))
+    (crush-test--cleanup)))
 
 (ert-deftest crush-test/prompt-start-set-on-buffer-init ()
   "After `crush' creates the buffer, crush--prompt-start-marker should be set."
@@ -154,7 +254,7 @@ a single `content' delta.  Runs in the crush buffer."
           (should crush--prompt-start-marker)
           (should (markerp crush--prompt-start-marker))
           (should (= (marker-position crush--prompt-start-marker)
-                     (- (point-max) (length "crush> "))))))
+                     (- (point-max) (length "---\n\n"))))))
     (crush-test--cleanup)))
 
 ;;; 4. Input locking
@@ -331,38 +431,51 @@ a single `content' delta.  Runs in the crush buffer."
 
 (ert-deftest crush-test/region-label-prompts-and-placeholders ()
   "`crush--region-label-at-point' maps every region type to a label.
-The fresh buffer has a prompt marker at point-min with type nil, so it
-must resolve to `prompt' (pending prompt) rather than falling through
-to `plain'."
+The fresh buffer has an input divider at point-min tagged `separator',
+so point there resolves to `separator', not `user'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (string= (crush--region-label-at-point) "prompt"))))
+          (should (string= (crush--region-label-at-point) "separator"))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/region-label-in-input-without-prompt-id ()
-  "Typed input carries the prompt ID even though its region type is nil."
+(ert-deftest crush-test/user-input-tagged-as-user-region ()
+  "Text typed in the input area carries `crush-region-type' `user'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "hello world")
-          (should (null (get-text-property (- (point) 1) 'crush-region-type)))
-          (should (string= (crush--region-label-at-point) "prompt"))))
+          (should (eq (get-text-property (- (point) 1) 'crush-region-type) 'user))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/region-label-attachment ()
-  "Attachment regions resolve to `attachment'."
+(ert-deftest crush-test/region-label-in-input-without-prompt-id ()
+  "Typed input carries the user region type even though it starts at
+the input marker after the separator."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "hello world")
+          (should (eq (get-text-property (- (point) 1) 'crush-region-type) 'user))
+          (goto-char (1- (point)))
+          (should (string= (crush--region-label-at-point) "user"))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/region-label-user ()
+  "User input (typed or attached) resolves to `user'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((inhibit-read-only t))
             (insert "attach-region-text"))
           (put-text-property (- (point) 18) (point)
-                             'crush-region-type 'attachment)
+                             'crush-region-type 'user)
+          (put-text-property (- (point) 18) (point)
+                             'crush-prompt-id crush--prompt-id)
           (goto-char (- (point) 9))
-          (should (string= (crush--region-label-at-point) "attachment"))))
+          (should (string= (crush--region-label-at-point) "user"))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/region-label-response ()
@@ -371,12 +484,13 @@ to `plain'."
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((start (point-max)))
-            (let ((inhibit-read-only t))
-              (insert "response-text"))
-            (put-text-property start (point)
-                               'crush-region-type 'response))
-          (goto-char (- (point) 5))
-          (should (string= (crush--region-label-at-point) "response"))))
+            (let ((inhibit-read-only t)
+                  (inhibit-modification-hooks t))
+              (insert "response-text")
+              (put-text-property start (point)
+                                 'crush-region-type 'response))
+            (goto-char (- (point) 5))
+            (should (string= (crush--region-label-at-point) "response")))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/region-label-tool-output ()
@@ -386,22 +500,24 @@ prompt fallback, even though it carries `crush-prompt-id'."
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((start (point-max)))
-            (let ((inhibit-read-only t))
-              (insert "raw-output-text"))
-            (put-text-property start (point)
-                               'crush-region-type 'tool-output)
-            (put-text-property start (point)
-                               'crush-prompt-id crush--prompt-id))
-          (goto-char (- (point) 5))
-          (should (string= (crush--region-label-at-point) "tool-output"))))
+            (let ((inhibit-read-only t)
+                  (inhibit-modification-hooks t))
+              (insert "raw-output-text")
+              (put-text-property start (point)
+                                 'crush-region-type 'tool-output)
+              (put-text-property start (point)
+                                 'crush-prompt-id crush--prompt-id))
+            (goto-char (- (point) 5))
+            (should (string= (crush--region-label-at-point) "tool-output")))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/region-label-falls-back-to-plain ()
-  "Regions with neither a region type nor a prompt ID resolve to `plain'."
+(ert-deftest crush-test/region-label-falls-back-to-nil ()
+  "Regions with no region type resolve to nil, not a guessed label."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (narrow-to-region (point-min) (point-max))))
+          (goto-char (point-max))
+          (should (null (crush--region-label-at-point)))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/header-model-falls-back-to-hyper-default ()
@@ -441,23 +557,38 @@ at point."
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
+            (goto-char (point-max))
+            (insert "typed")
+            (goto-char (1- (point)))
             (crush--update-header-line)
             (let ((h (format "%s" header-line-format)))
               (should (string-match-p "my-model" h))
-              (should (string-match-p "region: prompt" h)))))
+              (should (string-match-p "region: user" h)))))
       (crush-test--cleanup))))
 
-;;; 19. Prompt marker has prompt-id property
+(ert-deftest crush-test/header-line-shows-dash-for-nil-region ()
+  "Untagged space renders `region: -' in the header line."
+  (let ((crush-model "my-model"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (crush--update-header-line)
+            (let ((h (format "%s" header-line-format)))
+              (should (string-match-p "region: -" h)))))
+      (crush-test--cleanup))))
+
+;;; 19. Input separator has prompt-id property
 
 (ert-deftest crush-test/prompt-marker-has-prompt-id-property ()
-  "The `crush> ' prompt marker should have crush-prompt-id text property."
+  "The input separator text should have crush-prompt-id text property."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          ;; Find the "crush> " text
+          ;; Find the separator text
           (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
-          (let ((prompt-id (get-text-property (- (point) 7) 'crush-prompt-id)))
+          (should (search-forward "---" nil t))
+          (let ((prompt-id (get-text-property (- (point) 1) 'crush-prompt-id)))
             (should prompt-id)
             (should (string= prompt-id crush--prompt-id)))))
     (crush-test--cleanup)))
@@ -489,7 +620,7 @@ at point."
               (insert "response text\n")
               ;; Tag it manually like sentinel does
               (put-text-property response-start (point) 'crush-response-to prompt-id)
-              (crush--insert-prompt))
+              (crush--insert-input-separator))
             ;; Check response text has property
             (goto-char (point-min))
             (should (search-forward "response text" nil t))
@@ -625,7 +756,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
                       'response))
           (should-not (string= crush--prompt-id old-id))
           (goto-char (point-max))
-          (search-backward "crush> ")
+          (search-backward "---")
           (should (< (marker-position response-start)
                      (point)))))
     (crush-test--cleanup)))
@@ -650,7 +781,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/org-region-type-still-set ()
-  "Attachment blocks should have crush-region-type=attachment."
+  "Attachment blocks should have crush-region-type=user (appended input)."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -661,7 +792,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
               (crush-insert-selection (point-min) (point-max)))
             (goto-char (point-min))
             (should (search-forward "Attachment:" nil t))
-            (should (eq (get-text-property (match-beginning 0) 'crush-region-type) 'attachment))))
+            (should (eq (get-text-property (match-beginning 0) 'crush-region-type) 'user))))
       (crush-test--cleanup))))
 
 ;;; 57. Debug logging - crush-debug-mode defcustom
@@ -733,14 +864,15 @@ event; the facade continuation now owns completion."
           (crush-test--simulate-facade-response "response"))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (search-forward "crush> " nil t))))
+          (should (search-forward "---" nil t))))
     (crush-test--cleanup)))
 
-;;; 64. Prompt insertion rename
+;;; 64. Input separator insertion rename
 
 (ert-deftest crush-test/insert-prompt-renamed ()
-  "Crush--insert-prompt should be defined (renamed from crush--insert-prompt-marker)."
-  (should (fboundp 'crush--insert-prompt)))
+  "Crush--insert-input-separator should be defined (renamed from
+crush--insert-prompt)."
+  (should (fboundp 'crush--insert-input-separator)))
 
 ;;; 65. Sentinel freezes previous response read-only
 
@@ -767,21 +899,29 @@ response becomes read-only previous content, blocking edits."
             (should-error (insert-and-inherit "X") :type 'text-read-only)))
       (crush-test--cleanup))))
 
-;;; 67. crush--insert-before-prompt uses crush--prompt-start-marker
+;;; 67. crush--append-as-user-input appends after the input marker
 
-(ert-deftest crush-test/insert-before-prompt-works-without-prompt-start ()
-  "Crush--insert-before-prompt should insert before crush--prompt-start-marker."
+(defun crush-test--input-area-text ()
+  "Return the editable input area text: from `crush--input-start-marker'
+to the line end."
+  (buffer-substring-no-properties
+   (marker-position crush--input-start-marker)
+   (line-end-position)))
+
+(ert-deftest crush-test/append-as-user-input-lands-in-input-area ()
+  "Crush--append-as-user-input should insert after crush--input-start-marker."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            (should crush--prompt-start-marker)
-            (let ((prompt-start (marker-position crush--prompt-start-marker)))
-              (crush--insert-before-prompt buf "INSERTED CONTENT" nil nil)
-              (goto-char (point-min))
-              (should (search-forward "INSERTED CONTENT" nil t))
-              (should (search-forward "crush> " nil t))
-              (should (> (marker-position crush--prompt-start-marker) prompt-start)))))
+            (should crush--input-start-marker)
+            (crush--append-as-user-input buf "INSERTED CONTENT" nil nil)
+            (goto-char (marker-position crush--input-start-marker))
+            (should (string-match-p "INSERTED CONTENT"
+                                    (crush-test--input-area-text)))
+            (should (eq (get-text-property (marker-position crush--input-start-marker)
+                                           'crush-region-type)
+                        'user))))
       (crush-test--cleanup))))
 
 ;;; 69. crush--after-change uses crush--prompt-start-marker
@@ -829,9 +969,9 @@ response becomes read-only previous content, blocking edits."
           (should (marker-insertion-type crush--prompt-start-marker))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/crush-prompt-face-defined ()
-  "Crush-prompt-face should be defined."
-  (should (facep 'crush-prompt-face)))
+(ert-deftest crush-test/input-separator-face-defined ()
+  "Crush-input-separator-face should be defined."
+  (should (facep 'crush-input-separator-face)))
 
 ;;; Facade delta streaming
 
@@ -1080,38 +1220,38 @@ There is no separate `crush-mode' major mode."
           (should-not (derived-mode-p 'comint-mode))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/prompt-has-crush-prompt-face ()
-  "The prompt text should have crush-prompt-face."
+(ert-deftest crush-test/separator-has-input-separator-face ()
+  "The input separator text should have crush-input-separator-face."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
+          (should (search-forward "---" nil t))
           (should (eq (get-text-property (1- (point)) 'font-lock-face)
-                      'crush-prompt-face))))
+                      'crush-input-separator-face))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/prompt-is-read-only ()
-  "The prompt text should be read-only (via overlay)."
+  "The input separator text should be read-only (via text property)."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
+          (should (search-forward "---" nil t))
           (should (get-char-property (1- (point)) 'read-only))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/clear-buffer-prompt-has-crush-properties ()
-  "After crush-clear-buffer, the new prompt should have crush properties."
+  "After crush-clear-buffer, the new separator should have crush properties."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (call-interactively #'crush-clear-buffer)
           (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
+          (should (search-forward "---" nil t))
           (should (get-char-property (match-beginning 0) 'read-only))
           (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
-                      'crush-prompt-face))
+                      'crush-input-separator-face))
           (should-not (get-text-property (match-beginning 0) 'field))))
     (crush-test--cleanup)))
 
@@ -1144,25 +1284,25 @@ There is no separate `crush-mode' major mode."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/prompt-is-read-only-via-text-property ()
-  "The prompt text should be read-only via a text property.
-Backspacing into the prompt should be blocked."
+  "The input separator text should be read-only via a text property.
+Backspacing into the separator should be blocked."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
+          (should (search-forward "---" nil t))
           (goto-char (match-beginning 0))
           (should (get-text-property (point) 'read-only))
           (should (get-char-property (point) 'read-only))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/cannot-type-into-prompt ()
-  "Typing into the read-only prompt should signal text-read-only."
+  "Typing into the read-only input separator should signal text-read-only."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
+          (should (search-forward "---" nil t))
           (goto-char (match-beginning 0))
           (should-error (insert-and-inherit "X") :type 'text-read-only)))
     (crush-test--cleanup)))
@@ -1269,7 +1409,7 @@ Backspacing into the prompt should be blocked."
           (crush-test--simulate-facade-response "response")
           (font-lock-ensure)
           (goto-char (point-min))
-          (should (search-forward "crush> " nil t))
+          (should (search-forward "---" nil t))
           (should (get-char-property (match-beginning 0) 'read-only))
           (goto-char (match-beginning 0))
           (should-error (insert-and-inherit "X") :type 'text-read-only)
@@ -1294,7 +1434,7 @@ fail to enforce read-only."
             (crush-test--simulate-facade-response "# heading")
             (font-lock-ensure)
             (goto-char (point-min))
-            (should (search-forward "crush> " nil t))
+            (should (search-forward "---" nil t))
             (goto-char (match-beginning 0))
             (should (get-text-property (point) 'read-only))
             (should-error (insert-and-inherit "X") :type 'text-read-only)
@@ -1439,7 +1579,7 @@ right after the prompt inherits `read-only' and Emacs signals
 ;;; markers, user input, responses, reasoning) and produces a list of
 ;;; message alists (not (ROLE . TEXT) conses) that the hyper provider
 ;;; re-sends.  Role tags (`crush-role') are applied by
-;;; `crush--insert-prompt' / `crush--after-change' (user) and
+;;; `crush--insert-input-separator' / `crush--after-change' (user) and
 ;;; `crush--tag-response-region' (assistant/reasoning); the builder
 ;;; groups the buffer by prompt so the pending prompt is never included.
 
@@ -1453,10 +1593,10 @@ right after the prompt inherits `read-only' and Emacs signals
 
 (defun crush-test--seed-exchange (prompt-text reply-text)
   "Seed a completed exchange in the current crush buffer.
-Types PROMPT-TEXT and simulates a
-completed exchange: response region REPLY-TEXT tagged as the turn's
-answer, then a fresh pending prompt marker.  Returns the completed
-prompt's ID."
+Types PROMPT-TEXT (which lands in the `user' region via
+`crush--after-change') and simulates a completed exchange: response
+region REPLY-TEXT tagged as the turn's answer, then a fresh input
+separator.  Returns the completed prompt's ID."
   (let ((prompt-id crush--prompt-id))
     (goto-char (point-max))
     (insert prompt-text)
@@ -1466,9 +1606,13 @@ prompt's ID."
       (insert reply-text)
       (crush--tag-response-region response-start (point) prompt-id))
     (goto-char (point-max))
-    (newline)
+    (let ((inhibit-read-only t))
+      ;; Anticipate the newline the separator insertion would leave; it
+      ;; must not become part of the user turn.
+      (when (eq (char-before (point)) ?\n)
+        (delete-region (1- (point)) (point))))
     (setq-local crush--prompt-id (crush--generate-id))
-    (crush--insert-prompt)
+    (crush--insert-input-separator)
     prompt-id))
 
 (ert-deftest crush-test/history-turns-nil-when-only-one-prompt ()
@@ -1511,9 +1655,13 @@ completed prompt's ID."
         (insert answer-text))
       (crush--tag-response-region response-start (point) prompt-id))
     (goto-char (point-max))
-    (newline)
+    (let ((inhibit-read-only t))
+      ;; Anticipate the newline the separator insertion would leave; it
+      ;; must not become part of the user turn.
+      (when (eq (char-before (point)) ?\n)
+        (delete-region (1- (point)) (point))))
     (setq-local crush--prompt-id (crush--generate-id))
-    (crush--insert-prompt)
+    (crush--insert-input-separator)
     prompt-id))
 
 (ert-deftest crush-test/answer-text-excludes-tool-blocks ()
@@ -1623,7 +1771,8 @@ tool message with `tool_call_id: unknown' so legacy buffers still replay."
           (goto-char (point-max))
           (newline)
           (let ((response-start (point)))
-            (let ((inhibit-read-only t))
+            (let ((inhibit-read-only t)
+                  (inhibit-modification-hooks t))
               (insert "**tool block**\nraw")
               (put-text-property response-start (point)
                                  'crush-region-type 'tool)
@@ -1632,8 +1781,10 @@ tool message with `tool_call_id: unknown' so legacy buffers still replay."
             (crush--tag-response-region response-start (point) crush--prompt-id))
           (goto-char (point-max))
           (newline)
+          (let ((inhibit-read-only t))
+            (delete-region (1- (point)) (point)))
           (setq-local crush--prompt-id (crush--generate-id))
-          (crush--insert-prompt)
+          (crush--insert-input-separator)
           (let* ((msgs (crush--history-turns crush--prompt-id))
                  (tool-msg (cl-find "tool" msgs :key #'crush-test--msg-role :test #'string=)))
             (should (= (length msgs) 2))
@@ -1688,6 +1839,36 @@ The response region shares the `crush-prompt-id' tag."
               (should (equal (crush-test--msg-content (cadr msgs)) "answer text"))))))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/user-turn-text-excludes-separator ()
+  "`crush--user-turn-text' returns the typed input without the frozen
+separator line."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "hello world")
+          (should (equal (crush--user-turn-text crush--prompt-id)
+                         "hello world"))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/user-turn-text-includes-attachments ()
+  "`crush--user-turn-text' returns typed input plus appended attachments.
+Attachments are appended after `crush--input-start-marker' and tagged
+`user', so extraction reads them back as part of the turn."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (insert "hello")
+            (let ((aid (crush--generate-id)))
+              (crush--append-as-user-input buf "```emacs-lisp\n(code)\n```"
+                                           aid crush--prompt-id "src/file.el" "1-3"))
+            (let ((text (crush--user-turn-text crush--prompt-id)))
+              (should (string-match-p "hello" text))
+              (should (string-match-p "(code)" text)))))
+      (crush-test--cleanup))))
+
 ;; Helper: seed an exchange whose response carries a reasoning span.
 (defun crush-test--seed-reasoning-exchange (prompt-text reasoning-text answer-text)
   "Seed an exchange whose response carries a reasoning span.
@@ -1704,12 +1885,17 @@ over the CoT, response for the answer).  Returns the prompt ID."
       ;; Tag the whole response, then re-tag the CoT span as reasoning.
       (crush--tag-response-region response-start (point) prompt-id)
       (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t)
             (rs (+ response-start (length reasoning-text))))
         (put-text-property response-start rs 'crush-region-type 'reasoning)))
     (goto-char (point-max))
-    (newline)
+    (let ((inhibit-read-only t))
+      ;; Anticipate the newline the separator insertion would leave; it
+      ;; must not become part of the user turn.
+      (when (eq (char-before (point)) ?\n)
+        (delete-region (1- (point)) (point))))
     (setq-local crush--prompt-id (crush--generate-id))
-    (crush--insert-prompt)
+    (crush--insert-input-separator)
     prompt-id))
 
 (ert-deftest crush-test/history-turns-excludes-reasoning-by-default ()

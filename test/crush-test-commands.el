@@ -274,7 +274,8 @@ already-initialized buffer and re-initialized it."
 ;;; 33. Region type tagging: attachment
 
 (ert-deftest crush-test/attachment-region-tagged-as-attachment ()
-  "Attachment blocks should be tagged with crush-region-type 'attachment."
+  "Attachment blocks should be tagged with crush-region-type 'user (they
+are appended as user input)."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -284,11 +285,11 @@ already-initialized buffer and re-initialized it."
               (insert "selected code\n")
               (setq-local buffer-file-name "/test/file.el")
               (crush-insert-selection (point-min) (point-max)))
-            ;; Check that the attachment has crush-region-type 'attachment
+            ;; Check that the attachment lands in the user input region
             (goto-char (point-min))
             (should (search-forward "Attachment:" nil t))
             (let ((region-type (get-text-property (match-beginning 0) 'crush-region-type)))
-              (should (eq region-type 'attachment)))))
+              (should (eq region-type 'user)))))
       (crush-test--cleanup))))
 
 ;;; 37. Attachment formatting: markdown fenced blocks
@@ -299,10 +300,12 @@ The block carries an Attachment header line."
   (let ((buf (crush-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
-          (let ((formatted (crush--format-selection "src/file.el" (point-min) (point-max))))
-            (should (string-match-p "\\*\\*Attachment: src/file.el (lines 1-1)\\*\\*" formatted))
-            (should (string-match-p "```emacs-lisp" formatted))
-            (should (string-match-p "```" formatted))))
+          (with-temp-buffer
+            (insert "line one\nline two\n")
+            (let ((formatted (crush--format-selection "src/file.el" (point-min) (1- (point-max)))))
+              (should (string-match-p "\\*\\*Attachment: src/file.el (lines 1-2)\\*\\*" formatted))
+              (should (string-match-p "```emacs-lisp" formatted))
+              (should (string-match-p "```" formatted)))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/format-selection-uses-relative-path ()
@@ -365,7 +368,7 @@ These live on the header line, relative to the project root."
 
 (ert-deftest crush-test/insert-filepath-emits-link ()
   "`crush-insert-filepath' inserts a markdown link attachment.
-It sets crush-region-type 'attachment and a project-root-relative path."
+It sets crush-region-type 'user and a project-root-relative path."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -377,7 +380,7 @@ It sets crush-region-type 'attachment and a project-root-relative path."
               (goto-char (point-min))
               (should (search-forward "[file.go](file.go)" nil t))
               (let ((region-type (get-text-property (match-beginning 0) 'crush-region-type)))
-                (should (eq region-type 'attachment)))
+                (should (eq region-type 'user)))
               (should (string= (get-text-property (match-beginning 0) 'crush-filename) "file.go")))))
       (crush-test--cleanup))))
 

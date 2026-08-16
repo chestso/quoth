@@ -76,7 +76,8 @@ x-crush-id) and mapping the provider protocol onto the client's
    drives the reasoning overlay.
 3. A final `[DONE]` event, or the process exiting, runs the injected
    completion (`crush-facade--finalize`), which tags the response,
-   freezes it, and inserts a fresh `crush> ` prompt. Stream errors
+   freezes it, and inserts a fresh input divider (`---`, framed by
+   blank lines). Stream errors
    surface through `:on-error` into a clickable error pane.
 
 ### Session continuity
@@ -184,15 +185,14 @@ re-assert the boundaries after markdown-mode refontifies the buffer.
 All metadata is stored as **text properties** on buffer content;
 highlighting is left to markdown-mode's native font-lock.
 
-| Text Region             | Property                                                                                                       | Value                        |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `crush> ` prompt marker | `crush-prompt-id` + `read-only`                                                                                | Unique ID for the prompt     |
-| User input after prompt | `crush-prompt-id`                                                                                              | Same ID as the prompt marker |
-| Attachment blocks       | `crush-attachment-id` + `crush-prompt-id` + `crush-region-type 'attachment` + `crush-filename` + `crush-lines` | Metadata for the attachment  |
-| Tool blocks             | `crush-region-type 'tool` + `crush-prompt-id` + `crush-response-to` + `crush-tool-call` (id/name/args)         | Displayed tool call          |
-| Tool raw result         | `crush-region-type 'tool-output` (nested) + `crush-prompt-id` + `crush-response-to`                            | Raw result sent in history   |
-| Response text           | `crush-response-to` + `crush-region-type 'response`                                                            | The prompt ID being answered |
-| Reasoning text          | `crush-region-type 'reasoning` + `crush-prompt-id` + `crush-response-to`                                       | Chain-of-thought sub-span    |
+| Text Region                      | Property                                                                                                 | Value                                              |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Input separator (`---` divider)  | `crush-prompt-id` + `crush-region-type 'separator` + `read-only`                                         | Frozen markdown divider above the input area       |
+| User input (typed + attachments) | `crush-prompt-id` + `crush-region-type 'user` + `crush-attachment-id` + `crush-filename` + `crush-lines` | Editable input; attachments appended as user input |
+| Tool blocks                      | `crush-region-type 'tool` + `crush-prompt-id` + `crush-response-to` + `crush-tool-call` (id/name/args)   | Displayed tool call                                |
+| Tool raw result                  | `crush-region-type 'tool-output` (nested) + `crush-prompt-id` + `crush-response-to`                      | Raw result sent in history                         |
+| Response text                    | `crush-response-to` + `crush-region-type 'response`                                                      | The prompt ID being answered                       |
+| Reasoning text                   | `crush-region-type 'reasoning` + `crush-prompt-id` + `crush-response-to`                                 | Chain-of-thought sub-span                          |
 
 ### History Retrieval Functions
 
