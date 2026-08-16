@@ -148,9 +148,10 @@ disallowed.  Returns nil otherwise."
 
 (defun crush-exec--truncate-output (output)
   "Cap OUTPUT at `crush-tool-max-output' chars, head/tail with an omission.
-A tail of 30% is kept on overflow so the model sees the end of long
-output; empty output renders as the literal string `no output'."
-  (let* ((text (string-trim output))
+Leading whitespace is preserved so indented output (trees, diffs,
+markdown) renders correctly; only trailing whitespace is trimmed so an
+empty result reads as `no output' and the fence is always clean."
+  (let* ((text (string-trim-right output))
          (limit crush-tool-max-output))
     (cond
      ((string-empty-p text) "no output")

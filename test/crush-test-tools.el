@@ -280,6 +280,14 @@ It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
     (should (string-prefix-p (make-string 35 ?a) truncated)))
   (should (string= (crush-exec--truncate-output "") "no output")))
 
+(ert-deftest crush-test/truncate-output-preserves-leading-whitespace ()
+  "Leading whitespace (indentation) is preserved in command output."
+  (should (string= (crush-exec--truncate-output "  indented\nnext")
+                   "  indented\nnext"))
+  (should (string= (crush-exec--truncate-output "\t\ttabbed")
+                   "\t\ttabbed"))
+  (should (string= (crush-exec--truncate-output "  \n") "no output")))
+
 ;;; 7. Tool-block buffer formatting
 
 (ert-deftest crush-test/tool-block-renders-as-markdown ()
