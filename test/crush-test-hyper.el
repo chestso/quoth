@@ -1410,9 +1410,22 @@ The second request gets a content answer and finalizes."
                             (dl2 (+ (float-time) 6)))
                         (while (and (< (float-time) dl2) (not found))
                           (accept-process-output nil 0.1) (sit-for 0.02)
+                          ;; The call id no longer renders in the header
+                          ;; (it's display noise); it lives in the
+                          ;; `crush-tool-call' text property for wire
+                          ;; resume.
                           (setq found (save-excursion
                                         (goto-char (point-min))
-                                        (search-forward "call_abc" nil t))))
+                                        (cl-loop with pos = (point-min)
+                                                 while (< pos (point-max))
+                                                 for props = (text-properties-at pos)
+                                                 thereis (and (plist-get props 'crush-tool-call)
+                                                              (string= (plist-get
+                                                                        (plist-get props 'crush-tool-call)
+                                                                        :id)
+                                                                       "call_abc"))
+                                                 do (setq pos (or (next-property-change pos)
+                                                                  (point-max)))))))
                         (should found))
                       (let ((found nil)
                             (dl3 (+ (float-time) 6)))

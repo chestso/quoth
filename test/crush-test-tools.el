@@ -323,7 +323,6 @@ output is a fenced code block tagged `text`."
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "\\*\\*🔧 exec_command\\*\\*" content))
             (should (string-match-p "ran `ls`" content))
-            (should (string-match-p "call_1" content))
             (should (string-match-p "```text\n" content))
             (should (string-match-p "```\n$" content))))
       (crush-test--cleanup))))
@@ -368,7 +367,7 @@ add extra blank lines."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-exec-command-summary-fields ()
-  "The exec_command summary renders all present metadata fields."
+  "The exec_command summary renders every metadata field, present or default."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -381,13 +380,56 @@ add extra blank lines."
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "ran `ls`" content))
             (should (string-match-p "in `/tmp`" content))
-            (should (string-match-p "7.5s" content))
-            (should (string-match-p "/bin/zsh" content))
-            (should (string-match-p "login" content))))
+            (should (string-match-p "yield 7.5s" content))
+            (should (string-match-p "shell /bin/zsh" content))
+            (should (string-match-p "login yes" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-exec-command-shows-defaults ()
+  "A bare exec_command renders all defaults: real cwd, configured yield,
+shell-file-name, and login no."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "ran `ls`" content))
+            (should (string-match-p (concat "in `" (regexp-quote
+                                                    (file-name-as-directory
+                                                     (expand-file-name default-directory)))
+                                            "`")
+                                    content))
+            (should (string-match-p "yield 10s" content))
+            (should (string-match-p (concat "shell " (regexp-quote shell-file-name))
+                                    content))
+            (should (string-match-p "login no" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-escapes-backticks-in-cmd ()
+  "Backtick runs inside the displayed cmd keep the header valid markdown."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"echo `pwd`\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            ;; Backticks inside the cmd stay literal in the header (single
+            ;; runs are not doubled); the assertion uses the exact
+            ;; rendered text `echo `pwd``.
+            (should (string-match-p (regexp-quote "ran `echo `pwd``,") content))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-write-stdin-summary ()
-  "The write_stdin summary renders session id and input."
+  "The write_stdin summary renders session id, input, and yield."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -400,7 +442,8 @@ add extra blank lines."
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "\\*\\*⌨️ write_stdin\\*\\*" content))
             (should (string-match-p "session 7" content))
-            (should (string-match-p "wrote `hello`" content))))
+            (should (string-match-p "wrote `hello`" content))
+            (should (string-match-p "yield 1s" content))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-read-only-and-tagged ()
@@ -423,8 +466,8 @@ add extra blank lines."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-minimal-write-stdin ()
-  "A write_stdin block with only a session id renders a minimal summary
-and no output fence."
+  "A write_stdin block with only a session id renders session, empty input,
+yield, and no output fence."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -434,6 +477,8 @@ and no output fence."
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "session 7" content))
+            (should (string-match-p "wrote ``" content))
+            (should (string-match-p "yield 1s" content))
             (should-not (string-match-p "```" content))))
       (crush-test--cleanup))))
 

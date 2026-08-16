@@ -1311,41 +1311,23 @@ TAB binding."
 
 (defun crush--reasoning-regions ()
   "Return the list of reasoning regions, or nil.
-When content never began, the reasoning region is the span from
-`crush--reasoning-start' to `crush--reasoning-end' (or point-max).
-When at least one content delta arrived (or a tool block re-tagged),
-the full-response span is scanned: reasoning covers the runs between
-the response start and each tool block or the content start, tool
-blocks stay `tool', and the trailing content stays `response'."
-  (if (not (markerp crush--reasoning-start))
-      nil
-    (let ((end (if (markerp crush--reasoning-end)
-                   (marker-position crush--reasoning-end)
-                 (point-max))))
-      (if (and (markerp crush--reasoning-end)
-               (< end (point-max)))
-          ;; Content already began: the reasoning span runs from the
-          ;; response start up to the first tool block or the content
-          ;; start, whichever comes first.  Everything after it stays
-          ;; `response'; tool blocks stay `tool'.
-          (let ((limit (or (when-let ((first (car (crush--tool-block-bounds))))
-                             (car first))
-                           end))
-                (pos (marker-position crush--reasoning-start)))
-            (when (< pos limit)
-              (list (cons pos limit))))
-        ;; No content yet: reasoning runs from start to the answer
-        ;; boundary (tool block or point-max).
-        (let ((list nil)
-              (pos (marker-position crush--reasoning-start)))
-          (dolist (tb (crush--tool-block-bounds))
-            (when (and (>= (car tb) pos) (< (cdr tb) (point-max)))
-              (when (< pos (car tb))
-                (setq list (cons (cons pos (car tb)) list)))
-              (setq pos (cdr tb))))
-          (when (< pos (point-max))
-            (setq list (cons (cons pos (point-max)) list)))
-          (nreverse list))))))
+The active reasoning region runs from `crush--reasoning-start' to the
+answer boundary: `crush--reasoning-end' (where a content delta froze
+the CoT) when set, else the first tool block at or after the start
+(the model went straight from reasoning to a tool call), else
+`point-max'.  Each tool-loop round gets its own region tracked by its
+own markers; the boundary is computed relative to the start, never the
+response head, so reasoning that follows an earlier round's tool
+blocks is still found after `crush--reasoning-reset'."
+  (when (markerp crush--reasoning-start)
+    (let* ((pos (marker-position crush--reasoning-start))
+           (end (if (markerp crush--reasoning-end)
+                    (marker-position crush--reasoning-end)
+                  (or (cl-loop for (bs . _be) in (crush--tool-block-bounds)
+                               when (>= bs pos) return bs)
+                      (point-max)))))
+      (when (< pos end)
+        (list (cons pos end))))))
 
 (defun crush--tool-block-bounds ()
   "Return the list of (START . END) tool blocks in the current buffer.
@@ -1388,20 +1370,24 @@ resume."
   (when (and response-start (> response-end response-start))
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t))
-      ;; Tag the response span, but never overwrite existing `tool' or
-      ;; `tool-output' regions: the tool loop tags its blocks before
-      ;; this runs, and the nested `tool-output' raw result is the wire
-      ;; `role: "tool"' content that must survive re-tagging.  User
-      ;; input inside the response range (typed text before the stream
-      ;; started) is overwritten to `response': the region spans from
-      ;; `crush--response-start' onward, past the typed input.
+      ;; Tag the response span, but never overwrite existing `tool',
+      ;; `tool-output', or `reasoning' regions: the tool loop tags its
+      ;; blocks (and their nested raw-result spans) before this runs,
+      ;; and the reasoning overlay retags its CoT span separately.
+      ;; Overwriting reasoning to `response' would make history replay
+      ;; send the CoT as plain assistant content and, worse, cause a
+      ;; bare `tool' message (tool_call_id unknown) to be emitted for
+      ;; the reasoning text.  User input inside the response range
+      ;; (typed text before the stream started) is overwritten to
+      ;; `response': the region spans from `crush--response-start'
+      ;; onward, past the typed input.
       (let ((pos response-start))
         (while (< pos response-end)
           (let ((type (get-text-property pos 'crush-region-type))
                 (run-end (or (next-single-property-change pos 'crush-region-type
                                                           nil response-end)
                              response-end)))
-            (if (memq type '(tool tool-output))
+            (if (memq type '(tool tool-output reasoning))
                 (setq pos run-end)
               (put-text-property pos run-end
                                  'crush-prompt-id prompt-id)
@@ -1667,41 +1653,77 @@ through unchanged."
                      (number-to-string (/ ms 1000.0)))))
      (t (format "%dms" ms)))))
 
+(defun crush--tool-embed-backticks (text)
+  "Return TEXT wrapped so runs of backticks never break inline code.
+Runs of two or more backticks inside TEXT (as in a shell command) would
+otherwise close an inline-code span early; each run is rendered as a
+literal doubled pair so the whole string stays a valid single-tick
+inline-code span."
+  (format "`%s`" (replace-regexp-in-string "``" "`` ``" text)))
+
+(defun crush--tool-login-requested-p (args)
+  "Return non-nil when ARGS requests a login shell.
+A pure display predicate: unlike `crush-exec--login', it never signals
+when login is disallowed by config, so the header can render
+`login yes|no' without erroring on a rejected request."
+  (let ((requested (plist-get args :login)))
+    (and requested (not (eq requested :json-false)) t)))
+
 (defun crush--tool-summary-clauses (tool args)
   "Return the ordered display clauses for TOOL and its ARGS plist.
-Each clause is a string like \"ran `ls`\", \"in `/tmp`\", \"7.5s\",
-\"/bin/zsh\", or \"login\".  Args without a display clause are skipped."
+Every parameter renders, with execution-side defaults filled in when
+the model omitted them, so the line shows what the tool actually ran:
+cmd, workdir, `yield <ms>`, `shell <name>`, and `login yes|no` for
+`exec_command`; session id, wrote/input, and `yield <ms>` for
+`write_stdin`.  A missing `cmd` (required) contributes no clause."
   (let ((clauses nil))
     (cond
      ((string= tool "exec_command")
       (when (stringp (plist-get args :cmd))
-        (push (format "ran `%s`" (plist-get args :cmd)) clauses))
-      (when (stringp (plist-get args :workdir))
-        (push (format "in `%s`" (plist-get args :workdir)) clauses))
-      (when (numberp (plist-get args :yield_time_ms))
-        (push (crush--yield-ms->human (plist-get args :yield_time_ms)) clauses))
-      (when (stringp (plist-get args :shell))
-        (push (plist-get args :shell) clauses))
-      (when (eq (plist-get args :login) t)
-        (push "login" clauses)))
+        (push (format "ran %s"
+                      (crush--tool-embed-backticks (plist-get args :cmd)))
+              clauses))
+      (push (format "in %s"
+                    (crush--tool-embed-backticks
+                     (or (plist-get args :workdir) default-directory)))
+            clauses)
+      (push (format "yield %s"
+                    (crush--yield-ms->human
+                     (crush-exec--yield-ms args crush-process-yield-ms)))
+            clauses)
+      (push (format "shell %s"
+                    (or (plist-get args :shell) shell-file-name))
+            clauses)
+      (push (format "login %s"
+                    (if (crush--tool-login-requested-p args) "yes" "no"))
+            clauses))
      ((string= tool "write_stdin")
       (when (integerp (plist-get args :session_id))
         (push (format "session %d" (plist-get args :session_id)) clauses))
-      (when (stringp (plist-get args :input))
-        (push (format "wrote `%s`" (plist-get args :input)) clauses))))
+      (push (format "wrote %s"
+                    (crush--tool-embed-backticks
+                     (or (plist-get args :input) "")))
+            clauses)
+      (push (format "yield %s"
+                    (crush--yield-ms->human
+                     (crush-exec--yield-ms args crush-process-write-yield-ms)))
+            clauses)))
     (nreverse clauses)))
 
-(defun crush--tool-header-line (tool args id)
-  "Return the single markdown header line for TOOL, ARGS, and call ID.
-The line is bold icon + tool name, then an italic summary and the call
-id, e.g. \"**🔧 exec_command** — *ran `ls` in `/tmp` 10s bash* · call_1\"."
+(defun crush--tool-header-line (tool args)
+  "Return the single markdown header line for TOOL and its ARGS plist.
+The line is bold icon + tool name, then a plain-text parameter summary
+(no inline emphasis, clauses comma-separated), e.g.
+\"**🔧 exec_command** — ran `ls` in `/tmp`, yield 10s, shell /bin/bash,
+login no\".  The tool-call id is deliberately not shown: it is display
+noise, and wire resume reads it from the `crush-tool-call' text
+property."
   (let* ((icon (or (cdr (assoc tool crush--tool-icons)) "🛠️"))
          (name (if (string= tool "write_stdin") "write_stdin" tool))
          (clauses (crush--tool-summary-clauses tool args))
          (summary (when clauses
-                    (format " — *%s*" (mapconcat #'identity clauses " "))))
-         (call (when id (format " · %s" id))))
-    (format "**%s %s**%s%s" icon name (or summary "") (or call ""))))
+                    (format " — %s" (mapconcat #'identity clauses ", ")))))
+    (format "**%s %s**%s" icon name (or summary ""))))
 
 (defun crush--ensure-blank-line ()
   "Ensure the text before point is separated from what follows by one blank line.
@@ -1750,7 +1772,7 @@ for wire resume.  Returns the end position of the inserted block."
         ;; its own line with one blank line of separation so the block
         ;; stays valid markdown (buffer, HTML, and PDF alike).
         (crush--ensure-blank-line)
-        (insert (crush--tool-header-line name args id))
+        (insert (crush--tool-header-line name args))
         (insert "\n\n")
         (let ((result (plist-get tool-calls :result)))
           (when result
@@ -1767,7 +1789,15 @@ for wire resume.  Returns the end position of the inserted block."
         (put-text-property start end 'crush-region-type 'tool)
         (put-text-property start end 'crush-prompt-id prompt-id)
         (put-text-property start end 'crush-response-to prompt-id)
-        (put-text-property start (1- end) 'crush-tool-call
+        ;; Tag the whole block (including the closing fence) so the
+        ;; wire-reconstruction walk in `crush--tool-rounds' treats it as
+        ;; one call span.  A trailing fence char left without the call
+        ;; property is itself `tool'-typed and, having no metadata, makes
+        ;; the walker fall into the legacy branch, whose raw-result bound
+        ;; (the next `crush-tool-call' change) extends to the end of the
+        ;; response and swallows every following turn as a bare `tool'
+        ;; message with `tool_call_id: unknown'.
+        (put-text-property start end 'crush-tool-call
                            (list :id id
                                  :name name
                                  :args-json (plist-get tool-calls :args-json)))

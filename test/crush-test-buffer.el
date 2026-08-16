@@ -1914,6 +1914,122 @@ dropped."
               (should (equal (crush-test--msg-content (cadr msgs)) "final answer"))))))
     (crush-test--cleanup)))
 
+;; Helper: seed an exchange with a multi-round tool loop.  Round 1
+;; streams reasoning then content then inserts a tool block; round 2
+;; streams reasoning then content.  Tagged exactly as the tool loop
+;; tags it via `crush--tag-response-region' after each round.
+(defun crush-test--seed-tool-loop-exchange (prompt-text r1-reasoning r1-content
+                                                        tool-calls r2-reasoning r2-content)
+  "Seed a two-round tool-loop exchange for PROMPT-TEXT.
+Round 1 streams R1-REASONING then R1-CONTENT then TOOL-CALLS (a list
+of plists rendered as tool blocks); round 2 streams R2-REASONING then
+R2-CONTENT.  Returns the completed prompt's ID."
+  (let ((prompt-id crush--prompt-id))
+    (goto-char (point-max))
+    (insert prompt-text)
+    (goto-char (point-max))
+    (newline)
+    (let ((response-start (point)))
+      ;; Round 1: reasoning, content, then the tool block.
+      (setq-local crush--response-start (point-marker))
+      (crush-facade--append-delta r1-reasoning 'reasoning)
+      (crush-facade--append-delta r1-content 'content)
+      (dolist (tc tool-calls)
+        (crush--tool-block-insert tc prompt-id))
+      (crush--tag-response-region (marker-position crush--response-start)
+                                  (point-max) prompt-id)
+      (crush--reasoning-reset)
+      ;; Round 2: final reasoning and content, no more tools.
+      (setq-local crush--response-start (point-marker))
+      (crush-facade--append-delta r2-reasoning 'reasoning)
+      (crush-facade--append-delta r2-content 'content)
+      (crush--tag-response-region (marker-position crush--response-start)
+                                  (point-max) prompt-id)
+      (crush--reasoning-reset))
+    (goto-char (point-max))
+    (let ((inhibit-read-only t))
+      (when (eq (char-before (point)) ?\n)
+        (delete-region (1- (point)) (point))))
+    (setq-local crush--prompt-id (crush--generate-id))
+    (crush--insert-input-separator)
+    prompt-id))
+
+(ert-deftest crush-test/tool-rounds-no-spurious-unknown-tool ()
+  "A multi-round tool exchange must not emit a bare `tool' message with
+`tool_call_id: unknown' between rounds.
+
+The trailing closing fence of a tool block is `tool'-typed but had no
+`crush-tool-call' property, so the reconstruction walker fell into the
+legacy branch and swallowed the following round's reasoning + content
+as a bogus tool result."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-tool-loop-exchange
+                     "push to remotes"
+                     "The user wants to push this to remotes."
+                     "You have two remotes: `github` and `origin`."
+                     (list (list :name "exec_command" :id "call_1"
+                                 :args-json "{\"cmd\":\"git remote -v\"}"
+                                 :result "github\tgit@github.com:thomasc1971/crush.el.git"
+                                 :exit 0))
+                     "GitHub pushed successfully."
+                     "GitHub pushed. Now to Codeberg")))
+            (let ((msgs (crush--tool-rounds id)))
+              (should (= (length msgs) 3))
+              ;; assistant(tool_calls) + tool pair, then the final
+              ;; plain assistant answer; no `unknown' tool message.
+              (should (equal (crush-test--msg-role (nth 0 msgs)) "assistant"))
+              (should (equal (crush-test--msg-role (nth 1 msgs)) "tool"))
+              (should (string= (cdr (assoc 'tool_call_id (nth 1 msgs))) "call_1"))
+              (should (equal (crush-test--msg-role (nth 2 msgs)) "assistant"))
+              (should (string-match-p "Now to Codeberg"
+                                      (crush-test--msg-content (nth 2 msgs))))
+              (should-not (cl-find "unknown" msgs
+                                   :key (lambda (m) (cdr (assoc 'tool_call_id m)))
+                                   :test #'string=))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/tool-rounds-reasoning-stays-reasoning ()
+  "A second-round reasoning span must stay tagged `reasoning', not be
+overwritten to `response' by the round's re-tag.
+
+When reasoning was overwritten, history replay folded the CoT into the
+assistant content and, combined with the fence bug, emitted it as a
+spurious tool result."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-tool-loop-exchange
+                     "push to remotes"
+                     "R1 reasoning"
+                     "R1 content"
+                     (list (list :name "exec_command" :id "call_1"
+                                 :args-json "{\"cmd\":\"git status\"}"
+                                 :result "nothing to commit" :exit 0))
+                     "R2 reasoning"
+                     "R2 final answer")))
+            (let ((msgs (crush--tool-rounds id)))
+              (should (= (length msgs) 3))
+              ;; Final assistant message must carry only the answer,
+              ;; never the CoT text.
+              (let ((final (crush-test--msg-content (nth 2 msgs))))
+                (should (string-match-p "R2 final answer" final))
+                (should-not (string-match-p "R2 reasoning" final))))
+            ;; The reasoning spans themselves must be tagged reasoning.
+            (let ((pos (point-min)))
+              (while (< pos (point-max))
+                (let ((type (get-text-property pos 'crush-region-type))
+                      (end (or (next-single-property-change pos 'crush-region-type
+                                                            nil (point-max))
+                               (point-max))))
+                  (when (eq type 'response)
+                    (should-not (string-match-p "R2 reasoning"
+                                                (buffer-substring-no-properties
+                                                 pos (min end (+ pos 40))))))
+                  (setq pos end)))))))
+    (crush-test--cleanup)))
+
 (ert-deftest crush-test/history-turns-splits-reasoning-when-enabled ()
   "With reasoning enabled the assistant message gains a reasoning_content
 field holding the CoT text."
