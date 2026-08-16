@@ -1646,6 +1646,22 @@ id, e.g. \"**🔧 exec_command** — *ran `ls` in `/tmp` 10s bash* · call_1\"."
          (call (when id (format " · %s" id))))
     (format "**%s %s**%s%s" icon name (or summary "") (or call ""))))
 
+(defun crush--ensure-blank-line ()
+  "Ensure the text before point is separated from what follows by one blank line.
+At point, count trailing newlines and insert the minimum number needed to
+leave exactly two newlines (one blank line) before the next insertion.
+Existing whitespace is never removed, and a point at `point-min' is left
+untouched."
+  (unless (bobp)
+    (let ((newlines 0))
+      (save-excursion
+        (while (and (> (point) (point-min))
+                    (eq (char-before) ?\n))
+          (backward-char)
+          (setq newlines (1+ newlines))))
+      (when (< newlines 2)
+        (insert (make-string (- 2 newlines) ?\n))))))
+
 (defun crush--tool-block-insert (tool-calls prompt-id)
   "Insert a tool-call block for TOOL-CALLS into the buffer.
 TOOL-CALLS is a plist of :name :id :args-json :result :exit.
@@ -1672,6 +1688,11 @@ for wire resume.  Returns the end position of the inserted block."
           (raw-end nil))
       (save-excursion
         (goto-char start)
+        ;; A model often ends its trailing sentence with no newline
+        ;; before emitting a tool call; make sure the header starts on
+        ;; its own line with one blank line of separation so the block
+        ;; stays valid markdown (buffer, HTML, and PDF alike).
+        (crush--ensure-blank-line)
         (insert (crush--tool-header-line name args id))
         (insert "\n\n")
         (let ((result (plist-get tool-calls :result)))

@@ -311,6 +311,45 @@ output is a fenced code block tagged `text`."
             (should (string-match-p "```\n$" content))))
       (crush-test--cleanup))))
 
+(ert-deftest crush-test/tool-block-adds-blank-line-after-bare-content ()
+  "A tool block after content with no trailing newline gains one blank
+line before the header so the block stays valid markdown."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (insert "what it does"))
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\"}"
+                 :result "Process exited with code 0\nOutput:\nAGENTS.md"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "what it does\n\n\\*\\*🔧 exec_command\\*\\*"
+                                    content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-reuses-existing-blank-line ()
+  "A tool block after content already ending in a blank line does not
+add extra blank lines."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (insert "what it does\n\n"))
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\"}"
+                 :result "Process exited with code 0\nOutput:\nAGENTS.md"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should-not (string-match-p "\n\n\n\n\\*\\*🔧" content))))
+      (crush-test--cleanup))))
+
 (ert-deftest crush-test/tool-block-exec-command-summary-fields ()
   "The exec_command summary renders all present metadata fields."
   (let ((default-directory crush-test--root))
