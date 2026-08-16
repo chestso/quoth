@@ -179,13 +179,12 @@ errors.  SESSION-UUID is the buffer's opaque session identifier; when
 sent as the x-session-id / x-session-affinity cache-affinity headers.
 The prior conversation is read from BUFFER via the facade's
 `crush--history-for', which enters the buffer itself, and re-sent as
-`user'/'assistant' messages; `crush-hyper-history-include-reasoning'
-controls whether reasoning turns are replayed, and the facade's
-`crush-hyper-history-limit' decides whether any turns exist.
-CONTINUATION, when non-nil, is a list of structured message alists
-that replace the user message — used by the tool loop to send
-follow-up requests with tool results.  The provider never touches
-buffers itself."
+message alists; `crush-hyper-history-include-reasoning' controls whether
+reasoning is replayed, and the facade's `crush-hyper-history-limit'
+decides whether history exists.  CONTINUATION, when non-nil, is a list
+of message alists (user, assistant with `tool_calls', `role: \"tool\"')
+that replace the user message — used by the tool loop to send follow-up
+requests with tool results.  The provider never touches buffers itself."
   (ignore session-id continue-p stderr)
   (let* ((history (and buffer
                        (crush--history-for buffer)))
@@ -263,7 +262,7 @@ Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
                                   :exit (cdr result))
                             blocks))))))))))
     (list (list (cons 'role "assistant")
-                (cons 'content :null)
+                (cons 'content nil)
                 (cons 'tool_calls (vconcat (nreverse tcs-list))))
           (nreverse tool-msgs)
           (nreverse blocks))))

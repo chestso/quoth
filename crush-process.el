@@ -134,19 +134,33 @@ Mirrors Codex's `derive_exec_args' (shell.rs): bash/zsh/sh use `-c'
       ('cmd
        (list shell-path "/c" command)))))
 
+(defun crush-process--spawn-env ()
+  "Return the process-environment for a spawned session.
+Disables interactive pagers and git terminal prompts so PTY reads
+never block on `Press RETURN to continue', and
+sets a dumb terminal so columnated tools degrade to plain output."
+  (append (list (concat "PAGER=" (or (executable-find "cat") "cat"))
+                "GIT_PAGER=cat"
+                "GIT_TERMINAL_PROMPT=0"
+                "MANPAGER=cat"
+                "TERM=dumb")
+          process-environment))
+
 (defun crush-process--spawn (command cwd id &optional shell login)
   "Spawn COMMAND in CWD under the nth session ID.
 SHELL is the shell binary to run the command under (nil means
 `shell-file-name'); LOGIN requests a login shell.  Returns
 (PROCESS . OUTPUT-BUFFER), or nil when the environment fails.  The
-command runs with a PTY connection and merged stdout/stderr."
+command runs with a PTY connection and merged stdout/stderr under a
+sanitized `process-environment'."
   (let* ((shell-path (or shell shell-file-name))
          (argv (crush-process--shell-args shell-path command login))
          (output-buffer (generate-new-buffer " *crush-session-output*")))
     (with-current-buffer output-buffer
       ;; The child inherits the output buffer's default-directory.
       (setq-local default-directory cwd)
-      (let ((proc (make-process
+      (let ((process-environment (crush-process--spawn-env))
+            (proc (make-process
                    :name (format "crush-exec-%d" id)
                    :buffer output-buffer
                    :command argv
@@ -229,13 +243,16 @@ reports a session id when it is nil."
 
 (defun crush-process--write-stdin (session input yield-ms)
   "Write INPUT to SESSION's stdin and read output for YIELD-MS.
-Returns (CHUNK . EXIT-OR-NIL), or nil when the process is still running."
+A literal `\\x04' run in INPUT is sent as a control-D (EOT) to close the
+session's stdin, matching the `write_stdin' tool description.  Returns
+(CHUNK . EXIT-OR-NIL), or nil when the process is still running."
   (let ((proc (crush-process-session-process session)))
     (when (and proc
                (process-live-p proc)
                (stringp input)
                (> (length input) 0))
-      (process-send-string proc input))
+      (process-send-string proc (replace-regexp-in-string
+                                 "\\\\x04" "\C-d" input t t)))
     (crush-process--yield session yield-ms)))
 
 (defun crush-process--kill (session)

@@ -64,51 +64,6 @@
   "Capture slot for `crush-test/hyper-send-injects-completion'.")
 
 ;;; 91. Hyper provider: request composition
-(ert-deftest crush-test/hyper-history-messages-tool-pair ()
-  "A tool turn carrying id/name/args emits the assistant tool_calls
-declaration followed by the tool result with the matching id, per the
-OpenAI function-calling message shape."
-  (let ((msgs (crush-openai-history-messages
-               '((user . "run ls")
-                 (tool "call_1" "bash" "{\"command\":\"ls\"}"
-                       . "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>")))))
-    (should (= (length msgs) 3))
-    ;; user
-    (should (string= (cdr (assoc 'role (nth 0 msgs))) "user"))
-    ;; assistant tool_calls declaration
-    (let ((tc-msg (nth 1 msgs)))
-      (should (string= (cdr (assoc 'role tc-msg)) "assistant"))
-      (should (eq (cdr (assoc 'content tc-msg)) nil))
-      (let ((tcs (cdr (assoc 'tool_calls tc-msg))))
-        (should (vectorp tcs))
-        (should (= (length tcs) 1))
-        (let ((tc (aref tcs 0)))
-          (should (string= (cdr (assoc 'id tc)) "call_1"))
-          (should (string= (cdr (assoc 'type tc)) "function"))
-          (let ((fn (cdr (assoc 'function tc))))
-            (should (string= (cdr (assoc 'name fn)) "bash"))
-            (should (string= (cdr (assoc 'arguments fn)) "{\"command\":\"ls\"}"))))))
-    ;; tool result with matching id
-    (let ((tool-msg (nth 2 msgs)))
-      (should (string= (cdr (assoc 'role tool-msg)) "tool"))
-      (should (string= (cdr (assoc 'tool_call_id tool-msg)) "call_1"))
-      (should (string-match-p "<command>ls</command>"
-                              (cdr (assoc 'content tool-msg)))))))
-
-(ert-deftest crush-test/hyper-history-messages-legacy-tool-fallback ()
-  "A bare (tool . text) turn without metadata keeps the legacy
-`tool_call_id: unknown' emission."
-  (let ((msgs (crush-openai-history-messages
-               '((user . "run ls")
-                 (assistant . "Listing done")
-                 (tool . "<raw>")))))
-    (should (= (length msgs) 3))
-    (let ((tool-msg (nth 2 msgs)))
-      (should (string= (cdr (assoc 'role tool-msg)) "tool"))
-      (should (string= (cdr (assoc 'tool_call_id tool-msg)) "unknown"))
-      (should (string= (cdr (assoc 'content tool-msg)) "<raw>")))))
-
-;;; 91. Hyper provider: request composition
 
 (ert-deftest crush-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
@@ -1016,11 +971,12 @@ Returns the capture output."
 ;;; `crush-hyper-history-limit' (0 = off) is the only switch.
 
 (ert-deftest crush-test/hyper-history-compose-prepends-turns ()
-  "Prior turns ride before the new user message."
+  "Prior messages (alists) ride before the new user message."
   (let ((crush-git-context nil))
     (let* ((req (crush-openai-compose-request
                  "second" nil "m"
-                 '((user . "first") (assistant . "one"))))
+                 (list (list (cons 'role "user") (cons 'content "first"))
+                       (list (cons 'role "assistant") (cons 'content "one")))))
            (msgs (alist-get 'messages req)))
       (should (= (length msgs) 4))
       (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
@@ -1030,7 +986,7 @@ Returns the capture output."
       (should (string= (crush--openai-alist-get "content" (nth 3 msgs)) "second")))))
 
 (ert-deftest crush-test/hyper-history-compose-plain-with-no-turns ()
-  "With no prior turns the request is exactly system + user.
+  "With no prior messages the request is exactly system + user.
 This covers the first prompt, or a limit of 0."
   (let ((crush-git-context nil))
     (let* ((req (crush-openai-compose-request "second" nil "m" nil))
@@ -1040,15 +996,15 @@ This covers the first prompt, or a limit of 0."
                        "second")))))
 
 (ert-deftest crush-test/hyper-history-compose-drops-junk-turns ()
-  "Unrecognized roles and empty text never reach the messages array."
-  (let* ((req (crush-openai-compose-request
-               "hi" nil "m"
-               '((user . "a") (reasoning . "hidden") (assistant . "")
-                 (user . "   "))))
-         (msgs (alist-get 'messages req)))
-    ;; system + the single meaningful user turn + new user.
-    (should (= (length msgs) 3))
-    (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "a"))))
+  "History is already message alists, so nothing is filtered here;
+the caller (crush--history-turns) is responsible for dropping junk."
+  (let ((crush-git-context nil))
+    (let* ((req (crush-openai-compose-request
+                 "hi" nil "m"
+                 (list (list (cons 'role "user") (cons 'content "a")))))
+           (msgs (alist-get 'messages req)))
+      (should (= (length msgs) 3))
+      (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "a")))))
 
 (ert-deftest crush-test/hyper-history-wire-roundtrip ()
   "A second prompt is sent with the prior user+assistant turns as history.
@@ -1242,8 +1198,8 @@ The second request is a plain [system, user]."
   "Excluded reasoning: the assistant message has only `content'."
   (let* ((req (crush-openai-compose-request
                "hello" nil "m"
-               '((user . "first")
-                 (assistant . "answer"))))
+               (list (list (cons 'role "user") (cons 'content "first"))
+                     (list (cons 'role "assistant") (cons 'content "answer")))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 4))
     (let ((a (nth 2 msgs)))
@@ -1252,12 +1208,15 @@ The second request is a plain [system, user]."
       (should-not (assoc 'reasoning_content a)))))
 
 (ert-deftest crush-test/hyper-history-compose-reasoning-wire-shape ()
-  "Included reasoning yields one assistant message.\nIt carries both `content' and `reasoning_content'; there is no\nstandalone reasoning message."
+  "Included reasoning yields one assistant message.
+It carries both `content' and `reasoning_content'; there is no
+standalone reasoning message."
   (let* ((req (crush-openai-compose-request
                "hello" nil "m"
-               '((user . "first")
-                 (assistant . "answer")
-                 (reasoning . "trace"))))
+               (list (list (cons 'role "user") (cons 'content "first"))
+                     (list (cons 'role "assistant")
+                           (cons 'content "answer")
+                           (cons 'reasoning_content "trace")))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 4))
     (let ((a (nth 2 msgs)))
@@ -1272,10 +1231,10 @@ The second request is a plain [system, user]."
                          msgs))))
 
 (ert-deftest crush-test/hyper-history-compose-reasoning-orphan-dropped ()
-  "A `reasoning' record with no preceding assistant turn is dropped."
+  "A stray `reasoning' message with no assistant is dropped by the caller;
+history arrives pre-filtered here, so the request stays system + user."
   (let* ((req (crush-openai-compose-request
-               "hello" nil "m"
-               '((reasoning . "stray"))))
+               "hello" nil "m" nil))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 2))))
 
@@ -1530,6 +1489,43 @@ the cap, insert a final prompt, and stop sending requests."
             ;; (initial + 2 tool-loop rounds), then finalized.
             (let ((requests (nth 1 result)))
               (should (= (length requests) 3)))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/hyper-tool-loop-accumulates-continuation ()
+  "Each tool-loop follow-up carries every prior tool call + result.
+When a turn spans multiple tool rounds, the wire continuation must
+accumulate, not replace, so the model sees its earlier calls."
+  (let ((default-directory crush-test--root)
+        (crush-tools-enabled t)
+        (crush-tool-loop-max 2))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (setq-local crush-active-provider
+                      (crush-make-hyper-provider
+                       :buffer (current-buffer)
+                       :working-directory default-directory
+                       :token "tok"
+                       :model "m"))
+          (let ((result
+                 (crush-test--with-hyper-server
+                  'tool-call-loop
+                  (lambda (base)
+                    (setf (crush-hyper-provider-base-url crush-active-provider) base)
+                    (goto-char (point-max))
+                    (insert "go")
+                    (crush-send-input)
+                    (let ((dl (+ (float-time) 10)))
+                      (while (and (< (float-time) dl)
+                                  (< (length (crush-get-all-prompts)) 2))
+                        (accept-process-output nil 0.1) (sit-for 0.02)))))))
+            (let ((requests (nth 1 result)))
+              (should (= (length requests) 3))
+              (let ((r1 (json-read-from-string (nth 3 (nth 1 requests))))
+                    (r2 (json-read-from-string (nth 3 (nth 2 requests)))))
+                ;; system + user + assistant + tool (round 1).
+                (should (= (length (crush--openai-alist-get "messages" r1)) 4))
+                ;; system + user + 2x assistant + 2x tool (round 2).
+                (should (= (length (crush--openai-alist-get "messages" r2)) 6))))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-tool-loop-finalizes-after-content-answer ()

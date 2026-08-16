@@ -98,6 +98,23 @@ It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
     (should (string= (crush-openai-tool-call-result call) (car result)))
     (should (= (crush-openai-tool-call-exit call) (cdr result)))))
 
+(ert-deftest crush-test/tool-dispatch-logs-call ()
+  "The dispatch boundary logs every tool call under the `tool' category.
+Executors return (RESULT . EXIT); `crush-openai-execute-tool' owns the
+debug log, so a tool is never expected to log
+itself."
+  (unwind-protect
+      (let ((crush-debug-mode t))
+        (should-not (get-buffer "*crush-debug*"))
+        (let* ((call (crush-test--tool-call "exec_command" "{\"cmd\":\"echo hi\"}"))
+               (result (crush-openai-execute-tool call)))
+          (should (integerp (cdr result)))
+          (with-current-buffer "*crush-debug*"
+            (goto-char (point-min))
+            (should (search-forward "tool: exec_command" nil t))
+            (should (search-forward "echo hi" nil t)))))
+    (crush-test--cleanup)))
+
 ;;; 2. Argument parsing
 
 (ert-deftest crush-test/tool-parse-args-valid ()

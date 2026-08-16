@@ -1436,12 +1436,20 @@ right after the prompt inherits `read-only' and Emacs signals
 
 ;;; These tests pin the contract of the facade's history extraction:
 ;;; `crush--history-turns' reads the buffer's tagged regions (prompt
-;;; markers, user input, responses, reasoning) and produces the (ROLE
-;;; . TEXT) conversation that the hyper provider re-sends.  Role tags
-;;; (`crush-role') are applied by `crush--insert-prompt' /
-;;; `crush--after-change' (user) and `crush--tag-response-region'
-;;; (assistant/reasoning); the turns builder groups the buffer by
-;;; prompt so the pending prompt is never included.
+;;; markers, user input, responses, reasoning) and produces a list of
+;;; message alists (not (ROLE . TEXT) conses) that the hyper provider
+;;; re-sends.  Role tags (`crush-role') are applied by
+;;; `crush--insert-prompt' / `crush--after-change' (user) and
+;;; `crush--tag-response-region' (assistant/reasoning); the builder
+;;; groups the buffer by prompt so the pending prompt is never included.
+
+(defun crush-test--msg-role (msg)
+  "Return the `role' of message alist MSG."
+  (cdr (assoc 'role msg)))
+
+(defun crush-test--msg-content (msg)
+  "Return the `content' of message alist MSG, or nil."
+  (cdr (assoc 'content msg)))
 
 (defun crush-test--seed-exchange (prompt-text reply-text)
   "Seed a completed exchange in the current crush buffer.
@@ -1472,15 +1480,16 @@ prompt's ID."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-excludes-pending-prompt ()
-  "The pending (current) prompt never appears in the turns.
+  "The pending (current) prompt never appears in the messages.
 It is being sent when the history is extracted."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((_completed-id (crush-test--seed-exchange "first prompt" "first reply")))
-            (should (= (length (crush--history-turns crush--prompt-id)) 2))
-            (should (equal (car (crush--history-turns crush--prompt-id))
-                           (cons 'user "first prompt"))))))
+            (let ((msgs (crush--history-turns crush--prompt-id)))
+              (should (= (length msgs) 2))
+              (should (equal (crush-test--msg-role (car msgs)) "user"))
+              (should (equal (crush-test--msg-content (car msgs)) "first prompt"))))))
     (crush-test--cleanup)))
 
 ;;; Helper: seed an exchange that carries a tool call.
@@ -1529,9 +1538,9 @@ answer text."
               (should-not (string-match-p "<output>" answer))))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/tool-turn-text-returns-raw-output ()
-  "`crush--tool-turn-text' returns the raw `<command>/<output>/<exit_code>'
-tool result for the wire, not the rendered decoration."
+(ert-deftest crush-test/tool-rounds-raw-output ()
+  "`crush--tool-rounds' emits the raw result as the tool content, not the
+rendered decoration."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1542,17 +1551,17 @@ tool result for the wire, not the rendered decoration."
                                  :args-json "{\"command\":\"ls\"}"
                                  :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
                                  :exit 0)))))
-            (let ((tool-text (crush--tool-turn-text id)))
-              (should (stringp tool-text))
-              (should (string-match-p "<command>ls</command>" tool-text))
-              (should (string-match-p "<output>" tool-text))
-              (should (string-match-p "<exit_code>0</exit_code>" tool-text))))))
+            (let* ((msgs (crush--tool-rounds id))
+                   (tool-msg (cl-find "tool" msgs :key #'crush-test--msg-role :test #'string=)))
+              (should tool-msg)
+              (should (string-match-p "<command>ls</command>" (crush-test--msg-content tool-msg)))
+              (should (string-match-p "<output>" (crush-test--msg-content tool-msg)))
+              (should (string-match-p "<exit_code>0</exit_code>" (crush-test--msg-content tool-msg)))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-tool-exchange ()
-  "A completed exchange with a tool call emits user and tool
-(raw result) turns; the assistant turn is omitted because the
-tool-call pair already covers the assistant response."
+  "A completed exchange with a tool call emits user + assistant(tool_calls)
++ tool messages, reconstructed from the buffer."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1564,20 +1573,19 @@ tool-call pair already covers the assistant response."
                                  :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
                                  :exit 0)))))
             (ignore id)
-            (let ((turns (crush--history-turns crush--prompt-id)))
-              (should (equal (nth 0 turns) (cons 'user "run ls")))
-              (should (= (length turns) 2))
-              ;; Tool turn carries (id name args . raw-output).
-              (should (eq (car (nth 1 turns)) 'tool))
+            (let ((msgs (crush--history-turns crush--prompt-id)))
+              (should (= (length msgs) 3))
+              (should (equal (crush-test--msg-role (nth 0 msgs)) "user"))
+              (should (equal (crush-test--msg-role (nth 1 msgs)) "assistant"))
+              (should (vectorp (cdr (assoc 'tool_calls (nth 1 msgs)))))
+              (should (equal (crush-test--msg-role (nth 2 msgs)) "tool"))
               (should (string-match-p "<command>ls</command>"
-                                      (nth 4 (nth 1 turns))))))))
+                                      (crush-test--msg-content (nth 2 msgs))))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-carries-tool-metadata ()
-  "The tool turn carries the call's id, name, and args from the
-`crush-tool-call' property, as a plist-style cons: (tool id name args
-. raw-output).  The assistant turn is omitted when a tool exchange
-exists."
+  "The assistant message carries the call's id, name, and args from the
+`crush-tool-call' property, and the tool result pairs with the same id."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1589,21 +1597,24 @@ exists."
                                  :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
                                  :exit 0)))))
             (ignore id)
-            (let ((turns (crush--history-turns crush--prompt-id)))
-              (should (= (length turns) 2))
-              (should (eq (car (nth 1 turns)) 'tool))
-              (should (string= (nth 1 (nth 1 turns)) "call_1"))
-              (should (string= (nth 2 (nth 1 turns)) "bash"))
-              (should (string= (nth 3 (nth 1 turns)) "{\"command\":\"ls\"}"))
-              (let ((cdr-t (nth 4 (nth 1 turns))))
-                (should (string-match-p "<command>ls</command>" cdr-t))
-                (should-not (string-match-p "tool:" cdr-t)))))))
+            (let* ((msgs (crush--history-turns crush--prompt-id))
+                   (assistant (nth 1 msgs))
+                   (tool (nth 2 msgs))
+                   (tc (aref (cdr (assoc 'tool_calls assistant)) 0)))
+              (should (= (length msgs) 3))
+              (should (string= (cdr (assoc 'id tc)) "call_1"))
+              (should (string= (cdr (assoc 'name (cdr (assoc 'function tc)))) "bash"))
+              (should (string= (cdr (assoc 'arguments (cdr (assoc 'function tc))))
+                               "{\"command\":\"ls\"}"))
+              (should (string= (cdr (assoc 'tool_call_id tool)) "call_1"))
+              (let ((content (crush-test--msg-content tool)))
+                (should (string-match-p "<command>ls</command>" content))
+                (should-not (string-match-p "tool:" content)))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-legacy-tool-fallback ()
   "A tool block without `crush-tool-call' metadata falls back to a bare
-(tool . text) turn so legacy buffers still replay.  The assistant turn
-is omitted when a tool turn exists."
+tool message with `tool_call_id: unknown' so legacy buffers still replay."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1614,10 +1625,8 @@ is omitted when a tool turn exists."
           (let ((response-start (point)))
             (let ((inhibit-read-only t))
               (insert "**tool block**\nraw")
-              (put-text-property response-start (+ response-start 6)
+              (put-text-property response-start (point)
                                  'crush-region-type 'tool)
-              (put-text-property response-start (+ response-start 14)
-                                 'crush-promp-id nil)
               (put-text-property response-start (point) 'crush-prompt-id crush--prompt-id)
               (put-text-property response-start (point) 'crush-response-to crush--prompt-id))
             (crush--tag-response-region response-start (point) crush--prompt-id))
@@ -1625,10 +1634,12 @@ is omitted when a tool turn exists."
           (newline)
           (setq-local crush--prompt-id (crush--generate-id))
           (crush--insert-prompt)
-          (let ((turns (crush--history-turns crush--prompt-id)))
-            (should (= (length turns) 2))
-            (should (eq (car (nth 1 turns)) 'tool))
-            (should (stringp (cdr (nth 1 turns)))))))
+          (let* ((msgs (crush--history-turns crush--prompt-id))
+                 (tool-msg (cl-find "tool" msgs :key #'crush-test--msg-role :test #'string=)))
+            (should (= (length msgs) 2))
+            (should tool-msg)
+            (should (string= (cdr (assoc 'tool_call_id tool-msg)) "unknown"))
+            (should (stringp (crush-test--msg-content tool-msg))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-includes-multiple-exchanges ()
@@ -1638,12 +1649,16 @@ is omitted when a tool turn exists."
         (with-current-buffer buf
           (let ((_id1 (crush-test--seed-exchange "first prompt" "first reply"))
                 (_id2 (crush-test--seed-exchange "second prompt" "second reply")))
-            (let ((turns (crush--history-turns crush--prompt-id)))
-              (should (= (length turns) 4))
-              (should (equal (nth 0 turns) (cons 'user "first prompt")))
-              (should (equal (nth 1 turns) (cons 'assistant "first reply")))
-              (should (equal (nth 2 turns) (cons 'user "second prompt")))
-              (should (equal (nth 3 turns) (cons 'assistant "second reply")))))))
+            (let ((msgs (crush--history-turns crush--prompt-id)))
+              (should (= (length msgs) 4))
+              (should (equal (crush-test--msg-role (nth 0 msgs)) "user"))
+              (should (equal (crush-test--msg-content (nth 0 msgs)) "first prompt"))
+              (should (equal (crush-test--msg-role (nth 1 msgs)) "assistant"))
+              (should (equal (crush-test--msg-content (nth 1 msgs)) "first reply"))
+              (should (equal (crush-test--msg-role (nth 2 msgs)) "user"))
+              (should (equal (crush-test--msg-content (nth 2 msgs)) "second prompt"))
+              (should (equal (crush-test--msg-role (nth 3 msgs)) "assistant"))
+              (should (equal (crush-test--msg-content (nth 3 msgs)) "second reply"))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-omits-unanswered-attachment-text ()
@@ -1654,23 +1669,23 @@ is omitted when a tool turn exists."
           (let ((id1 (crush-test--seed-exchange "first prompt" "first reply")))
             (goto-char (point-max))
             (insert "second prompt")
-            (let ((turns (crush--history-turns crush--prompt-id)))
+            (let ((msgs (crush--history-turns crush--prompt-id)))
               (ignore id1)
-              (should (= (length turns) 2))
-              (should (equal (car turns) (cons 'user "first prompt")))))))
+              (should (= (length msgs) 2))
+              (should (equal (crush-test--msg-content (car msgs)) "first prompt"))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-user-text-skips-response-region ()
-  "The user turn never leaks the assistant reply text.
+  "The user message never leaks the assistant reply text.
 The response region shares the `crush-prompt-id' tag."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((completed-id (crush-test--seed-exchange "hello" "answer text")))
-            (let ((turns (crush--history-turns crush--prompt-id)))
+            (let ((msgs (crush--history-turns crush--prompt-id)))
               (ignore completed-id)
-              (should (equal (car turns) (cons 'user "hello")))
-              (should (equal (cadr turns) (cons 'assistant "answer text")))))))
+              (should (equal (crush-test--msg-content (car msgs)) "hello"))
+              (should (equal (crush-test--msg-content (cadr msgs)) "answer text"))))))
     (crush-test--cleanup)))
 
 ;; Helper: seed an exchange whose response carries a reasoning span.
@@ -1698,7 +1713,7 @@ over the CoT, response for the answer).  Returns the prompt ID."
     prompt-id))
 
 (ert-deftest crush-test/history-turns-excludes-reasoning-by-default ()
-  "By default the assistant turn carries only the answer text.
+  "By default the assistant message carries only the answer text.
 Here `crush-hyper-history-include-reasoning' is nil, so the CoT span is
 dropped."
   (unwind-protect
@@ -1707,16 +1722,15 @@ dropped."
           (let ((id (crush-test--seed-reasoning-exchange
                      "question" "step one\nstep two" "final answer")))
             (ignore id)
-            (let ((turns (crush--history-turns crush--prompt-id)))
-              (should (= (length turns) 2))
-              (should (equal (car turns) (cons 'user "question")))
-              (should (equal (cadr turns) (cons 'assistant "final answer")))))))
+            (let ((msgs (crush--history-turns crush--prompt-id)))
+              (should (= (length msgs) 2))
+              (should (equal (crush-test--msg-content (car msgs)) "question"))
+              (should (equal (crush-test--msg-content (cadr msgs)) "final answer"))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-splits-reasoning-when-enabled ()
-  "With reasoning enabled the assistant turn is followed by a record.
-`crush-hyper-history-include-reasoning' t makes the CoT text its own
-`reasoning' turn."
+  "With reasoning enabled the assistant message gains a reasoning_content
+field holding the CoT text."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer))
             (crush-hyper-history-include-reasoning t))
@@ -1724,12 +1738,12 @@ dropped."
           (let ((id (crush-test--seed-reasoning-exchange
                      "question" "step one\nstep two" "final answer")))
             (ignore id)
-            (let ((turns (crush--history-turns crush--prompt-id)))
-              (should (= (length turns) 3))
-              (should (equal (car turns) (cons 'user "question")))
-              (should (equal (cadr turns) (cons 'assistant "final answer")))
-              (should (equal (caddr turns)
-                             (cons 'reasoning "step one\nstep two")))))))
+            (let ((msgs (crush--history-turns crush--prompt-id)))
+              (should (= (length msgs) 2))
+              (should (equal (crush-test--msg-content (car msgs)) "question"))
+              (should (equal (crush-test--msg-content (cadr msgs)) "final answer"))
+              (should (equal (cdr (assoc 'reasoning_content (cadr msgs)))
+                             "step one\nstep two"))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-limit-caps-turns ()
@@ -1740,10 +1754,10 @@ dropped."
           (with-current-buffer buf
             (let ((_id1 (crush-test--seed-exchange "first" "one")))
               (let ((_id2 (crush-test--seed-exchange "second" "two")))
-                (let ((turns (crush--history-turns crush--prompt-id)))
-                  (should (= (length turns) 2))
-                  (should (equal (car turns) (cons 'user "second")))
-                  (should (equal (cadr turns) (cons 'assistant "two"))))))))
+                (let ((msgs (crush--history-turns crush--prompt-id)))
+                  (should (= (length msgs) 2))
+                  (should (equal (crush-test--msg-content (car msgs)) "second"))
+                  (should (equal (crush-test--msg-content (cadr msgs)) "two")))))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/history-limit-zero-disables ()
@@ -1762,16 +1776,18 @@ dropped."
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((id1 (crush-test--seed-exchange "first" "reply")))
-            (let ((turns (crush--history-turns crush--prompt-id)))
-              (should (equal turns
-                             '((user . "first") (assistant . "reply")))))
+            (let ((msgs (crush--history-turns crush--prompt-id)))
+              (should (= (length msgs) 2))
+              (should (equal (crush-test--msg-content (car msgs)) "first"))
+              (should (equal (crush-test--msg-content (cadr msgs)) "reply")))
             ;; Editing a completed region is reflected immediately.
             (let ((inhibit-read-only t)
                   (rs (text-property-any (point-min) (point-max)
                                          'crush-response-to id1)))
               (delete-region rs (1+ rs)))
             (should-not (equal (crush--history-turns crush--prompt-id)
-                               '((user . "first") (assistant . "reply")))))))
+                               (list (list (cons 'role "user") (cons 'content "first"))
+                                     (list (cons 'role "assistant") (cons 'content "reply"))))))))
     (crush-test--cleanup)))
 
 ;;; 100. Undo: programmatic changes are not undoable

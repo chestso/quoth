@@ -88,7 +88,6 @@ request `login' on the tool call for it to take effect."
   :type 'boolean
   :group 'crush-tool)
 
-(declare-function crush--debug-log "crush.el" (category message))
 (declare-function crush-openai-tool-error-result "crush-openai" (message))
 (declare-function crush-openai-tool-call-args "crush-openai" (tool-call))
 (declare-function crush-process--start "crush-process" (command working-directory owner &optional shell login))
@@ -214,19 +213,9 @@ an error result with exit code -1."
                     (let* ((text (crush-exec--format-result chunk exit)))
                       (setf (crush-openai-tool-call-result tool-call) text
                             (crush-openai-tool-call-exit tool-call) exit)
-                      (crush--debug-log
-                       'tool
-                       (format "exec_command %S exit=%s output=%S"
-                               cmd exit
-                               (substring chunk 0 (min (length chunk) 200))))
                       (crush-process--kill session)
                       (cons text exit))
                   (let* ((text (crush-exec--format-running chunk id)))
-                    (crush--debug-log
-                     'tool
-                     (format "exec_command %S session=%d output=%S"
-                             cmd id
-                             (substring chunk 0 (min (length chunk) 200))))
                     (cons text nil))))))
         (error (crush-exec--error (error-message-string err) tool-call))))))
 

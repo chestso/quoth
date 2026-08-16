@@ -169,13 +169,6 @@ Buffer-local.")
   "The currently running Crush process, if any.
 Buffer-local.")
 
-(defvar-local crush--tool-continuation nil
-  "Continuation messages for an in-flight tool loop, or nil.
-A list of structured message alists (assistant with `tool_calls'
-followed by `role: \"tool\"' messages) appended to the request
-history when the tool loop sends a follow-up.  Reset to nil when
-the tool loop finishes or the buffer is cleared.")
-
 ;;; The facade stream protocol (state, progress, error pane) lives in
 ;;; `crush-stream.el'; crush.el requires and transitions it.
 
@@ -727,61 +720,70 @@ nothing remains."
         (string-trim text)))))
 
 (defun crush--history-turns (prompt-id)
-  "Return the conversation history up to (but excluding) PROMPT-ID.
-Iterate the buffer's prompts in buffer order, stopping at PROMPT-ID;
-the pending prompt is being sent and therefore never part of history.
-For each prior prompt emit (ROLE . TEXT) conses: `user'
-with the typed input and attachments, `assistant' with the streamed
-answer (reasoning excluded), `tool' with the tool-call exchange text,
-and, when `crush-hyper-history-include-reasoning' is enabled, a
-`reasoning' record carrying the CoT text.  Returns nil when PROMPT-ID
-is the first prompt in the buffer."
+  "Return the conversation history for PROMPT-ID as message alists.
+Iterate the buffer's prompts in order, stopping at PROMPT-ID (the pending
+prompt is being sent and never part of history).  Each prior exchange is
+reconstructed from the buffer's tagged regions: the user message via
+`crush--user-turn-text', the assistant/tool messages via
+`crush--tool-rounds' (which yields message alists directly).  When
+`crush-hyper-history-include-reasoning' is non-nil, the CoT text is folded
+into the exchange's trailing assistant message as `reasoning_content'.
+Returns nil when PROMPT-ID is the first prompt, or when
+`crush-hyper-history-limit' is 0.  This is a pure buffer->wire read."
   (if (and (boundp 'crush-hyper-history-limit)
            (= crush-hyper-history-limit 0))
       nil
     (let* ((prompts (crush-get-all-prompts))
            (reached-current nil)
-           (turns nil))
+           (messages nil))
       (dolist (id prompts)
         (if (string= id prompt-id)
             (setq reached-current t)
           (unless reached-current
-            (let ((user-text (crush--user-turn-text id)))
-              (when user-text
-                (push (cons 'user user-text) turns)))
-            (let ((tool-turn (crush--tool-turn id)))
-              (if tool-turn
-                  (push tool-turn turns)
-                ;; No tool turn: emit the assistant text as a plain
-                ;; message.  When a tool turn exists, the
-                ;; crush-openai-history-messages function emits the
-                ;; proper assistant(tool_calls) + tool pair instead.
-                (let ((resp-text (crush-get-response-text id)))
-                  (when resp-text
-                    (push (cons 'assistant resp-text) turns)))))
-            (when (and (boundp 'crush-hyper-history-include-reasoning)
-                       crush-hyper-history-include-reasoning)
-              (let ((reasoning-text (crush-get-reasoning-text id)))
-                (when reasoning-text
-                  (push (cons 'reasoning reasoning-text) turns)))))))
-      (let* ((limited (nreverse turns))
-             (exchanges (cl-count-if (lambda (turn) (eq (car turn) 'user))
-                                     limited)))
+            (let ((exchange nil))
+              (let ((user-text (crush--user-turn-text id)))
+                (when user-text
+                  (setq exchange
+                        (append exchange
+                                (list (list (cons 'role "user")
+                                            (cons 'content user-text)))))))
+              (let ((round-msgs (crush--tool-rounds id)))
+                (if round-msgs
+                    (setq exchange (append exchange round-msgs))
+                  (let ((resp-text (crush-get-response-text id)))
+                    (when resp-text
+                      (setq exchange
+                            (append exchange
+                                    (list (list (cons 'role "assistant")
+                                                (cons 'content resp-text)))))))))
+              (when (and (boundp 'crush-hyper-history-include-reasoning)
+                         crush-hyper-history-include-reasoning)
+                (let ((reasoning-text (crush-get-reasoning-text id)))
+                  (when (and reasoning-text (> (length reasoning-text) 0))
+                    (let ((assistant (car (last exchange))))
+                      (when (and assistant
+                                 (string= (cdr (assoc 'role assistant)) "assistant"))
+                        (setcdr (last assistant)
+                                (list (cons 'reasoning_content reasoning-text))))))))
+              (setq messages (append messages exchange))))))
+      (let* ((ordered messages)
+             (exchanges (cl-count-if (lambda (m) (string= (cdr (assoc 'role m)) "user"))
+                                     ordered)))
         (if (and (boundp 'crush-hyper-history-limit)
                  (> crush-hyper-history-limit 0)
                  (> exchanges crush-hyper-history-limit))
             (let ((to-cut (- exchanges crush-hyper-history-limit))
                   (cut 0)
                   (i 0))
-              (while (and (< i (length limited))
-                          (if (eq (car (nth i limited)) 'user)
+              (while (and (< i (length ordered))
+                          (if (string= (cdr (assoc 'role (nth i ordered))) "user")
                               (< cut to-cut)
                             t))
-                (when (eq (car (nth i limited)) 'user)
+                (when (string= (cdr (assoc 'role (nth i ordered))) "user")
                   (setq cut (1+ cut)))
                 (setq i (1+ i)))
-              (seq-subseq limited i))
-          limited)))))
+              (seq-subseq ordered i))
+          ordered)))))
 
 (defun crush--history-for (buffer)
   "Return BUFFER's history without its pending prompt.
@@ -792,74 +794,137 @@ keeps the provider buffer-free."
   (with-current-buffer buffer
     (crush--history-turns crush--prompt-id)))
 
-(defun crush--tool-turn-text (prompt-id)
-  "Return the tool-call exchange text for PROMPT-ID, or nil.
-The raw tool result (the nested `crush-region-type' `tool-output'
-span) within the response region for PROMPT-ID, falling back to the
-decorated `tool' span for buffers created before the nested region
-existed.  Returns nil when no tool calls were made."
-  (let ((pos (text-property-any (point-min) (point-max)
-                                'crush-response-to prompt-id)))
-    (when pos
-      (let* ((end (or (next-single-property-change pos 'crush-response-to
-                                                   nil (point-max))
-                      (point-max)))
-             (raw-pos (text-property-any pos end
-                                         'crush-region-type 'tool-output)))
-        (if raw-pos
-            ;; Raw result (the wire `role: "tool"' content).
-            (let ((raw-end (or (next-single-property-change raw-pos 'crush-region-type
-                                                            nil end)
-                               end)))
-              (let ((text (string-trim
-                           (buffer-substring-no-properties raw-pos raw-end))))
-                (when (> (length text) 0)
-                  text)))
-          ;; Fallback: pre-nested-region buffers carry only the
-          ;; decorated `tool' span.
-          (when (text-property-any pos end 'crush-region-type 'tool)
-            (let ((ts (text-property-any pos end 'crush-region-type 'tool)))
-              (let ((te (or (next-single-property-change ts 'crush-region-type
-                                                         nil end)
-                            end)))
-                (let ((text (string-trim
-                             (buffer-substring-no-properties ts te))))
-                  (when (> (length text) 0)
-                    text))))))))))
+(defun crush--tool-block-raw-result (start end)
+  "Return the raw tool result for the tool block spanning START..END.
+The nested `tool-output' span is the wire `role: \"tool\"' content;
+fall back to the trimmed block text for legacy blocks without it."
+  (let ((raw-pos (text-property-any start end 'crush-region-type 'tool-output)))
+    (string-trim
+     (buffer-substring-no-properties
+      (or raw-pos start)
+      (if raw-pos
+          (or (next-single-property-change raw-pos 'crush-region-type nil end)
+              end)
+        end)))))
 
-(defun crush--tool-call-meta (prompt-id)
-  "Return (ID NAME ARGS) for PROMPT-ID's first tool call, or nil.
-Reads the block's `crush-tool-call' text property (a plist of :id
-:name :args-json) within the response region for PROMPT-ID.  Returns
-nil when the block predates the property or no call exists."
-  (let ((pos (text-property-any (point-min) (point-max)
-                                'crush-response-to prompt-id)))
-    (when pos
-      (let ((end (or (next-single-property-change pos 'crush-response-to
-                                                  nil (point-max))
-                     (point-max))))
-        (let ((ts (text-property-any pos end
-                                     'crush-region-type 'tool)))
-          (when ts
-            (let ((plist (get-text-property ts 'crush-tool-call)))
-              (when plist
-                (list (plist-get plist :id)
-                      (plist-get plist :name)
-                      (plist-get plist :args-json))))))))))
+(defun crush--tool-call-alist (plist)
+  "Return the wire `tool_calls' element for `crush-tool-call' PLIST, or nil.
+PLIST carries :id :name :args-json; a missing id or name yields nil so a
+legacy block degrades to a bare tool message."
+  (when (and (stringp (plist-get plist :id))
+             (stringp (plist-get plist :name)))
+    (list (cons 'id (plist-get plist :id))
+          (cons 'type "function")
+          (cons 'function
+                (list (cons 'name (plist-get plist :name))
+                      (cons 'arguments (or (plist-get plist :args-json) "")))))))
 
-(defun crush--tool-turn (prompt-id)
-  "Return the tool turn for PROMPT-ID as a cons, or nil.
-When the call metadata (id/name/args) is available the turn is a
-plist-style cons `(tool ID NAME ARGS . TEXT)' carrying the raw result
-TEXT; without metadata it falls back to the legacy bare `(tool .
-TEXT)' cons.  TEXT is the raw `<command>/<output>/<exit_code>' result,
-or the decorated block for pre-nested-region buffers."
-  (let ((text (crush--tool-turn-text prompt-id)))
-    (when text
-      (let ((meta (crush--tool-call-meta prompt-id)))
-        (if meta
-            (cons 'tool (append meta (list text)))
-          (cons 'tool text))))))
+(defun crush--tool-rounds (prompt-id &optional start end)
+  "Return the assistant/tool message alists for PROMPT-ID's response.
+Walks the response region's `crush-region-type' spans in order and
+reconstructs the OpenAI messages the model produced: `response' spans
+accumulate assistant content; each `tool' span contributes an assistant
+`tool_calls' message (carrying any accumulated leading content) followed
+by its `role: \"tool\"' result.  Contiguous `tool' spans share one
+assistant message (parallel calls in a round).  Reasoning and the nested
+`tool-output' spans are skipped.  START/END bound the walk, defaulting to
+the whole response region for PROMPT-ID.  This is the single buffer->wire
+reconstruction used by both history replay and the live tool loop."
+  (let* ((start (or start
+                    (text-property-any (point-min) (point-max)
+                                       'crush-response-to prompt-id)))
+         (end (or end
+                  (and start
+                       (or (next-single-property-change start 'crush-response-to
+                                                        nil (point-max))
+                           (point-max))))))
+    (if (not start)
+        nil
+      (let ((pos start)
+            (prev nil)
+            (pending nil)        ; accumulated response text, reverse order
+            (calls nil)          ; (call-alist id raw) triples, forward order
+            (messages nil))      ; message alists, forward order
+        (cl-labels
+            ((flush-tools
+               ()
+               (when calls
+                 (let* ((text (string-trim (apply #'concat (nreverse pending))))
+                        (content (and (> (length text) 0) text))
+                        (tcs (vconcat (mapcar #'car calls))))
+                   (setq messages
+                         (append messages
+                                 (list (append
+                                        (list (cons 'role "assistant")
+                                              (cons 'content content))
+                                        (list (cons 'tool_calls tcs))))))
+                   (dolist (entry calls)
+                     (setq messages
+                           (append messages
+                                   (list (list (cons 'role "tool")
+                                               (cons 'tool_call_id (nth 1 entry))
+                                               (cons 'content (nth 2 entry)))))))
+                   (setq calls nil
+                         pending nil)))))
+          (while (< pos end)
+            (let* ((call-plist (get-text-property pos 'crush-tool-call))
+                   (call-end (or (next-single-property-change pos 'crush-tool-call
+                                                              nil end)
+                                 end))
+                   (type (get-text-property pos 'crush-region-type))
+                   (region-end (or (next-single-property-change pos 'crush-region-type
+                                                                nil end)
+                                   end)))
+              (cond
+               ;; A tool block: `crush-tool-call' spans it contiguously, even
+               ;; though the nested `tool-output' span splits region-type.  A
+               ;; legacy block has `tool' type but no `crush-tool-call' span.
+               ((or call-plist (eq type 'tool))
+                (if (crush--tool-call-alist call-plist)
+                    ;; One tool call per assistant message, preserving round
+                    ;; boundaries (no merging of sequential rounds).
+                    (progn
+                      (setq calls
+                            (list (list (crush--tool-call-alist call-plist)
+                                        (plist-get call-plist :id)
+                                        (crush--tool-block-raw-result pos call-end))))
+                      (flush-tools))
+                  ;; Legacy or metadata-less block: emit a bare tool message
+                  ;; only when it carries real result text.
+                  (let ((raw (crush--tool-block-raw-result pos call-end)))
+                    (when (> (length raw) 0)
+                      (flush-tools)
+                      (setq messages
+                            (append messages
+                                    (list (list (cons 'role "tool")
+                                                (cons 'tool_call_id "unknown")
+                                                (cons 'content raw))))))))
+                (setq pos (if call-plist call-end region-end)))
+               ;; Assistant content span.
+               ((eq type 'response)
+                (let ((run-end (min region-end call-end)))
+                  (setq pending (cons (buffer-substring-no-properties pos run-end)
+                                      pending))
+                  (setq pos run-end)))
+               ;; Reasoning, nested tool-output, or anything else: skip.
+               (t
+                (setq pos (min region-end call-end)))))
+            ;; A tool block ended exactly where the next span begins; guard
+            ;; against a zero-length advance.
+            (when (and prev (= pos prev))
+              (setq pos (min end (1+ pos))))
+            (setq prev pos))
+          (flush-tools)
+          ;; Trailing assistant content after the last tool run is a plain
+          ;; answer with no tool_calls.
+          (when pending
+            (let ((text (string-trim (apply #'concat (nreverse pending)))))
+              (when (> (length text) 0)
+                (setq messages
+                      (append messages
+                              (list (list (cons 'role "assistant")
+                                          (cons 'content text))))))))
+          messages)))))
 
 (defun crush--install-font-lock-guard (&optional enable)
   "Protect read-only boundaries from font-lock in the current buffer.
@@ -928,7 +993,6 @@ buffer-local and never leaves via the network; only the hash is sent."
       (setq-local crush--input-start-marker nil)
       (setq-local crush--input-ring nil)
       (setq-local crush--input-ring-index 0)
-      (setq-local crush--tool-continuation nil)
       (setq-local crush--tool-loop-count 0)
       (crush-chat-mode 1)
       (crush--install-font-lock-guard t)
@@ -1395,7 +1459,6 @@ Runs in the crush buffer, which owns all response text."
     (setq-local crush-process nil)
     (setq-local crush--response-start nil)
     (setq-local crush--attachments nil)
-    (setq-local crush--tool-continuation nil)
     (setq-local crush--tool-loop-count 0)
     (crush--input-ring-write)
     (crush--update-header-line)
@@ -1428,14 +1491,13 @@ provider's completion action invokes this."
   "Execute pending tool calls and send a follow-up request.
 Extracts tool calls from the transport's SSE state, executes them
 via `crush-provider--tool-results', inserts tool blocks into the
-buffer, and sends a follow-up request with the continuation
-messages.  Loops up to `crush-tool-loop-max' rounds; when the cap
-is hit or no tool calls come back, finalizes via
-`crush-facade--close-response'."
+buffer, then reconstructs the follow-up continuation from the buffer's
+tagged regions via `crush--tool-rounds' (no in-memory cache).  Loops up
+to `crush-tool-loop-max' rounds; when the cap is hit or no tool calls
+come back, finalizes via `crush-facade--close-response'."
   (if (>= crush--tool-loop-count crush-tool-loop-max)
       (progn
         (setq-local crush--tool-loop-count 0)
-        (setq-local crush--tool-continuation nil)
         (crush-facade--stream-transition 'done 1)
         (let ((response-start (when (markerp crush--response-start)
                                 (marker-position crush--response-start)))
@@ -1445,8 +1507,6 @@ is hit or no tool calls come back, finalizes via
                         crush-active-provider crush-process))
            (result (crush-provider--tool-results
                     crush-active-provider tool-calls))
-           (assistant-msg (nth 0 result))
-           (tool-msgs (nth 1 result))
            (blocks (nth 2 result))
            (prompt-id crush--prompt-id)
            (buf (current-buffer)))
@@ -1457,51 +1517,52 @@ is hit or no tool calls come back, finalizes via
             (inhibit-modification-hooks t))
         (dolist (block blocks)
           (crush--tool-block-insert block prompt-id)))
-      ;; Build the continuation messages: user + assistant(tool_calls) +
-      ;; tool results.  The user message is extracted from the buffer
-      ;; (the current prompt's typed input), and the assistant + tool
-      ;; messages come from `crush-provider--tool-results'.
-      (let ((user-text (crush--user-turn-text prompt-id)))
-        (setq-local crush--tool-continuation
-                    (append (when (and user-text (> (length user-text) 0))
-                              (list (list (cons 'role "user")
-                                          (cons 'content user-text))))
-                            (list assistant-msg)
-                            tool-msgs)))
-      ;; Tag the response so far, then reset reasoning state before
-      ;; the follow-up stream starts a new response region.
+      ;; Tag the response so far (streamed content + the just-inserted
+      ;; tool blocks), so `crush--tool-rounds' can rebuild the wire
+      ;; continuation from the buffer alone.
       (let ((response-start (when (markerp crush--response-start)
                               (marker-position crush--response-start))))
-        (crush--tag-response-region response-start (point) prompt-id))
+        (crush--tag-response-region response-start (point-max) prompt-id))
       (crush--reasoning-reset)
-      ;; Clear the old process and set up for the follow-up.
-      (setq-local crush-process nil)
-      (setq-local crush--response-start (point-marker))
-      (crush-facade--stream-transition 'active 2)
-      (let ((real-proc (crush-provider-send-prompt
-                        crush-active-provider ""
-                        :context nil
-                        :session-id crush--session
-                        :session-uuid crush--session-uuid
-                        :continue-p crush--continue
-                        :completion (lambda ()
+      ;; Reconstruct the continuation: the current prompt's user message
+      ;; followed by every assistant(tool_calls)/tool exchange so far,
+      ;; walking the whole response region for this prompt so prior rounds
+      ;; are included.
+      (let* ((user-msg (let ((text (crush--user-turn-text prompt-id)))
+                         (and text
+                              (> (length text) 0)
+                              (list (cons 'role "user")
+                                    (cons 'content text)))))
+             (continuation (append (and user-msg (list user-msg))
+                                   (crush--tool-rounds prompt-id))))
+        ;; Clear the old process and set up for the follow-up.
+        (setq-local crush-process nil)
+        (setq-local crush--response-start (point-marker))
+        (crush-facade--stream-transition 'active 2)
+        (let ((real-proc (crush-provider-send-prompt
+                          crush-active-provider ""
+                          :context nil
+                          :session-id crush--session
+                          :session-uuid crush--session-uuid
+                          :continue-p crush--continue
+                          :completion (lambda ()
+                                        (when (buffer-live-p buf)
+                                          (with-current-buffer buf
+                                            (crush-facade--finalize))))
+                          :on-delta (lambda (delta kind)
                                       (when (buffer-live-p buf)
                                         (with-current-buffer buf
-                                          (crush-facade--finalize))))
-                        :on-delta (lambda (delta kind)
-                                    (when (buffer-live-p buf)
-                                      (with-current-buffer buf
-                                        (crush-facade--append-delta delta kind))))
-                        :on-error (lambda (message)
-                                    (when (buffer-live-p buf)
-                                      (with-current-buffer buf
-                                        (crush-facade--record-error message))))
-                        :buffer buf
-                        :stderr (get-buffer-create "*crush-errors*")
-                        :continuation crush--tool-continuation)))
-        (when (and real-proc (processp real-proc))
-          (set-marker (process-mark real-proc) (point-max))
-          (setq-local crush-process real-proc))))))
+                                          (crush-facade--append-delta delta kind))))
+                          :on-error (lambda (message)
+                                      (when (buffer-live-p buf)
+                                        (with-current-buffer buf
+                                          (crush-facade--record-error message))))
+                          :buffer buf
+                          :stderr (get-buffer-create "*crush-errors*")
+                          :continuation continuation)))
+          (when (and real-proc (processp real-proc))
+            (set-marker (process-mark real-proc) (point-max))
+            (setq-local crush-process real-proc)))))))
 
 ;;; Major mode commands
 
@@ -1787,7 +1848,6 @@ for wire resume.  Returns the end position of the inserted block."
                  (cons (overlay-start ov) (overlay-end ov)))))
             (crush--reasoning-reset))
           (crush--insert-prompt)))
-      (setq-local crush--tool-continuation nil)
       (setq-local crush--tool-loop-count 0)
       (setq-local buffer-undo-list nil)
       (goto-char (point-max))

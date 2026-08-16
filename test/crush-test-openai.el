@@ -193,48 +193,53 @@ the user message should include git branch, status, and commits."
           (should-not (string-match-p "<git_state>" user-content)))
       (delete-directory default-directory t))))
 
-;;; 2. History messages
+;;; 2. Request composition with history (message alists)
 
-(ert-deftest crush-test/openai-history-tool-pair ()
-  "A tool turn with id/name/args emits assistant tool_calls + tool result."
-  (let ((msgs (crush-openai-history-messages
-               '((user . "run ls")
-                 (tool "call_1" "bash" "{\"command\":\"ls\"}"
-                       . "<command>ls</command>\n<exit_code>0</exit_code>")))))
-    (should (= (length msgs) 3))
-    (should (string= (cdr (assoc 'role (nth 0 msgs))) "user"))
-    (let ((tc-msg (nth 1 msgs)))
-      (should (eq (cdr (assoc 'content tc-msg)) nil))
-      (let ((tcs (cdr (assoc 'tool_calls tc-msg))))
-        (should (vectorp tcs))
-        (let ((tc (aref tcs 0)))
-          (should (string= (cdr (assoc 'id tc)) "call_1"))
-          (should (string= (cdr (assoc 'name (cdr (assoc 'function tc))))
-                           "bash")))))
-    (let ((tool-msg (nth 2 msgs)))
-      (should (string= (cdr (assoc 'role tool-msg)) "tool"))
-      (should (string= (cdr (assoc 'tool_call_id tool-msg)) "call_1")))))
+(ert-deftest crush-test/openai-compose-history-tool-pair ()
+  "History message alists (assistant with tool_calls + tool) ride as-is."
+  (let ((history
+         (list (list (cons 'role "user") (cons 'content "run ls"))
+               (list (cons 'role "assistant")
+                     (cons 'content nil)
+                     (cons 'tool_calls
+                           (vector (list (cons 'id "call_1")
+                                         (cons 'type "function")
+                                         (cons 'function
+                                               (list (cons 'name "bash")
+                                                     (cons 'arguments "{\"command\":\"ls\"}")))))))
+               (list (cons 'role "tool")
+                     (cons 'tool_call_id "call_1")
+                     (cons 'content "<command>ls</command>\n<exit_code>0</exit_code>")))))
+    (let* ((req (crush-openai-compose-request "explain" nil "m" history))
+           (msgs (alist-get 'messages req)))
+      (should (= (length msgs) 5))   ; system + 3 history + current user
+      (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
+      (should (string= (crush--openai-alist-get "role" (nth 1 msgs)) "user"))
+      (should (string= (crush--openai-alist-get "role" (nth 2 msgs)) "assistant"))
+      (should (string= (crush--openai-alist-get "role" (nth 3 msgs)) "tool"))
+      (let ((tc-msg (nth 2 msgs)))
+        (let ((tcs (crush--openai-alist-get "tool_calls" tc-msg)))
+          (should (vectorp tcs))
+          (let ((tc (aref tcs 0)))
+            (should (string= (crush--openai-alist-get "id" tc) "call_1"))
+            (should (string= (crush--openai-alist-get "name"
+                                                      (crush--openai-alist-get "function" tc))
+                             "bash"))))))))
 
-(ert-deftest crush-test/openai-history-legacy-tool-fallback ()
-  "A bare (tool . TEXT) turn falls back to `tool_call_id: unknown'."
-  (let ((msgs (crush-openai-history-messages
-               '((user . "run ls")
-                 (tool . "<raw>")))))
-    (let ((tool-msg (car (last msgs))))
-      (should (string= (cdr (assoc 'role tool-msg)) "tool"))
-      (should (string= (cdr (assoc 'tool_call_id tool-msg)) "unknown"))
-      (should (string= (cdr (assoc 'content tool-msg)) "<raw>")))))
-
-(ert-deftest crush-test/openai-history-reasoning-folded ()
-  "A reasoning turn after an assistant turn folds into reasoning_content."
-  (let ((msgs (crush-openai-history-messages
-               '((assistant . "short answer")
-                 (reasoning . "deep chain of thought")))))
-    (should (= (length msgs) 1))
-    (let ((msg (car msgs)))
-      (should (string= (cdr (assoc 'content msg)) "short answer"))
-      (should (string= (cdr (assoc 'reasoning_content msg))
-                       "deep chain of thought")))))
+(ert-deftest crush-test/openai-compose-history-reasoning-content ()
+  "A history assistant message already carrying reasoning_content is kept."
+  (let ((history
+         (list (list (cons 'role "user") (cons 'content "q"))
+               (list (cons 'role "assistant")
+                     (cons 'content "short answer")
+                     (cons 'reasoning_content "deep chain of thought")))))
+    (let* ((req (crush-openai-compose-request "next" nil "m" history))
+           (msgs (alist-get 'messages req)))
+      (should (= (length msgs) 4))   ; system + 2 history + current user
+      (let ((a (nth 2 msgs)))
+        (should (string= (crush--openai-alist-get "content" a) "short answer"))
+        (should (string= (crush--openai-alist-get "reasoning_content" a)
+                         "deep chain of thought"))))))
 
 ;;; 3. SSE parser
 

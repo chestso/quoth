@@ -184,79 +184,22 @@ message."
 (defun crush-openai-execute-tool (tool-call)
   "Execute TOOL-CALL and return (RESULT-TEXT . EXIT-CODE).
 Looks up the tool name in `crush-openai-tool-registry'; an unknown
-tool yields an error result without spawning any process."
-  (let ((entry (assoc (crush-openai-tool-call-name tool-call)
-                      crush-openai-tool-registry)))
-    (if entry
-        (funcall (cdr entry) tool-call)
-      (crush-openai-tool-error-result
-       (format "unknown tool %S" (crush-openai-tool-call-name tool-call))))))
-
-(defun crush-openai-history-messages (turns)
-  "Build message alists from conversation history.
-TURNS is a list of (ROLE . TEXT) conses from the facade's history
-extraction (see `crush--history-turns').  `user' and `assistant'
-become messages; a `reasoning' turn immediately following an
-`assistant' turn is folded into that same assistant message as the
-`reasoning_content' field (HYPER-API.md section 3.4).  A `tool' turn
-carrying (ID NAME ARGS . TEXT) emits, per the OpenAI function-calling
-shape, the assistant `tool_calls' declaration followed by the
-`role: \"tool\"' result message with the matching `tool_call_id'; a
-bare (tool . TEXT) turn keeps the legacy `tool_call_id: \"unknown\"'.
-Any other role, and empty or whitespace-only text, is dropped.
-Returns the alists in conversation order."
-  (let ((messages nil)
-        (pending nil))
-    (dolist (turn turns)
-      (let ((role (car turn))
-            (text (cdr turn)))
-        (cond
-         ((and (eq role 'reasoning) pending)
-          (setcdr (last pending)
-                  (list (cons 'reasoning_content text))))
-         ((eq role 'tool)
-          (if (and (consp text) (not (stringp text)))
-              ;; With metadata: assistant tool_calls + tool result pair.
-              ;; TEXT is a dotted list (ID NAME ARGS . CONTENT); use
-              ;; car/cadr/caddr/cdddr (nth cannot walk a dotted tail).
-              (let ((id (car text))
-                    (name (cadr text))
-                    (args (caddr text))
-                    (content (let ((tail (cdddr text)))
-                               (if (listp tail)
-                                   (car tail)
-                                 tail))))
-                (when (and (stringp id) (stringp name))
-                  (push (list (cons 'role "assistant")
-                              (cons 'content nil)
-                              (cons 'tool_calls
-                                    (vector
-                                     (list (cons 'id id)
-                                           (cons 'type "function")
-                                           (cons 'function
-                                                 (list (cons 'name name)
-                                                       (cons 'arguments
-                                                             (or args ""))))))))
-                        messages)
-                  (push (list (cons 'role "tool")
-                              (cons 'tool_call_id id)
-                              (cons 'content (or content "")))
-                        messages)))
-            ;; Legacy: bare (tool . TEXT).
-            (push (list (cons 'role "tool")
-                        (cons 'tool_call_id "unknown")
-                        (cons 'content text))
-                  messages))
-          (setq pending nil))
-         ((and (memq role '(user assistant))
-               (stringp text)
-               (> (length (string-trim text)) 0))
-          (let ((msg (cons (cons 'role (symbol-name role))
-                           (list (cons 'content text)))))
-            (push msg messages)
-            (setq pending msg)))
-         (t (setq pending nil)))))
-    (nreverse messages)))
+tool yields an error result without spawning any process.  Logs the
+call name, args, result, and exit under the `tool' category; executors must not log themselves."
+  (let* ((name (crush-openai-tool-call-name tool-call))
+         (entry (assoc name crush-openai-tool-registry))
+         (result (if entry
+                     (funcall (cdr entry) tool-call)
+                   (crush-openai-tool-error-result
+                    (format "unknown tool %S" name)))))
+    (crush--debug-log
+     'tool
+     (format "%s %S exit=%s output=%S"
+             name
+             (crush-openai-tool-call-args tool-call)
+             (or (cdr result) "running")
+             (substring (car result) 0 (min (length (car result)) 200))))
+    result))
 
 (defun crush--git-summary (dir)
   "Return a formatted git state summary string for DIR, or nil.
@@ -295,19 +238,20 @@ git repository or if git is unavailable."
                   (mapconcat #'identity (nreverse lines) "\n")
                   "\n</git_state>"))))))
 
-(defun crush-openai-compose-request (prompt context model &optional turns continuation)
+(defun crush-openai-compose-request (prompt context model &optional history continuation)
   "Compose a chat-completions request alist for PROMPT.
 CONTEXT is optional attachment text; MODEL is the resolved model (the
 caller passes the provider's model slot, already derived from the shared
 `crush-model' defcustom).  Falls back to `crush-openai-default-model'.
-Prior (ROLE . TEXT) TURNS from the facade's history extraction ride
-between the system prompt and the new user message; with no turns the
-body carries exactly system + user (`stream: t', no tools).  History
-is disabled by the caller passing nil turns (`crush-hyper-history-limit
-0 means the facade extracts none).  CONTINUATION, when non-nil, is a
-list of structured message alists (assistant with `tool_calls'
-followed by `role: \"tool\"' messages) that replace the user message;
-used by the tool loop to send follow-up requests with tool results.
+HISTORY is a list of message alists (already reconstructed from the
+buffer by `crush--history-for'); they ride between the system prompt and
+the new user message.  With no history the body carries exactly system +
+user (`stream: t', no tools).  History is disabled by the caller passing
+nil (`crush-hyper-history-limit 0 means the facade extracts none).
+CONTINUATION, when non-nil, is a list of message alists (user, assistant
+with `tool_calls', `role: \"tool\"') that replace the user message; used
+by the tool loop to send follow-up requests with tool results.  Both
+inputs are message alists, never (ROLE . TEXT) conses.
 When `crush-tools-enabled' is non-nil (the default), the request
 announces the `bash' tool and `tool_choice: \"auto\"'.
 When `crush-git-context' is non-nil and the project is a git repo,
@@ -332,12 +276,12 @@ the current branch, status, and recent commits."
            (continuation
             (append (list (list '(role . "system")
                                 (cons 'content crush-openai-system-prompt)))
-                    (when turns (crush-openai-history-messages turns))
+                    (or history nil)
                     continuation))
-           (turns
+           (history
             (append (list (list '(role . "system")
                                 (cons 'content crush-openai-system-prompt)))
-                    (crush-openai-history-messages turns)
+                    history
                     (list (list '(role . "user")
                                 (cons 'content user-content)))))
            (t
