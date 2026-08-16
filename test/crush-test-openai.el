@@ -60,15 +60,14 @@
 
 (ert-deftest crush-test/openai-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
-  (let ((crush-git-context nil))
-    (let* ((req (crush-openai-compose-request "Hello" nil "m"))
-           (msgs (alist-get 'messages req)))
-      (should (string= (alist-get 'model req) "m"))
-      (should (eq (alist-get 'stream req) t))
-      (should (= (length msgs) 2))
-      (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
-      (should (string= (crush--openai-alist-get "role" (nth 1 msgs)) "user"))
-      (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "Hello")))))
+  (let* ((req (crush-openai-compose-request "Hello" nil "m"))
+         (msgs (alist-get 'messages req)))
+    (should (string= (alist-get 'model req) "m"))
+    (should (eq (alist-get 'stream req) t))
+    (should (= (length msgs) 2))
+    (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
+    (should (string= (crush--openai-alist-get "role" (nth 1 msgs)) "user"))
+    (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "Hello"))))
 
 (ert-deftest crush-test/openai-compose-with-context-merges-preamble ()
   "With context, the user message should carry preamble + context + prompt."
@@ -125,73 +124,6 @@ The default is non-nil, so `tool_choice' is `auto'."
     (should (= (length msgs) 3))  ; system + assistant + tool
     (should (string= (cdr (assoc 'role (nth 1 msgs))) "assistant"))
     (should (string= (cdr (assoc 'tool_call_id (nth 2 msgs))) "c1"))))
-
-;;; 1b. Git context injection
-
-(ert-deftest crush-test/openai-compose-injects-git-summary ()
-  "When `crush-git-context' is t and the project is a git repo,
-the user message should include git branch, status, and commits."
-  (let* ((default-directory (make-temp-file "crush-git-test" t))
-         (crush-git-context t))
-    (unwind-protect
-        (progn
-          (call-process "git" nil nil nil "init" default-directory)
-          (call-process "git" nil nil nil "-C" default-directory
-                        "config" "user.email" "test@crush.el")
-          (call-process "git" nil nil nil "-C" default-directory
-                        "config" "user.name" "Crush Test")
-          (let ((f (expand-file-name "README" default-directory)))
-            (write-region "hello" nil f)
-            (call-process "git" nil nil nil "-C" default-directory
-                          "add" "README")
-            (call-process "git" nil nil nil "-C" default-directory
-                          "commit" "-m" "initial commit"))
-          (let* ((req (crush-openai-compose-request "Hello" nil "m"))
-                 (user-content (crush--openai-alist-get
-                                "content"
-                                (nth 1 (alist-get 'messages req)))))
-            (should (string-match-p "<git_state>" user-content))
-            (should (string-match-p "master" user-content))
-            (should (string-match-p "Status: clean" user-content))
-            (should (string-match-p "initial commit" user-content))
-            (should (string-match-p "</git_state>" user-content))))
-      (delete-directory default-directory t))))
-
-(ert-deftest crush-test/openai-compose-omits-git-summary-when-disabled ()
-  "When `crush-git-context' is nil, no git state is injected."
-  (let* ((default-directory (make-temp-file "crush-git-test" t))
-         (crush-git-context nil))
-    (unwind-protect
-        (progn
-          (call-process "git" nil nil nil "init" default-directory)
-          (call-process "git" nil nil nil "-C" default-directory
-                        "config" "user.email" "test@crush.el")
-          (call-process "git" nil nil nil "-C" default-directory
-                        "config" "user.name" "Crush Test")
-          (let ((f (expand-file-name "README" default-directory)))
-            (write-region "hello" nil f)
-            (call-process "git" nil nil nil "-C" default-directory
-                          "add" "README")
-            (call-process "git" nil nil nil "-C" default-directory
-                          "commit" "-m" "initial commit"))
-          (let* ((req (crush-openai-compose-request "Hello" nil "m"))
-                 (user-content (crush--openai-alist-get
-                                "content"
-                                (nth 1 (alist-get 'messages req)))))
-            (should-not (string-match-p "<git_state>" user-content))))
-      (delete-directory default-directory t))))
-
-(ert-deftest crush-test/openai-compose-no-git-summary-without-repo ()
-  "When the project is not a git repo, no git state is injected."
-  (let* ((default-directory (make-temp-file "crush-nogit-test" t))
-         (crush-git-context t))
-    (unwind-protect
-        (let* ((req (crush-openai-compose-request "Hello" nil "m"))
-               (user-content (crush--openai-alist-get
-                              "content"
-                              (nth 1 (alist-get 'messages req)))))
-          (should-not (string-match-p "<git_state>" user-content)))
-      (delete-directory default-directory t))))
 
 ;;; 2. Request composition with history (message alists)
 

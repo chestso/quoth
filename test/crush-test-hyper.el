@@ -67,8 +67,7 @@
 
 (ert-deftest crush-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
-  (let ((crush-model nil)
-        (crush-git-context nil))
+  (let ((crush-model nil))
     (let* ((req (crush-openai-compose-request "Hello" nil "m"))
            (msgs (alist-get 'messages req)))
       (should (string= (alist-get 'model req) "m"))
@@ -972,46 +971,42 @@ Returns the capture output."
 
 (ert-deftest crush-test/hyper-history-compose-prepends-turns ()
   "Prior messages (alists) ride before the new user message."
-  (let ((crush-git-context nil))
-    (let* ((req (crush-openai-compose-request
-                 "second" nil "m"
-                 (list (list (cons 'role "user") (cons 'content "first"))
-                       (list (cons 'role "assistant") (cons 'content "one")))))
-           (msgs (alist-get 'messages req)))
-      (should (= (length msgs) 4))
-      (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
-      (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "first"))
-      (should (string= (crush--openai-alist-get "role" (nth 2 msgs)) "assistant"))
-      (should (string= (crush--openai-alist-get "content" (nth 2 msgs)) "one"))
-      (should (string= (crush--openai-alist-get "content" (nth 3 msgs)) "second")))))
+  (let* ((req (crush-openai-compose-request
+               "second" nil "m"
+               (list (list (cons 'role "user") (cons 'content "first"))
+                     (list (cons 'role "assistant") (cons 'content "one")))))
+         (msgs (alist-get 'messages req)))
+    (should (= (length msgs) 4))
+    (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
+    (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "first"))
+    (should (string= (crush--openai-alist-get "role" (nth 2 msgs)) "assistant"))
+    (should (string= (crush--openai-alist-get "content" (nth 2 msgs)) "one"))
+    (should (string= (crush--openai-alist-get "content" (nth 3 msgs)) "second"))))
 
 (ert-deftest crush-test/hyper-history-compose-plain-with-no-turns ()
   "With no prior messages the request is exactly system + user.
 This covers the first prompt, or a limit of 0."
-  (let ((crush-git-context nil))
-    (let* ((req (crush-openai-compose-request "second" nil "m" nil))
-           (msgs (alist-get 'messages req)))
-      (should (= (length msgs) 2))
-      (should (string= (crush--openai-alist-get "content" (nth 1 msgs))
-                       "second")))))
+  (let* ((req (crush-openai-compose-request "second" nil "m" nil))
+         (msgs (alist-get 'messages req)))
+    (should (= (length msgs) 2))
+    (should (string= (crush--openai-alist-get "content" (nth 1 msgs))
+                     "second"))))
 
 (ert-deftest crush-test/hyper-history-compose-drops-junk-turns ()
   "History is already message alists, so nothing is filtered here;
 the caller (crush--history-turns) is responsible for dropping junk."
-  (let ((crush-git-context nil))
-    (let* ((req (crush-openai-compose-request
-                 "hi" nil "m"
-                 (list (list (cons 'role "user") (cons 'content "a")))))
-           (msgs (alist-get 'messages req)))
-      (should (= (length msgs) 3))
-      (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "a")))))
+  (let* ((req (crush-openai-compose-request
+               "hi" nil "m"
+               (list (list (cons 'role "user") (cons 'content "a")))))
+         (msgs (alist-get 'messages req)))
+    (should (= (length msgs) 3))
+    (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "a"))))
 
 (ert-deftest crush-test/hyper-history-wire-roundtrip ()
   "A second prompt is sent with the prior user+assistant turns as history.
 The first request is a plain [system, user]; the second request body's
 messages array is [system, prior-user, prior-assistant, current]."
-  (let ((default-directory crush-test--root)
-        (crush-git-context nil))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
           (let ((capture
@@ -1094,8 +1089,7 @@ messages array is [system, prior-user, prior-assistant, current]."
   "Driving `crush-send-input' twice re-sends prior turns as history.
 The second request body must be [system, user \"hi\", assistant reply,
 user \"hello\"]; the first stays [system, user \"hi\"]."
-  (let ((default-directory crush-test--root)
-        (crush-git-context nil))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
           (setq-local crush-active-provider
@@ -1150,8 +1144,7 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
 (ert-deftest crush-test/hyper-history-limit-zero-disables ()
   "Setting `crush-hyper-history-limit' to 0 disables history.
 The second request is a plain [system, user]."
-  (let ((default-directory crush-test--root)
-        (crush-git-context nil))
+  (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
           (setq-local crush-active-provider
@@ -1391,7 +1384,6 @@ The first request gets tool_calls; the loop executes `echo hi', inserts
 a tool block, and sends a second request carrying the tool result.
 The second request gets a content answer and finalizes."
   (let ((default-directory crush-test--root)
-        (crush-git-context nil)
         (crush-tools-enabled t))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)

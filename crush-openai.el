@@ -113,14 +113,6 @@ same string so the gateway sees an identical client."
 (defconst crush-openai-default-model "deepseek-v4-flash"
   "Model used when the provider model slot and `crush-model' are both nil.")
 
-(defcustom crush-git-context t
-  "When non-nil, inject git branch, status, and recent commits
-into the user message so the model knows the project's current
-git state.  Only has an effect when the buffer's project root is
-a git repository."
-  :type 'boolean
-  :group 'crush)
-
 (declare-function crush--debug-log "crush.el" (category message))
 
 ;;; Tool protocol: the OpenAI function-calling shape the client speaks.
@@ -201,43 +193,6 @@ call name, args, result, and exit under the `tool' category; executors must not 
              (substring (car result) 0 (min (length (car result)) 200))))
     result))
 
-(defun crush--git-summary (dir)
-  "Return a formatted git state summary string for DIR, or nil.
-Runs `git branch --show-current', `git status --short', and
-`git log --oneline -n 3' in DIR.  Returns nil if DIR is not a
-git repository or if git is unavailable."
-  (let* ((dir (expand-file-name dir))
-         (git (executable-find "git")))
-    (when (and git
-               (eq 0 (call-process git nil nil nil
-                                   "-C" dir "rev-parse"
-                                   "--is-inside-work-tree")))
-      (let ((lines nil))
-        (let ((branch (with-temp-buffer
-                        (call-process git nil t nil
-                                      "-C" dir "branch" "--show-current")
-                        (string-trim (buffer-string)))))
-          (unless (string-empty-p branch)
-            (push (format "Current branch: %s" branch) lines)))
-        (let ((status (with-temp-buffer
-                        (call-process git nil t nil
-                                      "-C" dir "status" "--short")
-                        (string-trim (buffer-string)))))
-          (push (if (string-empty-p status)
-                    "Status: clean"
-                  (format "Status:\n%s" status))
-                lines))
-        (let ((commits (with-temp-buffer
-                         (call-process git nil t nil
-                                       "-C" dir "log" "--oneline" "-n" "3")
-                         (string-trim (buffer-string)))))
-          (unless (string-empty-p commits)
-            (push (format "Recent commits:\n%s" commits) lines)))
-        (when lines
-          (concat "<git_state>\n"
-                  (mapconcat #'identity (nreverse lines) "\n")
-                  "\n</git_state>"))))))
-
 (defun crush-openai-compose-request (prompt context model &optional history continuation)
   "Compose a chat-completions request alist for PROMPT.
 CONTEXT is optional attachment text; MODEL is the resolved model (the
@@ -253,24 +208,14 @@ with `tool_calls', `role: \"tool\"') that replace the user message; used
 by the tool loop to send follow-up requests with tool results.  Both
 inputs are message alists, never (ROLE . TEXT) conses.
 When `crush-tools-enabled' is non-nil (the default), the request
-announces the `bash' tool and `tool_choice: \"auto\"'.
-When `crush-git-context' is non-nil and the project is a git repo,
-the user message is prefixed with a `<git_state>' block containing
-the current branch, status, and recent commits."
+announces the `bash' tool and `tool_choice: \"auto\"'."
   (let* ((model (or model crush-openai-default-model))
-         (git-summary (and crush-git-context
-                           (crush--git-summary default-directory)))
          (user-content
           (if (and context (not (string-empty-p context)))
-              (concat (if git-summary
-                          (concat git-summary "\n\n")
-                        "")
-                      crush-context-preamble "\n\n"
+              (concat crush-context-preamble "\n\n"
                       context "\n\n"
                       prompt)
-            (if git-summary
-                (concat git-summary "\n\n" prompt)
-              prompt)))
+            prompt))
          (messages
           (cond
            (continuation
