@@ -89,10 +89,10 @@
                         "think"))))))
 
 (ert-deftest crush-test/reasoning-stream-moves-cursor ()
-  "Point should follow the reasoning stream to the insertion point."
+  "Point should follow the reasoning stream when cursor is at point-max."
   (crush-test--with-reasoning-process
    (lambda (_proc)
-     (goto-char (point-min))
+     (goto-char (point-max))
      (crush-facade--append-delta "think" 'reasoning)
      (should (= (point) (point-max)))
      (crush-facade--append-delta " harder" 'reasoning)

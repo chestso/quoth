@@ -638,19 +638,44 @@ region."
                    rear-nonsticky (read-only))))))
 
 (defun crush--insert-at-eof (text &optional props)
-  "Insert TEXT at point-max, leaving point after it.
-Applies PROPS (a plist of text properties) to the inserted text.
-Returns the end position.  This is the single insertion point for
-streamed response content, so the cursor always follows the growing
-response to the bottom of the buffer."
+  "Insert TEXT at point-max, applying PROPS (a plist of text properties).
+Returns the end position.  The cursor only moves to point-max if it
+was already there before insertion, allowing users to scroll back
+and read earlier content while the response grows.
+
+Also preserves window scroll position for users who have scrolled back,
+preventing auto-scroll on insertion."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t)
+        (old-point (point))
+        (old-point-max (point-max))
         (start (point-max)))
-    (goto-char (point-max))
-    (insert text)
-    (when props
-      (add-text-properties start (point) props))
-    (point)))
+    ;; Only preserve window scroll if cursor was NOT at point-max.
+    ;; When cursor is at EOF, let Emacs auto-scroll naturally.
+    (if (= old-point old-point-max)
+        ;; Cursor at EOF: advance to new point-max, let auto-scroll happen
+        (progn
+          (goto-char (point-max))
+          (insert text)
+          (when props
+            (add-text-properties start (point) props))
+          (goto-char (point))
+          (point))
+      ;; Cursor scrolled back: preserve scroll position
+      (let ((window-starts
+             (mapcar (lambda (win)
+                       (cons win (window-start win)))
+                     (get-buffer-window-list (current-buffer) nil t))))
+        (goto-char (point-max))
+        (insert text)
+        (when props
+          (add-text-properties start (point) props))
+        ;; Restore window scroll positions
+        (dolist (ws window-starts)
+          (set-window-start (car ws) (cdr ws) nil))
+        ;; Restore cursor position
+        (goto-char old-point)
+        (point)))))
 
 (defun crush-get-attachments-for-prompt (prompt-id)
   "Return list of attachment regions for PROMPT-ID.
@@ -1612,27 +1637,26 @@ come back, finalizes via `crush-facade--close-response'."
 The facade's buffer-aware consumer for streaming providers inserts at
 point-max, the growing response area, and drives the reasoning overlay:
 the first reasoning delta opens the region, later ones extend it, the
-first content delta freezes it, and the cursor moves along reasoning
-insertions while point stays put for content.  `crush--response-start'
-is never touched; it stays at the response start for finalization.
-Runs in the crush buffer (the facade's `:on-delta' closure enters it)."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t))
+first content delta freezes it.  `crush--response-start' is never touched;
+it stays at the response start for finalization.
+
+Uses `crush--insert-at-eof' for insertion, which only advances the cursor
+if it was already at point-max, allowing users to scroll back while the
+response streams in.  Runs in the crush buffer (the facade's `:on-delta'
+closure enters it)."
+  (save-excursion
+    (goto-char (point-max))
+    (pcase kind
+      ('reasoning
+       (crush--reasoning-start-region)
+       (crush--reasoning-extend-overlay))
+      ('content
+       (crush--reasoning-stop))))
+  (crush--insert-at-eof delta)
+  (when (eq kind 'reasoning)
     (save-excursion
       (goto-char (point-max))
-      (pcase kind
-        ('reasoning
-         (crush--reasoning-start-region)
-         (crush--reasoning-extend-overlay))
-        ('content
-         (crush--reasoning-stop)))
-      (insert delta)
-      (pcase kind
-        ('reasoning
-         (crush--reasoning-extend-overlay))))
-    ;; Always keep the cursor at the bottom of the response, for both
-    ;; reasoning and content deltas, so streaming reads like a terminal.
-    (goto-char (point-max))))
+      (crush--reasoning-extend-overlay))))
 
 (defun crush-facade--send (prompt context has-context)
   "Send PROMPT (with optional CONTEXT when HAS-CONTEXT) via the active provider.

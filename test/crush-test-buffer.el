@@ -1043,6 +1043,52 @@ facade; this asserts the facade's contract — insertion completes."
           (crush-facade--append-delta "works" 'content)))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/facade-delta-cursor-stays-when-scrolled-back ()
+  "When cursor is not at point-max, streaming should not move it.
+This allows users to scroll back and read earlier content while
+the response streams in."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; Set up some existing content
+          (goto-char (point-max))
+          (insert "existing content\n")
+          (setq-local crush--response-start (point-marker))
+          ;; Position cursor in the middle of existing content
+          (goto-char (point-min))
+          (search-forward "existing")
+          (let ((saved-point (point)))
+            ;; Stream in new content
+            (crush-facade--append-delta "streamed text" 'content)
+            ;; Cursor should stay where it was
+            (should (= (point) saved-point))
+            ;; New content should be at the end
+            (goto-char (point-max))
+            (should (search-backward "streamed text" nil t)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/facade-delta-cursor-follows-when-at-end ()
+  "When cursor is at point-max, streaming should advance it.
+This gives a terminal-like reading experience for users watching
+the live stream."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (setq-local crush--response-start (point-marker))
+          ;; Cursor is at point-max
+          (should (= (point) (point-max)))
+          ;; Stream in content
+          (crush-facade--append-delta "streaming text" 'content)
+          ;; Cursor should have moved to the new point-max
+          (should (= (point) (point-max)))
+          ;; Content should be visible at point
+          (should (string= (buffer-substring-no-properties
+                            (- (point) (length "streaming text"))
+                            (point))
+                           "streaming text"))))
+    (crush-test--cleanup)))
+
 ;;; Custom input ring
 
 (ert-deftest crush-test/custom-input-ring-initialized ()
