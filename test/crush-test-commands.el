@@ -302,20 +302,20 @@ The block carries an Attachment header line."
         (with-current-buffer buf
           (with-temp-buffer
             (insert "line one\nline two\n")
-            (let ((formatted (crush--format-selection "src/file.el" (point-min) (1- (point-max)))))
+            (let ((formatted (crush--format-selection "src/file.el" "src/file.el"
+                                                      (point-min) (1- (point-max)))))
               (should (string-match-p "\\*\\*Attachment: src/file.el (lines 1-2)\\*\\*" formatted))
               (should (string-match-p "```emacs-lisp" formatted))
               (should (string-match-p "```" formatted)))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/format-selection-uses-relative-path ()
-  "Attachment paths are relative to the project root (or `default-directory')."
-  (let ((buf (crush-test--fresh-buffer))
-        (crush-working-directory "/tmp/proj"))
+  "Attachment paths use the pre-resolved relative path as-is."
+  (let ((buf (crush-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
-          (setq-local default-directory "/tmp/proj/")
-          (let ((formatted (crush--format-selection "/tmp/proj/src/file.el" 1 5)))
+          (let ((formatted (crush--format-selection "/tmp/proj/src/file.el"
+                                                    "src/file.el" 1 5)))
             (should (string-match-p "src/file.el" formatted))
             (should-not (string-match-p "/tmp/proj/src" formatted))))
       (crush-test--cleanup))))
@@ -325,7 +325,7 @@ The block carries an Attachment header line."
   (let ((buf (crush-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
-          (let ((formatted (crush--format-selection nil 1 5)))
+          (let ((formatted (crush--format-selection nil nil 1 5)))
             (should (string-match-p "(no file)" formatted))))
       (crush-test--cleanup))))
 

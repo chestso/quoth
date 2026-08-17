@@ -87,9 +87,9 @@ initialization.  Should be a model name like
 ;;; Buffer-local state
 
 ;;; `crush--continue', `crush--session-uuid', `crush--session-id',
-;;; `crush--response-start', `crush--pending-context', and
-;;; `crush-process' are the shared buffer-local state owned by the
-;;; facade (defined below); providers must not touch them.
+;;; `crush--response-start', and `crush-process' are the shared
+;;; buffer-local state owned by the facade (defined below); providers
+;;; must not touch them.
 
 (defcustom crush-reasoning-preview-lines 10
   "Number of reasoning lines to show in the collapsed preview.
@@ -159,10 +159,6 @@ log.  Buffer-local.")
 (defvar crush--response-start nil
   "Marker for where response text starts.
 Set when prompt is sent, used by sentinel to tag response text.
-Buffer-local.")
-
-(defvar crush--pending-context nil
-  "Context text stashed for stdin delivery.
 Buffer-local.")
 
 (defvar crush-process nil
@@ -1022,7 +1018,6 @@ buffer-local and never leaves via the network; only the hash is sent."
       (crush--init-session-uuid)
       (setq-local crush--attachments nil)
       (setq-local crush--response-start nil)
-      (setq-local crush--pending-context nil)
       (setq-local crush-active-provider nil)
       (setq-local crush--prompt-start-marker nil)
       (setq-local crush--input-start-marker nil)
@@ -1095,9 +1090,10 @@ Resolves against `project-root' when in a project, otherwise
            (project-root proj))
          default-directory))))
 
-(defun crush--format-selection (file start end)
+(defun crush--format-selection (file relative-file start end)
   "Format the selection as a markdown fenced code block.
-FILE is the file path, START and END are the line numbers."
+FILE is the file path, RELATIVE-FILE is its pre-resolved project-relative
+path (or nil to re-resolve), START and END are the position bounds."
   (let* ((start-line (save-excursion
                        (goto-char start)
                        (line-number-at-pos)))
@@ -1105,7 +1101,7 @@ FILE is the file path, START and END are the line numbers."
                      (goto-char end)
                      (line-number-at-pos)))
          (selected-text (buffer-substring-no-properties start end))
-         (relative-file (or (crush--relative-file file) "(no file)"))
+         (relative-file (or relative-file (crush--relative-file file) "(no file)"))
          (lang (crush--lang-from-extension (file-name-nondirectory relative-file))))
     (format "**Attachment: %s (lines %d-%d)**\n\n```%s\n%s\n```"
             relative-file start-line end-line lang selected-text)))
@@ -1159,6 +1155,22 @@ reasoning.  Inert when no reasoning is active or it already ended."
 TAB / RET (and mouse-1 on GUIs, ignored harmlessly in TUI) toggle
 `crush-reasoning-toggle'.")
 
+(defun crush--insert-fold-ellipsis (prompt-id response-to)
+  "Insert the reasoning-fold ellipsis (\"\\n…\") tagged with the exchange.
+The ellipsis is real buffer text inserted inside the response region.
+Without `crush-response-to' it punctures the contiguous property run
+that `crush--tool-rounds' walks to bound the response, so
+`next-single-property-change' would stop at the fold marker and drop
+everything after it (the hidden reasoning tail and the final assistant
+summary) from history replay.  PROMPT-ID and RESPONSE-TO tag the whole
+\"\\n…\".  Returns the end position of the inserted text."
+  (insert (propertize "\n…"
+                      'keymap crush--reasoning-fold-keymap
+                      'crush-fold-mark t
+                      'crush-prompt-id prompt-id
+                      'crush-response-to response-to))
+  (point))
+
 (defun crush--reasoning-install-fold (region)
   "Install the reasoning fold on REGION (START . END) of current buffer.
 When the reasoning is `crush-reasoning-preview-lines' lines or fewer,
@@ -1198,21 +1210,8 @@ is inserted as real text carrying the toggle keymap and
               (setq preview-end (point)))
             (save-excursion
               (goto-char preview-end)
-              ;; The ellipsis is real buffer text inserted inside the
-              ;; response region.  Without `crush-response-to' it
-              ;; punctures the contiguous property run that
-              ;; `crush--tool-rounds' walks to bound the response, so
-              ;; `next-single-property-change' would stop at the fold
-              ;; marker and drop everything after it (the hidden
-              ;; reasoning tail and the final assistant summary) from
-              ;; history replay.  Tag the whole "…\n" (the leading
-              ;; newline included) with the surrounding exchange.
-              (insert (propertize "\n…"
-                                  'keymap crush--reasoning-fold-keymap
-                                  'crush-fold-mark t
-                                  'crush-prompt-id crush--prompt-id
-                                  'crush-response-to crush--prompt-id))
-              (setq ellipsis-end (point)))
+              (setq ellipsis-end
+                    (crush--insert-fold-ellipsis crush--prompt-id crush--prompt-id)))
             (let ((preview-ov (make-overlay start-m preview-end
                                             nil nil nil)))
               (overlay-put preview-ov 'crush-overlay t)
@@ -1317,23 +1316,15 @@ beyond `crush-reasoning-preview-lines' lines."
             (setq preview-end (point)))
           (save-excursion
             (goto-char preview-end)
-            ;; Same tagging as `crush--reasoning-install-fold': keep the
-            ;; `crush-response-to' run contiguous so history replay walks
-            ;; past the fold marker.  The exchange id is read from the
-            ;; text at the fold origin (the reasoning region), not the
-            ;; buffer's current `crush--prompt-id', which may have rotated
-            ;; since finalize.  The whole "…\n" (leading newline
-            ;; included) carries the tags.
-            (insert (propertize "\n…"
-                                'keymap crush--reasoning-fold-keymap
-                                'crush-fold-mark t
-                                'crush-prompt-id (get-text-property
-                                                  (or origin (overlay-start body-ov))
-                                                  'crush-prompt-id)
-                                'crush-response-to (get-text-property
-                                                    (or origin (overlay-start body-ov))
-                                                    'crush-response-to)))
-            (setq ellipsis-end (point)))
+            ;; The exchange id is read from the text at the fold origin
+            ;; (the reasoning region), not the buffer's current
+            ;; `crush--prompt-id', which may have rotated since finalize.
+            (setq ellipsis-end
+                  (crush--insert-fold-ellipsis
+                   (get-text-property (or origin (overlay-start body-ov))
+                                      'crush-prompt-id)
+                   (get-text-property (or origin (overlay-start body-ov))
+                                      'crush-response-to))))
           (let ((preview-ov (make-overlay start-m preview-end
                                           nil nil nil)))
             (overlay-put preview-ov 'crush-overlay t)
@@ -1677,11 +1668,10 @@ of 3 (the standard markdown fenced-code-block delimiter)."
     (setq max-run (max max-run run))
     (make-string (max 3 (1+ max-run)) ?\`)))
 
-(defun crush--fence-lang ()
-  "Return the language tag used for tool-output fenced blocks.
+(defconst crush--fence-lang "text"
+  "Language tag for tool-output fenced blocks.
 Always `text' so tool output renders as a plain code block regardless
-of what the raw result contains."
-  "text")
+of what the raw result contains.")
 
 ;;; Tool-block display decoration
 
@@ -1966,8 +1956,8 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
 BEG and END are the bounds of the selection."
   (interactive "r")
   (let* ((file (buffer-file-name))
-         (formatted (crush--format-selection file beg end))
          (relative (crush--relative-file file))
+         (formatted (crush--format-selection file relative beg end))
          (lines (format "%d-%d"
                         (save-excursion (goto-char beg) (line-number-at-pos))
                         (save-excursion (goto-char end) (line-number-at-pos))))
