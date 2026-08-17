@@ -1143,13 +1143,19 @@ Inert when no reasoning region is active or content already started."
 Sets `crush--reasoning-end' at point-max (before the content delta
 is appended), stops moving the overlay, and inserts two newlines
 before the answer so the content is visually separated from the
-reasoning.  Inert when no reasoning is active or it already ended."
+reasoning.  Inert when no reasoning is active or it already ended.
+The separator is inserted at point-max, never at an arbitrary point,
+so it cannot land inside a just-inserted tool block."
   (when (and (overlayp crush--reasoning-overlay)
              (not (markerp crush--reasoning-end)))
-    (setq-local crush--reasoning-end (copy-marker (point) nil))
+    (setq-local crush--reasoning-end (copy-marker (point-max) nil))
     (move-overlay crush--reasoning-overlay
                   (overlay-start crush--reasoning-overlay)
                   (marker-position crush--reasoning-end))
+    ;; Insert at point-max (never an arbitrary point, so it cannot land
+    ;; inside a just-inserted tool block) and leave point after it, so
+    ;; the caller's subsequent content insert follows the separator.
+    (goto-char (point-max))
     (insert "\n\n")))
 
 (defvar crush--reasoning-fold-keymap
