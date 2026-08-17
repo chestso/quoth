@@ -631,18 +631,6 @@ at point."
 
 ;;; 23. History retrieval functions
 
-(ert-deftest crush-test/get-prompt-at-point ()
-  "`crush-get-prompt-at-point' should return prompt ID at cursor."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test input")
-          (let ((prompt-id (crush-get-prompt-at-point)))
-            (should prompt-id)
-            (should (string= prompt-id crush--prompt-id)))))
-    (crush-test--cleanup)))
-
 (ert-deftest crush-test/get-all-prompts ()
   "`crush-get-all-prompts' should return all prompt IDs in buffer."
   (unwind-protect
@@ -1739,6 +1727,9 @@ completed prompt's ID."
     (let ((response-start (point)))
       (dolist (tc tool-calls)
         (crush--tool-block-insert tc prompt-id))
+      ;; The answer follows the tool block at point-max (tool-block-insert
+      ;; now leaves point at EOF).
+      (goto-char (point-max))
       (let ((inhibit-read-only t))
         (insert answer-text))
       (crush--tag-response-region response-start (point) prompt-id))
@@ -1797,7 +1788,7 @@ rendered decoration."
 
 (ert-deftest crush-test/history-turns-tool-exchange ()
   "A completed exchange with a tool call emits user + assistant(tool_calls)
-+ tool messages, reconstructed from the buffer."
++ tool + trailing assistant answer, reconstructed from the buffer."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1810,13 +1801,17 @@ rendered decoration."
                                  :exit 0)))))
             (ignore id)
             (let ((msgs (crush--history-turns crush--prompt-id)))
-              (should (= (length msgs) 3))
+              (should (= (length msgs) 4))
               (should (equal (crush-test--msg-role (nth 0 msgs)) "user"))
               (should (equal (crush-test--msg-role (nth 1 msgs)) "assistant"))
               (should (vectorp (cdr (assoc 'tool_calls (nth 1 msgs)))))
               (should (equal (crush-test--msg-role (nth 2 msgs)) "tool"))
               (should (string-match-p "<command>ls</command>"
-                                      (crush-test--msg-content (nth 2 msgs))))))))
+                                      (crush-test--msg-content (nth 2 msgs))))
+              ;; The answer text seeded after the tool block is a trailing
+              ;; plain assistant message.
+              (should (equal (crush-test--msg-role (nth 3 msgs)) "assistant"))
+              (should (string= (crush-test--msg-content (nth 3 msgs)) "Listing done"))))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-carries-tool-metadata ()
@@ -1837,7 +1832,7 @@ rendered decoration."
                    (assistant (nth 1 msgs))
                    (tool (nth 2 msgs))
                    (tc (aref (cdr (assoc 'tool_calls assistant)) 0)))
-              (should (= (length msgs) 3))
+              (should (= (length msgs) 4))
               (should (string= (cdr (assoc 'id tc)) "call_1"))
               (should (string= (cdr (assoc 'name (cdr (assoc 'function tc)))) "bash"))
               (should (string= (cdr (assoc 'arguments (cdr (assoc 'function tc))))
@@ -1845,8 +1840,10 @@ rendered decoration."
               (should (string= (cdr (assoc 'tool_call_id tool)) "call_1"))
               (let ((content (crush-test--msg-content tool)))
                 (should (string-match-p "<command>ls</command>" content))
-                (should-not (string-match-p "tool:" content)))))))
-    (crush-test--cleanup)))
+                (should-not (string-match-p "tool:" content)))
+              ;; Trailing answer after the tool block.
+              (should (equal (crush-test--msg-role (nth 3 msgs)) "assistant"))
+              (should (string= (crush-test--msg-content (nth 3 msgs)) "Listing done"))))))))
 
 (ert-deftest crush-test/history-turns-legacy-tool-fallback ()
   "A tool block without `crush-tool-call' metadata falls back to a bare

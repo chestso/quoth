@@ -637,12 +637,20 @@ region."
                    front-sticky (read-only)
                    rear-nonsticky (read-only))))))
 
-(defun crush-get-prompt-at-point ()
-  "Return the prompt ID at or before point, or nil if not found."
-  (or (get-text-property (point) 'crush-prompt-id)
-      (get-text-property (point) 'crush-response-to)
-      (when (> (point) (point-min))
-        (get-text-property (1- (point)) 'crush-prompt-id))))
+(defun crush--insert-at-eof (text &optional props)
+  "Insert TEXT at point-max, leaving point after it.
+Applies PROPS (a plist of text properties) to the inserted text.
+Returns the end position.  This is the single insertion point for
+streamed response content, so the cursor always follows the growing
+response to the bottom of the buffer."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t)
+        (start (point-max)))
+    (goto-char (point-max))
+    (insert text)
+    (when props
+      (add-text-properties start (point) props))
+    (point)))
 
 (defun crush-get-attachments-for-prompt (prompt-id)
   "Return list of attachment regions for PROMPT-ID.
@@ -1067,17 +1075,16 @@ line range string)."
                             (markerp crush--input-start-marker))
                        (marker-position crush--input-start-marker)
                      (point-max))))
-        (save-excursion
-          (goto-char start)
-          (insert formatted "\n\n")
-          (put-text-property start (point) 'crush-region-type 'user)
-          (when (and attachment-id prompt-id)
-            (put-text-property start (point) 'crush-attachment-id attachment-id)
-            (put-text-property start (point) 'crush-prompt-id prompt-id))
-          (when filename
-            (put-text-property start (point) 'crush-filename filename))
-          (when lines
-            (put-text-property start (point) 'crush-lines lines)))))))
+        (goto-char start)
+        (insert formatted "\n\n")
+        (put-text-property start (point) 'crush-region-type 'user)
+        (when (and attachment-id prompt-id)
+          (put-text-property start (point) 'crush-attachment-id attachment-id)
+          (put-text-property start (point) 'crush-prompt-id prompt-id))
+        (when filename
+          (put-text-property start (point) 'crush-filename filename))
+        (when lines
+          (put-text-property start (point) 'crush-lines lines))))))
 
 (defun crush--relative-file (file)
   "Return FILE relative to the project root or the default directory.
@@ -1617,8 +1624,9 @@ Runs in the crush buffer (the facade's `:on-delta' closure enters it)."
       (pcase kind
         ('reasoning
          (crush--reasoning-extend-overlay))))
-    (when (eq kind 'reasoning)
-      (goto-char (point-max)))))
+    ;; Always keep the cursor at the bottom of the response, for both
+    ;; reasoning and content deltas, so streaming reads like a terminal.
+    (goto-char (point-max))))
 
 (defun crush-facade--send (prompt context has-context)
   "Send PROMPT (with optional CONTEXT when HAS-CONTEXT) via the active provider.
@@ -1804,60 +1812,69 @@ for wire resume.  Returns the end position of the inserted block."
          (args (or (and (stringp (plist-get tool-calls :args-json))
                         (crush-openai-parse-tool-args
                          (plist-get tool-calls :args-json)))
-                   (list))))
-    (let ((inhibit-read-only t)
-          (inhibit-modification-hooks t)
-          (start (point-max))
-          (raw-start nil)
-          (raw-end nil))
-      (save-excursion
-        (goto-char start)
-        ;; A model often ends its trailing sentence with no newline
-        ;; before emitting a tool call; make sure the header starts on
-        ;; its own line with one blank line of separation so the block
-        ;; stays valid markdown (buffer, HTML, and PDF alike).
-        (crush--ensure-blank-line)
-        (insert (crush--tool-header-line name args))
-        (insert "\n\n")
-        (let ((result (plist-get tool-calls :result)))
-          (when result
-            (let ((fence (crush--fence-str result)))
-              (insert (format "%s%s\n" fence (crush--fence-lang)))
-              (setq raw-start (point))
-              (insert result)
-              (unless (string-suffix-p "\n" result)
-                (insert "\n"))
-              (setq raw-end (point))
-              (insert fence "\n"))))
-        (insert "\n"))
-      (let ((end (point-max)))
-        (put-text-property start end 'crush-region-type 'tool)
-        (put-text-property start end 'crush-prompt-id prompt-id)
-        (put-text-property start end 'crush-response-to prompt-id)
-        ;; Tag the whole block (including the closing fence) so the
-        ;; wire-reconstruction walk in `crush--tool-rounds' treats it as
-        ;; one call span.  A trailing fence char left without the call
-        ;; property is itself `tool'-typed and, having no metadata, makes
-        ;; the walker fall into the legacy branch, whose raw-result bound
-        ;; (the next `crush-tool-call' change) extends to the end of the
-        ;; response and swallows every following turn as a bare `tool'
-        ;; message with `tool_call_id: unknown'.
-        (put-text-property start end 'crush-tool-call
-                           (list :id id
-                                 :name name
-                                 :args-json (plist-get tool-calls :args-json)))
-        ;; Nested region: the raw tool result (the wire `role: "tool"`
-        ;; content) sits between the output label's opening fence and the
-        ;; closing fence.  Tag it separately so history extraction can
-        ;; send the raw result without the display decoration.  Carries
-        ;; the same prompt/response tags so it survives re-tagging and
-        ;; persistence.
-        (when raw-start
-          (put-text-property raw-start raw-end 'crush-region-type 'tool-output)
-          (put-text-property raw-start raw-end 'crush-prompt-id prompt-id)
-          (put-text-property raw-start raw-end 'crush-response-to prompt-id))
-        (crush--freeze-region start end)
-        end))))
+                   (list)))
+         (result (plist-get tool-calls :result))
+         (fence (when result (crush--fence-str result)))
+         ;; A model often ends its trailing sentence with no newline
+         ;; before emitting a tool call; make sure the header starts on
+         ;; its own line with one blank line of separation so the block
+         ;; stays valid markdown (buffer, HTML, and PDF alike).
+         ;; Count trailing newlines at point-max and pad to two.
+         (prefix (unless (bobp)
+                   (let ((n 0))
+                     (save-excursion
+                       (goto-char (point-max))
+                       (while (and (> (point) (point-min))
+                                   (eq (char-before) ?\n))
+                         (backward-char)
+                         (setq n (1+ n))))
+                     (when (< n 2)
+                       (make-string (- 2 n) ?\n)))))
+         (header (crush--tool-header-line name args))
+         (raw (when result
+                (concat result (unless (string-suffix-p "\n" result) "\n"))))
+         (block (concat prefix
+                        header "\n\n"
+                        (when result
+                          (concat fence crush--fence-lang "\n"
+                                  raw
+                                  fence "\n"))
+                        "\n"))
+         (start (point-max)))
+    (crush--insert-at-eof block)
+    (let* ((inhibit-modification-hooks t)
+           (end (point-max))
+           (raw-start (when raw (+ start (length prefix)
+                                   (length header) 2
+                                   (length fence) (length crush--fence-lang) 1)))
+           (raw-end (when raw (+ raw-start (length raw)))))
+      (put-text-property start end 'crush-region-type 'tool)
+      (put-text-property start end 'crush-prompt-id prompt-id)
+      (put-text-property start end 'crush-response-to prompt-id)
+      ;; Tag the whole block (including the closing fence) so the
+      ;; wire-reconstruction walk in `crush--tool-rounds' treats it as
+      ;; one call span.  A trailing fence char left without the call
+      ;; property is itself `tool'-typed and, having no metadata, makes
+      ;; the walker fall into the legacy branch, whose raw-result bound
+      ;; (the next `crush-tool-call' change) extends to the end of the
+      ;; response and swallows every following turn as a bare `tool'
+      ;; message with `tool_call_id: unknown'.
+      (put-text-property start end 'crush-tool-call
+                         (list :id id
+                               :name name
+                               :args-json (plist-get tool-calls :args-json)))
+      ;; Nested region: the raw tool result (the wire `role: "tool"`
+      ;; content) sits between the output label's opening fence and the
+      ;; closing fence.  Tag it separately so history extraction can
+      ;; send the raw result without the display decoration.  Carries
+      ;; the same prompt/response tags so it survives re-tagging and
+      ;; persistence.
+      (when raw-start
+        (put-text-property raw-start raw-end 'crush-region-type 'tool-output)
+        (put-text-property raw-start raw-end 'crush-prompt-id prompt-id)
+        (put-text-property raw-start raw-end 'crush-response-to prompt-id))
+      (crush--freeze-region start end)
+      end)))
 
 (defun crush-send-input ()
   "Send the current prompt to the provider."
