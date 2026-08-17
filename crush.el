@@ -610,6 +610,37 @@ start so attachments and prior content can be inserted before it;
       (setq-local crush--input-start-marker (point-marker))
       (set-marker-insertion-type crush--input-start-marker nil))))
 
+(defun crush--insert-user-separator ()
+  "Insert a frozen horizontal divider marking the end of the user input.
+Renders the same `---' as `crush--input-separator-text' and frames it
+with a blank line above and below, mirroring
+`crush--insert-input-separator'.  It is a display-only seam between the
+user leg and the assistant leg of a turn, not an editable input prompt:
+inserted at point (on the line after the user's prompt, before the
+response starts) and frozen read-only.  It carries no face; markdown
+renders the `---' itself as a horizontal rule.  Tagged
+`crush-region-type' `user-separator' so the history/continuation readers
+(`crush--user-turn-text', `crush-get-response-text', `crush--tool-rounds')
+all skip it; it carries `crush-prompt-id' but never `crush-response-to',
+so it belongs to the turn yet never leaks into the assistant response
+region."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
+    (unless (bobp)
+      (insert "\n"))
+    (let ((start (point)))
+      (insert crush--input-separator-text "\n\n")
+      (put-text-property start (point) 'crush-region-type 'user-separator)
+      (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
+      ;; Plain, read-only text: no face.  markdown-mode renders the
+      ;; `---' itself as a horizontal rule; the face (and a possible
+      ;; overlay) are unnecessary and font-lock would strip them anyway.
+      (add-text-properties
+       start (point)
+       '(read-only t
+                   front-sticky (read-only)
+                   rear-nonsticky (read-only))))))
+
 (defun crush-get-prompt-at-point ()
   "Return the prompt ID at or before point, or nil if not found."
   (or (get-text-property (point) 'crush-prompt-id)
@@ -1167,9 +1198,20 @@ is inserted as real text carrying the toggle keymap and
               (setq preview-end (point)))
             (save-excursion
               (goto-char preview-end)
-              (insert "\n" (propertize "…"
-                                       'keymap crush--reasoning-fold-keymap
-                                       'crush-fold-mark t))
+              ;; The ellipsis is real buffer text inserted inside the
+              ;; response region.  Without `crush-response-to' it
+              ;; punctures the contiguous property run that
+              ;; `crush--tool-rounds' walks to bound the response, so
+              ;; `next-single-property-change' would stop at the fold
+              ;; marker and drop everything after it (the hidden
+              ;; reasoning tail and the final assistant summary) from
+              ;; history replay.  Tag the whole "…\n" (the leading
+              ;; newline included) with the surrounding exchange.
+              (insert (propertize "\n…"
+                                  'keymap crush--reasoning-fold-keymap
+                                  'crush-fold-mark t
+                                  'crush-prompt-id crush--prompt-id
+                                  'crush-response-to crush--prompt-id))
               (setq ellipsis-end (point)))
             (let ((preview-ov (make-overlay start-m preview-end
                                             nil nil nil)))
@@ -1275,9 +1317,22 @@ beyond `crush-reasoning-preview-lines' lines."
             (setq preview-end (point)))
           (save-excursion
             (goto-char preview-end)
-            (insert "\n" (propertize "…"
-                                     'keymap crush--reasoning-fold-keymap
-                                     'crush-fold-mark t))
+            ;; Same tagging as `crush--reasoning-install-fold': keep the
+            ;; `crush-response-to' run contiguous so history replay walks
+            ;; past the fold marker.  The exchange id is read from the
+            ;; text at the fold origin (the reasoning region), not the
+            ;; buffer's current `crush--prompt-id', which may have rotated
+            ;; since finalize.  The whole "…\n" (leading newline
+            ;; included) carries the tags.
+            (insert (propertize "\n…"
+                                'keymap crush--reasoning-fold-keymap
+                                'crush-fold-mark t
+                                'crush-prompt-id (get-text-property
+                                                  (or origin (overlay-start body-ov))
+                                                  'crush-prompt-id)
+                                'crush-response-to (get-text-property
+                                                    (or origin (overlay-start body-ov))
+                                                    'crush-response-to)))
             (setq ellipsis-end (point)))
           (let ((preview-ov (make-overlay start-m preview-end
                                           nil nil nil)))
@@ -1839,6 +1894,10 @@ for wire resume.  Returns the end position of the inserted block."
     (crush--input-ring-add prompt)
     (goto-char (line-end-position))
     (newline)
+    ;; Draw a horizontal divider after the user turn so the response is
+    ;; visually decoupled from the prompt text; the response region and
+    ;; reasoning overlay begin after it.
+    (crush--insert-user-separator)
     (setq-local crush--response-start (point-marker))
     (setq-local crush--input-ring-index 0)
     (setq-local crush--tool-loop-count 0)

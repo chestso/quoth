@@ -1623,6 +1623,94 @@ separator.  Returns the completed prompt's ID."
           (should (null (crush--history-turns crush--prompt-id)))))
     (crush-test--cleanup)))
 
+;;; Turn divider: a frozen `---' between the user turn and its response.
+
+(defun crush-test--seed-user-separator (prompt-text reasoning-text answer-text)
+  "Seed a turn with a user separator, as `crush-send-input' does.
+Types PROMPT-TEXT, inserts the separator via `crush--insert-user-separator',
+then streams REASONING-TEXT and ANSWER-TEXT and finalizes.  Returns the
+completed prompt's ID."
+  (let ((prompt-id crush--prompt-id))
+    (goto-char (point-max))
+    (insert prompt-text)
+    (goto-char (line-end-position))
+    (newline)
+    (crush--insert-user-separator)
+    (setq-local crush--response-start (point-marker))
+    (let ((proc (make-pipe-process :name "crush-hyper-test-div"
+                                   :noquery t :coding 'binary)))
+      (process-put proc :crush-target (current-buffer))
+      (unwind-protect
+          (progn
+            (crush-facade--append-delta reasoning-text 'reasoning)
+            (crush-facade--append-delta answer-text 'content)
+            (crush-facade--finalize))
+        (delete-process proc)))
+    (goto-char (point-max))
+    (let ((inhibit-read-only t))
+      (when (eq (char-before (point)) ?\n)
+        (delete-region (1- (point)) (point))))
+    (setq-local crush--prompt-id (crush--generate-id))
+    (crush--insert-input-separator)
+    prompt-id))
+
+(ert-deftest crush-test/user-separator-inserted-before-response ()
+  "`crush--insert-user-separator' places a frozen, read-only `---' between
+the user text and the streamed response, tagged `user-separator'."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-user-separator
+                     "describe this file"
+                     "The user wants me to describe the file."
+                     "This is the answer.")))
+            (ignore id)
+            (goto-char (point-min))
+            (search-forward "describe this file")
+            ;; The user separator sits right after the user text, framed by
+            ;; a blank line above and below (mirroring the input separator).
+            (let* ((sep (text-property-any (point) (point-max)
+                                           'crush-region-type 'user-separator))
+                   (sep-end (or (next-single-property-change sep 'crush-region-type
+                                                             nil (point-max))
+                                (point-max))))
+              (should sep)
+              (should (get-text-property sep 'read-only))
+              (should (string= (buffer-substring-no-properties (1- sep) sep-end)
+                               "\n---\n\n"))
+              ;; The blank line below the divider is part of the separator.
+              (should (eq (get-text-property (1- sep-end) 'crush-region-type)
+                          'user-separator)))
+            ;; The response text follows the separator.
+            (search-forward "This is the answer.")
+            (should (eq (get-text-property (match-beginning 0) 'crush-region-type)
+                        'response)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/user-separator-ignored-by-history-turns ()
+  "The user separator must not leak into the reconstructed history: a turn
+with reasoning + separator yields exactly `user' then `assistant' messages."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((id (crush-test--seed-user-separator
+                     "describe this file"
+                     "The user wants me to describe the file."
+                     "This is the answer.")))
+            (ignore id)
+            (let ((msgs (crush--history-turns crush--prompt-id)))
+              (should (= (length msgs) 2))
+              (should (equal (crush-test--msg-role (nth 0 msgs)) "user"))
+              (should (string= (crush-test--msg-content (nth 0 msgs))
+                               "describe this file"))
+              (should (equal (crush-test--msg-role (nth 1 msgs)) "assistant"))
+              (should (string= (crush-test--msg-content (nth 1 msgs))
+                               "This is the answer."))
+              (should-not (cl-some (lambda (m) (string-match-p "---"
+                                                               (or (crush-test--msg-content m) "")))
+                                   msgs))))))
+    (crush-test--cleanup)))
+
 (ert-deftest crush-test/history-turns-excludes-pending-prompt ()
   "The pending (current) prompt never appears in the messages.
 It is being sent when the history is extracted."
@@ -2030,6 +2118,59 @@ spurious tool result."
                   (setq pos end)))))))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/history-turns-reasoning-fold-keeps-final-summary ()
+  "A reasoning fold between a tool round and the final summary must not
+drop the summary from replay.
+
+The fold ellipsis is real buffer text inside the response region.
+Without `crush-response-to' on it (and its leading newline), the
+property run `crush--tool-rounds' walks to bound the response is
+punctured, so `next-single-property-change' stops at the fold marker
+and everything after it -- the hidden reasoning tail and the final
+assistant summary -- is dropped from history replay.  The ellipsis must
+carry the exchange's prompt/response tags."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; Seed a tool round, then reasoning long enough to fold
+          ;; (> `crush-reasoning-preview-lines' lines), then a summary.
+          (goto-char (point-max))
+          (insert "what is this file?")
+          (goto-char (line-end-position))
+          (newline)
+          (crush--insert-user-separator)
+          (setq-local crush--response-start (point-marker))
+          (let ((pid crush--prompt-id))
+            (let ((proc (make-pipe-process :name "crush-fold-replay"
+                                           :noquery t :coding 'binary)))
+              (process-put proc :crush-target (current-buffer))
+              (crush-facade--append-delta "Let me check the file." 'reasoning)
+              (crush--tool-block-insert
+               (list :name "exec_command" :id "call_1"
+                     :args-json "{\"cmd\":\"head -100 crush.el\"}"
+                     :result "Process exited with code 0\nOutput:\n;;; header"
+                     :exit 0)
+               pid)
+              (crush--tag-response-region (marker-position crush--response-start)
+                                          (point-max) pid)
+              (crush--reasoning-reset)
+              (setq-local crush--response-start (point-marker))
+              (crush-facade--append-delta
+               (mapconcat #'identity (make-list 11 "think hard.") "\n")
+               'reasoning)
+              (crush-facade--append-delta "FINAL SUMMARY" 'content)
+              (crush-facade--finalize)
+              (delete-process proc))
+            (let* ((msgs (crush--tool-rounds pid))
+                   (last-msg (car (last msgs)))
+                   (roles (mapcar (lambda (m) (cdr (assoc 'role m))) msgs)))
+              ;; Two tool rounds' worth: assistant(tool_calls) + tool,
+              ;; then a trailing assistant with the final summary.
+              (should (equal roles
+                             '("assistant" "tool" "assistant")))
+              (should (string= (crush-test--msg-content last-msg) "FINAL SUMMARY"))))))
+    (crush-test--cleanup)))
+
 (ert-deftest crush-test/history-turns-splits-reasoning-when-enabled ()
   "With reasoning enabled the assistant message gains a reasoning_content
 field holding the CoT text."
@@ -2047,7 +2188,6 @@ field holding the CoT text."
               (should (equal (cdr (assoc 'reasoning_content (cadr msgs)))
                              "step one\nstep two"))))))
     (crush-test--cleanup)))
-
 (ert-deftest crush-test/history-limit-caps-turns ()
   "`crush-hyper-history-limit' caps the prior exchanges; the tail stays."
   (let ((crush-hyper-history-limit 1))
