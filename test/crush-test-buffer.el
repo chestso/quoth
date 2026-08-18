@@ -957,10 +957,6 @@ to the line end."
           (should (marker-insertion-type crush--prompt-start-marker))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/input-separator-face-defined ()
-  "Crush-input-separator-face should be defined."
-  (should (facep 'crush-input-separator-face)))
-
 ;;; Facade delta streaming
 
 (ert-deftest crush-test/facade-delta-inserts-at-end ()
@@ -1301,17 +1297,6 @@ There is no separate `crush-mode' major mode."
           (should-not (derived-mode-p 'comint-mode))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/separator-has-input-separator-face ()
-  "The input separator text should have crush-input-separator-face."
-  (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (search-forward "---" nil t))
-          (should (eq (get-text-property (1- (point)) 'font-lock-face)
-                      'crush-input-separator-face))))
-    (crush-test--cleanup)))
-
 (ert-deftest crush-test/prompt-is-read-only ()
   "The input separator text should be read-only (via text property)."
   (unwind-protect
@@ -1331,8 +1316,6 @@ There is no separate `crush-mode' major mode."
           (goto-char (point-min))
           (should (search-forward "---" nil t))
           (should (get-char-property (match-beginning 0) 'read-only))
-          (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
-                      'crush-input-separator-face))
           (should-not (get-text-property (match-beginning 0) 'field))))
     (crush-test--cleanup)))
 

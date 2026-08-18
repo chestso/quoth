@@ -60,11 +60,6 @@
   :group 'tools
   :prefix "crush-")
 
-(defface crush-input-separator-face
-  '((t :inherit font-lock-keyword-face))
-  "Face for the frozen input separator line."
-  :group 'crush)
-
 (defface crush-reasoning-face
   '((t :inherit region :extend t))
   "Face for streamed chain-of-thought reasoning text.
@@ -598,8 +593,7 @@ start so attachments and prior content can be inserted before it;
        start (point)
        '(read-only t
                    front-sticky (read-only)
-                   rear-nonsticky (read-only font-lock-face)
-                   font-lock-face crush-input-separator-face))
+                   rear-nonsticky (read-only)))
       (crush--freeze-region (point-min) start)
       (setq-local crush--prompt-start-marker (copy-marker start))
       (set-marker-insertion-type crush--prompt-start-marker t)
