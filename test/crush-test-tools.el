@@ -68,12 +68,12 @@
 ;;; 1. Tool registry and dispatch
 
 (ert-deftest crush-test/tool-registry-has-exec-command ()
-  "The registry should map `exec_command' to `crush-exec-command--exec'."
+  "The registry should map \"exec_command\" to `crush-exec-command--exec'."
   (should (equal (cdr (assoc "exec_command" crush-openai-tool-registry))
                  #'crush-exec-command--exec)))
 
 (ert-deftest crush-test/tool-registry-has-write-stdin ()
-  "The registry should map `write_stdin' to `crush-write-stdin--exec'."
+  "The registry should map \"write_stdin\" to `crush-write-stdin--exec'."
   (should (equal (cdr (assoc "write_stdin" crush-openai-tool-registry))
                  #'crush-write-stdin--exec)))
 
@@ -238,7 +238,7 @@ itself."
 ;;; 4. write_stdin execution
 
 (ert-deftest crush-test/write-stdin-round-trip ()
-  "`exec_command' + `write_stdin' drive an interactive process to completion."
+  "Test that \"exec_command\" and \"write_stdin\" drive the process to completion."
   (let* ((start (crush-test--tool-call
                  "exec_command"
                  "{\"cmd\":\"read line; echo got:$line\",\"yield_time_ms\":200}"))
