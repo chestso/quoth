@@ -1135,6 +1135,41 @@ The buffer's own point may be stale (as in a process filter); the
             (should (> (with-current-buffer buf (point-max)) old-max)))))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/insert-at-eof-accepts-a-position ()
+  "Insertion at an explicit position must tag exactly that span."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "before\n")
+          (let ((pos (point)))
+            (crush--insert-at-eof "middle" (list 'foo 'bar) pos)
+            (should (eq (get-text-property pos 'foo) 'bar))
+            (should (string= (buffer-substring pos (+ pos (length "middle")))
+                             "middle"))
+            ;; Inserting at a position must not clobber point-max content.
+            (should (string-match-p "before" (buffer-string))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/append-as-user-input-delegates-to-insert-at-eof ()
+  "Appending user input must preserve a scrolled-back window point.
+Unlike a raw `insert', which leaves the chase of window point to the
+caller, `crush--append-as-user-input' must route through
+`crush--insert-at-eof' so a scrolled-back window keeps its place."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "line one\nline two\n"))
+        (let ((win (display-buffer buf t)))
+          (select-window win)
+          (set-window-point win 9)
+          (let ((saved-win-point (window-point win)))
+            (with-current-buffer buf
+              (crush--append-as-user-input buf "INSERTED CONTENT" nil nil))
+            (should (= (window-point win) saved-win-point)))))
+    (crush-test--cleanup)))
+
 ;;; Custom input ring
 
 (ert-deftest crush-test/custom-input-ring-initialized ()

@@ -644,11 +644,12 @@ point-max on a redisplay cycle).")
 Used to detect stale `window-point' during rapid process output:
 if `window-point' is behind this, the user scrolled back.")
 
-(defun crush--insert-at-eof (text &optional props)
-  "Insert TEXT at point-max, applying PROPS (a plist of text properties).
+(defun crush--insert-at-eof (text &optional props position)
+  "Insert TEXT at POSITION (default point-max), applying PROPS.
+PROPS is a plist of text properties applied to the inserted text.
 Returns the new point-max.
 
-If the cursor is at point-max, advance it to the new end and let the
+If the cursor is at POSITION, advance it to the new end and let the
 window auto-scroll naturally.  Otherwise preserve the cursor position
 and every window's scroll position, so a user who has scrolled back
 can keep reading while content streams in.
@@ -659,33 +660,33 @@ stale.  This mirrors comint's `comint-adjust-window-point' pattern.
 
 When following, sets `crush--follow-p' so the next call (which may run
 before redisplay updates `window-point') continues to follow.  When
-`window-point' is behind point-max AND behind the last follow position,
+`window-point' is behind POSITION AND behind the last follow position,
 the user scrolled back: stop following."
   (let* ((inhibit-read-only t)
          (inhibit-modification-hooks t)
+         (position (or position (point-max)))
          (windows (get-buffer-window-list (current-buffer) nil t))
          (selected-win (or (get-buffer-window (current-buffer) 'visible)
                            (car windows)))
-         (old-point-max (point-max))
          (snapshots (mapcar (lambda (w)
                               (list w (window-start w) (window-point w)))
                             windows))
          (win-point (if selected-win
                         (window-point selected-win)
                       (point)))
-         ;; Follow when window-point is at point-max, OR when we were
+         ;; Follow when window-point is at POSITION, OR when we were
          ;; following and window-point hasn't diverged (stale redisplay
-         ;; keeps window-point at the old position, which is < pmax).
+         ;; keeps window-point at the old position, which is < POSITION).
          ;; If we were following but window-point is now well behind
          ;; (the user scrolled back during a redisplay cycle), stop.
-         (follow (or (= win-point old-point-max)
+         (follow (or (= win-point position)
                      (and crush--follow-p
-                          (<= win-point old-point-max)
+                          (<= win-point position)
                           (>= win-point (or crush--last-follow-point 0))))))
-    (goto-char old-point-max)
+    (goto-char position)
     (insert text)
     (when props
-      (add-text-properties old-point-max (point-max) props))
+      (add-text-properties position (point) props))
     (if follow
         (progn
           (setq-local crush--follow-p t)
@@ -1119,24 +1120,25 @@ region `crush-region-type' `user' so it reads back as typed input.
 When ATTACHMENT-ID and PROMPT-ID are provided, also apply those text
 properties.  When FILENAME is provided, tag the region with
 `crush-filename'; when LINES is provided, tag it with `crush-lines' (a
-line range string)."
+line range string).  Delegates to `crush--insert-at-eof' so the
+insertion preserves a scrolled-back window's point like every other
+append."
   (with-current-buffer buf
-    (let ((inhibit-read-only t)
-          (inhibit-modification-hooks t))
-      (let ((start (if (and crush--input-start-marker
-                            (markerp crush--input-start-marker))
-                       (marker-position crush--input-start-marker)
-                     (point-max))))
-        (goto-char start)
-        (insert formatted "\n\n")
-        (put-text-property start (point) 'crush-region-type 'user)
-        (when (and attachment-id prompt-id)
-          (put-text-property start (point) 'crush-attachment-id attachment-id)
-          (put-text-property start (point) 'crush-prompt-id prompt-id))
-        (when filename
-          (put-text-property start (point) 'crush-filename filename))
-        (when lines
-          (put-text-property start (point) 'crush-lines lines))))))
+    (let ((start (if (and crush--input-start-marker
+                          (markerp crush--input-start-marker))
+                     (marker-position crush--input-start-marker)
+                   (point-max))))
+      (crush--insert-at-eof
+       (concat formatted "\n\n")
+       (append (list 'crush-region-type 'user)
+               (when (and attachment-id prompt-id)
+                 (list 'crush-attachment-id attachment-id
+                       'crush-prompt-id prompt-id))
+               (when filename
+                 (list 'crush-filename filename))
+               (when lines
+                 (list 'crush-lines lines)))
+       start))))
 
 (defun crush--relative-file (file)
   "Return FILE relative to the project root or the default directory.
