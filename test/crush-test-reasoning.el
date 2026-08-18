@@ -220,7 +220,11 @@ open (`crush--response-start' at point-max after a newline)."
       (should-not crush--reasoning-overlay))
     (crush-test--kill-crush-buffer)))
 
-;;; Fold: preview overlay + ellipsis for >10 lines, no fold for <=10
+;;; Fold: preview overlay + body overlay for >10 lines, no fold for <=10
+;;;
+;;; Overlay-only model: the fold marker lives in the body overlay's
+;;; `before-string' (display-only, not buffer text).  No `…' character
+;;; is inserted into the buffer.  Toggle is via the overlay keymap.
 
 (defun crush-test--reasoning-fold-overlay (&optional buffer)
   "Return the body overlay (invisible, folded) in BUFFER, or nil."
@@ -236,14 +240,6 @@ open (`crush--response-start' at point-max after a newline)."
           (lambda (o) (overlay-get o 'crush-reasoning-preview))
           (overlays-in (point-min) (point-max))))))
 
-(defun crush-test--reasoning-ellipsis (&optional buffer)
-  "Return the position of the `…' ellipsis in BUFFER, or nil."
-  (with-current-buffer (or buffer (current-buffer))
-    (save-excursion
-      (goto-char (point-min))
-      (when (search-forward "…" nil t)
-        (match-beginning 0)))))
-
 (defun crush-test--reasoning-lines (n)
   "Return a string of N numbered lines separated by newlines."
   (mapconcat #'identity
@@ -252,7 +248,9 @@ open (`crush--response-start' at point-max after a newline)."
              "\n"))
 
 (ert-deftest crush-test/finalize-auto-collapses-reasoning ()
-  "Finalize should auto-collapse reasoning > 10 lines with a preview."
+  "Finalize should auto-collapse reasoning > 10 lines with a preview.
+The body overlay is invisible with a `before-string' marker.  No `…'
+character is inserted into the buffer."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 12)
@@ -262,15 +260,16 @@ open (`crush--response-start' at point-max after a newline)."
       (let ((body-ov (crush-test--reasoning-fold-overlay))
             (preview-ov (crush-test--reasoning-preview-overlay)))
         (should (overlayp body-ov))
-        (should (eq (overlay-get body-ov 'invisible) t))
+        (should (eq (overlay-get body-ov 'invisible) 'crush-reasoning-fold))
+        (should (stringp (overlay-get body-ov 'before-string)))
         (should (overlayp preview-ov))
         (should (eq (overlay-get preview-ov 'face) 'crush-reasoning-face))
         (should (= (count-lines (overlay-start preview-ov)
                                 (overlay-end preview-ov))
                    10))
+        ;; No ellipsis character in the buffer.
         (goto-char (point-min))
-        (should (search-forward "…" nil t))
-        (should (get-text-property (1- (point)) 'crush-fold-mark))))
+        (should-not (search-forward "…" nil t))))
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/finalize-no-fold-for-10-or-fewer-lines ()
@@ -282,45 +281,42 @@ open (`crush--response-start' at point-max after a newline)."
                 (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (should-not (crush-test--reasoning-fold-overlay))
-      (should-not (crush-test--reasoning-ellipsis))
+      (should-not (crush-test--reasoning-preview-overlay))
       (goto-char (point-min))
       (should (search-forward "line 1" nil t))
-      (should (search-forward "line 10" nil t)))
+      (should (search-forward "line 10" nil t))
+      ;; No ellipsis in the buffer.
+      (should-not (search-forward "…" nil t)))
     (crush-test--kill-crush-buffer)))
 
-(ert-deftest crush-test/finalize-fold-marker-has-toggle-keymap ()
-  "The … ellipsis should carry the toggle keymap."
+(ert-deftest crush-test/finalize-fold-marker-is-before-string ()
+  "The fold marker is a display-only `before-string' on the body overlay.
+No `crush-fold-mark' text property, no `…' in the buffer."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 11)
                                             'reasoning)
                 (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
+      (let ((body-ov (crush-test--reasoning-fold-overlay)))
+        (should (overlayp body-ov))
+        (let ((bs (overlay-get body-ov 'before-string)))
+          (should (stringp bs))
+          ;; The before-string carries the toggle keymap.
+          (should (keymapp (get-text-property 0 'keymap bs)))
+          (should (eq (lookup-key (get-text-property 0 'keymap bs) (kbd "TAB"))
+                      #'crush-reasoning-toggle))))
+      ;; No ellipsis character in the buffer.
       (goto-char (point-min))
-      (should (search-forward "…" nil t))
-      (let ((keymap (get-text-property (1- (point)) 'keymap)))
-        (should (keymapp keymap))
-        (should (eq (lookup-key keymap (kbd "TAB"))
-                    #'crush-reasoning-toggle))
-        (should (eq (lookup-key keymap (kbd "RET"))
-                    #'crush-reasoning-toggle))))
-    (crush-test--kill-crush-buffer)))
-
-(ert-deftest crush-test/finalize-marker-is-dim-real-text ()
-  "The … ellipsis is real buffer text carrying crush-fold-mark."
-  (let ((buf (crush-test--finalize-with-reasoning
-              (lambda (_proc)
-                (crush-facade--append-delta (crush-test--reasoning-lines 11)
-                                            'reasoning)
-                (crush-facade--append-delta "answer" 'content)))))
-    (with-current-buffer buf
-      (goto-char (point-min))
-      (should (search-forward "…" nil t))
-      (should (get-text-property (1- (point)) 'crush-fold-mark))
-      (should-not (get-text-property (1- (point)) 'face))
-      (let ((preview-ov (crush-test--reasoning-preview-overlay)))
-        (should (overlayp preview-ov))
-        (should (eq (overlay-get preview-ov 'face) 'crush-reasoning-face))))
+      (should-not (search-forward "…" nil t))
+      ;; No crush-fold-mark text property anywhere.
+      (let ((pos (point-min))
+            (found nil))
+        (while (and (not found) (< pos (point-max)))
+          (when (get-text-property pos 'crush-fold-mark)
+            (setq found t))
+          (setq pos (1+ pos)))
+        (should-not found)))
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/finalize-snaps-fold-to-lines ()
@@ -335,9 +331,11 @@ open (`crush--response-start' at point-max after a newline)."
             (body-ov (crush-test--reasoning-fold-overlay)))
         (should (overlayp preview-ov))
         (should (overlayp body-ov))
-        (goto-char (overlay-end preview-ov))
-        (should (looking-at "\n"))
-        (goto-char (1+ (overlay-start body-ov)))
+        ;; Preview ends where body starts.
+        (should (= (overlay-end preview-ov) (overlay-start body-ov)))
+        ;; Body starts at line 11.
+        (goto-char (overlay-start body-ov))
+        (forward-line)
         (should (looking-at "line 11"))))
     (crush-test--kill-crush-buffer)))
 
@@ -353,7 +351,8 @@ open (`crush--response-start' at point-max after a newline)."
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/toggle-expands-collapsed-reasoning ()
-  "Crush-reasoning-toggle should expand a collapsed reasoning region."
+  "Crush-reasoning-toggle should expand a collapsed reasoning region.
+No buffer text is inserted or deleted — only overlay properties change."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 11)
@@ -362,16 +361,16 @@ open (`crush--response-start' at point-max after a newline)."
     (with-current-buffer buf
       (let ((body-ov (crush-test--reasoning-fold-overlay)))
         (should (eq (overlay-get body-ov 'crush-fold-state) 'collapsed))
-        (goto-char (point-min))
-        (search-forward "…")
-        (goto-char (1- (point)))
+        ;; Point on the body overlay.
+        (goto-char (overlay-start body-ov))
         (crush-reasoning-toggle)
         (should (eq (overlay-get body-ov 'crush-fold-state) 'expanded))
         (should-not (overlay-get body-ov 'invisible))
-        (should-not (crush-test--reasoning-ellipsis))
-        (should-not (crush-test--reasoning-preview-overlay))
-        (goto-char (point-min))
-        (should (search-forward "line 11" nil t))))
+        (should-not (overlay-get body-ov 'before-string))
+        ;; Hidden content is now visible.
+        (goto-char (overlay-start body-ov))
+        (forward-line)
+        (should (looking-at "line 11"))))
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/toggle-collapses-expanded-reasoning ()
@@ -383,21 +382,17 @@ open (`crush--response-start' at point-max after a newline)."
                 (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (crush-test--reasoning-fold-overlay)))
-        (goto-char (point-min))
-        (search-forward "…")
-        (goto-char (1- (point)))
-        (crush-reasoning-toggle)       ; expand
-        (goto-char (point-min))
-        (search-forward "line 11")
-        (goto-char (match-beginning 0))
-        (crush-reasoning-toggle)       ; collapse
+        ;; Expand first.
+        (goto-char (overlay-start body-ov))
+        (crush-reasoning-toggle)
+        (should (eq (overlay-get body-ov 'crush-fold-state) 'expanded))
+        ;; Collapse.
+        (goto-char (overlay-start body-ov))
+        (crush-reasoning-toggle)
         (should (eq (overlay-get body-ov 'crush-fold-state) 'collapsed))
-        (should (eq (overlay-get body-ov 'invisible) t))
-        (should (crush-test--reasoning-ellipsis))
-        (should (overlayp (crush-test--reasoning-preview-overlay)))
-        (goto-char (crush-test--reasoning-ellipsis))
-        (should (get-text-property (point) 'read-only))
-        (should-error (delete-char 1) :type 'text-read-only)))
+        (should (eq (overlay-get body-ov 'invisible) 'crush-reasoning-fold))
+        (should (eq (overlay-get body-ov 'intangible) t))
+        (should (stringp (overlay-get body-ov 'before-string)))))
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/toggle-no-fold-at-point ()
@@ -415,8 +410,11 @@ open (`crush--response-start' at point-max after a newline)."
           (should (equal messages '("No reasoning fold at point"))))))
     (crush-test--kill-crush-buffer)))
 
-(ert-deftest crush-test/toggle-via-tab-on-marker ()
-  "Pressing TAB on the … ellipsis should toggle the fold."
+(ert-deftest crush-test/fold-arrow-up-past-collapsed ()
+  "Collapsed fold body overlay must be intangible so navigation skips it.
+`intangible t' alongside `invisible t' ensures cursor motion commands
+line-move, previous-line, etc. jump over the hidden region instead of
+getting stuck at its boundary (which caused 'Beginning of buffer')."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 11)
@@ -424,19 +422,83 @@ open (`crush--response-start' at point-max after a newline)."
                 (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (crush-test--reasoning-fold-overlay)))
-        (goto-char (point-min))
-        (search-forward "…")
-        (goto-char (1- (point)))
-        (let ((keymap (get-text-property (point) 'keymap)))
-          (should (keymapp keymap))
-          (should (eq (lookup-key keymap (kbd "TAB"))
-                      #'crush-reasoning-toggle)))
-        (should (eq (lookup-key (symbol-value 'crush-chat-mode-map) (kbd "TAB"))
-                    #'crush--reasoning-tab))
-        (let ((binding (key-binding (kbd "TAB"))))
-          (if (eq binding #'crush-reasoning-toggle)
-              (call-interactively binding)
-            (call-interactively #'crush-reasoning-toggle)))
+        (should (overlayp body-ov))
+        ;; The body overlay must be both invisible and intangible.
+        (should (eq (overlay-get body-ov 'invisible) 'crush-reasoning-fold))
+        (should (eq (overlay-get body-ov 'intangible) t))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/fold-before-string-is-intangible ()
+  "The before-string marker must carry `intangible t' so arrow-up
+skips it entirely instead of getting stuck on the marker line."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((body-ov (crush-test--reasoning-fold-overlay)))
+        (should (overlayp body-ov))
+        (let ((bs (overlay-get body-ov 'before-string)))
+          (should (stringp bs))
+          (should (eq (get-text-property 0 'intangible bs) t)))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/fold-named-invisibility-spec ()
+  "Collapsed reasoning uses a named invisibility spec so buffer-reading
+tools (markdown-preview, export) see the full text."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((body-ov (crush-test--reasoning-fold-overlay)))
+        (should (overlayp body-ov))
+        ;; Named spec, not bare t.
+        (should (eq (overlay-get body-ov 'invisible) 'crush-reasoning-fold))
+        ;; buffer-invisibility-spec includes our spec.
+        (should (member 'crush-reasoning-fold buffer-invisibility-spec))
+        ;; The hidden text is still in the buffer.
+        (goto-char (overlay-start body-ov))
+        (should (search-forward "line 11" (overlay-end body-ov) t))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/fold-tab-from-preview ()
+  "TAB from inside the preview overlay should toggle the fold.
+The preview overlay carries the toggle keymap so TAB works from
+the visible preview lines."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((body-ov (crush-test--reasoning-fold-overlay))
+            (preview-ov (crush-test--reasoning-preview-overlay)))
+        (should (overlayp body-ov))
+        (should (overlayp preview-ov))
+        ;; Place point inside the preview overlay.
+        (goto-char (+ (overlay-start preview-ov) 2))
+        (should (<= (overlay-start preview-ov) (point)))
+        (should (< (point) (overlay-end preview-ov)))
+        ;; Toggle should expand the body via the preview overlay.
+        (crush-reasoning-toggle)
+        (should (eq (overlay-get body-ov 'crush-fold-state) 'expanded))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/toggle-via-tab-on-overlay ()
+  "Pressing TAB inside the body overlay should toggle the fold."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((body-ov (crush-test--reasoning-fold-overlay)))
+        ;; Point inside the body overlay.
+        (goto-char (overlay-start body-ov))
+        (funcall #'crush--reasoning-tab)
         (should (eq (overlay-get body-ov 'crush-fold-state) 'expanded))))
     (crush-test--kill-crush-buffer)))
 
@@ -460,6 +522,62 @@ open (`crush--response-start' at point-max after a newline)."
                      (push (apply #'format fmt args) messages))))
           (crush-reasoning-toggle)
           (should (equal messages '("No reasoning fold at point"))))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/fold-no-character-eating ()
+  "Expand/collapse cycles must not insert or delete buffer text.
+The buffer size stays constant across multiple toggle cycles."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((body-ov (crush-test--reasoning-fold-overlay))
+            (size-before (buffer-size)))
+        ;; Expand.
+        (goto-char (overlay-start body-ov))
+        (crush-reasoning-toggle)
+        (should (= (buffer-size) size-before))
+        ;; Collapse.
+        (goto-char (overlay-start body-ov))
+        (crush-reasoning-toggle)
+        (should (= (buffer-size) size-before))
+        ;; Expand again.
+        (goto-char (overlay-start body-ov))
+        (crush-reasoning-toggle)
+        (should (= (buffer-size) size-before))
+        ;; Collapse again.
+        (goto-char (overlay-start body-ov))
+        (crush-reasoning-toggle)
+        (should (= (buffer-size) size-before))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/fold-reasoning-region-contiguous ()
+  "The reasoning region stays contiguous — no gap from a fold marker.
+All text from the first reasoning char to the last has
+`crush-region-type' `reasoning'."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (goto-char (point-min))
+      (search-forward "line 1")
+      (let ((start (match-beginning 0)))
+        (search-forward "line 11")
+        (let ((end (point)))
+          ;; Every char between line 1 and line 11 must be reasoning.
+          (let ((pos start)
+                (bad nil))
+            (while (and (not bad) (< pos end))
+              (unless (eq (get-text-property pos 'crush-region-type) 'reasoning)
+                (setq bad t))
+              (setq pos (1+ pos)))
+            (should-not bad))
+          ;; No nil-typed gap in the reasoning span.
+          (should-not (text-property-any start end 'crush-region-type nil)))))
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/interrupt-auto-collapses-reasoning ()
@@ -592,10 +710,7 @@ open (`crush--response-start' at point-max after a newline)."
                 (push ov folds)))
             (should (= (length folds) 2))
             (dolist (ov folds)
-              (should (eq (overlay-get ov 'invisible) t)))
-            (goto-char (point-min))
-            (should (search-forward "…" nil t))
-            (should (search-forward "…" nil t))))
+              (should (eq (overlay-get ov 'invisible) 'crush-reasoning-fold)))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/multi-round-reasoning-fold-toggles-independently ()
@@ -617,10 +732,12 @@ open (`crush--response-start' at point-max after a newline)."
           (crush-facade--close-response
            (marker-position crush--response-start) expected-id)
           ;; Expand the first fold.
-          (goto-char (point-min))
-          (search-forward "…")
-          (goto-char (1- (point)))
-          (crush-reasoning-toggle)
+          (let ((folds nil))
+            (dolist (ov (overlays-in (point-min) (point-max)))
+              (when (overlay-get ov 'crush-fold-state)
+                (push ov folds)))
+            (goto-char (overlay-start (car folds)))
+            (crush-reasoning-toggle))
           (let ((folds nil))
             (dolist (ov (overlays-in (point-min) (point-max)))
               (when (overlay-get ov 'crush-fold-state)
@@ -631,7 +748,7 @@ open (`crush--response-start' at point-max after a newline)."
               (should (overlayp expanded))
               (should (overlayp collapsed))
               (should-not (overlay-get expanded 'invisible))
-              (should (eq (overlay-get collapsed 'invisible) t)))))
+              (should (eq (overlay-get collapsed 'invisible) 'crush-reasoning-fold)))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/multi-round-reasoning-with-tool-blocks ()
@@ -668,10 +785,7 @@ open (`crush--response-start' at point-max after a newline)."
                 (push ov folds)))
             (should (= (length folds) 2))
             (dolist (ov folds)
-              (should (eq (overlay-get ov 'invisible) t)))
-            (goto-char (point-min))
-            (should (search-forward "…" nil t))
-            (should (search-forward "…" nil t))))
+              (should (eq (overlay-get ov 'invisible) 'crush-reasoning-fold)))))
       (crush-test--cleanup))))
 
 ;;; 97. Region tagging: reasoning + tool blocks in one response

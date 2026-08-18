@@ -637,45 +637,74 @@ region."
                    front-sticky (read-only)
                    rear-nonsticky (read-only))))))
 
+(defvar-local crush--follow-p nil
+  "Whether the crush buffer's window is following the stream.
+Set by `crush--insert-at-eof' when the window-point was at point-max
+before insertion.  Persists across rapid process-filter invocations
+where `window-point' is stale (redisplay hasn't run yet).  Reset to
+nil when the user scrolls back (window-point diverges from
+point-max on a redisplay cycle).")
+
+(defvar-local crush--last-follow-point 0
+  "Last point-max value set by `crush--insert-at-eof' when following.
+Used to detect stale `window-point' during rapid process output:
+if `window-point' is behind this, the user scrolled back.")
+
 (defun crush--insert-at-eof (text &optional props)
   "Insert TEXT at point-max, applying PROPS (a plist of text properties).
-Returns the end position.  The cursor only moves to point-max if it
-was already there before insertion, allowing users to scroll back
-and read earlier content while the response grows.
+Returns the new point-max.
 
-Also preserves window scroll position for users who have scrolled back,
-preventing auto-scroll on insertion."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t)
-        (old-point (point))
-        (old-point-max (point-max))
-        (start (point-max)))
-    ;; Only preserve window scroll if cursor was NOT at point-max.
-    ;; When cursor is at EOF, let Emacs auto-scroll naturally.
-    (if (= old-point old-point-max)
-        ;; Cursor at EOF: advance to new point-max, let auto-scroll happen
+If the cursor is at point-max, advance it to the new end and let the
+window auto-scroll naturally.  Otherwise preserve the cursor position
+and every window's scroll position, so a user who has scrolled back
+can keep reading while content streams in.
+
+Uses `window-point' (not buffer point) because the process filter and
+sentinel run in other buffers, where the crush buffer's saved point is
+stale.  This mirrors comint's `comint-adjust-window-point' pattern.
+
+When following, sets `crush--follow-p' so the next call (which may run
+before redisplay updates `window-point') continues to follow.  When
+`window-point' is behind point-max AND behind the last follow position,
+the user scrolled back: stop following."
+  (let* ((inhibit-read-only t)
+         (inhibit-modification-hooks t)
+         (windows (get-buffer-window-list (current-buffer) nil t))
+         (selected-win (or (get-buffer-window (current-buffer) 'visible)
+                           (car windows)))
+         (old-point-max (point-max))
+         (snapshots (mapcar (lambda (w)
+                              (list w (window-start w) (window-point w)))
+                            windows))
+         (win-point (if selected-win
+                        (window-point selected-win)
+                      (point)))
+         ;; Follow when window-point is at point-max, OR when we were
+         ;; following and window-point hasn't diverged (stale redisplay
+         ;; keeps window-point at the old position, which is < pmax).
+         ;; If we were following but window-point is now well behind
+         ;; (the user scrolled back during a redisplay cycle), stop.
+         (follow (or (= win-point old-point-max)
+                     (and crush--follow-p
+                          (<= win-point old-point-max)
+                          (>= win-point (or crush--last-follow-point 0))))))
+    (goto-char old-point-max)
+    (insert text)
+    (when props
+      (add-text-properties old-point-max (point-max) props))
+    (if follow
         (progn
+          (setq-local crush--follow-p t)
+          (setq-local crush--last-follow-point (point-max))
           (goto-char (point-max))
-          (insert text)
-          (when props
-            (add-text-properties start (point) props))
-          (goto-char (point))
-          (point))
-      ;; Cursor scrolled back: preserve scroll position
-      (let ((window-starts
-             (mapcar (lambda (win)
-                       (cons win (window-start win)))
-                     (get-buffer-window-list (current-buffer) nil t))))
-        (goto-char (point-max))
-        (insert text)
-        (when props
-          (add-text-properties start (point) props))
-        ;; Restore window scroll positions
-        (dolist (ws window-starts)
-          (set-window-start (car ws) (cdr ws) nil))
-        ;; Restore cursor position
-        (goto-char old-point)
-        (point)))))
+          (when selected-win
+            (set-window-point selected-win (point-max))))
+      (setq-local crush--follow-p nil)
+      (dolist (s snapshots)
+        (set-window-start (nth 0 s) (nth 1 s) nil)
+        (set-window-point (nth 0 s) (nth 2 s)))
+      (goto-char win-point))
+    (point-max)))
 
 (defun crush-get-attachments-for-prompt (prompt-id)
   "Return list of attachment regions for PROMPT-ID.
@@ -1060,6 +1089,9 @@ buffer-local and never leaves via the network; only the hash is sent."
       (crush-chat-mode 1)
       (crush--install-font-lock-guard t)
       (crush--update-header-line)
+      ;; Named invisibility spec: collapsed reasoning is hidden from
+      ;; display but visible to buffer-reading tools (export, preview).
+      (add-to-invisibility-spec 'crush-reasoning-fold)
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (erase-buffer)
@@ -1189,34 +1221,29 @@ so it cannot land inside a just-inserted tool block."
     (define-key map (kbd "RET") #'crush-reasoning-toggle)
     (define-key map [mouse-1] #'crush-reasoning-toggle)
     map)
-  "Keymap on the reasoning collapse marker.
+  "Keymap on the reasoning fold body overlay.
 TAB / RET (and mouse-1 on GUIs, ignored harmlessly in TUI) toggle
 `crush-reasoning-toggle'.")
 
-(defun crush--insert-fold-ellipsis (prompt-id response-to)
-  "Insert the reasoning-fold ellipsis (\"\\n…\") tagged with the exchange.
-The ellipsis is real buffer text inserted inside the response region.
-Without `crush-response-to' it punctures the contiguous property run
-that `crush--tool-rounds' walks to bound the response, so
-`next-single-property-change' would stop at the fold marker and drop
-everything after it (the hidden reasoning tail and the final assistant
-summary) from history replay.  PROMPT-ID and RESPONSE-TO tag the whole
-\"\\n…\".  Returns the end position of the inserted text."
-  (insert (propertize "\n…"
-                      'keymap crush--reasoning-fold-keymap
-                      'crush-fold-mark t
-                      'crush-prompt-id prompt-id
-                      'crush-response-to response-to))
-  (point))
+(defun crush--reasoning-fold-marker (start end)
+  "Return a display-only string for the fold marker.
+START and END are the body overlay boundaries.  The marker shows
+the hidden line and char count.  Carries the toggle keymap."
+  (let* ((lines (count-lines start end))
+         (chars (- end start))
+         (text (format "... reasoning (%d lines, %d chars)\n" lines chars)))
+    (propertize text
+                'keymap crush--reasoning-fold-keymap
+                'intangible t)))
 
 (defun crush--reasoning-install-fold (region)
   "Install the reasoning fold on REGION (START . END) of current buffer.
-When the reasoning is `crush-reasoning-preview-lines' lines or fewer,
-the overlay stays visible with no fold.  When it exceeds that, the
-first N lines are shown via a preview overlay, a `…' (U+2026) ellipsis
-is inserted as real text carrying the toggle keymap and
-`crush-fold-mark', and the remaining lines are hidden by an
-`invisible' body overlay.  Returns the body overlay, or nil."
+Creates two overlays: a preview overlay (first N lines, always
+visible) and a body overlay (the rest, hidden with a display-only
+`before-string' marker).  No buffer text is inserted.  When the
+reasoning is `crush-reasoning-preview-lines' lines or fewer, the
+original reasoning overlay stays as-is with no fold.  Returns the
+body overlay, or nil."
   (let* ((start (car region))
          (end (cdr region))
          (start-m (copy-marker start))
@@ -1239,27 +1266,24 @@ is inserted as real text carrying the toggle keymap and
               nil)
           (let ((inhibit-read-only t)
                 (inhibit-modification-hooks t)
-                (preview-end nil)
-                (ellipsis-end nil))
+                (preview-end nil))
             (save-excursion
               (goto-char start-m)
               (forward-line (1- preview-lines))
               (end-of-line)
               (setq preview-end (point)))
-            (save-excursion
-              (goto-char preview-end)
-              (setq ellipsis-end
-                    (crush--insert-fold-ellipsis crush--prompt-id crush--prompt-id)))
-            (let ((preview-ov (make-overlay start-m preview-end
-                                            nil nil nil)))
+            (let ((preview-ov (make-overlay start-m preview-end nil nil nil)))
               (overlay-put preview-ov 'crush-overlay t)
               (overlay-put preview-ov 'crush-reasoning-preview t)
               (overlay-put preview-ov 'face 'crush-reasoning-face)
-              (crush--freeze-region (marker-position start-m)
-                                    ellipsis-end)
-              (move-overlay ov ellipsis-end end-m)
+              (overlay-put preview-ov 'keymap crush--reasoning-fold-keymap)
+              (move-overlay ov preview-end end-m)
               (overlay-put ov 'crush-fold-state 'collapsed)
-              (overlay-put ov 'invisible t)
+              (overlay-put ov 'invisible 'crush-reasoning-fold)
+              (overlay-put ov 'intangible t)
+              (overlay-put ov 'before-string
+                           (crush--reasoning-fold-marker preview-end end-m))
+              (overlay-put ov 'keymap crush--reasoning-fold-keymap)
               (overlay-put ov 'crush-reasoning nil)
               (overlay-put ov 'crush-reasoning-origin
                            (marker-position start-m))
@@ -1269,124 +1293,68 @@ is inserted as real text carrying the toggle keymap and
 
 (defun crush-reasoning-toggle ()
   "Toggle the reasoning fold at point.
-When point is on the `…' ellipsis or inside a collapsed (hidden)
-reasoning body, expand it.  When inside an expanded reasoning
-region, collapse it (re-install the preview).  Otherwise signal
-a message.  Triggered by TAB / RET on the ellipsis (real text
-keymap), by `C-c c r', or directly."
+Finds an overlay with `crush-fold-state' at point.  If point is in
+the preview overlay, finds the adjacent body overlay.  If collapsed,
+expands it (clear `invisible' and `before-string').  If expanded,
+collapses it (re-set `invisible' and `before-string').  If no fold
+overlay is at point, signals a message."
   (interactive)
-  (if (get-text-property (point) 'crush-fold-mark)
-      (crush--reasoning-expand)
-    (let ((ov (cl-find-if
-               (lambda (o) (overlay-get o 'crush-fold-state))
-               (overlays-at (point)))))
-      (if (not (overlayp ov))
-          (message "No reasoning fold at point")
-        (if (eq (overlay-get ov 'crush-fold-state) 'collapsed)
-            (crush--reasoning-expand)
-          (crush--reasoning-collapse ov))))))
+  (let* ((ov (cl-find-if
+              (lambda (o) (overlay-get o 'crush-fold-state))
+              (overlays-at (point))))
+         (preview-ov (when (not ov)
+                       (cl-find-if
+                        (lambda (o) (overlay-get o 'crush-reasoning-preview))
+                        (overlays-at (point))))))
+    (when (and preview-ov (not ov))
+      (setq ov (cl-find-if
+                (lambda (o)
+                  (and (overlay-get o 'crush-fold-state)
+                       (= (overlay-start o) (overlay-end preview-ov))))
+                (overlays-in (point-min) (point-max)))))
+    (if (not (overlayp ov))
+        (message "No reasoning fold at point")
+      (if (eq (overlay-get ov 'crush-fold-state) 'collapsed)
+          (crush--reasoning-expand ov)
+        (crush--reasoning-collapse ov)))))
 
-(defun crush--reasoning-expand ()
-  "Expand the reasoning fold closest to point.
-Searches backward from point for the `…' ellipsis, then the adjacent
-body and preview overlays.  Deletes the ellipsis and preview overlay,
-extends the body overlay to cover the full reasoning region, and makes
-it visible."
-  (let* ((ellipsis-pos (save-excursion
-                         (when (search-backward "…" nil t)
-                           (point)))))
-    (unless ellipsis-pos
-      (setq ellipsis-pos (save-excursion
-                           (goto-char (point-min))
-                           (when (search-forward "…" nil t)
-                             (1- (point))))))
-    (let ((body-ov (when ellipsis-pos
-                     (car (cl-remove-if-not
-                           (lambda (o)
-                             (and (overlay-get o 'crush-fold-state)
-                                  (= (overlay-start o)
-                                     (1+ ellipsis-pos))))
-                           (overlays-in (point-min) (point-max))))))
-          (preview-ov (when ellipsis-pos
-                        (car (cl-remove-if-not
-                              (lambda (o)
-                                (and (overlay-get o 'crush-reasoning-preview)
-                                     (= (overlay-end o)
-                                        (1- ellipsis-pos))))
-                              (overlays-in (point-min) (point-max)))))))
-      (when (and (overlayp body-ov) (overlayp preview-ov) ellipsis-pos)
-        (let ((inhibit-read-only t)
-              (inhibit-modification-hooks t)
-              (preview-start (overlay-start preview-ov))
-              (full-end (overlay-end body-ov)))
-          (overlay-put body-ov 'crush-reasoning-origin preview-start)
-          (goto-char ellipsis-pos)
-          (delete-region ellipsis-pos (1+ (point)))
-          (delete-overlay preview-ov)
-          (move-overlay body-ov preview-start full-end)
-          (overlay-put body-ov 'crush-fold-state 'expanded)
-          (overlay-put body-ov 'invisible nil)
-          (message "Reasoning expanded"))))))
+(defun crush--reasoning-expand (body-ov)
+  "Expand the reasoning body overlay BODY-OV.
+Clears `invisible' and `before-string' so the full reasoning text is
+visible.  No buffer text is inserted or deleted."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
+    (overlay-put body-ov 'crush-fold-state 'expanded)
+    (overlay-put body-ov 'invisible nil)
+    (overlay-put body-ov 'intangible nil)
+    (overlay-put body-ov 'before-string nil)
+    (message "Reasoning expanded")))
 
 (defun crush--reasoning-collapse (body-ov)
   "Collapse the reasoning body overlay BODY-OV.
-Re-installs the preview overlay and `…' ellipsis, hiding the body
-beyond `crush-reasoning-preview-lines' lines."
-  (let* ((origin (overlay-get body-ov 'crush-reasoning-origin))
-         (full-end (overlay-end body-ov))
-         (preview-lines (or crush-reasoning-preview-lines 10))
-         (start-m (copy-marker (or origin (overlay-start body-ov))))
-         (end-m (copy-marker full-end t)))
-    (save-excursion
-      (goto-char start-m)
-      (beginning-of-line)
-      (set-marker start-m (point)))
-    (let ((total-lines (count-lines start-m end-m)))
-      (when (> total-lines preview-lines)
-        (let ((inhibit-read-only t)
-              (inhibit-modification-hooks t)
-              (preview-end nil)
-              (ellipsis-end nil))
-          (save-excursion
-            (goto-char start-m)
-            (forward-line (1- preview-lines))
-            (end-of-line)
-            (setq preview-end (point)))
-          (save-excursion
-            (goto-char preview-end)
-            ;; The exchange id is read from the text at the fold origin
-            ;; (the reasoning region), not the buffer's current
-            ;; `crush--prompt-id', which may have rotated since finalize.
-            (setq ellipsis-end
-                  (crush--insert-fold-ellipsis
-                   (get-text-property (or origin (overlay-start body-ov))
-                                      'crush-prompt-id)
-                   (get-text-property (or origin (overlay-start body-ov))
-                                      'crush-response-to))))
-          (let ((preview-ov (make-overlay start-m preview-end
-                                          nil nil nil)))
-            (overlay-put preview-ov 'crush-overlay t)
-            (overlay-put preview-ov 'crush-reasoning-preview t)
-            (overlay-put preview-ov 'face 'crush-reasoning-face)
-            (crush--freeze-region (marker-position start-m)
-                                  ellipsis-end)
-            (move-overlay body-ov ellipsis-end end-m)
-            (overlay-put body-ov 'crush-fold-state 'collapsed)
-            (overlay-put body-ov 'invisible t)
-            (message "Reasoning collapsed")))))
-    (set-marker start-m nil)
-    (set-marker end-m nil)))
+Re-sets `invisible' and `before-string' so the body is hidden behind
+a display-only marker.  No buffer text is inserted or deleted."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
+    (overlay-put body-ov 'crush-fold-state 'collapsed)
+    (overlay-put body-ov 'invisible 'crush-reasoning-fold)
+    (overlay-put body-ov 'intangible t)
+    (overlay-put body-ov 'before-string
+                 (crush--reasoning-fold-marker
+                  (overlay-start body-ov) (overlay-end body-ov)))
+    (message "Reasoning collapsed")))
 
 (defun crush--reasoning-tab ()
   "Handle TAB in crush chat buffers.
-Toggles the reasoning fold when point is on a fold marker (or the
-fold's overlay); otherwise falls back to the major mode's or global
-TAB binding."
+Toggles the reasoning fold when point is inside a fold body overlay
+or the preview overlay; otherwise falls back to the major mode's or
+global TAB binding."
   (interactive)
-  (if (or (get-text-property (point) 'crush-fold-mark)
-          (cl-find-if
-           (lambda (o) (overlay-get o 'crush-fold-state))
-           (overlays-at (point))))
+  (if (cl-find-if
+       (lambda (o)
+         (or (overlay-get o 'crush-fold-state)
+             (overlay-get o 'crush-reasoning-preview)))
+       (overlays-at (point)))
       (crush-reasoning-toggle)
     (let ((fallback (or (lookup-key (current-local-map) (kbd "TAB"))
                         (lookup-key (current-global-map) (kbd "TAB")))))
@@ -1522,14 +1490,21 @@ Runs in the crush buffer, which owns all response text."
       ;; Generate new prompt ID BEFORE inserting marker
       (setq-local crush--prompt-id (crush--generate-id))
       (crush--insert-input-separator))
+    ;; If the window was following the stream, advance cursor to the
+    ;; new input separator so the user lands at the editable prompt.
+    (when crush--follow-p
+      (let ((win (get-buffer-window (current-buffer) 'visible)))
+        (goto-char (point-max))
+        (when win
+          (set-window-point win (point-max)))
+        (setq-local crush--last-follow-point (point-max))))
     (setq-local crush-process nil)
     (setq-local crush--response-start nil)
     (setq-local crush--attachments nil)
     (setq-local crush--tool-loop-count 0)
     (crush--input-ring-write)
     (crush--update-header-line)
-    (setq-local buffer-undo-list nil)
-    (goto-char (point-max))))
+    (setq-local buffer-undo-list nil)))
 
 (defun crush-facade--finalize ()
   "Finalize the current response via the facade.
@@ -1836,7 +1811,9 @@ for wire resume.  Returns the end position of the inserted block."
   ;; is still active and lacks a trailing newline.  Stop reasoning
   ;; now so the tool block is visually separated from the reasoning
   ;; and the reasoning region boundaries are correct.
-  (crush--reasoning-stop)
+  ;; Wrap in `save-excursion' so `crush--reasoning-stop`'s internal
+  ;; `goto-char (point-max)` does not yank the user's cursor.
+  (save-excursion (crush--reasoning-stop))
   (let* ((name (plist-get tool-calls :name))
          (id (plist-get tool-calls :id))
          (args (or (and (stringp (plist-get tool-calls :args-json))
@@ -1938,9 +1915,10 @@ for wire resume.  Returns the end position of the inserted block."
     (setq-local crush--response-start (point-marker))
     (setq-local crush--input-ring-index 0)
     (setq-local crush--tool-loop-count 0)
+    (setq-local crush--follow-p t)
+    (setq-local crush--last-follow-point (point-max))
     (crush-facade--send prompt context has-context)
-    (setq-local crush--attachments nil)
-    (goto-char (point-max))))
+    (setq-local crush--attachments nil)))
 
 (defun crush-interrupt ()
   "Interrupt the currently running Crush process."
@@ -1971,9 +1949,14 @@ for wire resume.  Returns the end position of the inserted block."
                  (cons (overlay-start ov) (overlay-end ov)))))
             (crush--reasoning-reset))
           (crush--insert-input-separator)))
+      (when crush--follow-p
+        (let ((win (get-buffer-window (current-buffer) 'visible)))
+          (goto-char (point-max))
+          (when win
+            (set-window-point win (point-max)))
+          (setq-local crush--last-follow-point (point-max))))
       (setq-local crush--tool-loop-count 0)
       (setq-local buffer-undo-list nil)
-      (goto-char (point-max))
       (message "Crush process interrupted"))))
 
 (defun crush-clear-buffer ()
@@ -1982,6 +1965,8 @@ Also rotates the buffer's session UUID, so the next prompt gets a
 cold hyperscale cache (new x-session-id / x-session-affinity)."
   (interactive)
   (setq-local crush--continue nil)
+  (setq-local crush--follow-p nil)
+  (setq-local crush--last-follow-point 0)
   (crush--init-session-uuid)
   (crush-facade--stream-clear)
   ;; Kill any live process sessions this buffer owns.

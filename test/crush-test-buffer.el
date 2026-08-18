@@ -1089,6 +1089,53 @@ the live stream."
                            "streaming text"))))
     (crush-test--cleanup)))
 
+;;; Window point preservation
+
+;; These tests assert the window-point-aware behavior of
+;; `crush--insert-at-eof': it must read the window's point (not the
+;; stale buffer point) so a user who scrolled back keeps their place
+;; even when the insertion runs from a process filter/sentinel.
+
+(ert-deftest crush-test/insert-at-eof-preserves-window-point ()
+  "Insertion must not move a window whose point is not at point-max.
+The buffer's own point may be stale (as in a process filter); the
+window-point is the authoritative cursor position."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "line one\nline two\n"))
+        (let ((win (display-buffer buf t)))
+          (select-window win)
+          ;; Force the window point to 9 while buffer point stays at max.
+          (set-window-point win 9)
+          (let* ((saved-win-point (window-point win))
+                 (saved-win-start (window-start win)))
+            (should (= saved-win-point 9))
+            (should (< saved-win-point (with-current-buffer buf (point-max))))
+            (with-current-buffer buf
+              (crush--insert-at-eof "appended text"))
+            (should (= (window-point win) saved-win-point))
+            (should (= (window-start win) saved-win-start)))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/insert-at-eof-follows-window-point-at-end ()
+  "Insertion must advance a window whose point is at point-max."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "existing\n"))
+        (let ((win (display-buffer buf t)))
+          (select-window win)
+          (set-window-point win (point-max))
+          (let ((old-max (with-current-buffer buf (point-max))))
+            (with-current-buffer buf
+              (crush--insert-at-eof "appended text"))
+            (should (= (window-point win) (point-max)))
+            (should (> (with-current-buffer buf (point-max)) old-max)))))
+    (crush-test--cleanup)))
+
 ;;; Custom input ring
 
 (ert-deftest crush-test/custom-input-ring-initialized ()
