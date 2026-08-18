@@ -94,8 +94,8 @@ initialization.  Should be a model name like
 (defcustom crush-reasoning-preview-lines 10
   "Number of reasoning lines to show in the collapsed preview.
 When a reasoning region contains more than this many lines, the first
-N lines are shown as a preview and the rest are hidden behind a `…'
-ellipsis toggle.  Set to 0 to always collapse with no preview.
+N lines are shown as a preview and the rest are hidden behind a fold
+marker.  Set to 0 to always collapse with no preview.
 Must be a non-negative integer."
   :type 'integer
   :group 'crush)

@@ -97,7 +97,7 @@ When `crush-openai-thinking` is non-nil, the gateway's internal thinking mode is
 
 ### crush-reasoning-preview-lines
 
-Number of reasoning lines to show in the collapsed preview (default 10). When the reasoning region exceeds this, the first N lines are shown with a `…` ellipsis toggle; the remainder is hidden behind an invisible overlay. Press `TAB` or `C-c c r` on the ellipsis to expand or re-collapse. Set to 0 to always collapse with no preview.
+Number of reasoning lines to show in the collapsed preview (default 10). When the reasoning region exceeds this, the first N lines are shown as a preview; the remainder is hidden behind an invisible overlay. Press `TAB` or `C-c c r` on the preview to expand or re-collapse. Set to 0 to always collapse with no preview.
 
 Reasoning is a display aid and is excluded from model-visible history by default; set `crush-hyper-history-include-reasoning` to `t` to re-send it as the `reasoning_content` field on the assistant message (per [HYPER-API.md §3.4](HYPER-API.md)).
 

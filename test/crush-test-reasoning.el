@@ -249,8 +249,7 @@ open (`crush--response-start' at point-max after a newline)."
 
 (ert-deftest crush-test/finalize-auto-collapses-reasoning ()
   "Finalize should auto-collapse reasoning > 10 lines with a preview.
-The body overlay is invisible with a `before-string' marker.  No `…'
-character is inserted into the buffer."
+The body overlay is invisible with a `before-string' marker."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 12)
@@ -266,10 +265,8 @@ character is inserted into the buffer."
         (should (eq (overlay-get preview-ov 'face) 'crush-reasoning-face))
         (should (= (count-lines (overlay-start preview-ov)
                                 (overlay-end preview-ov))
-                   10))
-        ;; No ellipsis character in the buffer.
-        (goto-char (point-min))
-        (should-not (search-forward "…" nil t))))
+                   10))))
+
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/finalize-no-fold-for-10-or-fewer-lines ()
@@ -284,14 +281,13 @@ character is inserted into the buffer."
       (should-not (crush-test--reasoning-preview-overlay))
       (goto-char (point-min))
       (should (search-forward "line 1" nil t))
-      (should (search-forward "line 10" nil t))
-      ;; No ellipsis in the buffer.
-      (should-not (search-forward "…" nil t)))
+      (should (search-forward "line 10" nil t)))
+
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/finalize-fold-marker-is-before-string ()
   "The fold marker is a display-only `before-string' on the body overlay.
-No `crush-fold-mark' text property, no `…' in the buffer."
+No `crush-fold-mark' text property."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 11)
@@ -306,9 +302,6 @@ No `crush-fold-mark' text property, no `…' in the buffer."
           (should (keymapp (get-text-property 0 'keymap bs)))
           (should (eq (lookup-key (get-text-property 0 'keymap bs) (kbd "TAB"))
                       #'crush-reasoning-toggle))))
-      ;; No ellipsis character in the buffer.
-      (goto-char (point-min))
-      (should-not (search-forward "…" nil t))
       ;; No crush-fold-mark text property anywhere.
       (let ((pos (point-min))
             (found nil))

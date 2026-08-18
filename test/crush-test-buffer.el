@@ -2210,15 +2210,9 @@ spurious tool result."
 
 (ert-deftest crush-test/history-turns-reasoning-fold-keeps-final-summary ()
   "A reasoning fold between a tool round and the final summary must not
-drop the summary from replay.
-
-The fold ellipsis is real buffer text inside the response region.
-Without `crush-response-to' on it (and its leading newline), the
-property run `crush--tool-rounds' walks to bound the response is
-punctured, so `next-single-property-change' stops at the fold marker
-and everything after it -- the hidden reasoning tail and the final
-assistant summary -- is dropped from history replay.  The ellipsis must
-carry the exchange's prompt/response tags."
+drop the summary from replay.  The fold marker is a display-only
+`before-string' on the body overlay, so the reasoning region is
+contiguous in the buffer and `crush--tool-rounds' sees the full response."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
