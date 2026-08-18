@@ -5,47 +5,113 @@ package is structured, how each provider works, how the chat buffer
 tracks its content, and how to hack on it. User-facing documentation
 lives in [README.md](README.md).
 
+## Design Principles
+
+These principles are load-bearing: every file and subsystem follows
+them, and new code must too.
+
+1. **The buffer is the single source of truth.** Every outgoing HTTP
+   request — the initial send and every tool-loop follow-up — is
+   reconstructed from the buffer's tagged regions (text properties) at
+   send time. There is no cache, side table, or temporary store holding
+   message history or tool state. Killing and reopening the buffer
+   rebuilds an identical request. All conversation state lives in the
+   buffer; persistence via **file local variables** is the planned
+   next step (currently Phase 2 roadmap work — see
+   `crush--session-uuid`).
+
+2. **The buffer is append-only and self-freezing.** The buffer only
+   ever grows at point-max; completed content (prompts, responses,
+   tool blocks, reasoning) is frozen read-only, and history/state is
+   enforced on the frozen regions. Read-only is applied via **text
+   properties** (`read-only` with `front-sticky`/`rear-nonsticky`
+   boundaries), never overlays; the current input area stays editable.
+
+3. **Text properties carry state; overlays are for special UI only.**
+   Metadata (region type, prompt id, response linkage, tool-call
+   payloads) is stored as text properties so it survives
+   font-lock refontification. Overlays are reserved for transient,
+   display-only features — the reasoning highlight + fold and the
+   clickable error pane — and never carry `read-only`.
+
+4. **Protocols live in their own files.** The provider protocol
+   (`crush-provider.el`), the OpenAI chat-completions + tool protocol
+   (`crush-openai.el`), the facade stream protocol (`crush-stream.el`),
+   and the process-handler session protocol (`crush-process.el`) are
+   each a dedicated, self-contained file with a single dependency
+   direction. `crush.el` only orchestrates the buffer and calls into
+   them.
+
+5. **Providers are abstracted and reuse the protocols.** Every provider
+   is a self-contained file implementing the `crush-provider-*`
+   generics. The shared wire work (request composition, SSE parsing,
+   curl transport, tool dispatch) is implemented once in
+   `crush-openai.el`; the concrete hyper provider is a thin shim that
+   maps its configuration onto that client.
+
+6. **Buffer-free sliding layers.** The facade stream protocol
+   (`crush-stream.el`) and the process handler (`crush-process.el`)
+   never read or write the crush buffer. The main loop in `crush.el`
+   is the only place with buffer access, and it threads progress,
+   deltas, and errors through callbacks into those layers.
+
+7. **Everything inserted must be valid markdown.** The chat buffer's
+   parent mode is `markdown-mode` (fallback `text-mode`); bodies,
+   attachments, tool blocks, and the input divider are all rendered as
+   markdown constructs (fenced code blocks, bold headers, horizontal
+   rules) so native font-lock and preview/export stay correct.
+
+8. **No persistent process.** Each prompt fires a new HTTP request.
+   Tool execution is the one exception: interactive commands run in PTY
+   sessions owned by `crush-process.el`, scoped per crush buffer and
+   capped at `crush-process-max-sessions`.
+
 ## Project Layout
 
 ```
 crush.el/               # Package root
-  crush.el              # Core: config, provider protocol include, chat mode, helpers, commands
+  crush.el              # Core: config, buffer orchestration, chat mode, helpers, commands
   crush-provider.el     # Provider protocol: base struct + crush-provider-* generics
   crush-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
   crush-stream.el       # Facade stream protocol: stream state, progress, error pane
   crush-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over crush-openai)
+  crush-process.el      # Process handler: PTY sessions, output buffering, yield, stdin, cleanup
+  crush-tools.el        # Local tool implementations: exec_command + write_stdin (over crush-process)
   crush-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
-  crush-tools.el        # Local tool implementations: the bash tool (registers into the tool registry)
+  crush-debug-tools.el  # On-demand debug commands (region dump, history reconstruction; not loaded by default)
   test/                 # ERT test suite (see "Hacking" below)
 ```
 
 Dependency direction: `crush-provider.el` has no dependencies;
 `crush-openai.el` requires `crush-provider` (for the context preamble);
 `crush-stream.el` requires `crush-provider`; `crush-xxh3.el` has no
-dependencies (pure math); `crush-hyper-provider.el` requires
-`crush-provider` + `crush-openai` + `crush-xxh3`; `crush-tools.el`
-requires `crush-openai` and registers its bash tool into the tool
-registry at load; `crush.el` requires all six. Shared runtime plumbing
+dependencies (pure math); `crush-process.el` requires only `cl-lib`
+and `subr-x`; `crush-hyper-provider.el` requires `crush-provider` +
+`crush-openai` + `crush-xxh3`; `crush-tools.el` requires
+`crush-openai` + `crush-process` and registers its tools at load;
+`crush.el` requires all seven. Shared runtime plumbing
 (`crush-facade--append-delta`, `crush-facade--record-error`,
 `crush--debug-log`) stays in `crush.el` — the providers call it through
 buffer-local process references and `declare-function` stubs.
 
 ## Provider Abstraction
 
-All provider interaction goes through a provider protocol
-(`crush-provider-send-prompt`, `crush-provider-interrupt`,
-`crush-provider-active-p`, `crush-provider-cleanup`,
-`crush-provider-grant-permission`). The protocol and shared base struct
-live in `crush-provider.el`; the concrete provider is a dedicated,
-buffer-unaware file:
+All provider interaction goes through a provider protocol (the
+`cl-defgeneric` methods `crush-provider-send-prompt`,
+`crush-provider-interrupt`, `crush-provider-active-p`,
+`crush-provider-cleanup`, `crush-provider-grant-permission`, plus the
+internal `crush-provider--tool-calls` and
+`crush-provider--tool-results` used by the tool loop). The protocol and
+the shared `crush-provider` base struct live in `crush-provider.el`;
+each concrete provider is a dedicated, buffer-unaware file:
 
 - `crush-hyper-provider.el` — the default implementation: direct HTTP
   to the Charm Hyper gateway (see below).
 
-`cl-defstruct` + `cl-defgeneric`/`cl-defmethod` provide the protocol.
 The shared `crush-provider` base struct has slots `buffer`,
-`working-directory`, `type`; the hyper provider adds its own slots
-(base URL, token, model).
+`completion-action`, `working-directory`, `application-count`
+(default 1), and `type`. The hyper provider subclasses it and adds its
+own slots (base URL, token, model, session-affinity hash, x-crush-id).
 
 ## Hyper provider (primary)
 
@@ -70,7 +136,7 @@ x-crush-id) and mapping the provider protocol onto the client's
    the JSON body go to curl over stdin. `data-binary = @-` is the
    **last** config line so curl reads the rest of stdin as the body.
 2. SSE frames are parsed incrementally in the process filter
-   (`crush--hyper-curl-filter` → `crush--hyper-sse-feed`); content
+   (`crush--hyper-curl-filter` → `crush-openai-sse-feed`); content
    deltas are emitted to the facade's `:on-delta` callback
    (`crush-facade--append-delta`), which appends them in order and
    drives the reasoning overlay.
@@ -89,70 +155,76 @@ tagged regions is folded into each request's messages array as
 Because the buffer is the source of truth, `C-c c k` (clear) starts a
 fresh conversation naturally.
 
-Tool calls replay in the OpenAI function-calling shape: a `tool` turn
-carrying `(id name args . raw-result)` emits an assistant `tool_calls`
-declaration (content `null`) followed by the `role: "tool"` result
-message with the matching `tool_call_id`. Only the raw
-`<command>/<output>/<exit_code>` result and the stored call id travel —
-never the rendered toolbar. Buffers created before the nested
-`tool-output` region existed fall back to the bare `(tool . text)` turn
-with a legacy `tool_call_id: "unknown"`.
+Tool calls replay in the OpenAI function-calling shape: an assistant
+`tool_calls` declaration (content `null`) followed by a
+`role: "tool"` result message with the matching `tool_call_id`. Only
+the raw result text and the stored call id travel — never the rendered
+toolbar. Buffers created before the nested `tool-output` region existed
+fall back to the bare `(tool . text)` turn with a legacy
+`tool_call_id: "unknown"`.
 
 Each buffer also owns an opaque session UUID (rotated by `C-c c k`),
 whose XXH3-64 hash is sent as the `x-session-id` /
 `x-session-affinity` headers on every hyper request, enabling
 server-side prefix/token caching (HYPER-API.md §3.1). The raw UUID
 never leaves the machine; only the 16-hex hash goes over TLS. Disable
-with `crush-hyper-session-cache-p` (default t).
+with `crush-hyper-session-cache-p` (default t). Persistence of the UUID
+as a file local variable is planned but not yet implemented.
 
 ### Tool calls
 
 When `crush-tools-enabled` is non-nil (default), the model may call a
-tool. The tool block is rendered in the buffer as markdown:
+tool. There are two tools, both implemented in `crush-tools.el` as thin
+wrappers over the `crush-process.el` session handler:
 
-**🔧 tool: bash**
+- `exec_command` — starts a command in a new PTY session, yields for
+  the requested window (default `crush-process-yield-ms`, clamped
+  250–30000 ms), and reports either `Process exited with code N` or
+  `Process running with session ID N` plus the captured output.
+- `write_stdin` — writes to a live session (identified by the session
+  id echoed by `exec_command`) and returns the output produced since
+  the last report.
 
-**command:** `{"command":"ls"}`  
-**exit:** `0`  
-**output:**
+The tool block is rendered in the buffer as valid markdown:
+
+**🔧 exec_command** — ran `ls`, yield 10s, shell /bin/bash, login no
 
 ```
-<command>ls</command>
-<output>
+Process exited with code 0
+Output:
 ARCHITECTURE.md
 CONTRIBUTING.md
 crush.el
-crush-hyper-provider.el
-crush-openai.el
-crush-provider.el
-CRUSH-SPEC.md
-crush-stream.el
-crush-tools.el
-crush-xxh3.el
-format.sh
-HYPER-API.md
-LICENSE
-README.md
-TODO.md
-</output>
-<exit_code>0</exit_code>
+...
 ```
 
 The output is enclosed in a fenced code block whose fence length is one
-backtick longer than the longest run of backticks in the output, so
-nested fences never break the block. The tool block is read-only and
-tagged `crush-region-type 'tool'`. Inside it, the raw tool result (the
-`<command>/<output>/<exit_code>` text between the fences) is tagged
+backtick longer than the longest run of backticks in the output
+(`crush--fence-str`), so nested fences never break the block. The tool
+block is read-only and tagged `crush-region-type 'tool'`; inside it,
+the raw result text (between the fences) is tagged
 `crush-region-type 'tool-output'` — a nested region that survives
-response re-tagging and region persistence — and the block carries the
-call's `crush-tool-call` metadata (id, name, args). When the exchange
-enters conversation history, only the raw result and the real
-`tool_call_id` travel, never the rendered toolbar.
+response re-tagging — and the block carries the call's
+`crush-tool-call` metadata (id, name, args). When the exchange enters
+conversation history, only the raw result and the real `tool_call_id`
+travel, never the rendered markup.
 
-Tools run without confirmation (`yolo` mode). Up to
-`crush-tool-loop-max` (default 8) consecutive tool-call rounds are
-supported per prompt; the loop stops after that limit or when the model
-produces a content answer instead of tool calls.
+The tool _protocol_ — the `crush-openai-tool-call` struct, the registry
+(`crush-openai-tool-registry`), dispatch (`crush-openai-execute-tool`),
+argument parsing, and the execution policy — lives in
+`crush-openai.el`; `crush-tools.el` only implements the concrete tools
+and registers them at load.
+
+### Process handler (crush-process.el)
+
+General-purpose, model-neutral, buffer-unaware layer that owns PTY
+sessions. It handles spawning (with sanitized env: `PAGER=cat`,
+`GIT_PAGER=cat`, `TERM=dumb`), output buffering, yield/deadline
+draining, stdin writes, and cleanup. Sessions live in a global registry
+keyed by session id and are scoped per crush buffer through the `owner`
+slot; `crush-clear-buffer` runs `crush-process--cleanup-buffer` to kill
+every session owned by the cleared buffer. `crush-process-max-sessions`
+(default 128) caps concurrent sessions.
 
 ### Current limitations
 
@@ -171,14 +243,31 @@ provides the chat keybindings and hooks. Rendering, prompt tracking,
 and fontification are all implemented with text properties, markers,
 and markdown native font-lock instead of comint.
 
-### Read-Only Handling
+### Append-Only and Read-Only Handling
 
-Prompt text and completed exchanges are made read-only via **text
-properties** (`read-only` with `front-sticky`/`rear-nonsticky`
-boundaries), so the history can't be edited while the current input
-area stays fully editable. A font-lock guard
+The buffer only grows at point-max (streamed deltas, responses, tool
+blocks, and new input dividers are all inserted at EOF). Prompt text
+and completed exchanges are frozen read-only via **text properties**
+(`read-only` with `front-sticky`/`rear-nonsticky` boundaries), so the
+history can't be edited while the current input area stays fully
+editable. A font-lock guard
 (`font-lock-unfontify-region-function`) and a `post-command-hook`
 re-assert the boundaries after markdown-mode refontifies the buffer.
+
+The **sanctioned overlay exceptions** (they carry faces and display
+properties, never `read-only`):
+
+- **Reasoning (CoT) highlight + fold.** The reasoning span is
+  highlighted by an overlay and, when longer than
+  `crush-reasoning-preview-lines`, folded via a two-overlay model: an
+  always-visible preview overlay over the first N lines, and a body
+  overlay carrying `invisible` + a display-only `before-string` marker.
+  No buffer text is inserted or deleted during toggle, keeping the
+  buffer-as-database intact.
+- **Error pane.** Stream errors render as a clickable, read-only
+  overlay at point-max carrying `crush-error-action`; `RET` dismisses
+  it. Both overlay kinds are tagged `crush-overlay` so
+  `crush-clear-buffer` sweeps them.
 
 ### Metadata
 
