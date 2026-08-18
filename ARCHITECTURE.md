@@ -49,11 +49,14 @@ them, and new code must too.
    `crush-openai.el`; the concrete hyper provider is a thin shim that
    maps its configuration onto that client.
 
-6. **Buffer-free sliding layers.** The facade stream protocol
-   (`crush-stream.el`) and the process handler (`crush-process.el`)
-   never read or write the crush buffer. The main loop in `crush.el`
-   is the only place with buffer access, and it threads progress,
-   deltas, and errors through callbacks into those layers.
+6. **Buffer-unaware, presentation-agnostic layers.** The facade stream
+   protocol (`crush-stream.el`) and the process handler
+   (`crush-process.el`) never read or write the crush buffer. They
+   treat the caller as opaque: the main loop in `crush.el` is the only
+   place with buffer access, and it threads progress, deltas, and
+   errors through callbacks into those layers. Keeping the protocols
+   and providers buffer-unaware is a deliberate separation of
+   concerns, not an implementation detail.
 
 7. **Everything inserted must be valid markdown.** The chat buffer's
    parent mode is `markdown-mode` (fallback `text-mode`); bodies,
