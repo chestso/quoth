@@ -65,7 +65,7 @@
   "Return a live pipe process usable as a fake transport process.
 The hyper provider's curl transport sends stdin (config + JSON body)
 then EOF; a pipe process stays alive to accept that without erroring
-(the way a short-lived `true' process would not)."
+\(the way a short-lived `true' process would not)."
   (let ((proc (make-pipe-process :name "crush-test-live-fake"
                                  :noquery t
                                  :coding 'binary
@@ -170,7 +170,8 @@ a single `content' delta.  Runs in the crush buffer."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/markers-flank-the-separator ()
-  "`crush--prompt-start-marker' points at the divider, and
+  "Test that markers flank the separator.
+`crush--prompt-start-marker' points at the divider, and
 `crush--input-start-marker' directly after its trailing blank line."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
@@ -212,8 +213,8 @@ a single `content' delta.  Runs in the crush buffer."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/separator-has-blank-lines ()
-  "The divider is framed by blank lines: a blank line below it, and a
-blank line above it when it follows a response."
+  "Test that the divider is framed by blank lines.
+A blank line below it, and a blank line above it when it follows a response."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -451,8 +452,8 @@ so point there resolves to `separator', not `user'."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/region-label-in-input-without-prompt-id ()
-  "Typed input carries the user region type even though it starts at
-the input marker after the separator."
+  "Test that typed input carries the user region type.
+This is the case even though it starts at the input marker after the separator."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -494,8 +495,8 @@ the input marker after the separator."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/region-label-tool-output ()
-  "The nested `tool-output' region resolves to its symbol name, not the
-prompt fallback, even though it carries `crush-prompt-id'."
+  "Test that the nested `tool-output' region resolves to its symbol name.
+It is not the prompt fallback, even though it carries `crush-prompt-id'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -521,8 +522,9 @@ prompt fallback, even though it carries `crush-prompt-id'."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/header-model-falls-back-to-hyper-default ()
-  "Effective model falls back to `crush-openai-default-model' for hyper
-providers with a nil model slot."
+  "Test that the effective model falls back to the hyper default.
+This is `crush-openai-default-model' for hyper providers with a nil
+model slot."
   (let ((crush-model nil))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -551,8 +553,8 @@ providers with a nil model slot."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/header-line-shows-model-and-region ()
-  "The header line shows both the current model and the region type
-at point."
+  "Test that the header line shows both the model and the region type.
+Both the current model and the region type at point appear."
   (let ((crush-model "my-model"))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -858,8 +860,9 @@ event; the facade continuation now owns completion."
 ;;; 64. Input separator insertion rename
 
 (ert-deftest crush-test/insert-prompt-renamed ()
-  "Crush--insert-input-separator should be defined (renamed from
-crush--insert-prompt)."
+  "Test that the input separator function was renamed.
+The `crush--insert-input-separator' function replaced
+`crush--insert-prompt'."
   (should (fboundp 'crush--insert-input-separator)))
 
 ;;; 65. Sentinel freezes previous response read-only
@@ -890,8 +893,8 @@ response becomes read-only previous content, blocking edits."
 ;;; 67. crush--append-as-user-input appends after the input marker
 
 (defun crush-test--input-area-text ()
-  "Return the editable input area text: from `crush--input-start-marker'
-to the line end."
+  "Return the editable input area text to the line end.
+The text starts at `crush--input-start-marker' and runs to the line end."
   (buffer-substring-no-properties
    (marker-position crush--input-start-marker)
    (line-end-position)))
@@ -1093,9 +1096,9 @@ the live stream."
 ;; even when the insertion runs from a process filter/sentinel.
 
 (ert-deftest crush-test/insert-at-eof-preserves-window-point ()
-  "Insertion must not move a window whose point is not at point-max.
+  "Test that insertion does not move a window whose point is not at point-max.
 The buffer's own point may be stale (as in a process filter); the
-window-point is the authoritative cursor position."
+`window-point' is the authoritative cursor position."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1719,8 +1722,10 @@ completed prompt's ID."
     prompt-id))
 
 (ert-deftest crush-test/user-separator-inserted-before-response ()
-  "`crush--insert-user-separator' places a frozen, read-only `---' between
-the user text and the streamed response, tagged `user-separator'."
+  "Test that the user separator is inserted before the response.
+The `crush--insert-user-separator' function places a frozen, read-only
+`---' between the user text and the streamed response, tagged
+`user-separator'."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1752,8 +1757,9 @@ the user text and the streamed response, tagged `user-separator'."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/user-separator-ignored-by-history-turns ()
-  "The user separator must not leak into the reconstructed history: a turn
-with reasoning + separator yields exactly `user' then `assistant' messages."
+  "Test that the user separator does not leak into reconstructed history.
+A turn with reasoning + separator yields exactly `user' then
+`assistant' messages."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1790,11 +1796,11 @@ It is being sent when the history is extracted."
 
 ;;; Helper: seed an exchange that carries a tool call.
 (defun crush-test--seed-tool-exchange (prompt-text answer-text tool-calls)
-  "Seed an exchange: PROMPT-TEXT as the user input, ANSWER-TEXT as the
-assistant answer, and TOOL-CALLS as a list of plists (:name :id
-:args-json :result :exit) rendered as tool blocks before the answer,
-tagged the way the streaming machinery tags them.  Returns the
-completed prompt's ID."
+  "Seed an exchange and return the completed prompt's ID.
+PROMPT-TEXT is the user input, ANSWER-TEXT is the assistant answer, and
+TOOL-CALLS is a list of plists (:name :id :args-json :result :exit)
+rendered as tool blocks before the answer, tagged the way the streaming
+machinery tags them."
   (let ((prompt-id crush--prompt-id))
     (goto-char (point-max))
     (insert prompt-text)
@@ -1820,8 +1826,9 @@ completed prompt's ID."
     prompt-id))
 
 (ert-deftest crush-test/answer-text-excludes-tool-blocks ()
-  "`crush-get-response-text' must not include the rendered tool block
-in the assistant answer.  The tool blocks are display decoration around
+  "Test that the answer text excludes rendered tool blocks.
+`crush-get-response-text' must not include the rendered tool block in
+the assistant answer.  The tool blocks are display decoration around
 the raw tool result; the assistant turn carries only the model's own
 answer text."
   (unwind-protect
@@ -1842,7 +1849,8 @@ answer text."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/tool-rounds-raw-output ()
-  "`crush--tool-rounds' emits the raw result as the tool content, not the
+  "Test that tool rounds emit the raw result as the tool content.
+The `crush--tool-rounds' function emits the raw result, not the
 rendered decoration."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
@@ -1891,8 +1899,9 @@ rendered decoration."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-carries-tool-metadata ()
-  "The assistant message carries the call's id, name, and args from the
-`crush-tool-call' property, and the tool result pairs with the same id."
+  "Test that the assistant message carries the tool metadata.
+It carries the call's id, name, and args from the `crush-tool-call'
+property, and the tool result pairs with the same id."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1922,8 +1931,8 @@ rendered decoration."
               (should (string= (crush-test--msg-content (nth 3 msgs)) "Listing done"))))))))
 
 (ert-deftest crush-test/history-turns-legacy-tool-fallback ()
-  "A tool block without `crush-tool-call' metadata falls back to a bare
-tool message with `tool_call_id: unknown' so legacy buffers still replay."
+  "Test that a tool block without metadata falls back to a bare message.
+The message has `tool_call_id: unknown' so legacy buffers still replay."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2001,8 +2010,8 @@ The response region shares the `crush-prompt-id' tag."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/user-turn-text-excludes-separator ()
-  "`crush--user-turn-text' returns the typed input without the frozen
-separator line."
+  "Test that the user turn text excludes the frozen separator line.
+`crush--user-turn-text' returns the typed input only."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2116,8 +2125,9 @@ R2-CONTENT.  Returns the completed prompt's ID."
     prompt-id))
 
 (ert-deftest crush-test/tool-rounds-no-spurious-unknown-tool ()
-  "A multi-round tool exchange must not emit a bare `tool' message with
-`tool_call_id: unknown' between rounds.
+  "Test that a multi-round tool exchange emits no spurious tool message.
+It must not emit a bare `tool' message with `tool_call_id: unknown'
+between rounds.
 
 The trailing closing fence of a tool block is `tool'-typed but had no
 `crush-tool-call' property, so the reconstruction walker fell into the
@@ -2152,8 +2162,9 @@ as a bogus tool result."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/tool-rounds-reasoning-stays-reasoning ()
-  "A second-round reasoning span must stay tagged `reasoning', not be
-overwritten to `response' by the round's re-tag.
+  "Test that second-round reasoning stays tagged as reasoning.
+The span must stay tagged `reasoning', not be overwritten to
+`response' by the round's re-tag.
 
 When reasoning was overwritten, history replay folded the CoT into the
 assistant content and, combined with the fence bug, emitted it as a
@@ -2192,10 +2203,12 @@ spurious tool result."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-reasoning-fold-keeps-final-summary ()
-  "A reasoning fold between a tool round and the final summary must not
-drop the summary from replay.  The fold marker is a display-only
+  "Test that a reasoning fold keeps the final summary in replay.
+A fold between a tool round and the final summary must not drop the
+summary from replay.  The fold marker is a display-only
 `before-string' on the body overlay, so the reasoning region is
-contiguous in the buffer and `crush--tool-rounds' sees the full response."
+contiguous in the buffer and `crush--tool-rounds' sees the full
+response."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2239,8 +2252,9 @@ contiguous in the buffer and `crush--tool-rounds' sees the full response."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/history-turns-splits-reasoning-when-enabled ()
-  "With reasoning enabled the assistant message gains a reasoning_content
-field holding the CoT text."
+  "Test that reasoning is split out when history includes reasoning.
+The assistant message gains a reasoning_content field holding the CoT
+text."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer))
             (crush-hyper-history-include-reasoning t))

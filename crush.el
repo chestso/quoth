@@ -199,8 +199,8 @@ Carries `crush-reasoning-face' and the `crush-overlay' property so
 `crush-clear-buffer' removes it.  Buffer-local.")
 
 (defvar crush--input-start-marker nil
-  "Marker at the start of the editable input region (right after the
-frozen input separator line).
+  "Marker at the start of the editable input region.
+This is right after the frozen input separator line.
 Buffer-local.")
 
 (defvar crush--project-root nil
@@ -569,8 +569,8 @@ Accepts optional hook arguments so it can also be used as a change hook."
                     (point-max))))))
 
 (defconst crush--input-separator-text "---"
-  "Text of the frozen markdown horizontal divider that precedes the
-editable input area.")
+  "Text of the frozen markdown horizontal divider.
+This precedes the editable input area.")
 
 (defun crush--insert-input-separator ()
   "Insert the frozen input divider (`---') at point, framed by blank lines.
@@ -610,7 +610,7 @@ inserted at point (on the line after the user's prompt, before the
 response starts) and frozen read-only.  It carries no face; markdown
 renders the `---' itself as a horizontal rule.  Tagged
 `crush-region-type' `user-separator' so the history/continuation readers
-(`crush--user-turn-text', `crush-get-response-text', `crush--tool-rounds')
+\(`crush--user-turn-text', `crush-get-response-text', `crush--tool-rounds'\)
 all skip it; it carries `crush-prompt-id' but never `crush-response-to',
 so it belongs to the turn yet never leaks into the assistant response
 region."
@@ -633,10 +633,10 @@ region."
 
 (defvar-local crush--follow-p nil
   "Whether the crush buffer's window is following the stream.
-Set by `crush--insert-at-eof' when the window-point was at point-max
-before insertion.  Persists across rapid process-filter invocations
+Set by `crush--insert-at-eof' when the `window-point' was at point-max
+before insertion.  Persists across rapid `process-filter' invocations
 where `window-point' is stale (redisplay hasn't run yet).  Reset to
-nil when the user scrolls back (window-point diverges from
+nil when the user scrolls back (`window-point' diverges from
 point-max on a redisplay cycle).")
 
 (defvar-local crush--last-follow-point 0
@@ -895,9 +895,10 @@ fall back to the trimmed block text for legacy blocks without it."
         end)))))
 
 (defun crush--tool-call-alist (plist)
-  "Return the wire `tool_calls' element for `crush-tool-call' PLIST, or nil.
-PLIST carries :id :name :args-json; a missing id or name yields nil so a
-legacy block degrades to a bare tool message."
+  "Return the wire element for `crush-tool-call' PLIST, or nil.
+The element is the `tool_calls' field.  PLIST carries :id :name
+:args-json; a missing id or name yields nil so a legacy block degrades
+to a bare tool message."
   (when (and (stringp (plist-get plist :id))
              (stringp (plist-get plist :name)))
     (list (cons 'id (plist-get plist :id))
@@ -908,12 +909,12 @@ legacy block degrades to a bare tool message."
 
 (defun crush--tool-rounds (prompt-id &optional start end)
   "Return the assistant/tool message alists for PROMPT-ID's response.
-Walks the response region's `crush-region-type' spans in order and
-reconstructs the OpenAI messages the model produced: `response' spans
+Walk the response region's `crush-region-type' spans in order and
+reconstruct the OpenAI messages the model produced: `response' spans
 accumulate assistant content; each `tool' span contributes an assistant
 `tool_calls' message (carrying any accumulated leading content) followed
 by its `role: \"tool\"' result.  Contiguous `tool' spans share one
-assistant message (parallel calls in a round).  Reasoning and the nested
+assistant message (parallel invocation in a round).  Reasoning and the nested
 `tool-output' spans are skipped.  START/END bound the walk, defaulting to
 the whole response region for PROMPT-ID.  This is the single buffer->wire
 reconstruction used by both history replay and the live tool loop."
@@ -1360,7 +1361,7 @@ global TAB binding."
 The active reasoning region runs from `crush--reasoning-start' to the
 answer boundary: `crush--reasoning-end' (where a content delta froze
 the CoT) when set, else the first tool block at or after the start
-(the model went straight from reasoning to a tool call), else
+\(the model went straight from reasoning to a tool call), else
 `point-max'.  Each tool-loop round gets its own region tracked by its
 own markers; the boundary is computed relative to the start, never the
 response head, so reasoning that follows an earlier round's tool
@@ -1502,9 +1503,9 @@ Runs in the crush buffer, which owns all response text."
 
 (defun crush-facade--finalize ()
   "Finalize the current response via the facade.
-Checks for pending tool calls from the SSE stream; when present,
-drives the tool loop (execute, insert blocks, send follow-up).
-Otherwise closes the response and inserts a fresh prompt.  The
+Check for pending tool invocation from the SSE stream; when present,
+drive the tool loop (execute, insert blocks, send follow-up).
+Otherwise close the response and insert a fresh prompt.  The
 provider's completion action invokes this."
   (if (and crush-tools-enabled
            crush-active-provider
@@ -1523,13 +1524,13 @@ provider's completion action invokes this."
   "Number of tool-loop rounds executed for the current prompt.")
 
 (defun crush-facade--tool-loop ()
-  "Execute pending tool calls and send a follow-up request.
-Extracts tool calls from the transport's SSE state, executes them
+  "Execute pending tool invocations and send a follow-up request.
+Extracts tool invocations from the transport's SSE state, executes them
 via `crush-provider--tool-results', inserts tool blocks into the
 buffer, then reconstructs the follow-up continuation from the buffer's
-tagged regions via `crush--tool-rounds' (no in-memory cache).  Loops up
-to `crush-tool-loop-max' rounds; when the cap is hit or no tool calls
-come back, finalizes via `crush-facade--close-response'."
+tagged regions via `crush--tool-rounds' (no in-memory cache).  Loop up
+to `crush-tool-loop-max' rounds; when the cap is hit or no invocation
+come back, finalize via `crush-facade--close-response'."
   (if (>= crush--tool-loop-count crush-tool-loop-max)
       (progn
         (setq-local crush--tool-loop-count 0)
@@ -1706,8 +1707,8 @@ through unchanged."
      (t (format "%dms" ms)))))
 
 (defun crush--tool-embed-backticks (text)
-  "Return TEXT wrapped so runs of backticks never break inline code.
-Runs of two or more backticks inside TEXT (as in a shell command) would
+  "Return TEXT wrapped so run of backticks never break inline code.
+Run of two or more backticks inside TEXT (as in a shell command) would
 otherwise close an inline-code span early; each run is rendered as a
 literal doubled pair so the whole string stays a valid single-tick
 inline-code span."
@@ -1765,7 +1766,7 @@ cmd, workdir, `yield <ms>`, `shell <name>`, and `login yes|no` for
 (defun crush--tool-header-line (tool args)
   "Return the single markdown header line for TOOL and its ARGS plist.
 The line is bold icon + tool name, then a plain-text parameter summary
-(no inline emphasis, clauses comma-separated), e.g.
+\(no inline emphasis, clauses comma-separated), e.g.
 \"**🔧 exec_command** — ran `ls` in `/tmp`, yield 10s, shell /bin/bash,
 login no\".  The tool-call id is deliberately not shown: it is display
 noise, and wire resume reads it from the `crush-tool-call' text

@@ -238,7 +238,7 @@ itself."
 ;;; 4. write_stdin execution
 
 (ert-deftest crush-test/write-stdin-round-trip ()
-  "exec_command + write_stdin drive an interactive process to completion."
+  "`exec_command' + `write_stdin' drive an interactive process to completion."
   (let* ((start (crush-test--tool-call
                  "exec_command"
                  "{\"cmd\":\"read line; echo got:$line\",\"yield_time_ms\":200}"))
@@ -328,8 +328,8 @@ output is a fenced code block tagged `text`."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-adds-blank-line-after-bare-content ()
-  "A tool block after content with no trailing newline gains one blank
-line before the header so the block stays valid markdown."
+  "Test that a tool block after bare content gains a blank line.
+The blank line appears before the header so the block stays valid markdown."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -348,8 +348,9 @@ line before the header so the block stays valid markdown."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-reuses-existing-blank-line ()
-  "A tool block after content already ending in a blank line does not
-add extra blank lines."
+  "Test that a tool block reuses an existing blank line.
+The tool block does not add extra blank lines after content already
+ending in a blank line."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -386,8 +387,9 @@ add extra blank lines."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-exec-command-shows-defaults ()
-  "A bare exec_command renders all defaults: real cwd, configured yield,
-shell-file-name, and login no."
+  "Test that a bare exec_command renders all defaults.
+The defaults are the real cwd, configured yield, `shell-file-name', and
+login no."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -466,8 +468,9 @@ shell-file-name, and login no."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-minimal-write-stdin ()
-  "A write_stdin block with only a session id renders session, empty input,
-yield, and no output fence."
+  "Test that a minimal write_stdin block renders session, input, and yield.
+A block with only a session id renders the session, empty input, yield,
+and no output fence."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)

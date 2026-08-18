@@ -406,7 +406,7 @@ No buffer text is inserted or deleted — only overlay properties change."
 (ert-deftest crush-test/fold-arrow-up-past-collapsed ()
   "Collapsed fold body overlay must be intangible so navigation skips it.
 `intangible t' alongside `invisible t' ensures cursor motion commands
-line-move, previous-line, etc. jump over the hidden region instead of
+`line-move', `previous-line', etc. jump over the hidden region instead of
 getting stuck at its boundary (which caused 'Beginning of buffer')."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
@@ -422,8 +422,8 @@ getting stuck at its boundary (which caused 'Beginning of buffer')."
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/fold-before-string-is-intangible ()
-  "The before-string marker must carry `intangible t' so arrow-up
-skips it entirely instead of getting stuck on the marker line."
+  "Test that the before-string marker must carry `intangible t'.
+This ensures arrow-up skips it entirely instead of getting stuck on the marker line."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 11)
@@ -438,8 +438,8 @@ skips it entirely instead of getting stuck on the marker line."
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/fold-named-invisibility-spec ()
-  "Collapsed reasoning uses a named invisibility spec so buffer-reading
-tools (markdown-preview, export) see the full text."
+  "Test that collapsed reasoning uses a named invisibility spec.
+This ensures buffer-reading tools (markdown-preview, export) see the full text."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 11)
@@ -792,9 +792,9 @@ All text from the first reasoning char to the last has
 ;;; before the first tool block, and never re-tagged the response).
 
 (ert-deftest crush-test/tools-reasoning-tags-content-and-tools ()
-  "A response with reasoning, tool blocks, and final content tags every
-span: reasoning on the CoT text, tool on the tool blocks, response on
-the final content."
+  "Test that a response with reasoning, tool blocks, and content tags every span.
+The reasoning is tagged on the CoT text, tool on the tool blocks, and
+response on the final content."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -825,8 +825,9 @@ the final content."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tools-reasoning-tags-tool-blocks-tagged ()
-  "The tool block itself carries `crush-region-type' tool even when
-the response has reasoning, so the header line shows region: tool."
+  "Test that the tool block itself carries the tool region type.
+The `crush-region-type' tool tag appears even when the response has
+reasoning, so the header line shows region: tool."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)

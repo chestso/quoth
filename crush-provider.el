@@ -68,7 +68,7 @@ as data objects, never read or switched to.  ON-DELTA is a (DELTA
 KIND) callback that consumes streamed output, and ON-ERROR receives
 stream error messages, for providers that stream (hyper).
 CONTINUATION, when non-nil, is a list of structured message alists
-(assistant with `tool_calls' followed by `role: \"tool\"' messages)
+\(assistant with `tool_calls' followed by `role: \"tool\"' messages)
 that replace the user message in the request body; used by the
 tool loop to send follow-up requests with tool results.")
 
@@ -87,13 +87,13 @@ ACTION is `allow', `allow-session', or `deny'.")
 
 (cl-defgeneric crush-provider--tool-results (provider tool-calls)
   "Build the tool-result messages and display blocks for TOOL-CALLS.
-TOOL-CALLS is a vector of tool-call alists from the SSE stream,
-accumulated by `crush--hyper-sse-merge-tool-calls'.  Returns a
-list (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS) where
-ASSISTANT-MSG is the assistant message carrying `tool_calls',
-TOOL-RESULT-MSGS is a list of `role: \"tool\"' messages, and
-TOOL-BLOCKS is a list of plists (:name :id :args-json :result
-:exit) for `crush--tool-block-insert'."
+PROVIDER is the provider instance.  TOOL-CALLS is a vector of
+tool-call alists from the SSE stream, accumulated by
+`crush--hyper-sse-merge-tool-calls'.  Returns a list
+\(ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS) where ASSISTANT-MSG is
+the assistant message carrying `tool_calls', TOOL-RESULT-MSGS is a
+list of `role: \"tool\"' messages, and TOOL-BLOCKS is a list of plists
+\(:name :id :args-json :result :exit) for `crush--tool-block-insert'."
   (ignore provider tool-calls)
   nil)
 

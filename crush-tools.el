@@ -113,7 +113,7 @@ argument must be a non-empty string."
 (defun crush-exec--yield-ms (tool-call-args default-ms)
   "Resolve the yield window from TOOL-CALL-ARGS or DEFAULT-MS.
 The `yield_time_ms' argument is clamped to the 250-30000 effective range
-(mirrors Codex's exec_command)."
+\(mirrors Codex's exec_command)."
   (let ((raw (plist-get tool-call-args :yield_time_ms)))
     (if (numberp raw)
         (max 250 (min 30000 raw))
@@ -128,7 +128,7 @@ disallowed.  Returns nil otherwise."
     (when (and requested
                (not (eq requested :json-false))
                (not crush-tool-allow-login-shell))
-      (error "login shell is disabled by config; omit `login' or set it to false"))
+      (error "Login shell is disabled by config; omit `login' or set it to false"))
     (and requested (not (eq requested :json-false)) t)))
 
 (defun crush-exec--shell (tool-call-args)
@@ -139,7 +139,7 @@ disallowed.  Returns nil otherwise."
          shell)))
 
 (defun crush-exec--error (message tool-call)
-  "Store an error result on TOOL-CALL and return the error pair."
+  "Store an error result on TOOL-CALL with MESSAGE and return the error pair."
   (let ((result (crush-openai-tool-error-result message)))
     (setf (crush-openai-tool-call-result tool-call) (car result)
           (crush-openai-tool-call-exit tool-call) (cdr result))
@@ -192,7 +192,7 @@ an error result with exit code -1."
   (let* ((args (crush-openai-tool-call-args tool-call))
          (cmd (crush-exec--cmd args)))
     (if (not cmd)
-        (crush-exec--error "missing cmd" tool-call)
+        (crush-exec--error "Missing cmd" tool-call)
       (condition-case err
           (let* ((working-dir (or (plist-get args :workdir) default-directory))
                  (yield-ms (crush-exec--yield-ms args crush-process-yield-ms))
@@ -204,7 +204,7 @@ an error result with exit code -1."
                            shell login)))
             (if (not (crush-process-session-p session))
                 ;; Spawn failed without signalling.
-                (crush-exec--error "failed to start command" tool-call)
+                (crush-exec--error "Failed to start command" tool-call)
               (let* ((result (crush-process--yield session yield-ms))
                      (chunk (car result))
                      (exit (cdr result))

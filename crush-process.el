@@ -122,7 +122,7 @@ unknown POSIX-style shell)."
   "Return the argument vector to run COMMAND under SHELL-PATH.
 LOGIN non-nil requests a login shell where the shell supports one.
 Mirrors Codex's `derive_exec_args' (shell.rs): bash/zsh/sh use `-c'
-(or `-lc'), powershell uses `-Command', and cmd uses `/c'."
+\(or `-lc'), powershell uses `-Command', and cmd uses `/c'."
   (let ((type (crush-process--shell-type shell-path)))
     (pcase type
       ((or 'bash 'zsh 'sh 'sh-like)
@@ -135,10 +135,10 @@ Mirrors Codex's `derive_exec_args' (shell.rs): bash/zsh/sh use `-c'
        (list shell-path "/c" command)))))
 
 (defun crush-process--spawn-env ()
-  "Return the process-environment for a spawned session.
-Disables interactive pagers and git terminal prompts so PTY reads
+  "Return the `process-environment' for a spawned session.
+Disable interactive pagers and git terminal prompts so PTY reads
 never block on `Press RETURN to continue', and
-sets a dumb terminal so columnated tools degrade to plain output."
+set a dumb terminal so columnated tools degrade to plain output."
   (append (list (concat "PAGER=" (or (executable-find "cat") "cat"))
                 "GIT_PAGER=cat"
                 "GIT_TERMINAL_PROMPT=0"
@@ -150,7 +150,7 @@ sets a dumb terminal so columnated tools degrade to plain output."
   "Spawn COMMAND in CWD under the nth session ID.
 SHELL is the shell binary to run the command under (nil means
 `shell-file-name'); LOGIN requests a login shell.  Returns
-(PROCESS . OUTPUT-BUFFER), or nil when the environment fails.  The
+\(PROCESS . OUTPUT-BUFFER), or nil when the environment fails.  The
 command runs with a PTY connection and merged stdout/stderr under a
 sanitized `process-environment'."
   (let* ((shell-path (or shell shell-file-name))
@@ -178,7 +178,7 @@ requests a login shell.  WORKING-DIRECTORY is resolved against
 session, or nil when the cap is hit or the spawn fails."
   (when (>= (hash-table-count crush-process--sessions)
             crush-process-max-sessions)
-    (error "crush-process: session cap of %d reached"
+    (error "crush-process: Session cap of %d reached"
            crush-process-max-sessions))
   (let* ((cwd (file-name-as-directory
                (expand-file-name (or working-directory default-directory))))
@@ -245,7 +245,7 @@ reports a session id when it is nil."
   "Write INPUT to SESSION's stdin and read output for YIELD-MS.
 A literal `\\x04' run in INPUT is sent as a control-D (EOT) to close the
 session's stdin, matching the `write_stdin' tool description.  Returns
-(CHUNK . EXIT-OR-NIL), or nil when the process is still running."
+\(CHUNK . EXIT-OR-NIL), or nil when the process is still running."
   (let ((proc (crush-process-session-process session)))
     (when (and proc
                (process-live-p proc)

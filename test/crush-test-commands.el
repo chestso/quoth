@@ -274,8 +274,8 @@ already-initialized buffer and re-initialized it."
 ;;; 33. Region type tagging: attachment
 
 (ert-deftest crush-test/attachment-region-tagged-as-attachment ()
-  "Attachment blocks should be tagged with crush-region-type 'user (they
-are appended as user input)."
+  "Test that attachment blocks are tagged with crush-region-type 'user.
+They are appended as user input."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))

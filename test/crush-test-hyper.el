@@ -525,8 +525,8 @@ non-nil."
         (crush-test--cleanup)))))
 
 (ert-deftest crush-test/hyper-method-hashes-session-uuid-when-enabled ()
-  "With the cache gate on, the method passes the XXH3-64 hash
-of the session UUID as the cache-affinity session id."
+  "Test that with the cache gate on, the method passes the XXH3-64 hash.
+The hash is of the session UUID as the cache-affinity session id."
   (let ((captured-session nil))
     (cl-letf (((symbol-function 'crush-openai-request)
                (lambda (&rest args)
@@ -1578,8 +1578,9 @@ answer; the buffer should have a new prompt and the response tagged."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-tool-loop-header-shows-region-tool ()
-  "After a tool round-trip, the header line shows `region: tool' when
-point is on the tool block and `region: response' on the final content."
+  "Test that after a tool round-trip, the header line shows the region.
+When point is on the tool block, it shows `region: tool', and `region:
+response' on the final content."
   (let ((default-directory crush-test--root)
         (crush-tools-enabled t)
         (buf (crush-test--fresh-buffer)))
@@ -1630,10 +1631,10 @@ point is on the tool block and `region: response' on the final content."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-history-replays-tool-pair-with-real-id ()
-  "A follow-up request replays the tool call as an OpenAI-conformant
-pair: an assistant message carrying the persisted tool_calls id, and a
-tool result whose tool_call_id matches it.  The live tool loop already
-sends correct ids; this pins the history-replay path."
+  "Test that a follow-up request replays the tool call as a valid pair.
+It replays an assistant message carrying the persisted tool_calls id,
+and a tool result whose tool_call_id matches it.  The live tool loop
+already sends correct ids; this pins the history-replay path."
   (let ((default-directory crush-test--root)
         (crush-tools-enabled t))
     (unwind-protect

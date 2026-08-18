@@ -204,8 +204,8 @@ to done."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/facade-harness-moves-process-mark ()
-  "The facade should set the process mark at point-max after send,
-then streamed deltas append at point-max (not via the mark)."
+  "Test that the facade sets the process mark at point-max after send.
+Streamed deltas append at point-max (not via the mark)."
   (unwind-protect
       (crush-test--with-facade
        (lambda (fake _completion)
