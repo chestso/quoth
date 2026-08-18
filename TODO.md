@@ -42,19 +42,17 @@ crush.el talks to providers through a provider abstraction (`crush-provider-*` g
 - [x] Prompt response header in buffer
 - [x] Stderr routing to separate `*crush-errors*` buffer
 - [x] Working directory resolution (`crush-working-directory` / project root)
-- [x] ERT test suite with mock CLI integration tests
+- [x] ERT test suite with mock HTTP integration tests
 - [x] Minor mode (`crush-minor-mode`) for source buffer keybindings
 - [x] `crush-insert-buffer` (whole buffer as context)
 - [x] `crush-insert-filepath` (file path as context)
 - [x] Context blocks inserted before prompt as attachments
-- [x] Context sent to CLI via stdin with explanatory preamble
+- [x] Context sent as literal markdown inside the LLM message with an explanatory preamble
 - [x] Shared buffer init helper (`crush--init-buffer`)
 - [x] `format.sh` for elisp, markdown, and shell formatting
-- [x] `--quiet` flag to suppress spinner output
-- [x] SIGINT handling (show "Interrupted" message)
-- [x] Model selection via `crush-model` defcustom (`--model` flag)
-- [x] Manual session selection via `crush--session` (`--session` flag)
-- [x] Permission behavior documentation (auto-approve warning)
+- [x] Model selection via `crush-model` defcustom
+- [x] Manual session selection via `crush--session`
+- [x] Tool execution policy (`crush-tool-policy`, `yolo` in v1)
 
 ### Phase 1b: Comint removal & text-mode migration (complete)
 
@@ -62,7 +60,7 @@ The package originally derived from `comint-mode`; it no longer does. Commit `43
 
 - [x] `crush-chat-mode` minor mode (keybindings, hooks) on top of a markdown-mode/text-mode parent
 - [x] Marker-based prompt tracking (`crush--prompt-start-marker`, `crush--input-start-marker`) replacing comint prompt fields
-- [x] Custom output filter (`crush--output-filter`) inserting at the process mark
+- [x] Custom output filter (`crush--openai-curl-filter`) inserting at the process mark
 - [x] Custom input ring (M-p/M-n) persisted to `~/.emacs.d/crush-history`
 - [x] Read-only prompt and history via text properties (`rear-nonsticky` boundaries)
 - [x] Font-lock guard and post-command re-assertion so markdown refontification cannot break input editability
@@ -98,10 +96,10 @@ Chat commands are all reachable via keys that markdown-mode does not bind.
 
 ### Phase 1f: Hyper provider phase 1 — primary path (complete)
 
-Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is crush.el.s primary mode of operation.
+Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is crush.el's primary mode of operation.
 
 - [x] `crush-hyper-provider` struct + default provider
-- [x] Request composition (`crush--hyper-compose-request`): messages array, model, `stream: t`, max tokens, temperature, thinking/reasoning-effort options, no tools yet
+- [x] Request composition (`crush-openai-compose-request`): messages array, model, `stream: t`, max tokens, temperature, thinking/reasoning-effort options, no tools yet
 - [x] SSE streaming via curl subprocess (gptel/plz pattern): config + body over stdin, `data-binary = @-`, deltas parsed in the process filter
 - [x] Response finalization via the facade (`crush-facade--finalize`): tag region, fresh prompt, state reset (buffer-unaware backend emits deltas/errors through callbacks)
 - [x] Reasoning display: `reasoning_content` deltas streamed into a styled, collapsible region (overlay + fold marker)
@@ -113,14 +111,14 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 - [x] Token storage via `auth-source` (`machine hyper.charm.land login apikey password sk-hyper-...`), gptel-style; `crush-hyper-token` accepts string/function/nil
 - [x] In-buffer history round trip (default on): prior `[user, assistant (and tool)]` turns are read from the buffer's tagged regions and re-sent with each request (tool calls replay as the OpenAI-conformant assistant `tool_calls` + tool result pair with the real `tool_call_id`) (`crush-hyper-history-limit` caps the tail; 0 disables; `crush-hyper-history-include-reasoning` opts the CoT back in as `reasoning_content`)
 - [x] `x-session-id` / `x-session-affinity` headers for server-side prefix/token caching ([HYPER-API.md §3.1](HYPER-API.md)), via a dedicated pure-Elisp XXH3-64 (`crush-xxh3.el`, seed 0, big-endian, 16-hex); per-buffer UUID (`crush--session-uuid`), rotated by `crush-clear-buffer`, gate `crush-hyper-session-cache-p`
-- [x] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages. First tool: `bash` — see the tool design notes
-  - [x] Tool blocks rendered as markdown in the buffer (bold 🔧 tool name, inline code for command/exit, fenced code block for output)
-  - [x] Tool blocks are read-only, tagged `crush-region-type 'tool'`, and carry `crush-tool-call` for wire resume; the raw result span inside the block is tagged `crush-region-type 'tool-output'` so history sends the raw `<command>/<output>/<exit_code>` (never the rendered toolbar)
+- [x] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages. Two tools: `exec_command` and `write_stdin`
+  - [x] Tool blocks rendered as markdown in the buffer (bold 🔧 tool name, inline parameter summary, fenced code block for output)
+  - [x] Tool blocks are read-only, tagged `crush-region-type 'tool'`, and carry `crush-tool-call` for wire resume; the raw result span inside the block is tagged `crush-region-type 'tool-output'` so history sends the raw result text (never the rendered toolbar)
   - [x] Tool loop: up to `crush-tool-loop-max` (8) consecutive rounds, each round sends the assistant message with `tool_calls` plus `role: "tool"` results
   - [x] Tool output fenced code blocks escape nested fences via longest-backtick-run detection
-  - [x] Tools run without confirmation (yolo),
-  - [ ] Stateful shell session for tool calls (persist cwd and exported env across `bash` invocations)
-  - [ ] Background job management for long-running commands (`job_output` / `job_kill` peer tools after auto-background)
+  - [x] Tools run without confirmation (yolo)
+  - [x] Stateful sessions for tool calls via `crush-process.el`: `exec_command` starts a PTY session and `write_stdin` feeds it, preserving cwd and environment within the session
+  - [ ] Long-running command lifecycle: explicit session close/kill and idle-session reaping beyond `write_stdin`
 - [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (tokens currently come from `auth-source` via `crush-hyper-token`)
 - [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection
 - [ ] Error handling and retry
@@ -146,5 +144,4 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 
 ## Reference Docs
 
-- [CRUSH-SPEC.md](CRUSH-SPEC.md) — Crush CLI protocol (flags, stdin semantics, permission model)
 - [HYPER-API.md](HYPER-API.md) — Charm Hyper gateway HTTP API (auth, chat completions, model catalog)
