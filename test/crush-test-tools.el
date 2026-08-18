@@ -57,6 +57,10 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
+(declare-function crush-test--fresh-buffer "crush-test" ())
+(declare-function crush-test--cleanup "crush-test" ())
+(defvar crush-test--root)
+
 (defun crush-test--tool-call (name &optional args-json)
   "Return a `crush-tool-call' for NAME with ARGS-JSON (or nil)."
   (let ((call (crush-make-openai-tool-call :id "call_test" :name name)))
