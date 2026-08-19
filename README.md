@@ -35,29 +35,23 @@ Requires Emacs 28.1+. The package spans several files (`crush.el` plus `crush-pr
 
 ## Configuration
 
-### crush-model
-
-Set the default model for Crush:
+Most of crush.el's behavior is configurable through Emacs customization:
 
 ```elisp
-(setq crush-model "claude-sonnet-4-20250514")
+M-x customize-group RET crush
 ```
 
-When set, the model is used for requests. When `nil` (default), the provider falls back to `crush-openai-default-model` (the shared default).
+The `crush` group covers the essentials — model (`crush-model`), working
+directory, request tuning (`crush-openai-timeout`, `-max-tokens`,
+`-temperature`, `-thinking`, `-reasoning-effort`), history replay
+(`crush-hyper-history-limit`, `crush-hyper-history-include-reasoning`),
+reasoning display (`crush-reasoning-preview-lines`), the system prompt
+(`crush-openai-system-prompt`), debug logging, and the hyper provider
+settings (`crush-hyper-base-url`, `crush-hyper-token`). Process
+handling lives in the `crush-process` group and tool behavior in the
+`crush-tool` group.
 
-### crush-working-directory
-
-Set the working directory used by crush (resolves selections relative to it):
-
-```elisp
-(setq crush-working-directory "/path/to/project")
-```
-
-When `nil` (default), uses the project root if available, otherwise `default-directory`.
-
-### crush-hyper-base-url
-
-Base URL of the Charm Hyper gateway (default `https://hyper.charm.land/v1`). Requests go to `BASE-URL/chat/completions` (the OpenAI-compatible endpoint). Overridden by the `HYPER_URL` environment variable when set.
+One setting needs setup beyond `M-x customize`: the token.
 
 ### crush-hyper-token
 
@@ -76,34 +70,6 @@ The value may also be a string (used verbatim) or a function of no arguments ret
 ```
 
 Set it to `nil` to request without a token (useful for local gateways). A missing authinfo entry signals an error with setup instructions rather than silently sending no token.
-
-### Model selection
-
-The provider uses `crush-model` (the shared model defcustom), falling back to `crush-openai-default-model` (`deepseek-v4-flash`). Request-level `max_tokens`, `temperature`, and `thinking`/`reasoning_effort` are controlled by the defcustoms below.
-
-### crush-openai-timeout / crush-openai-max-tokens / crush-openai-temperature
-
-Request tuning: timeout in seconds, `max_tokens` (default 64000), and sampling temperature (nil means unset).
-
-### crush-hyper-history-limit / crush-hyper-history-include-reasoning
-
-The provider is stateful: each request re-sends the buffer's completed exchanges — `user`, `assistant`, and `tool` turns — before the new prompt, so the model sees the whole conversation. Tool calls replay in the OpenAI function-calling shape: an assistant `tool_calls` declaration followed by the tool result with the matching `tool_call_id` (only the raw `<command>/<output>/<exit_code>` result and the stored call id travel, never the rendered tool block). The conversation is read from the buffer's tagged regions at send time — nothing is stored client- or server-side. `crush-hyper-history-limit` (default 200) caps how many prior exchanges are sent (the most recent ones are always retained); set it to `0` to disable history and get stateless per-prompt requests.
-
-`crush-hyper-history-include-reasoning` (default nil) controls whether streamed chain-of-thought rides along in history: off, the assistant turn carries only the answer; on, the CoT is re-sent as the `reasoning_content` field of the assistant message, which is what the gateway requires for thinking turns carried across requests.
-
-### crush-openai-thinking / crush-openai-reasoning-effort
-
-When `crush-openai-thinking` is non-nil, the gateway's internal thinking mode is enabled. `crush-openai-reasoning-effort` selects the reasoning level (`low`, `medium`, `high`, `max`); nil uses the model default.
-
-### crush-reasoning-preview-lines
-
-Number of reasoning lines to show in the collapsed preview (default 10). When the reasoning region exceeds this, the first N lines are shown as a preview; the remainder is hidden behind an invisible overlay. Press `TAB` or `C-c c r` on the preview to expand or re-collapse. Set to 0 to always collapse with no preview.
-
-Reasoning is a display aid and is excluded from model-visible history by default; set `crush-hyper-history-include-reasoning` to `t` to re-send it as the `reasoning_content` field on the assistant message (per [HYPER-API.md §3.4](HYPER-API.md)).
-
-### crush-debug-mode
-
-When non-nil (default), log commands, input, output, and sentinel events to a `*crush-debug*` buffer. Set to `nil` to disable logging.
 
 ## Architecture
 
