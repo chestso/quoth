@@ -60,6 +60,34 @@
   (expand-file-name "crush-test" temporary-file-directory)
   "Root directory used by tests to derive a deterministic crush buffer name.")
 
+(defvar crush-test--root-created-by-us nil
+  "Non-nil when this run created `crush-test--root'.
+Set so the `kill-emacs-hook' cleanup only removes a directory this
+run provisioned, never one that pre-existed (parallel runs, leftover
+state from an earlier run).")
+
+;; The suite binds `default-directory' to `crush-test--root' and spawns
+;; subprocesses (fake providers, `sleep', hyper-server.py) there.  An
+;; arbitrary system cannot be expected to already have this directory,
+;; so provision it at load time, before any test body runs; register
+;; cleanup so batch runs leave nothing behind.
+(unless (file-directory-p crush-test--root)
+  (make-directory crush-test--root t)
+  (when (file-directory-p crush-test--root)
+    (setq crush-test--root-created-by-us t)
+    (add-hook 'kill-emacs-hook
+              (lambda ()
+                (when (and crush-test--root-created-by-us
+                           (file-directory-p crush-test--root))
+                  (delete-directory crush-test--root t))))))
+
+(ert-deftest crush-test/test-root-exists ()
+  "The deterministic test root directory exists (suite self-provisions).
+Cannot expect an arbitrary system to already have /tmp/crush-test;
+tests bind `default-directory' to `crush-test--root' and spawn
+processes there, so the entry file must create it."
+  (should (file-directory-p crush-test--root)))
+
 (defun crush-test--buffer-name ()
   "Return the deterministic crush buffer name for `crush-test--root'."
   (let ((crush--root-buffer-alist nil))
