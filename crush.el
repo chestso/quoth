@@ -1964,6 +1964,8 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (setq-local crush--continue nil)
   (setq-local crush--follow-p nil)
   (setq-local crush--last-follow-point 0)
+  (setq-local crush-openai--cached-system-prompt nil)
+  (setq-local crush-openai--cache-key nil)
   (crush--init-session-uuid)
   (crush-facade--stream-clear)
   ;; Kill any live process sessions this buffer owns.

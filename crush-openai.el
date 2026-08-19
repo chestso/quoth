@@ -106,14 +106,240 @@ same string so the gateway sees an identical client."
   :type 'string
   :group 'crush)
 
-(defconst crush-openai-system-prompt
+(defcustom crush-openai-system-prompt
   "You are a helpful assistant.  You answer concisely and correctly."
-  "System prompt sent with every request.")
+  "Base system prompt, followed by the <env>, <project_context>,
+and <user_preferences> blocks on every request.
+Read at request-build time; edits apply on the next cache miss
+(context-file change, `crush-clear-buffer', or a new buffer)."
+  :type 'string
+  :group 'crush)
 
 (defconst crush-openai-default-model "deepseek-v4-flash"
   "Model used when the provider model slot and `crush-model' are both nil.")
 
+(defcustom crush-openai-git-status-limit 20
+  "Maximum lines of `git status --short' output in the <env> block.
+Matches the Crush CLI's `head -20' cap."
+  :type 'integer
+  :group 'crush)
+
+(defcustom crush-openai-git-commits 3
+  "Number of recent commits to include in the <env> block."
+  :type 'integer
+  :group 'crush)
+
 (declare-function crush--debug-log "crush.el" (category message))
+
+;;; System prompt construction: <env> block with project context.
+
+(defun crush-openai--build-env-block ()
+  "Build the <env> block for the system prompt.
+Includes working directory, git repo status, platform, date, and
+optionally git branch/status/commits when inside a git repository.
+Git status is a snapshot at build time and may be outdated by the
+time the model reads it."
+  (let* ((dir (expand-file-name default-directory))
+         (is-git (file-directory-p (expand-file-name ".git" dir)))
+         (platform (symbol-name system-type))
+         (date (format-time-string "%-m/%-d/%Y"))
+         (lines (list (format "Working directory: %s" dir)
+                      (format "Is directory a git repo: %s"
+                              (if is-git "yes" "no"))
+                      (format "Platform: %s" platform)
+                      (format "Today's date: %s" date))))
+    (when is-git
+      (let ((git-status (crush-openai--git-status-string dir)))
+        (when git-status
+          (push (format "\nGit status (snapshot at conversation start - may be outdated):\n%s"
+                        git-status)
+                lines))))
+    (format "<env>\n%s\n</env>"
+            (string-join (nreverse lines) "\n"))))
+
+(defun crush-openai--git-status-string (dir)
+  "Return git status summary for DIR, or nil if git is unavailable.
+Runs three commands (matching the Crush CLI):
+`git branch --show-current', `git status --short | head -N',
+`git log --oneline -n N'.  Returns the concatenated output."
+  (let ((default-directory (file-name-as-directory dir)))
+    (condition-case nil
+        (let ((branch (crush-openai--git-output "git branch --show-current"))
+              (status (crush-openai--git-output
+                       (format "git status --short | head -%d"
+                               crush-openai-git-status-limit)))
+              (commits (crush-openai--git-output
+                        (format "git log --oneline -n %d"
+                                crush-openai-git-commits))))
+          (string-join
+           (delq nil
+                 (list (and branch (format "Current branch: %s" branch))
+                       (and status
+                            (if (string-empty-p status)
+                                "Status: clean"
+                              (format "Status:\n%s" status)))
+                       (and commits (format "Recent commits:\n%s" commits))))
+           "\n"))
+      (error nil))))
+
+(defun crush-openai--git-output (command)
+  "Run COMMAND in `default-directory' and return trimmed stdout, or nil."
+  (let ((out (string-trim
+              (shell-command-to-string command))))
+    (if (string-empty-p out) nil out)))
+
+;;; System prompt construction: context file discovery.
+
+(defconst crush-openai--default-context-paths
+  '(".github/copilot-instructions.md"
+    ".cursorrules"
+    "CLAUDE.md" "CLAUDE.local.md"
+    "GEMINI.md" "gemini.md"
+    "crush.md" "crush.local.md"
+    "Crush.md" "Crush.local.md"
+    "CRUSH.md" "CRUSH.local.md"
+    "AGENTS.md" "agents.md" "Agents.md")
+  "Default context file paths to discover in the working directory.")
+
+(defcustom crush-openai-context-paths
+  crush-openai--default-context-paths
+  "List of files/directories to scan for project context.
+Paths are relative to the working directory.  Directories are
+walked recursively.  Defaults match the Crush CLI's list."
+  :type '(repeat string)
+  :group 'crush)
+
+(defcustom crush-openai-global-context-paths
+  (list (expand-file-name "crush/CRUSH.md"
+                          (or (getenv "XDG_CONFIG_HOME")
+                              "~/.config"))
+        (expand-file-name "AGENTS.md"
+                          (or (getenv "XDG_CONFIG_HOME")
+                              "~/.config")))
+  "Global context files applied across all projects."
+  :type '(repeat string)
+  :group 'crush)
+
+(defun crush-openai--discover-context-files (paths)
+  "Scan PATHS relative to `default-directory' for context files.
+Each path is either a file (read directly) or a directory (walked
+recursively).  Returns a list of (RELATIVE-PATH . CONTENT) conses
+for files that exist and are readable.  Non-existent paths are
+silently skipped."
+  (let (result)
+    (dolist (p paths)
+      (let ((full (expand-file-name p)))
+        (cond
+         ((file-directory-p full)
+          (mapc
+           (lambda (f)
+             (let ((rel (file-relative-name f)))
+               (push (cons rel (with-temp-buffer
+                                 (insert-file-contents f)
+                                 (buffer-string)))
+                     result)))
+           (directory-files-recursively full "")))
+         ((file-readable-p full)
+          (push (cons p (with-temp-buffer
+                          (insert-file-contents full)
+                          (buffer-string)))
+                result)))))
+    (nreverse result)))
+
+;;; System prompt construction: context block builders.
+
+(defun crush-openai--build-context-block (files tag header intro)
+  "Build a context block from FILES (list of (PATH . CONTENT) conses).
+TAG is the XML tag name (e.g. \"project_context\"), HEADER is the
+section title, INTRO is the explanatory text.  Returns nil when
+FILES is nil or empty."
+  (when files
+    (let ((entries (mapconcat
+                    (lambda (entry)
+                      (format "<file path=\"%s\">\n%s\n</file>"
+                              (car entry) (cdr entry)))
+                    files "\n")))
+      (format "# %s\n%s\n<%s>\n%s\n</%s>"
+              header intro tag entries tag))))
+
+(defun crush-openai--build-project-context-block (files)
+  "Build the <project_context> block from FILES.
+FILES is a list of (RELATIVE-PATH . CONTENT) conses.  Returns nil
+when no files are found."
+  (crush-openai--build-context-block
+   files "project_context"
+   "Project-Specific Context"
+   "Make sure to follow the instructions in the context below."))
+
+(defun crush-openai--build-user-preferences-block (files)
+  "Build the <user_preferences> block from global FILES.
+FILES is a list of (PATH . CONTENT) conses.  Returns nil when no
+files are found."
+  (crush-openai--build-context-block
+   files "user_preferences"
+   "User context"
+   "The following is personal content added by the user that they'd like you to follow no matter what project you're working in."))
+
+
+;;; System prompt construction: full assembly and cache.
+
+(defvar-local crush-openai--cached-system-prompt nil
+  "Cached system prompt string for this buffer.")
+
+(defvar-local crush-openai--cache-key nil
+  "Cache key: (working-dir . context-file-modtimes).")
+
+(defun crush-openai--build-system-prompt-uncached ()
+  "Build the full system prompt with project context.
+Assembles base text + <env> block + <project_context> block +
+<user_preferences> block.  Called by `crush-openai--build-system-prompt'
+on cache miss."
+  (let* ((env (crush-openai--build-env-block))
+         (project-files (crush-openai--discover-context-files
+                         crush-openai-context-paths))
+         (project-block (crush-openai--build-project-context-block
+                         project-files))
+         (global-files (crush-openai--discover-context-files
+                        crush-openai-global-context-paths))
+         (prefs-block (crush-openai--build-user-preferences-block
+                       global-files))
+         (parts (delq nil
+                      (list crush-openai-system-prompt
+                            env project-block prefs-block))))
+    (string-join parts "\n\n")))
+
+(defun crush-openai--context-modtimes (&optional paths)
+  "Return alist of (RELATIVE-PATH . MODTIME) for existing context files.
+PATHS defaults to `crush-openai-context-paths' plus
+`crush-openai-global-context-paths'.  Non-existent files are omitted.
+MODTIME is from `file-attributes' (a list of integers)."
+  (let* ((all-paths (or paths
+                        (append crush-openai-context-paths
+                                crush-openai-global-context-paths)))
+         result)
+    (dolist (p all-paths)
+      (let ((full (expand-file-name p)))
+        (when (file-readable-p full)
+          (let ((modtime (file-attribute-modification-time
+                          (file-attributes full))))
+            (push (cons p modtime) result)))))
+    (nreverse result)))
+
+(defun crush-openai--build-system-prompt ()
+  "Build the system prompt, returning cached value on key match.
+Cache key is (working-dir . context-file-modtimes).  On match,
+returns the cached string without re-reading files or running git.
+On mismatch, rebuilds and caches."
+  (let* ((working-dir (expand-file-name default-directory))
+         (modtimes (crush-openai--context-modtimes))
+         (key (cons working-dir modtimes)))
+    (if (and crush-openai--cached-system-prompt
+             (equal crush-openai--cache-key key))
+        crush-openai--cached-system-prompt
+      (setq-local crush-openai--cache-key key)
+      (setq-local crush-openai--cached-system-prompt
+                  (crush-openai--build-system-prompt-uncached)))))
+
 
 ;;; Tool protocol: the OpenAI function-calling shape the client speaks.
 
@@ -210,6 +436,7 @@ inputs are message alists, never (ROLE . TEXT) conses.
 When `crush-tools-enabled' is non-nil (the default), the request
 announces the `bash' tool and `tool_choice: \"auto\"'."
   (let* ((model (or model crush-openai-default-model))
+         (sys-prompt (crush-openai--build-system-prompt))
          (user-content
           (if (and context (not (string-empty-p context)))
               (concat crush-context-preamble "\n\n"
@@ -220,18 +447,18 @@ announces the `bash' tool and `tool_choice: \"auto\"'."
           (cond
            (continuation
             (append (list (list '(role . "system")
-                                (cons 'content crush-openai-system-prompt)))
+                                (cons 'content sys-prompt)))
                     (or history nil)
                     continuation))
            (history
             (append (list (list '(role . "system")
-                                (cons 'content crush-openai-system-prompt)))
+                                (cons 'content sys-prompt)))
                     history
                     (list (list '(role . "user")
                                 (cons 'content user-content)))))
            (t
             (list (list '(role . "system")
-                        (cons 'content crush-openai-system-prompt))
+                        (cons 'content sys-prompt))
                   (list '(role . "user")
                         (cons 'content user-content))))))
          (body `((model . ,model)

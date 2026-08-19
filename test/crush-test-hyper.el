@@ -482,7 +482,7 @@ non-nil."
                 (mapconcat #'identity (nreverse received) "\n"))))
     (should (string-match-p "header = \"x-crush-id: my-id\""
                             (capture "my-id")))
-    (should-not (string-match-p "x-crush-id" (capture nil)))))
+    (should-not (string-match-p "header = \"x-crush-id" (capture nil)))))
 
 (ert-deftest crush-test/hyper-request-omits-session-headers-when-gate-off ()
   "With the cache gate off, neither session header is emitted."
@@ -501,8 +501,8 @@ non-nil."
            #'ignore #'ignore))
       (delete-process proc))
     (let ((config (mapconcat #'identity (nreverse received) "\n")))
-      (should-not (string-match-p "x-session-id" config))
-      (should-not (string-match-p "x-session-affinity" config)))))
+      (should-not (string-match-p "header = \"x-session-id" config))
+      (should-not (string-match-p "header = \"x-session-affinity" config)))))
 
 (ert-deftest crush-test/hyper-method-gates-session-id-on-defcustom ()
   "The session hash is computed only when the cache gate is on.\nWith the gate off, nil is passed for the session headers."

@@ -59,7 +59,8 @@
 ;;; 1. Request composition
 
 (ert-deftest crush-test/openai-compose-no-context ()
-  "Without context, messages should be system + user with just the prompt."
+  "Without context, messages should be system + user with just the prompt.
+The system message should carry the dynamic system prompt (<env> block)."
   (let* ((req (crush-openai-compose-request "Hello" nil "m"))
          (msgs (alist-get 'messages req)))
     (should (string= (alist-get 'model req) "m"))
@@ -67,6 +68,8 @@
     (should (= (length msgs) 2))
     (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
     (should (string= (crush--openai-alist-get "role" (nth 1 msgs)) "user"))
+    (should (string-match-p "<env>"
+                            (crush--openai-alist-get "content" (nth 0 msgs))))
     (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "Hello"))))
 
 (ert-deftest crush-test/openai-compose-with-context-merges-preamble ()
@@ -173,7 +176,198 @@ The default is non-nil, so `tool_choice' is `auto'."
         (should (string= (crush--openai-alist-get "reasoning_content" a)
                          "deep chain of thought"))))))
 
-;;; 3. SSE parser
+;;; 3. System prompt: <env> block
+
+(ert-deftest crush-test/openai-env-block-no-git ()
+  "The <env> block includes working dir, platform, and date.
+When not in a git repo, no git lines appear."
+  (let* ((default-directory "/tmp/nonexistent-project/")
+         (env (crush-openai--build-env-block)))
+    (should (string-match-p "<env>" env))
+    (should (string-match-p "Working directory: /tmp/nonexistent-project" env))
+    (should (string-match-p "Is directory a git repo: no" env))
+    (should (string-match-p "Platform:" env))
+    (should (string-match-p "Today's date:" env))
+    (should-not (string-match-p "Git status" env))
+    (should (string-match-p "</env>" env))))
+
+(ert-deftest crush-test/openai-env-block-with-git ()
+  "The <env> block includes git branch/status/commits when in a git repo.
+Uses the crush.el repo root (always a git repo during tests)."
+  (let ((default-directory
+         (file-name-directory
+          (or buffer-file-name load-file-name
+              (expand-file-name "crush-openai.el" default-directory)))))
+    (let ((env (crush-openai--build-env-block)))
+      (should (string-match-p "<env>" env))
+      (should (string-match-p "Is directory a git repo: yes" env))
+      (should (string-match-p "Current branch:" env))
+      (should (string-match-p "Status:" env))
+      (should (string-match-p "Recent commits:" env))
+      (should (string-match-p "</env>" env)))))
+
+;;; 4. System prompt: context file discovery
+
+(ert-deftest crush-test/openai-discover-context-files-finds-agents ()
+  "Discover AGENTS.md in the working directory and return its content."
+  (let* ((repo-root (file-name-directory
+                     (or buffer-file-name load-file-name
+                         (expand-file-name "crush-openai.el" default-directory))))
+         (default-directory repo-root)
+         (files (crush-openai--discover-context-files
+                 (list "AGENTS.md"))))
+    (should files)
+    (should (= (length files) 1))
+    (let ((entry (car files)))
+      (should (string= (car entry) "AGENTS.md"))
+      (should (string-match-p "crush.el" (cdr entry))))))
+
+(ert-deftest crush-test/openai-discover-context-files-missing-returns-nil ()
+  "Non-existent files are omitted from the result."
+  (let* ((default-directory "/tmp/")
+         (files (crush-openai--discover-context-files
+                 (list "DOES-NOT-EXIST.md"))))
+    (should-not files)))
+
+;;; 5. System prompt: <project_context> and <user_preferences> blocks
+
+(ert-deftest crush-test/openai-project-context-block-with-files ()
+  "The <project_context> block wraps file contents in XML."
+  (let ((block (crush-openai--build-project-context-block
+                (list (cons "AGENTS.md" "Project rules here")
+                      (cons "CRUSH.md" "More rules")))))
+    (should (string-match-p "# Project-Specific Context" block))
+    (should (string-match-p "Make sure to follow the instructions" block))
+    (should (string-match-p "<project_context>" block))
+    (should (string-match-p "<file path=\"AGENTS.md\">" block))
+    (should (string-match-p "Project rules here" block))
+    (should (string-match-p "<file path=\"CRUSH.md\">" block))
+    (should (string-match-p "More rules" block))
+    (should (string-match-p "</project_context>" block))))
+
+(ert-deftest crush-test/openai-project-context-block-empty-returns-nil ()
+  "Empty file list returns nil (no block)."
+  (should-not (crush-openai--build-project-context-block nil)))
+
+(ert-deftest crush-test/openai-user-preferences-block-with-files ()
+  "The <user_preferences> block wraps global file contents in XML."
+  (let ((block (crush-openai--build-user-preferences-block
+                (list (cons "~/.config/crush/CRUSH.md" "Global rules")))))
+    (should (string-match-p "# User context" block))
+    (should (string-match-p "<user_preferences>" block))
+    (should (string-match-p "<file path=" block))
+    (should (string-match-p "Global rules" block))
+    (should (string-match-p "</user_preferences>" block))))
+
+(ert-deftest crush-test/openai-user-preferences-block-empty-returns-nil ()
+  "Empty global file list returns nil (no block)."
+  (should-not (crush-openai--build-user-preferences-block nil)))
+
+;;; 6. System prompt: full assembly
+
+(ert-deftest crush-test/openai-build-system-prompt-uncached-basic ()
+  "The full system prompt contains base text, <env>, and context blocks.
+Uses the crush.el repo root so AGENTS.md is discovered."
+  (let* ((repo-root (file-name-directory
+                     (or buffer-file-name load-file-name
+                         (expand-file-name "crush-openai.el" default-directory))))
+         (default-directory repo-root)
+         (crush-openai-global-context-paths nil)
+         (prompt (crush-openai--build-system-prompt-uncached)))
+    (should (string-match-p "You are a helpful assistant" prompt))
+    (should (string-match-p "<env>" prompt))
+    (should (string-match-p "Working directory:" prompt))
+    (should (string-match-p "</env>" prompt))
+    (should (string-match-p "# Project-Specific Context" prompt))
+    (should (string-match-p "<project_context>" prompt))
+    (should (string-match-p "AGENTS.md" prompt))
+    (should (string-match-p "</project_context>" prompt))
+    (should-not (string-match-p "<user_preferences>" prompt))))
+
+(ert-deftest crush-test/openai-build-system-prompt-uncached-no-context ()
+  "With no context files, system prompt still has base text and <env>."
+  (let* ((default-directory "/tmp/")
+         (crush-openai-context-paths nil)
+         (crush-openai-global-context-paths nil)
+         (prompt (crush-openai--build-system-prompt-uncached)))
+    (should (string-match-p "You are a helpful assistant" prompt))
+    (should (string-match-p "<env>" prompt))
+    (should (string-match-p "Working directory:" prompt))
+    (should-not (string-match-p "<project_context>" prompt))
+    (should-not (string-match-p "<user_preferences>" prompt))))
+
+;;; 7. System prompt: cache (modtimes, hit, miss, invalidation)
+
+(ert-deftest crush-test/openai-context-modtimes-existing-only ()
+  "Return (path . modtime) for existing files only; skip missing."
+  (let* ((repo-root (file-name-directory
+                     (or buffer-file-name load-file-name
+                         (expand-file-name "crush-openai.el" default-directory))))
+         (default-directory repo-root)
+         (mods (crush-openai--context-modtimes
+                (list "AGENTS.md" "DOES-NOT-EXIST.md"))))
+    (should (= (length mods) 1))
+    (should (string= (car (nth 0 mods)) "AGENTS.md"))
+    (should (cdr (nth 0 mods)))))
+
+(ert-deftest crush-test/openai-context-modtimes-empty-for-nothing ()
+  "No existing files yields nil."
+  (let* ((default-directory "/tmp/")
+         (mods (crush-openai--context-modtimes
+                (list "DOES-NOT-EXIST.md"))))
+    (should-not mods)))
+
+(ert-deftest crush-test/openai-cache-hit-same-key ()
+  "Second call with same key returns cached string without rebuild."
+  (let* ((repo-root (file-name-directory
+                     (or buffer-file-name load-file-name
+                         (expand-file-name "crush-openai.el" default-directory)))))
+    (setq-local default-directory repo-root)
+    (setq-local crush-openai-global-context-paths nil)
+    (setq-local crush-openai--cached-system-prompt nil)
+    (setq-local crush-openai--cache-key nil)
+    (let ((first (crush-openai--build-system-prompt))
+          (second (crush-openai--build-system-prompt)))
+      (should (string= first second))
+      (should (string= first crush-openai--cached-system-prompt)))))
+
+(ert-deftest crush-test/openai-cache-miss-on-working-dir-change ()
+  "Changing default-directory triggers rebuild."
+  (let* ((repo-root (file-name-directory
+                     (or buffer-file-name load-file-name
+                         (expand-file-name "crush-openai.el" default-directory)))))
+    (setq-local default-directory repo-root)
+    (setq-local crush-openai-global-context-paths nil)
+    (setq-local crush-openai--cached-system-prompt nil)
+    (setq-local crush-openai--cache-key nil)
+    (let ((first (crush-openai--build-system-prompt)))
+      (setq-local default-directory "/tmp/")
+      (setq-local crush-openai-context-paths nil)
+      (let ((second (crush-openai--build-system-prompt)))
+        (should-not (string= first second))))))
+
+(ert-deftest crush-test/openai-cache-miss-on-modtime-change ()
+  "Modifying a context file triggers rebuild."
+  (let* ((tmp-dir (make-temp-file "crush-test-" t))
+         (ctx-file (expand-file-name "AGENTS.md" tmp-dir)))
+    (setq-local default-directory (file-name-as-directory tmp-dir))
+    (setq-local crush-openai-context-paths (list "AGENTS.md"))
+    (setq-local crush-openai-global-context-paths nil)
+    (setq-local crush-openai--cached-system-prompt nil)
+    (setq-local crush-openai--cache-key nil)
+    (unwind-protect
+        (progn
+          (write-region "version 1" nil ctx-file)
+          (let ((first (crush-openai--build-system-prompt)))
+            (should (string-match-p "version 1" first))
+            ;; Touch the file with new content + new modtime.
+            (write-region "version 2" nil ctx-file)
+            (let ((second (crush-openai--build-system-prompt)))
+              (should (string-match-p "version 2" second))
+              (should-not (string= first second)))))
+      (delete-directory tmp-dir t))))
+
+;;; 8. SSE parser
 
 (defun crush-test-openai--sse-state ()
   "Return a fresh, empty SSE parser state."
@@ -216,7 +410,7 @@ The default is non-nil, so `tool_choice' is `auto'."
     (should (string= (crush--openai-alist-get "role" a) "system"))
     (should (string= (crush--openai-alist-get 'content a) "hi"))))
 
-;;; 4. Tool protocol (registry, struct, parse, error result)
+;;; 9. Tool protocol (registry, struct, parse, error result)
 
 (defun crush-test-openai--tool-call (name args-json)
   "Return a `crush-openai-tool-call' for NAME with ARGS-JSON (or nil)."
