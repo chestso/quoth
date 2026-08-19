@@ -191,6 +191,19 @@ When not in a git repo, no git lines appear."
     (should-not (string-match-p "Git status" env))
     (should (string-match-p "</env>" env))))
 
+(ert-deftest crush-test/openai-env-block-field-order ()
+  "The <env> block fields follow the CLI order: working directory,
+git repo status, platform, then date — no reversal."
+  (let* ((default-directory "/tmp/nonexistent-project/")
+         (env (crush-openai--build-env-block))
+         (wd-pos (string-match "Working directory:" env))
+         (git-pos (string-match "Is directory a git repo:" env))
+         (platform-pos (string-match "Platform:" env))
+         (date-pos (string-match "Today's date:" env)))
+    (should (< wd-pos git-pos))
+    (should (< git-pos platform-pos))
+    (should (< platform-pos date-pos))))
+
 (ert-deftest crush-test/openai-env-block-with-git ()
   "The <env> block includes git branch/status/commits when in a git repo.
 Uses the crush.el repo root (always a git repo during tests)."

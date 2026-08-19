@@ -151,11 +151,11 @@ time the model reads it."
     (when is-git
       (let ((git-status (crush-openai--git-status-string dir)))
         (when git-status
-          (push (format "\nGit status (snapshot at conversation start - may be outdated):\n%s"
-                        git-status)
-                lines))))
+          (setq lines (append lines
+                              (list (format "\nGit status (snapshot at conversation start - may be outdated):\n%s"
+                                            git-status)))))))
     (format "<env>\n%s\n</env>"
-            (string-join (nreverse lines) "\n"))))
+            (string-join lines "\n"))))
 
 (defun crush-openai--git-status-string (dir)
   "Return git status summary for DIR, or nil if git is unavailable.
