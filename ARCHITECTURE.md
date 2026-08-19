@@ -153,17 +153,19 @@ x-crush-id) and mapping the provider protocol onto the client's
 
 The hyper provider is stateful: prior conversation from the buffer's
 tagged regions is folded into each request's messages array as
-`[system, prior-user, prior-assistant, ..., current-user]`. Set
-`crush-hyper-history-limit` to `0` for stateless per-prompt requests.
+`[system, prior-user, prior-assistant, prior-tool, ..., current-user]` (tool
+rounds interleave as assistant `tool_calls` + `role: "tool"` result pairs).
+Set `crush-hyper-history-limit` to `0` for stateless per-prompt requests.
 Because the buffer is the source of truth, `C-c c k` (clear) starts a
 fresh conversation naturally.
 
 Tool calls replay in the OpenAI function-calling shape: an assistant
 `tool_calls` declaration (content `null`) followed by a
 `role: "tool"` result message with the matching `tool_call_id`. Only
-the raw result text and the stored call id travel — never the rendered
-toolbar. Buffers created before the nested `tool-output` region existed
-fall back to the bare `(tool . text)` turn with a legacy
+the raw result text — Codex prose convention, `Process exited with
+code N`/`Output:` — and the stored call id travel, never the rendered
+tool block. Buffers created before the nested `tool-output` region
+existed fall back to the bare `(tool . text)` turn with a legacy
 `tool_call_id: "unknown"`.
 
 Each buffer also owns an opaque session UUID (rotated by `C-c c k`),
