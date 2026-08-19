@@ -173,20 +173,23 @@ Runs three commands (matching the Crush CLI):
                                 crush-openai-git-commits))))
           (string-join
            (delq nil
-                 (list (and branch (format "Current branch: %s" branch))
-                       (and status
-                            (if (string-empty-p status)
-                                "Status: clean"
-                              (format "Status:\n%s" status)))
-                       (and commits (format "Recent commits:\n%s" commits))))
+                 (list (and (not (string-empty-p branch))
+                            (format "Current branch: %s" branch))
+                       (if (string-empty-p status)
+                           "Status: clean"
+                         (format "Status:\n%s" status))
+                       (and (not (string-empty-p commits))
+                            (format "Recent commits:\n%s" commits))))
            "\n"))
       (error nil))))
 
 (defun crush-openai--git-output (command)
-  "Run COMMAND in `default-directory' and return trimmed stdout, or nil."
+  "Run COMMAND in `default-directory' and return trimmed stdout.
+Returns an empty string when the command produces no output or
+fails (git unavailable, broken repo)."
   (let ((out (string-trim
               (shell-command-to-string command))))
-    (if (string-empty-p out) nil out)))
+    out))
 
 ;;; System prompt construction: context file discovery.
 
