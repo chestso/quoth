@@ -333,7 +333,10 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
 (defvar crush-chat-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'newline)
+    ;; Bind both spellings: C-RET (control-modified return) and
+    ;; C-<return> (the named key) — terminals and GUI Emacs differ.
     (define-key map (kbd "C-RET") #'crush-send-input)
+    (define-key map (kbd "C-<return>") #'crush-send-input)
     (define-key map (kbd "TAB") #'crush--reasoning-tab)
     (define-key map (kbd "C-c c") crush-chat-command-map)
     (define-key map (kbd "M-p") #'crush--input-previous)

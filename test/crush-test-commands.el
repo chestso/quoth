@@ -452,6 +452,7 @@ for multiline input; C-RET sends the prompt."
     (should (keymapp map))
     (should (eq (lookup-key map (kbd "RET")) #'newline))
     (should (eq (lookup-key map (kbd "C-RET")) #'crush-send-input))
+    (should (eq (lookup-key map (kbd "C-<return>")) #'crush-send-input))
     (should (eq (lookup-key map (kbd "C-c c")) cmd))
     (should (eq (lookup-key cmd (kbd "s")) #'crush-send-input))
     (should (eq (lookup-key cmd (kbd "i")) #'crush-interrupt))
@@ -474,11 +475,12 @@ for multiline input; C-RET sends the prompt."
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/chat-mode-c-ret-binds-send-input ()
-  "C-RET in a crush buffer should resolve to crush-send-input."
+  "C-RET / C-<return> in a crush buffer should resolve to crush-send-input."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (eq (key-binding (kbd "C-RET")) #'crush-send-input))))
+          (should (eq (key-binding (kbd "C-RET")) #'crush-send-input))
+          (should (eq (key-binding (kbd "C-<return>")) #'crush-send-input))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/chat-mode-adds-after-change-hook ()
