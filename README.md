@@ -18,7 +18,7 @@ See [TODO.md](TODO.md) for the full project goal and roadmap.
 
 ## Important: Permission Behavior
 
-Tool calls run without confirmation: the provider executes the `bash` tool immediately when the model calls it. Interactive permission prompts for tool execution are on the roadmap. See the [TODO.md](TODO.md) roadmap for details.
+Tool calls run without confirmation: the provider executes the `exec_command` tool immediately when the model calls it. Interactive permission prompts for tool execution are on the roadmap. See the [TODO.md](TODO.md) roadmap for details.
 
 ## Installing
 
@@ -96,7 +96,8 @@ crush.el talks to providers through a small provider protocol
 directly to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE — no
 CLI binary needed — using the reusable OpenAI client in
 `crush-openai.el` for request composition and streaming, and the local
-`bash` tool in `crush-tools.el`. The chat buffer behaves identically
+tools (`exec_command`, `write_stdin`, `web_search`) in `crush-tools.el`
+and `crush-searxng.el`. The chat buffer behaves identically
 whichever provider is active.
 
 Details — how requests are composed and streamed, session continuity,
