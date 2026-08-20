@@ -61,7 +61,7 @@
 (ert-deftest crush-test/openai-compose-no-context ()
   "Without context, messages should be system + user with just the prompt.
 The system message should carry the dynamic system prompt (<env> block)."
-  (let* ((req (crush-openai-compose-request "Hello" nil "m"))
+  (let* ((req (crush-openai-compose-request "Hello" "m"))
          (msgs (alist-get 'messages req)))
     (should (string= (alist-get 'model req) "m"))
     (should (eq (alist-get 'stream req) t))
@@ -72,23 +72,13 @@ The system message should carry the dynamic system prompt (<env> block)."
                             (crush--openai-alist-get "content" (nth 0 msgs))))
     (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "Hello"))))
 
-(ert-deftest crush-test/openai-compose-with-context-merges-preamble ()
-  "With context, the user message should carry preamble + context + prompt."
-  (let* ((req (crush-openai-compose-request "Do the thing" "**Attachment: foo**" "m"))
-         (user-content (crush--openai-alist-get
-                        "content"
-                        (nth 1 (alist-get 'messages req)))))
-    (should (string-match-p "The following markdown fenced code blocks" user-content))
-    (should (string-match-p "\\*\\*Attachment: foo\\*\\*" user-content))
-    (should (string-match-p "Do the thing$" user-content))))
-
 (ert-deftest crush-test/openai-compose-respects-options ()
   "Optional max-tokens, temperature, thinking, and effort land in the body."
   (let ((crush-openai-max-tokens 1234)
         (crush-openai-temperature 0.5)
         (crush-openai-thinking t)
         (crush-openai-reasoning-effort "high"))
-    (let ((req (crush-openai-compose-request "P" nil "my-model")))
+    (let ((req (crush-openai-compose-request "P" "my-model")))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
       (should (eq (alist-get 'thinking req) t))
@@ -97,7 +87,7 @@ The system message should carry the dynamic system prompt (<env> block)."
 (ert-deftest crush-test/openai-compose-tools-by-default ()
   "With `crush-tools-enabled' t the body announces all registered tools.
 The default is non-nil, so `tool_choice' is `auto'."
-  (let ((req (crush-openai-compose-request "P" nil "m")))
+  (let ((req (crush-openai-compose-request "P" "m")))
     (should (assq 'tools req))
     (should (equal (alist-get 'tool_choice req) "auto"))
     (let ((tools (alist-get 'tools req)))
@@ -113,7 +103,7 @@ The default is non-nil, so `tool_choice' is `auto'."
 (ert-deftest crush-test/openai-compose-no-tools-when-disabled ()
   "With `crush-tools-enabled' nil the body has no `tools' or `tool_choice'."
   (let ((crush-tools-enabled nil))
-    (let ((req (crush-openai-compose-request "P" nil "m")))
+    (let ((req (crush-openai-compose-request "P" "m")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
@@ -121,7 +111,7 @@ The default is non-nil, so `tool_choice' is `auto'."
   "A non-nil CONTINUATION replaces the user message with follow-up msgs."
   (let ((msgs (alist-get 'messages
                          (crush-openai-compose-request
-                          "P" nil "m" nil
+                          "P" "m" nil
                           '(((role . "assistant") (content . nil)
                              (tool_calls . [(id . "c1")]))
                             ((role . "tool") (tool_call_id . "c1")
@@ -147,7 +137,7 @@ The default is non-nil, so `tool_choice' is `auto'."
                (list (cons 'role "tool")
                      (cons 'tool_call_id "call_1")
                      (cons 'content "<command>ls</command>\n<exit_code>0</exit_code>")))))
-    (let* ((req (crush-openai-compose-request "explain" nil "m" history))
+    (let* ((req (crush-openai-compose-request "explain" "m" history))
            (msgs (alist-get 'messages req)))
       (should (= (length msgs) 5))   ; system + 3 history + current user
       (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
@@ -170,7 +160,7 @@ The default is non-nil, so `tool_choice' is `auto'."
                (list (cons 'role "assistant")
                      (cons 'content "short answer")
                      (cons 'reasoning_content "deep chain of thought")))))
-    (let* ((req (crush-openai-compose-request "next" nil "m" history))
+    (let* ((req (crush-openai-compose-request "next" "m" history))
            (msgs (alist-get 'messages req)))
       (should (= (length msgs) 4))   ; system + 2 history + current user
       (let ((a (nth 2 msgs)))

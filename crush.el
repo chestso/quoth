@@ -174,11 +174,6 @@ Used to make `crush--init-buffer' idempotent regardless of the active
 parent mode (which may be `markdown-mode' or `text-mode').
 Buffer-local.")
 
-(defvar crush--attachments nil
-  "List of attachments for current pending prompt.
-Each attachment is a plist: (:id <uuid> :prompt-id <uuid> :content <string>).
-Buffer-local.")
-
 (defvar crush--prompt-start-marker nil
   "Marker at the start of the frozen input separator line.
 Buffer-local.")
@@ -707,23 +702,6 @@ the user scrolled back: stop following."
       (goto-char win-point))
     (point-max)))
 
-(defun crush-get-attachments-for-prompt (prompt-id)
-  "Return list of attachment regions for PROMPT-ID.
-Each element is (START END ATTACHMENT-ID)."
-  (let ((pos (point-min))
-        attachments)
-    (while (setq pos (text-property-any pos (point-max) 'crush-prompt-id prompt-id))
-      (let ((attach-id (get-text-property pos 'crush-attachment-id)))
-        (if attach-id
-            (let ((end (or (next-single-property-change pos 'crush-attachment-id nil (point-max))
-                           (point-max))))
-              (push (list pos end attach-id) attachments)
-              (setq pos end))
-          ;; No attachment at this position, move to next property change
-          (setq pos (or (next-single-property-change pos 'crush-prompt-id nil (point-max))
-                        (point-max))))))
-    (nreverse attachments)))
-
 (defun crush-get-all-prompts ()
   "Return list of all unique prompt IDs in buffer."
   (let ((pos (point-min))
@@ -1080,7 +1058,6 @@ buffer-local and never leaves via the network; only the hash is sent."
       (setq-local crush-process nil)
       (setq-local crush--continue nil)
       (crush--init-session-uuid)
-      (setq-local crush--attachments nil)
       (setq-local crush--response-start nil)
       (setq-local crush-active-provider nil)
       (setq-local crush--prompt-start-marker nil)
@@ -1119,16 +1096,13 @@ buffer-local and never leaves via the network; only the hash is sent."
       ;; by the parent mode (which calls kill-all-local-variables).
       (setq-local crush--initialized t))))
 
-(defun crush--append-as-user-input (buf formatted &optional attachment-id prompt-id filename lines)
+(defun crush--append-as-user-input (buf formatted)
   "Insert FORMATTED content into BUF as user input.
-Appends after `crush--input-start-marker' (or at point-max), tagging the
-region `crush-region-type' `user' so it reads back as typed input.
-When ATTACHMENT-ID and PROMPT-ID are provided, also apply those text
-properties.  When FILENAME is provided, tag the region with
-`crush-filename'; when LINES is provided, tag it with `crush-lines' (a
-line range string).  Delegates to `crush--insert-at-eof' so the
-insertion preserves a scrolled-back window's point like every other
-append."
+Appends after `crush--input-start-marker' (or at point-max), tagging
+the region `crush-region-type' `user' with the current
+`crush--prompt-id' so it reads back as typed input.  Delegates to
+`crush--insert-at-eof' so the insertion preserves a scrolled-back
+window's point like every other append."
   (with-current-buffer buf
     (let ((start (if (and crush--input-start-marker
                           (markerp crush--input-start-marker))
@@ -1136,14 +1110,8 @@ append."
                    (point-max))))
       (crush--insert-at-eof
        (concat formatted "\n\n")
-       (append (list 'crush-region-type 'user)
-               (when (and attachment-id prompt-id)
-                 (list 'crush-attachment-id attachment-id
-                       'crush-prompt-id prompt-id))
-               (when filename
-                 (list 'crush-filename filename))
-               (when lines
-                 (list 'crush-lines lines)))
+       (list 'crush-region-type 'user
+             'crush-prompt-id crush--prompt-id)
        start))))
 
 (defun crush--relative-file (file)
@@ -1503,7 +1471,6 @@ Runs in the crush buffer, which owns all response text."
         (setq-local crush--last-follow-point (point-max))))
     (setq-local crush-process nil)
     (setq-local crush--response-start nil)
-    (setq-local crush--attachments nil)
     (setq-local crush--tool-loop-count 0)
     (crush--input-ring-write)
     (crush--update-header-line)
@@ -1585,7 +1552,6 @@ come back, finalize via `crush-facade--close-response'."
         (crush-facade--stream-transition 'active 2)
         (let ((real-proc (crush-provider-send-prompt
                           crush-active-provider ""
-                          :context nil
                           :session-id crush--session
                           :session-uuid crush--session-uuid
                           :continue-p crush--continue
@@ -1636,8 +1602,8 @@ closure enters it)."
       (goto-char (point-max))
       (crush--reasoning-extend-overlay))))
 
-(defun crush-facade--send (prompt context has-context)
-  "Send PROMPT (with optional CONTEXT when HAS-CONTEXT) via the active provider.
+(defun crush-facade--send (prompt)
+  "Send PROMPT via the active provider.
 Injects the facade's continuation as the provider's completion action so
 providers signal stream completion without touching buffers.  Runs in the
 crush buffer, which owns all streamed output."
@@ -1645,7 +1611,6 @@ crush buffer, which owns all streamed output."
     (crush-facade--stream-transition 'active 2)
     (let ((real-proc (crush-provider-send-prompt
                       crush-active-provider prompt
-                      :context (when has-context context)
                       :session-id crush--session
                       :session-uuid crush--session-uuid
                       :continue-p crush--continue
@@ -1910,15 +1875,7 @@ for wire resume.  Returns the end position of the inserted block."
                           (point-min)))
          (input (buffer-substring-no-properties
                  input-start (point-max)))
-         (prompt (string-trim input))
-         (context (string-trim
-                   (mapconcat
-                    (lambda (region)
-                      (buffer-substring-no-properties
-                       (car region) (cadr region)))
-                    (crush-get-attachments-for-prompt crush--prompt-id)
-                    "\n\n")))
-         (has-context (not (string-empty-p context))))
+         (prompt (string-trim input)))
     (when (string-empty-p prompt)
       (user-error "No prompt to send"))
     (crush--input-ring-add prompt)
@@ -1944,8 +1901,7 @@ for wire resume.  Returns the end position of the inserted block."
     (setq-local crush--tool-loop-count 0)
     (setq-local crush--follow-p t)
     (setq-local crush--last-follow-point (point-max))
-    (crush-facade--send prompt context has-context)
-    (setq-local crush--attachments nil)))
+    (crush-facade--send prompt)))
 
 (defun crush-interrupt ()
   "Interrupt the currently running Crush process."
@@ -2060,17 +2016,10 @@ BEG and END are the bounds of the selection."
   (let* ((file (buffer-file-name))
          (relative (crush--relative-file file))
          (formatted (crush--format-selection file relative beg end))
-         (lines (format "%d-%d"
-                        (save-excursion (goto-char beg) (line-number-at-pos))
-                        (save-excursion (goto-char end) (line-number-at-pos))))
          (buf (crush--current-crush-buffer)))
     (with-current-buffer buf
-      (let ((attachment-id (crush--generate-id)))
-        ;; Insert with text properties
-        (crush--append-as-user-input buf formatted attachment-id crush--prompt-id
-                                     relative lines)
-        ;; Update header line to show attachment count
-        (crush--update-header-line)))
+      (crush--append-as-user-input buf formatted)
+      (crush--update-header-line))
     (switch-to-buffer-other-window buf)))
 
 (defun crush-insert-buffer ()
@@ -2090,10 +2039,8 @@ BEG and END are the bounds of the selection."
                         ""))
            (buf (crush--current-crush-buffer)))
       (with-current-buffer buf
-        (let ((attachment-id (crush--generate-id)))
-          (crush--append-as-user-input buf formatted attachment-id crush--prompt-id
-                                       relative-file nil)
-          (crush--update-header-line)))
+        (crush--append-as-user-input buf formatted)
+        (crush--update-header-line))
       (switch-to-buffer-other-window buf))))
 
 ;;; Entry point

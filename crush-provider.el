@@ -51,14 +51,7 @@
   (application-count 1)
   (type nil))
 
-(defconst crush-context-preamble
-  "The following markdown fenced code blocks contain code context from the
-user's editor. Each block has a header line indicating the source file and
-optional line range. Paths are relative to the project root. Use this context
-to answer the prompt."
-  "Preamble used before attached context by both providers.")
-
-(cl-defgeneric crush-provider-send-prompt (provider prompt &key context session-id continue-p completion buffer stderr on-delta on-error continuation)
+(cl-defgeneric crush-provider-send-prompt (provider prompt &key session-id continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to PROVIDER with optional CONTEXT, SESSION-ID, and CONTINUE-P.
 COMPLETION is a zero-argument closure (the facade's continuation) that
 the provider must invoke exactly once when the response stream finishes.

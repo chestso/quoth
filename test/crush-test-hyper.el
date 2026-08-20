@@ -68,7 +68,7 @@
 (ert-deftest crush-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
   (let ((crush-model nil))
-    (let* ((req (crush-openai-compose-request "Hello" nil "m"))
+    (let* ((req (crush-openai-compose-request "Hello" "m"))
            (msgs (alist-get 'messages req)))
       (should (string= (alist-get 'model req) "m"))
       (should (eq (alist-get 'stream req) t))
@@ -76,15 +76,6 @@
       (should (string= (crush--openai-alist-get "role" (nth 0 msgs)) "system"))
       (should (string= (crush--openai-alist-get "role" (nth 1 msgs)) "user"))
       (should (string= (crush--openai-alist-get "content" (nth 1 msgs)) "Hello")))))
-
-(ert-deftest crush-test/hyper-compose-with-context-merges-preamble ()
-  "With context, the user message should carry preamble + context + prompt."
-  (let* ((req (crush-openai-compose-request "Do the thing" "**Attachment: foo**" "m"))
-         (user-content (crush--openai-alist-get "content"
-                                                (nth 1 (alist-get 'messages req)))))
-    (should (string-match-p "The following markdown fenced code blocks" user-content))
-    (should (string-match-p "\\*\\*Attachment: foo\\*\\*" user-content))
-    (should (string-match-p "Do the thing$" user-content))))
 
 (ert-deftest crush-test/hyper-compose-respects-defcustoms ()
   "Model, max-tokens, temperature, thinking, reasoning-effort should land in body."
@@ -95,7 +86,7 @@
         (crush-openai-reasoning-effort "high"))
     ;; The model is resolved by the caller (the facade passes the provider
     ;; model slot derived from `crush-model'); compose uses it directly.
-    (let ((req (crush-openai-compose-request "P" nil crush-model)))
+    (let ((req (crush-openai-compose-request "P" crush-model)))
       (should (string= (alist-get 'model req) "my-model"))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
@@ -105,13 +96,13 @@
 (ert-deftest crush-test/hyper-compose-model-default ()
   "When no model is set, the crush default model is used."
   (let ((crush-model nil))
-    (should (string= (alist-get 'model (crush-openai-compose-request "P" nil nil))
+    (should (string= (alist-get 'model (crush-openai-compose-request "P" nil))
                      crush-openai-default-model))))
 
 (ert-deftest crush-test/hyper-compose-tools-by-default ()
   "With `crush-tools-enabled' t the body announces all registered tools.
 The default is non-nil, so `tool_choice' is `auto'."
-  (let ((req (crush-openai-compose-request "P" nil "m")))
+  (let ((req (crush-openai-compose-request "P" "m")))
     (should (assq 'tools req))
     (should (equal (alist-get 'tool_choice req) "auto"))
     (let ((tools (alist-get 'tools req)))
@@ -128,7 +119,7 @@ The default is non-nil, so `tool_choice' is `auto'."
   "With `crush-tools-enabled' nil the body matches the pre-tools format.
 It is byte-identical, with no `tools' or `tool_choice' key."
   (let ((crush-tools-enabled nil))
-    (let ((req (crush-openai-compose-request "P" nil "m")))
+    (let ((req (crush-openai-compose-request "P" "m")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
@@ -380,7 +371,7 @@ chunks and silently discarding any event split across them."
           (let ((crush-openai-timeout 45))
             (crush-openai-request
              "http://127.0.0.1:1" "tok"
-             (crush-openai-compose-request "hi" nil "m")
+             (crush-openai-compose-request "hi" "m")
              #'ignore #'ignore)))
       (delete-process proc))
     (should (string-match-p "max-time = 45"
@@ -402,7 +393,7 @@ XXH3-64 hash."
                   ((symbol-function 'process-send-eof) #'ignore))
           (crush-openai-request
            "http://127.0.0.1:1" "tok"
-           (crush-openai-compose-request "hi" nil "m")
+           (crush-openai-compose-request "hi" "m")
            #'ignore #'ignore nil (crush-xxh3-hash64 uuid)))
       (delete-process proc))
     (let ((config (mapconcat #'identity (nreverse received) "\n")))
@@ -424,7 +415,7 @@ XXH3-64 hash."
                   ((symbol-function 'process-send-eof) #'ignore))
           (crush-openai-request
            "http://127.0.0.1:1" "tok"
-           (crush-openai-compose-request "hi" nil "m")
+           (crush-openai-compose-request "hi" "m")
            #'ignore #'ignore))
       (delete-process proc))
     (should (string-match-p
@@ -478,7 +469,7 @@ non-nil."
                               ((symbol-function 'process-send-eof) #'ignore))
                       (crush-openai-request
                        "http://127.0.0.1:1" "tok"
-                       (crush-openai-compose-request "hi" nil "m")
+                       (crush-openai-compose-request "hi" "m")
                        #'ignore #'ignore nil nil id))
                   (delete-process proc))
                 (mapconcat #'identity (nreverse received) "\n"))))
@@ -499,7 +490,7 @@ non-nil."
                   ((symbol-function 'process-send-eof) #'ignore))
           (crush-openai-request
            "http://127.0.0.1:1" "tok"
-           (crush-openai-compose-request "hi" nil "m")
+           (crush-openai-compose-request "hi" "m")
            #'ignore #'ignore))
       (delete-process proc))
     (let ((config (mapconcat #'identity (nreverse received) "\n")))
@@ -741,7 +732,7 @@ Returns the capture output."
                   (lambda (base)
                     (let ((proc (crush-openai-request
                                  base "tok-rf"
-                                 (crush-openai-compose-request "hi" nil "m")
+                                 (crush-openai-compose-request "hi" "m")
                                  #'ignore #'ignore nil
                                  (crush-xxh3-hash64
                                   "f47ac10b-58cc-4372-a567-0e02b2c3d479"))))
@@ -787,7 +778,7 @@ Returns the capture output."
                (setq-local crush--response-start (point-marker))
                (let ((buf (current-buffer)))
                  (let ((proc (crush-openai-request
-                              base "tok" (crush-openai-compose-request "hi" nil "m")
+                              base "tok" (crush-openai-compose-request "hi" "m")
                               (crush-test--hyper-on-delta buf)
                               (crush-test--hyper-completion buf))))
                    (let ((deadline (+ (float-time) 6)))
@@ -826,7 +817,7 @@ Returns the capture output."
                (setq-local crush--response-start (point-marker))
                (let ((buf (current-buffer)))
                  (let ((proc (crush-openai-request
-                              base "tok" (crush-openai-compose-request "hi" nil "m")
+                              base "tok" (crush-openai-compose-request "hi" "m")
                               (crush-test--hyper-on-delta buf)
                               (crush-test--hyper-completion buf))))
                    (let ((deadline (+ (float-time) 6)))
@@ -890,7 +881,7 @@ Returns the capture output."
            (lambda (base)
              (setq-local crush--response-start (point-marker))
              (let ((proc (crush-openai-request
-                          base "tok" (crush-openai-compose-request "hi" nil "m")
+                          base "tok" (crush-openai-compose-request "hi" "m")
                           (crush-test--hyper-on-delta (current-buffer))
                           (crush-test--hyper-completion (current-buffer))
                           (crush-test--hyper-on-error (current-buffer)))))
@@ -914,7 +905,7 @@ Returns the capture output."
            (lambda (base)
              (setq-local crush--response-start (point-marker))
              (let* ((proc (crush-openai-request
-                           base "tok" (crush-openai-compose-request "hi" nil "m")
+                           base "tok" (crush-openai-compose-request "hi" "m")
                            (crush-test--hyper-on-delta (current-buffer))
                            (crush-test--hyper-completion (current-buffer))
                            (crush-test--hyper-on-error (current-buffer))))
@@ -942,7 +933,7 @@ Returns the capture output."
              (setq-local crush--response-start (point-marker))
              (let ((proc (crush-openai-request
                           base "sk-hyper-supersecret"
-                          (crush-openai-compose-request "hi" nil "m")
+                          (crush-openai-compose-request "hi" "m")
                           (crush-test--hyper-on-delta (current-buffer))
                           (crush-test--hyper-completion (current-buffer)))))
                (let ((deadline (+ (float-time) 6)))
@@ -974,7 +965,7 @@ Returns the capture output."
 (ert-deftest crush-test/hyper-history-compose-prepends-turns ()
   "Prior messages (alists) ride before the new user message."
   (let* ((req (crush-openai-compose-request
-               "second" nil "m"
+               "second" "m"
                (list (list (cons 'role "user") (cons 'content "first"))
                      (list (cons 'role "assistant") (cons 'content "one")))))
          (msgs (alist-get 'messages req)))
@@ -988,7 +979,7 @@ Returns the capture output."
 (ert-deftest crush-test/hyper-history-compose-plain-with-no-turns ()
   "With no prior messages the request is exactly system + user.
 This covers the first prompt, or a limit of 0."
-  (let* ((req (crush-openai-compose-request "second" nil "m" nil))
+  (let* ((req (crush-openai-compose-request "second" "m" nil))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 2))
     (should (string= (crush--openai-alist-get "content" (nth 1 msgs))
@@ -998,7 +989,7 @@ This covers the first prompt, or a limit of 0."
   "History is already message alists, so nothing is filtered here;
 the caller (crush--history-turns) is responsible for dropping junk."
   (let* ((req (crush-openai-compose-request
-               "hi" nil "m"
+               "hi" "m"
                (list (list (cons 'role "user") (cons 'content "a")))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 3))
@@ -1192,7 +1183,7 @@ The second request is a plain [system, user]."
 (ert-deftest crush-test/hyper-history-compose-excluded-stays-plain ()
   "Excluded reasoning: the assistant message has only `content'."
   (let* ((req (crush-openai-compose-request
-               "hello" nil "m"
+               "hello" "m"
                (list (list (cons 'role "user") (cons 'content "first"))
                      (list (cons 'role "assistant") (cons 'content "answer")))))
          (msgs (alist-get 'messages req)))
@@ -1207,7 +1198,7 @@ The second request is a plain [system, user]."
 It carries both `content' and `reasoning_content'; there is no
 standalone reasoning message."
   (let* ((req (crush-openai-compose-request
-               "hello" nil "m"
+               "hello" "m"
                (list (list (cons 'role "user") (cons 'content "first"))
                      (list (cons 'role "assistant")
                            (cons 'content "answer")
@@ -1229,7 +1220,7 @@ standalone reasoning message."
   "A stray `reasoning' message with no assistant is dropped by the caller;
 history arrives pre-filtered here, so the request stays system + user."
   (let* ((req (crush-openai-compose-request
-               "hello" nil "m" nil))
+               "hello" "m" nil))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 2))))
 
@@ -1298,7 +1289,7 @@ The SSE state carries them and the parser reports them."
              (setq-local crush--response-start (point-marker))
              (let ((buf (current-buffer)))
                (let ((proc (crush-openai-request
-                            base "tok" (crush-openai-compose-request "hi" nil "m")
+                            base "tok" (crush-openai-compose-request "hi" "m")
                             (crush-test--hyper-on-delta buf)
                             (lambda ()
                               (with-current-buffer buf
@@ -1321,7 +1312,7 @@ The SSE state carries them and the parser reports them."
 (ert-deftest crush-test/hyper-compose-disabled-tools-no-key ()
   "With `crush-tools-enabled' nil the body lacks the tool keys.\nNeither `tools' nor `tool_choice' appears."
   (let ((crush-tools-enabled nil))
-    (let ((req (crush-openai-compose-request "P" nil "m")))
+    (let ((req (crush-openai-compose-request "P" "m")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
@@ -1343,7 +1334,7 @@ un-frozen, so its advancing end marker hides the next prompt under
                (setq-local crush--response-start (point-marker))
                (let ((buf (current-buffer)))
                  (let ((proc (crush-openai-request
-                              base "tok" (crush-openai-compose-request "hi" nil "m")
+                              base "tok" (crush-openai-compose-request "hi" "m")
                               (crush-test--hyper-on-delta buf)
                               (crush-test--hyper-completion buf))))
                    (let ((deadline (+ (float-time) 6)))

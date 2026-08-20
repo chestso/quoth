@@ -267,7 +267,7 @@ name, context window, input cost, and reasoning support, e.g.
 ;;; Hyper provider methods
 
 (cl-defmethod crush-provider-send-prompt
-  ((provider crush-hyper-provider) prompt &key context session-id session-uuid continue-p completion buffer stderr on-delta on-error continuation)
+  ((provider crush-hyper-provider) prompt &key session-id session-uuid continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to PROVIDER via a direct HTTP+SSE request to Hyper.
 COMPLETION is the facade's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
@@ -286,7 +286,7 @@ requests with tool results.  The provider never touches buffers itself."
   (let* ((history (and buffer
                        (crush--history-for buffer)))
          (body (crush-openai-compose-request
-                prompt context (crush-hyper-provider-model provider)
+                prompt (crush-hyper-provider-model provider)
                 history continuation))
          (base-url (or (crush-hyper-provider-base-url provider)
                        (getenv "HYPER_URL")

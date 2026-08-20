@@ -231,7 +231,7 @@
           (crush-minor-mode -1))
       (crush-test--cleanup))))
 
-;;; 21. Attachments have attachment-id and prompt-id properties
+;;; 21. Inserted content has prompt-id properties
 
 (ert-deftest crush-test/init-buffer-is-idempotent ()
   "An initialized crush buffer resists re-initialization:
@@ -250,42 +250,36 @@ already-initialized buffer and re-initialized it."
               (should (eq marker1 crush--prompt-start-marker)))))
       (crush-test--cleanup))))
 
-(ert-deftest crush-test/attachment-has-properties ()
-  "Inserted attachments should have crush-attachment-id and crush-prompt-id properties."
+(ert-deftest crush-test/inserted-content-has-prompt-id ()
+  "Inserted content via crush-insert-selection should have crush-prompt-id."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
             (let ((prompt-id crush--prompt-id))
-              ;; Insert selection from temp buffer
               (with-temp-buffer
                 (insert "selected code\n")
                 (setq-local buffer-file-name "/test/file.el")
                 (crush-insert-selection (point-min) (point-max)))
-              ;; Find the org block in crush buffer
               (goto-char (point-min))
               (should (search-forward "selected code" nil t))
-              (let ((attach-id (get-text-property (- (point) 5) 'crush-attachment-id))
-                    (attach-prompt-id (get-text-property (- (point) 5) 'crush-prompt-id)))
-                (should attach-id)
-                (should (string= attach-prompt-id prompt-id))))))
+              (let ((pid (get-text-property (- (point) 5) 'crush-prompt-id)))
+                (should pid)
+                (should (string= pid prompt-id))))))
       (crush-test--cleanup))))
 
-;;; 33. Region type tagging: attachment
+;;; 33. Region type tagging: inserted content
 
-(ert-deftest crush-test/attachment-region-tagged-as-attachment ()
-  "Test that attachment blocks are tagged with crush-region-type 'user.
-They are appended as user input."
+(ert-deftest crush-test/inserted-content-tagged-as-user ()
+  "Test that inserted content blocks are tagged with crush-region-type 'user."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            ;; Insert selection from temp buffer
             (with-temp-buffer
               (insert "selected code\n")
               (setq-local buffer-file-name "/test/file.el")
               (crush-insert-selection (point-min) (point-max)))
-            ;; Check that the attachment lands in the user input region
             (goto-char (point-min))
             (should (search-forward "Attachment:" nil t))
             (let ((region-type (get-text-property (match-beginning 0) 'crush-region-type)))
@@ -344,31 +338,13 @@ The block carries an Attachment header line."
                            "plaintext")))
       (crush-test--cleanup))))
 
-;;; 38. Attachment text properties
+;;; 38. Inserted content text properties
 
-(ert-deftest crush-test/attachment-has-filename-lines-properties ()
-  "Inserted attachments carry `crush-filename' and `crush-lines'.
-These live on the header line, relative to the project root."
-  (let ((default-directory crush-test--root))
-    (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
-          (with-current-buffer buf
-            (with-temp-buffer
-              (insert "selected code\n")
-              (setq-local buffer-file-name
-                          (expand-file-name "src/file.el" default-directory))
-              (crush-insert-selection (point-min) (point-max)))
-            (goto-char (point-min))
-            (should (search-forward "Attachment:" nil t))
-            (should (string= (get-text-property (match-beginning 0) 'crush-filename) "src/file.el"))
-            (should (string= (get-text-property (match-beginning 0) 'crush-lines) "1-2"))))
-      (crush-test--cleanup))))
-
-;;; 39. Filepath attachment (link form)
+;;; 39. Filepath insertion (link form)
 
 (ert-deftest crush-test/insert-filepath-emits-link ()
-  "`crush-insert-filepath' inserts a markdown link attachment.
-It sets crush-region-type 'user and a project-root-relative path."
+  "`crush-insert-filepath' inserts a markdown link as user input.
+It sets crush-region-type 'user."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
@@ -380,8 +356,7 @@ It sets crush-region-type 'user and a project-root-relative path."
               (goto-char (point-min))
               (should (search-forward "[file.go](file.go)" nil t))
               (let ((region-type (get-text-property (match-beginning 0) 'crush-region-type)))
-                (should (eq region-type 'user)))
-              (should (string= (get-text-property (match-beginning 0) 'crush-filename) "file.go")))))
+                (should (eq region-type 'user))))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/sentinel-no-longer-fontifies ()

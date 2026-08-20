@@ -945,7 +945,7 @@ The text starts at `crush--input-start-marker' and runs to the line end."
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
             (should crush--input-start-marker)
-            (crush--append-as-user-input buf "INSERTED CONTENT" nil nil)
+            (crush--append-as-user-input buf "INSERTED CONTENT")
             (goto-char (marker-position crush--input-start-marker))
             (should (string-match-p "INSERTED CONTENT"
                                     (crush-test--input-area-text)))
@@ -1205,7 +1205,7 @@ caller, `crush--append-as-user-input' must route through
           (set-window-point win 9)
           (let ((saved-win-point (window-point win)))
             (with-current-buffer buf
-              (crush--append-as-user-input buf "INSERTED CONTENT" nil nil))
+              (crush--append-as-user-input buf "INSERTED CONTENT"))
             (should (= (window-point win) saved-win-point)))))
     (crush-test--cleanup)))
 
@@ -2056,7 +2056,7 @@ The message has `tool_call_id: unknown' so legacy buffers still replay."
               (should (equal (crush-test--msg-content (nth 3 msgs)) "second reply"))))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-omits-unanswered-attachment-text ()
+(ert-deftest crush-test/history-turns-omits-unanswered-prompt-text ()
   "An unanswered prompt contributes its user text but no assistant turn."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
@@ -2095,19 +2095,17 @@ The response region shares the `crush-prompt-id' tag."
                          "hello world"))))
     (crush-test--cleanup)))
 
-(ert-deftest crush-test/user-turn-text-includes-attachments ()
-  "`crush--user-turn-text' returns typed input plus appended attachments.
-Attachments are appended after `crush--input-start-marker' and tagged
-`user', so extraction reads them back as part of the turn."
+(ert-deftest crush-test/user-turn-text-includes-appended-input ()
+  "`crush--user-turn-text' returns typed input plus appended content.
+Content appended via `crush--append-as-user-input' is tagged `user',
+so extraction reads it back as part of the turn."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
             (goto-char (point-max))
             (insert "hello")
-            (let ((aid (crush--generate-id)))
-              (crush--append-as-user-input buf "```emacs-lisp\n(code)\n```"
-                                           aid crush--prompt-id "src/file.el" "1-3"))
+            (crush--append-as-user-input buf "```emacs-lisp\n(code)\n```")
             (let ((text (crush--user-turn-text crush--prompt-id)))
               (should (string-match-p "hello" text))
               (should (string-match-p "(code)" text)))))

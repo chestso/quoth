@@ -422,30 +422,25 @@ call name, args, result, and exit under the `tool' category; executors must not 
              (substring (car result) 0 (min (length (car result)) 200))))
     result))
 
-(defun crush-openai-compose-request (prompt context model &optional history continuation)
+(defun crush-openai-compose-request (prompt model &optional history continuation)
   "Compose a chat-completions request alist for PROMPT.
-CONTEXT is optional attachment text; MODEL is the resolved model (the
-caller passes the provider's model slot, already derived from the shared
-`crush-model' defcustom).  Falls back to `crush-openai-default-model'.
-HISTORY is a list of message alists (already reconstructed from the
-buffer by `crush--history-for'); they ride between the system prompt and
-the new user message.  With no history the body carries exactly system +
-user (`stream: t', no tools).  History is disabled by the caller passing
-nil (`crush-hyper-history-limit 0 means the facade extracts none).
-CONTINUATION, when non-nil, is a list of message alists (user, assistant
-with `tool_calls', `role: \"tool\"') that replace the user message; used
-by the tool loop to send follow-up requests with tool results.  Both
-inputs are message alists, never (ROLE . TEXT) conses.
+MODEL is the resolved model (the caller passes the provider's model
+slot, already derived from the shared `crush-model' defcustom).  Falls
+back to `crush-openai-default-model'.  HISTORY is a list of message
+alists (already reconstructed from the buffer by `crush--history-for');
+they ride between the system prompt and the new user message.  With no
+history the body carries exactly system + user (`stream: t', no tools).
+History is disabled by the caller passing nil
+\(`crush-hyper-history-limit 0 means the facade extracts none).
+CONTINUATION, when non-nil, is a list of message alists (user,
+assistant with `tool_calls', `role: \"tool\"') that replace the user
+message; used by the tool loop to send follow-up requests with tool
+results.  Both inputs are message alists, never (ROLE . TEXT) conses.
 When `crush-tools-enabled' is non-nil (the default), the request
 announces the `bash' tool and `tool_choice: \"auto\"'."
   (let* ((model (or model crush-openai-default-model))
          (sys-prompt (crush-openai--build-system-prompt))
-         (user-content
-          (if (and context (not (string-empty-p context)))
-              (concat crush-context-preamble "\n\n"
-                      context "\n\n"
-                      prompt)
-            prompt))
+         (user-content prompt)
          (messages
           (cond
            (continuation
