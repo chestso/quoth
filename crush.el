@@ -1169,22 +1169,32 @@ Inert when no reasoning region is active or content already started."
 (defun crush--reasoning-stop ()
   "Freeze the reasoning region, marking where the answer begins.
 Sets `crush--reasoning-end' at point-max (before the content delta
-is appended), stops moving the overlay, and inserts two newlines
+is appended), stops moving the overlay, and inserts a separator
 before the answer so the content is visually separated from the
 reasoning.  Inert when no reasoning is active or it already ended.
 The separator is inserted at point-max, never at an arbitrary point,
-so it cannot land inside a just-inserted tool block."
+so it cannot land inside a just-inserted tool block.
+
+The overlay end is frozen *after* ensuring the reasoning text ends
+with a newline.  This guarantees `:extend t' on `crush-reasoning-face'
+paints the last line's background to the end of the screen line, and
+gives the fold's `before-string' marker a clean line-end boundary so
+it starts on its own line."
   (when (and (overlayp crush--reasoning-overlay)
              (not (markerp crush--reasoning-end)))
+    (goto-char (point-max))
+    ;; Ensure the reasoning text ends with a newline so the overlay
+    ;; covers a complete last line: `:extend t' needs a newline to
+    ;; extend past, and the fold before-string must start on its own
+    ;; line (after the overlay's trailing newline).
+    (unless (eq (char-before) ?\n)
+      (insert "\n"))
     (setq-local crush--reasoning-end (copy-marker (point-max) nil))
     (move-overlay crush--reasoning-overlay
                   (overlay-start crush--reasoning-overlay)
                   (marker-position crush--reasoning-end))
-    ;; Insert at point-max (never an arbitrary point, so it cannot land
-    ;; inside a just-inserted tool block) and leave point after it, so
-    ;; the caller's subsequent content insert follows the separator.
-    (goto-char (point-max))
-    (insert "\n\n")))
+    ;; Insert a blank-line separator before the content delta.
+    (insert "\n")))
 
 (defvar crush--reasoning-fold-keymap
   (let ((map (make-sparse-keymap)))
@@ -1199,13 +1209,17 @@ TAB / RET (and mouse-1 on GUIs, ignored harmlessly in TUI) toggle
 (defun crush--reasoning-fold-marker (start end)
   "Return a display-only string for the fold marker.
 START and END are the body overlay boundaries.  The marker shows
-the hidden line and char count.  Carries the toggle keymap."
+the hidden line and char count.  Carries the toggle keymap and the
+`crush-reasoning-face' so the marker line has the same background
+color as the reasoning text.  The leading newline pushes the
+marker onto its own visual line when used as an `after-string' on
+the last visible position of the preview overlay."
   (let* ((lines (count-lines start end))
          (chars (- end start))
-         (text (format "... reasoning (%d lines, %d chars)\n" lines chars)))
+         (text (format "\n... reasoning (%d lines, %d chars)" lines chars)))
     (propertize text
-                'keymap crush--reasoning-fold-keymap
-                'intangible t)))
+                'face 'crush-reasoning-face
+                'keymap crush--reasoning-fold-keymap)))
 
 (defun crush--reasoning-install-fold (region)
   "Install the reasoning fold on REGION (START . END) of current buffer.
@@ -1242,6 +1256,14 @@ body overlay, or nil."
               (goto-char start-m)
               (forward-line (1- preview-lines))
               (end-of-line)
+              ;; Cross the newline so preview-end is at the beginning of
+              ;; the next line.  This ensures: (1) the preview overlay
+              ;; includes the trailing newline so `:extend t' paints the
+              ;; last preview line's background to EOL, and (2) the body
+              ;; overlay (and its before-string marker) starts on its
+              ;; own line instead of mid-line after the last preview text.
+              (unless (eobp)
+                (forward-char))
               (setq preview-end (point)))
             (let ((preview-ov (make-overlay start-m preview-end nil nil nil)))
               (overlay-put preview-ov 'crush-overlay t)
@@ -1252,31 +1274,73 @@ body overlay, or nil."
               (overlay-put ov 'crush-fold-state 'collapsed)
               (overlay-put ov 'invisible 'crush-reasoning-fold)
               (overlay-put ov 'intangible t)
-              (overlay-put ov 'before-string
-                           (crush--reasoning-fold-marker preview-end end-m))
               (overlay-put ov 'keymap crush--reasoning-fold-keymap)
               (overlay-put ov 'crush-reasoning nil)
               (overlay-put ov 'crush-reasoning-origin
                            (marker-position start-m))
+              ;; Create a separate zero-width marker overlay at the last
+              ;; visible position before the body (the trailing newline of
+              ;; the preview).  This overlay carries the fold marker as an
+              ;; `after-string' instead of putting it on the invisible body
+              ;; overlay as a `before-string'.  The key difference: the
+              ;; marker overlay is at a VISIBLE position, so its
+              ;; `after-string' text is tangible and `line-move-visual' can
+              ;; navigate through it.  A `before-string' on the invisible
+              ;; body overlay creates a visual line at an invisible+intangible
+              ;; position, trapping vertical navigation with
+              ;; `beginning-of-buffer' errors.
+              (let ((marker-pos (1- preview-end)))
+                (when (< marker-pos start-m)
+                  (setq marker-pos start-m))
+                (let ((marker-ov (make-overlay marker-pos marker-pos nil nil t)))
+                  (overlay-put marker-ov 'crush-overlay t)
+                  (overlay-put marker-ov 'crush-reasoning-marker t)
+                  (overlay-put marker-ov 'after-string
+                               (crush--reasoning-fold-marker
+                                preview-end end-m))
+                  (overlay-put marker-ov 'keymap
+                               crush--reasoning-fold-keymap)))
               (set-marker start-m nil)
               (set-marker end-m nil)
               ov)))))))
 
+(defun crush--reasoning-marker-overlay-for (body-ov)
+  "Return the marker overlay associated with BODY-OV, or nil.
+The marker overlay is the zero-width overlay carrying the fold
+marker as an `after-string', positioned just before the body overlay."
+  (let ((body-start (overlay-start body-ov)))
+    (cl-find-if
+     (lambda (o)
+       (and (overlay-get o 'crush-reasoning-marker)
+            (= (overlay-start o) (1- body-start))))
+     (overlays-in (max (point-min) (- body-start 2))
+                  (min (point-max) (+ body-start 1))))))
+
 (defun crush-reasoning-toggle ()
   "Toggle the reasoning fold at point.
-Finds an overlay with `crush-fold-state' at point.  If point is in
-the preview overlay, finds the adjacent body overlay.  If collapsed,
-expands it (clear `invisible' and `before-string').  If expanded,
-collapses it (re-set `invisible' and `before-string').  If no fold
-overlay is at point, signals a message."
+Finds an overlay with `crush-fold-state' at point.  If point is on
+the marker overlay or the preview overlay, finds the adjacent body
+overlay.  If collapsed, expands it (clear `invisible' and
+`intangible').  If expanded, collapses it (re-set `invisible' and
+`intangible').  If no fold overlay is at point, signals a message."
   (interactive)
   (let* ((ov (cl-find-if
               (lambda (o) (overlay-get o 'crush-fold-state))
               (overlays-at (point))))
+         (marker-ov (when (not ov)
+                      (cl-find-if
+                       (lambda (o) (overlay-get o 'crush-reasoning-marker))
+                       (overlays-at (point)))))
          (preview-ov (when (not ov)
                        (cl-find-if
                         (lambda (o) (overlay-get o 'crush-reasoning-preview))
                         (overlays-at (point))))))
+    (when (and marker-ov (not ov))
+      (setq ov (cl-find-if
+                (lambda (o)
+                  (and (overlay-get o 'crush-fold-state)
+                       (= (overlay-start o) (1+ (overlay-start marker-ov)))))
+                (overlays-in (point-min) (point-max)))))
     (when (and preview-ov (not ov))
       (setq ov (cl-find-if
                 (lambda (o)
@@ -1291,39 +1355,48 @@ overlay is at point, signals a message."
 
 (defun crush--reasoning-expand (body-ov)
   "Expand the reasoning body overlay BODY-OV.
-Clears `invisible' and `before-string' so the full reasoning text is
-visible.  No buffer text is inserted or deleted."
+Clears `invisible' and `intangible' so the full reasoning text is
+visible.  Also hides the marker overlay's `after-string'.  No buffer
+text is inserted or deleted."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t))
     (overlay-put body-ov 'crush-fold-state 'expanded)
     (overlay-put body-ov 'invisible nil)
     (overlay-put body-ov 'intangible nil)
-    (overlay-put body-ov 'before-string nil)
+    ;; Hide the marker overlay's after-string.
+    (let ((marker-ov (crush--reasoning-marker-overlay-for body-ov)))
+      (when marker-ov
+        (overlay-put marker-ov 'after-string nil)))
     (message "Reasoning expanded")))
 
 (defun crush--reasoning-collapse (body-ov)
   "Collapse the reasoning body overlay BODY-OV.
-Re-sets `invisible' and `before-string' so the body is hidden behind
-a display-only marker.  No buffer text is inserted or deleted."
+Re-sets `invisible' and `intangible' so the body is hidden.  Also
+re-shows the marker overlay's `after-string'.  No buffer text is
+inserted or deleted."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t))
     (overlay-put body-ov 'crush-fold-state 'collapsed)
     (overlay-put body-ov 'invisible 'crush-reasoning-fold)
     (overlay-put body-ov 'intangible t)
-    (overlay-put body-ov 'before-string
-                 (crush--reasoning-fold-marker
-                  (overlay-start body-ov) (overlay-end body-ov)))
+    ;; Re-show the marker overlay's after-string.
+    (let ((marker-ov (crush--reasoning-marker-overlay-for body-ov)))
+      (when marker-ov
+        (overlay-put marker-ov 'after-string
+                     (crush--reasoning-fold-marker
+                      (overlay-start body-ov) (overlay-end body-ov)))))
     (message "Reasoning collapsed")))
 
 (defun crush--reasoning-tab ()
   "Handle TAB in crush chat buffers.
-Toggles the reasoning fold when point is inside a fold body overlay
-or the preview overlay; otherwise falls back to the major mode's or
-global TAB binding."
+Toggles the reasoning fold when point is inside a fold body overlay,
+the marker overlay, or the preview overlay; otherwise falls back to
+the major mode's or global TAB binding."
   (interactive)
   (if (cl-find-if
        (lambda (o)
          (or (overlay-get o 'crush-fold-state)
+             (overlay-get o 'crush-reasoning-marker)
              (overlay-get o 'crush-reasoning-preview)))
        (overlays-at (point)))
       (crush-reasoning-toggle)
@@ -1969,7 +2042,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
 (defun crush-select-model ()
   "Select a model from the Hyper gateway's catalog.
 Fetches the live model catalog from `crush-hyper-base-url'/provider
-(sync) and prompts for a choice; picking a model sets the global
+\(sync) and prompts for a choice; picking a model sets the global
 `crush-model' and the current buffer's provider model slot, so the
 header line updates immediately and future buffers use the choice.
 Choosing the `default' entry clears the selection back to

@@ -124,7 +124,7 @@
        (should (overlayp ov))
        (should (string= (buffer-substring-no-properties
                          (overlay-start ov) (overlay-end ov))
-                        "think hard"))))))
+                        "think hard\n"))))))
 
 (ert-deftest crush-test/content-delta-inserts-blank-separator ()
   "The first content delta after reasoning adds two newlines before it."
@@ -240,6 +240,13 @@ open (`crush--response-start' at point-max after a newline)."
           (lambda (o) (overlay-get o 'crush-reasoning-preview))
           (overlays-in (point-min) (point-max))))))
 
+(defun crush-test--reasoning-marker-overlay (&optional buffer)
+  "Return the marker overlay (after-string fold marker) in BUFFER, or nil."
+  (with-current-buffer (or buffer (current-buffer))
+    (car (cl-remove-if-not
+          (lambda (o) (overlay-get o 'crush-reasoning-marker))
+          (overlays-in (point-min) (point-max))))))
+
 (defun crush-test--reasoning-lines (n)
   "Return a string of N numbered lines separated by newlines."
   (mapconcat #'identity
@@ -249,7 +256,7 @@ open (`crush--response-start' at point-max after a newline)."
 
 (ert-deftest crush-test/finalize-auto-collapses-reasoning ()
   "Finalize should auto-collapse reasoning > 10 lines with a preview.
-The body overlay is invisible with a `before-string' marker."
+The body overlay is invisible with a marker overlay's `after-string'."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 12)
@@ -257,10 +264,12 @@ The body overlay is invisible with a `before-string' marker."
                 (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (crush-test--reasoning-fold-overlay))
-            (preview-ov (crush-test--reasoning-preview-overlay)))
+            (preview-ov (crush-test--reasoning-preview-overlay))
+            (marker-ov (crush-test--reasoning-marker-overlay)))
         (should (overlayp body-ov))
         (should (eq (overlay-get body-ov 'invisible) 'crush-reasoning-fold))
-        (should (stringp (overlay-get body-ov 'before-string)))
+        (should (overlayp marker-ov))
+        (should (stringp (overlay-get marker-ov 'after-string)))
         (should (overlayp preview-ov))
         (should (eq (overlay-get preview-ov 'face) 'crush-reasoning-face))
         (should (= (count-lines (overlay-start preview-ov)
@@ -286,7 +295,7 @@ The body overlay is invisible with a `before-string' marker."
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/finalize-fold-marker-is-before-string ()
-  "The fold marker is a display-only `before-string' on the body overlay.
+  "The fold marker is a display-only `after-string' on a marker overlay.
 No `crush-fold-mark' text property."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
@@ -294,13 +303,13 @@ No `crush-fold-mark' text property."
                                             'reasoning)
                 (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
-      (let ((body-ov (crush-test--reasoning-fold-overlay)))
-        (should (overlayp body-ov))
-        (let ((bs (overlay-get body-ov 'before-string)))
-          (should (stringp bs))
-          ;; The before-string carries the toggle keymap.
-          (should (keymapp (get-text-property 0 'keymap bs)))
-          (should (eq (lookup-key (get-text-property 0 'keymap bs) (kbd "TAB"))
+      (let ((marker-ov (crush-test--reasoning-marker-overlay)))
+        (should (overlayp marker-ov))
+        (let ((as (overlay-get marker-ov 'after-string)))
+          (should (stringp as))
+          ;; The after-string carries the toggle keymap.
+          (should (keymapp (get-text-property 0 'keymap as)))
+          (should (eq (lookup-key (get-text-property 0 'keymap as) (kbd "TAB"))
                       #'crush-reasoning-toggle))))
       ;; No crush-fold-mark text property anywhere.
       (let ((pos (point-min))
@@ -326,9 +335,10 @@ No `crush-fold-mark' text property."
         (should (overlayp body-ov))
         ;; Preview ends where body starts.
         (should (= (overlay-end preview-ov) (overlay-start body-ov)))
-        ;; Body starts at line 11.
+        ;; Body starts at line 11.  The body overlay now begins at the
+        ;; start of the line (past the preview's trailing newline), so
+        ;; point is already looking at "line 11" — no forward-line needed.
         (goto-char (overlay-start body-ov))
-        (forward-line)
         (should (looking-at "line 11"))))
     (crush-test--kill-crush-buffer)))
 
@@ -359,10 +369,12 @@ No buffer text is inserted or deleted — only overlay properties change."
         (crush-reasoning-toggle)
         (should (eq (overlay-get body-ov 'crush-fold-state) 'expanded))
         (should-not (overlay-get body-ov 'invisible))
-        (should-not (overlay-get body-ov 'before-string))
-        ;; Hidden content is now visible.
+        ;; Marker overlay's after-string is hidden when expanded.
+        (should-not (overlay-get (crush-test--reasoning-marker-overlay)
+                                 'after-string))
+        ;; Hidden content is now visible.  Body starts at line 11
+        ;; (past the preview's trailing newline), so no forward-line.
         (goto-char (overlay-start body-ov))
-        (forward-line)
         (should (looking-at "line 11"))))
     (crush-test--kill-crush-buffer)))
 
@@ -385,7 +397,8 @@ No buffer text is inserted or deleted — only overlay properties change."
         (should (eq (overlay-get body-ov 'crush-fold-state) 'collapsed))
         (should (eq (overlay-get body-ov 'invisible) 'crush-reasoning-fold))
         (should (eq (overlay-get body-ov 'intangible) t))
-        (should (stringp (overlay-get body-ov 'before-string)))))
+        (should (stringp (overlay-get (crush-test--reasoning-marker-overlay)
+                                      'after-string)))))
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/toggle-no-fold-at-point ()
@@ -422,19 +435,25 @@ getting stuck at its boundary (which caused 'Beginning of buffer')."
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/fold-before-string-is-intangible ()
-  "Test that the before-string marker must carry `intangible t'.
-This ensures arrow-up skips it entirely instead of getting stuck on the marker line."
+  "The fold marker overlay must NOT carry `intangible'.
+The marker overlay is at a visible position (before the invisible body),
+so its `after-string' text must be tangible for `line-move-visual' to
+navigate through it.  Making the marker intangible was the cause of the
+arrow-up navigation bug."
   (let ((buf (crush-test--finalize-with-reasoning
               (lambda (_proc)
                 (crush-facade--append-delta (crush-test--reasoning-lines 11)
                                             'reasoning)
                 (crush-facade--append-delta "answer" 'content)))))
     (with-current-buffer buf
-      (let ((body-ov (crush-test--reasoning-fold-overlay)))
-        (should (overlayp body-ov))
-        (let ((bs (overlay-get body-ov 'before-string)))
-          (should (stringp bs))
-          (should (eq (get-text-property 0 'intangible bs) t)))))
+      (let ((marker-ov (crush-test--reasoning-marker-overlay)))
+        (should (overlayp marker-ov))
+        ;; The marker overlay must NOT be intangible.
+        (should-not (overlay-get marker-ov 'intangible))
+        ;; The after-string text must NOT carry intangible either.
+        (let ((as (overlay-get marker-ov 'after-string)))
+          (should (stringp as))
+          (should-not (get-text-property 0 'intangible as)))))
     (crush-test--kill-crush-buffer)))
 
 (ert-deftest crush-test/fold-named-invisibility-spec ()
@@ -849,6 +868,121 @@ reasoning, so the header line shows region: tool."
                       'tool))
           (should (string= (crush--region-label-at-point) "tool")))
       (crush-test--cleanup))))
+
+;;; 98. Overlay newline invariants: ensure reasoning overlay always ends
+;;; with a newline so `:extend t' paints the last line's background to
+;;; EOL, the fold `before-string' marker starts on its own line, and
+;;; the marker carries the reasoning face for a consistent background.
+
+(ert-deftest crush-test/reasoning-overlay-ends-with-newline ()
+  "The reasoning overlay must end with a newline after `crush--reasoning-stop'.
+This ensures `:extend t' on `crush-reasoning-face' paints the last
+line's background to the end of the screen line."
+  (crush-test--with-reasoning-process
+   (lambda (_proc)
+     (crush-facade--append-delta "think hard" 'reasoning)
+     (crush--reasoning-stop)
+     (let ((ov crush--reasoning-overlay))
+       (should (overlayp ov))
+       (should (eq (char-before (overlay-end ov)) ?\n))))))
+
+(ert-deftest crush-test/fold-before-string-on-own-line ()
+  "The fold before-string marker must start on its own line.
+`preview-end' must be past the newline after the last preview line
+so the body overlay (and its before-string) starts at the beginning
+of the next line."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((body-ov (crush-test--reasoning-fold-overlay))
+            (preview-ov (crush-test--reasoning-preview-overlay)))
+        (should (overlayp body-ov))
+        (should (overlayp preview-ov))
+        ;; preview-end is the body start; the char before it is a newline.
+        (should (eq (char-before (overlay-start body-ov)) ?\n))
+        ;; preview-end is at the beginning of a line.
+        (save-excursion
+          (goto-char (overlay-start body-ov))
+          (should (bolp)))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/fold-before-string-has-reasoning-face ()
+  "The fold marker must carry `crush-reasoning-face'.
+This gives the marker line the same background color as the reasoning
+text for visual consistency."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((marker-ov (crush-test--reasoning-marker-overlay)))
+        (should (overlayp marker-ov))
+        (let ((as (overlay-get marker-ov 'after-string)))
+          (should (stringp as))
+          (should (eq (get-text-property 0 'face as) 'crush-reasoning-face)))))
+    (crush-test--kill-crush-buffer)))
+
+(ert-deftest crush-test/fold-preview-includes-trailing-newline ()
+  "The preview overlay must include the trailing newline of its last line.
+This ensures the last preview line's background extends to EOL via
+`:extend t', matching the reasoning overlay's own trailing newline."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((preview-ov (crush-test--reasoning-preview-overlay)))
+        (should (overlayp preview-ov))
+        ;; The char before preview-end is a newline.
+        (should (eq (char-before (overlay-end preview-ov)) ?\n))))
+    (crush-test--kill-crush-buffer)))
+
+;;; 99. Arrow-up past collapsed fold: the fold marker must not block
+;;; vertical navigation.  `line-move-visual' / `previous-line' from
+;;; below the collapsed fold must skip the marker and land in the
+;;; preview, not signal `beginning-of-buffer'.
+
+(ert-deftest crush-test/fold-arrow-up-past-marker ()
+  "The fold marker must not block vertical navigation.
+The marker must NOT be a `before-string' on the invisible body overlay,
+because `before-string' text at an invisible+intangible position creates
+a navigation trap: `line-move-visual' targets the marker's visual line
+but cannot land point there (the position is invisible), so it signals
+`beginning-of-buffer'.
+
+Instead, the marker must be an `after-string' on a separate visible
+overlay at the boundary between preview and body.  This overlay is at a
+visible position, so the marker text is tangible and navigable."
+  (let ((buf (crush-test--finalize-with-reasoning
+              (lambda (_proc)
+                (crush-facade--append-delta (crush-test--reasoning-lines 11)
+                                            'reasoning)
+                (crush-facade--append-delta "answer" 'content)))))
+    (with-current-buffer buf
+      (let ((body-ov (crush-test--reasoning-fold-overlay)))
+        (should (overlayp body-ov))
+        ;; The body overlay must NOT carry a before-string.
+        (should-not (overlay-get body-ov 'before-string)))
+      ;; There must be a separate marker overlay with after-string.
+      (let* ((marker-ov nil)
+             (marker-text "... reasoning"))
+        (dolist (ov (overlays-in (point-min) (point-max)))
+          (when (and (overlay-get ov 'crush-overlay)
+                     (overlay-get ov 'after-string)
+                     (string-match-p marker-text
+                                     (overlay-get ov 'after-string)))
+            (setq marker-ov ov)))
+        (should (overlayp marker-ov))
+        ;; The marker overlay must be at a position NOT inside the body overlay.
+        (let ((body-ov (crush-test--reasoning-fold-overlay)))
+          (should (or (< (overlay-start marker-ov) (overlay-start body-ov))
+                      (> (overlay-start marker-ov) (overlay-end body-ov)))))))
+    (crush-test--kill-crush-buffer)))
 
 (provide 'crush-test-reasoning)
 ;;; crush-test-reasoning.el ends here

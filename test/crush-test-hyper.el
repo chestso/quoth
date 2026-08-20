@@ -868,7 +868,7 @@ Returns the capture output."
                  (should (overlayp found))
                  (should (string= (buffer-substring-no-properties
                                    (overlay-start found) (overlay-end found))
-                                  "mock think harder")))))))
+                                  "mock think harder\n")))))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/hyper-wire-error-http-surfaces ()

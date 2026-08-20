@@ -90,8 +90,9 @@ When nil, `web_search' is not in the schema and calls error."
   :group 'crush-searxng)
 
 (defvar-local crush-searxng--healthy nil
-  "Cached SearXNG health state: nil (unknown), t (healthy),
-or `unreachable' (dead, short-circuit future calls).")
+  "Cached SearXNG health state (nil means unknown).
+The value is nil \(unknown), t \(healthy), or `unreachable' \(dead,
+which short-circuits future calls).")
 
 (defun crush-searxng--query (tool-call-args)
   "Return the resolved query string for TOOL-CALL-ARGS, or nil.
@@ -102,7 +103,7 @@ The `query' argument must be a non-empty string after trimming."
          q)))
 
 (defun crush-searxng--max-results (tool-call-args)
-  "Return the resolved max-results from ARGS or the default.
+  "Return the resolved max-results from TOOL-CALL-ARGS or the default.
 Clamped to at least 1 and at most `crush-searxng-max-results'."
   (let ((raw (plist-get tool-call-args :max_results)))
     (if (integerp raw)
@@ -230,7 +231,7 @@ Errors yield an error result with exit code -1."
   (let ((args (crush-openai-tool-call-args tool-call)))
     (cond
      ((not (bound-and-true-p crush-searxng-enabled))
-      (crush-exec--error "web_search is disabled" tool-call))
+      (crush-exec--error "Web search is disabled" tool-call))
      ((not (crush-searxng--query args))
       (crush-exec--error "Missing query" tool-call))
      ((eq crush-searxng--healthy 'unreachable)
