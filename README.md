@@ -90,7 +90,7 @@ hacking guide — live in [ARCHITECTURE.md](ARCHITECTURE.md).
 ### Crush buffer (chat mode)
 
 - `M-x crush` — open the crush interaction buffer for the current project (or directory); each project gets its own buffer, named after the project root (e.g. `*crush:crush.el*`)
-- Type a prompt and press `RET` to send it to the active provider
+- Type a prompt and press `C-RET` to send it to the active provider; `RET` inserts a newline for multiline prompts
 - `M-p` / `M-n` — navigate input history (previous/next input)
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point; otherwise normal TAB
 - `C-c c i` — interrupt the running crush process

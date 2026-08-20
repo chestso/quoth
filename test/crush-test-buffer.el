@@ -298,6 +298,22 @@ A blank line below it, and a blank line above it when it follows a response."
               (delete-process fake-proc)))))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/send-input-sends-multiline-prompt ()
+  "`crush-send-input' sends the entire input region, not just one line.
+A multiline prompt (typed with naked RET) is sent in full."
+  (unwind-protect
+      (let ((sent-prompt nil))
+        (cl-letf (((symbol-function 'crush-provider-send-prompt)
+                   (lambda (_provider prompt &rest _args)
+                     (setq sent-prompt prompt)
+                     (make-pipe-process :name "crush-test-fake" :noquery t))))
+          (with-current-buffer (crush-test--fresh-buffer)
+            (goto-char (point-max))
+            (insert "line one\nline two\nline three")
+            (call-interactively #'crush-send-input)))
+        (should (string= sent-prompt "line one\nline two\nline three")))
+    (crush-test--cleanup)))
+
 ;;; 6. Stderr handling
 
 (ert-deftest crush-test/stderr-goes-to-separate-buffer ()

@@ -332,7 +332,8 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
 
 (defvar crush-chat-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'crush-send-input)
+    (define-key map (kbd "RET") #'newline)
+    (define-key map (kbd "C-RET") #'crush-send-input)
     (define-key map (kbd "TAB") #'crush--reasoning-tab)
     (define-key map (kbd "C-c c") crush-chat-command-map)
     (define-key map (kbd "M-p") #'crush--input-previous)
@@ -420,7 +421,7 @@ Only logs when `crush-debug-mode' is non-nil."
              (> (ring-length crush--input-ring) 0))
     (let ((input-start (marker-position crush--input-start-marker)))
       (when input-start
-        (delete-region input-start (line-end-position))
+        (delete-region input-start (point-max))
         (goto-char input-start)
         (insert (ring-ref crush--input-ring crush--input-ring-index))
         (setq-local crush--input-ring-index
@@ -434,7 +435,7 @@ Only logs when `crush-debug-mode' is non-nil."
              (> (ring-length crush--input-ring) 0))
     (let ((input-start (marker-position crush--input-start-marker)))
       (when input-start
-        (delete-region input-start (line-end-position))
+        (delete-region input-start (point-max))
         (goto-char input-start)
         (if (<= crush--input-ring-index 0)
             (setq-local crush--input-ring-index 0)
@@ -1890,7 +1891,7 @@ for wire resume.  Returns the end position of the inserted block."
                             (marker-position crush--input-start-marker))
                           (point-min)))
          (input (buffer-substring-no-properties
-                 input-start (line-end-position)))
+                 input-start (point-max)))
          (prompt (string-trim input))
          (context (string-trim
                    (mapconcat

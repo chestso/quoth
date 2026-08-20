@@ -445,11 +445,13 @@ It sets crush-region-type 'user and a project-root-relative path."
 (ert-deftest crush-test/chat-mode-has-keymap ()
   "Crush-chat-mode-map should have the expected keybindings.
 All commands live under the `C-c c' prefix so they do not conflict
-with markdown-mode's `C-c C-*' bindings."
+with markdown-mode's `C-c C-*' bindings.  Naked RET inserts a newline
+for multiline input; C-RET sends the prompt."
   (let ((map (symbol-value 'crush-chat-mode-map))
         (cmd (symbol-value 'crush-chat-command-map)))
     (should (keymapp map))
-    (should (eq (lookup-key map (kbd "RET")) #'crush-send-input))
+    (should (eq (lookup-key map (kbd "RET")) #'newline))
+    (should (eq (lookup-key map (kbd "C-RET")) #'crush-send-input))
     (should (eq (lookup-key map (kbd "C-c c")) cmd))
     (should (eq (lookup-key cmd (kbd "s")) #'crush-send-input))
     (should (eq (lookup-key cmd (kbd "i")) #'crush-interrupt))
@@ -463,12 +465,20 @@ with markdown-mode's `C-c C-*' bindings."
     (should (eq (lookup-key map (kbd "M-p")) #'crush--input-previous))
     (should (eq (lookup-key map (kbd "M-n")) #'crush--input-next))))
 
-(ert-deftest crush-test/chat-mode-ret-binds-send-input ()
-  "RET in a crush buffer should resolve to crush-send-input via minor mode."
+(ert-deftest crush-test/chat-mode-ret-binds-newline ()
+  "RET in a crush buffer should insert a newline (multiline editing)."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (eq (key-binding (kbd "RET")) #'crush-send-input))))
+          (should (eq (key-binding (kbd "RET")) #'newline))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/chat-mode-c-ret-binds-send-input ()
+  "C-RET in a crush buffer should resolve to crush-send-input."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (should (eq (key-binding (kbd "C-RET")) #'crush-send-input))))
     (crush-test--cleanup)))
 
 (ert-deftest crush-test/chat-mode-adds-after-change-hook ()
