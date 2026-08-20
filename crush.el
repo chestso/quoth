@@ -1904,7 +1904,7 @@ for wire resume.  Returns the end position of the inserted block."
     (when (string-empty-p prompt)
       (user-error "No prompt to send"))
     (crush--input-ring-add prompt)
-    (goto-char (line-end-position))
+    (goto-char (point-max))
     (newline)
     ;; Draw a horizontal divider after the user turn so the response is
     ;; visually decoupled from the prompt text; the response region and

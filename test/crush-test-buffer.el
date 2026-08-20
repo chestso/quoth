@@ -314,6 +314,29 @@ A multiline prompt (typed with naked RET) is sent in full."
         (should (string= sent-prompt "line one\nline two\nline three")))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/send-input-moves-point-to-eof ()
+  "`crush-send-input' moves point to eof before inserting the separator.
+Sending with point in the middle of the input must not split the
+prompt: the user separator lands at point-max."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "line one\nline two\nline three")
+          (goto-char (point-min))
+          (search-forward "line two")
+          (cl-letf (((symbol-function 'crush-provider-send-prompt)
+                     (lambda (_provider _prompt &rest _args)
+                       (make-pipe-process :name "crush-test-fake" :noquery t))))
+            (call-interactively #'crush-send-input))
+          (should (= (point) (point-max)))
+          (goto-char (point-min))
+          (should (search-forward "line three" nil t))
+          ;; The separator follows the last input line at eof.
+          (should (search-forward "---" nil t))
+          (should (<= (point) (point-max)))))
+    (crush-test--cleanup)))
+
 ;;; 6. Stderr handling
 
 (ert-deftest crush-test/stderr-goes-to-separate-buffer ()
