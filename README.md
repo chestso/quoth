@@ -71,6 +71,24 @@ The value may also be a string (used verbatim) or a function of no arguments ret
 
 Set it to `nil` to request without a token (useful for local gateways). A missing authinfo entry signals an error with setup instructions rather than silently sending no token.
 
+### Web Search (SearXNG)
+
+crush includes a `web_search` tool that queries a local SearXNG instance. The tool is enabled by default and expects the server at `http://127.0.0.1:8888`. If SearXNG is unavailable, the tool reports "unreachable" once and short-circuits future calls until the server returns.
+
+To set up a local SearXNG instance, see [SEARXNG.md](SEARXNG.md).
+
+To disable the tool:
+
+```elisp
+(setq crush-searxng-enabled nil)
+```
+
+To change the server URL:
+
+```elisp
+(setq crush-searxng-base-url "http://127.0.0.1:9999")
+```
+
 ## Architecture
 
 crush.el talks to providers through a small provider protocol
