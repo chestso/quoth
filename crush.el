@@ -1922,6 +1922,17 @@ for wire resume.  Returns the end position of the inserted block."
     (when (string-empty-p prompt)
       (user-error "No prompt to send"))
     (crush--input-ring-add prompt)
+    ;; Explicitly tag the user input region as `user' so history
+    ;; extraction (crush--user-turn-text) can find it.  after-change
+    ;; tagging may be incomplete when text is inserted via yank, undo,
+    ;; or other non-interactive paths that don't fire the hook or fire
+    ;; it with beg before prompt-start-marker.
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (put-text-property input-start (point-max)
+                         'crush-region-type 'user)
+      (put-text-property input-start (point-max)
+                         'crush-prompt-id crush--prompt-id))
     (goto-char (point-max))
     (newline)
     ;; Draw a horizontal divider after the user turn so the response is

@@ -2447,5 +2447,61 @@ text."
           (should (consp buffer-undo-list))))
     (crush-test--cleanup)))
 
+;;; Regression: stale-tagged user text must be retagged at send time
+
+(ert-deftest crush-test/send-input-retags-stale-user-text ()
+  "crush-send-input must tag the input region as 'user even when
+after-change didn't fire or text inherited stale tags (e.g. yank
+into read-only, undo).  The user's multi-line description was
+silently lost from history because it kept a stale 'separator
+crush-region-type inherited from the divider."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer))
+            (second-id nil))
+        (with-current-buffer buf
+          ;; Send a first prompt to get a second prompt area.
+          (goto-char (point-max))
+          (insert "first prompt")
+          (let ((fake-proc (crush-test--live-pipe-proc)))
+            (set-process-buffer fake-proc (current-buffer))
+            (cl-letf (((symbol-function #'make-process)
+                       (lambda (&rest _) fake-proc)))
+              (crush-send-input))
+            (funcall (crush-provider-completion-action
+                      crush-active-provider))
+            (when (process-live-p fake-proc)
+              (delete-process fake-proc)))
+          ;; second-id is the new prompt (created by finalize).
+          (setq second-id crush--prompt-id)
+          ;; Simulate stale tags: insert multi-line text and corrupt
+          ;; its region-type to 'separator (as would happen if text
+          ;; inherited properties from a yank-undo into the read-only
+          ;; separator).
+          (goto-char (point-max))
+          (insert "line one\nline two\nline three")
+          (let ((input-start (marker-position crush--input-start-marker))
+                (inhibit-read-only t)
+                (inhibit-modification-hooks t))
+            (put-text-property input-start (point-max)
+                               'crush-region-type 'separator))
+          ;; Verify the text is stale before send.
+          (should (eq (get-text-property
+                       (marker-position crush--input-start-marker)
+                       'crush-region-type)
+                      'separator))
+          ;; Send the stale-tagged input.
+          (let ((fake-proc (crush-test--live-pipe-proc)))
+            (set-process-buffer fake-proc (current-buffer))
+            (cl-letf (((symbol-function #'make-process)
+                       (lambda (&rest _) fake-proc)))
+              (crush-send-input))
+            (when (process-live-p fake-proc)
+              (delete-process fake-proc))))
+        ;; History reconstruction sees the multi-line text as user input.
+        (with-current-buffer buf
+          (should (string-match "line one"
+                                (crush--user-turn-text second-id)))))
+    (crush-test--cleanup)))
+
 (provide 'crush-test-buffer)
 ;;; crush-test-buffer.el ends here
