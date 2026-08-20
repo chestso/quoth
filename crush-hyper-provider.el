@@ -115,6 +115,76 @@ either.  Functions are called and the result is resolved recursively."
           resolved
         (crush-hyper--resolve-token resolved)))))
 
+(defun crush-hyper--catalog-filter (proc string)
+  "Filter for the catalog curl process PROC receiving chunk STRING.
+Accumulates raw output in the process's `:crush-catalog-body' property,
+skipping any `Process ...' status lines Emacs writes to the process
+buffer (they are not curl output)."
+  (process-put proc :crush-catalog-body
+               (concat (or (process-get proc :crush-catalog-body) "")
+                       string)))
+
+(defun crush-hyper--fetch-models (base-url &optional token)
+  "Fetch the model catalog from BASE-URL, returning (CATALOG . MODELS).
+BASE-URL is the hyper gateway base (e.g. `https://hyper.charm.land/v1');
+the catalog lives at `BASE-URL/provider' (HYPER-API.md section 5).
+TOKEN is resolved via `crush-hyper--resolve-token' and sent as a bearer
+header when present.  Returns a cons (CATALOG-ALIST . MODELS-VECTOR)
+where CATALOG-ALIST is the parsed top-level JSON (with the `models'
+key) and MODELS-VECTOR is the `models' array, or nil when the fetch
+fails (network error, non-200, or unparseable body).  Never logs the
+token; failures are debug-logged and swallowed so callers can fall back
+to a static list."
+  (condition-case err
+      (let* ((token (crush-hyper--resolve-token token))
+             (config (concat
+                      (format "url = %s/provider\n" base-url)
+                      "request = GET\n"
+                      "include\n"
+                      "silent\n"
+                      "no-buffer\n"
+                      (format "max-time = %s\n" (or crush-openai-timeout 300))
+                      (format "header = \"User-Agent: %s\"\n"
+                              crush-openai-user-agent)
+                      (when token
+                        (format "header = \"Authorization: Bearer %s\"\n" token))))
+             ;; The buffer receives no data (the filter diverges it), but
+             ;; `make-process' still needs a buffer for `:buffer'.
+             (buf (get-buffer-create " *crush-hyper-catalog*"))
+             (proc (make-process
+                    :name "crush-hyper-catalog"
+                    :buffer buf
+                    :command (list crush-openai-curl-program "--config" "-")
+                    :connection-type 'pipe
+                    :noquery t
+                    :filter #'crush-hyper--catalog-filter
+                    :stderr (get-buffer-create "*crush-errors*")))
+             (deadline (+ (float-time) (or crush-openai-timeout 300))))
+        (process-send-string proc config)
+        (process-send-eof proc)
+        (while (and (process-live-p proc) (< (float-time) deadline))
+          (accept-process-output proc 0.1))
+        (when (process-live-p proc)
+          (delete-process proc))
+        (let* ((raw (or (process-get proc :crush-catalog-body) ""))
+               ;; Strip the HTTP header block (from `include') leaving the
+               ;; JSON body, then any trailing `Process ...' status line
+               ;; that Emacs may append to the process buffer.
+               (body (if (string-match "\r?\n\r?\n" raw)
+                         (substring raw (match-end 0))
+                       raw)))
+          (when (string-empty-p (string-trim body))
+            (error "empty catalog response"))
+          (let* ((catalog (json-read-from-string (string-trim body)))
+                 (models (crush--openai-alist-get "models" catalog)))
+            (unless models
+              (error "catalog has no models key"))
+            (cons catalog models))))
+    (error
+     (crush--debug-log 'model-catalog
+                       (format "fetch failed for %s: %s" base-url err))
+     nil)))
+
 (defcustom crush-hyper-history-include-reasoning nil
   "Non-nil re-sends streamed reasoning (CoT) with assistant turns.
 The reasoning is emitted as `reasoning_content' (per HYPER-API.md
@@ -154,6 +224,33 @@ for the value; nil omits the header."
 (declare-function crush-make-openai-tool-call "crush-openai" (&rest args))
 (declare-function crush-openai-execute-tool "crush-openai" (tool-call))
 (declare-function crush-openai-parse-tool-args "crush-openai" (args-json))
+(declare-function crush--openai-alist-get "crush-openai" (key alist))
+
+(defun crush-hyper--model-choices (catalog)
+  "Return completion choices from CATALOG, an alist with a `models' key.
+Each choice is (ID . DISPLAY) where DISPLAY annotates the model with its
+name, context window, input cost, and reasoning support, e.g.
+\"m1 - Model One (context 4096, $0.50/1M in, can reason)\"."
+  (let ((models (crush--openai-alist-get "models" catalog)))
+    (mapcar
+     (lambda (m)
+       (let* ((id (crush--openai-alist-get "id" m))
+              (name (crush--openai-alist-get "name" m))
+              (ctx (crush--openai-alist-get "context_window" m))
+              (cost (crush--openai-alist-get "cost_per_1m_in" m))
+              (reason (crush--openai-alist-get "can_reason" m)))
+         (cons id
+               (string-trim
+                (format "%s - %s (context %s, $%s/1M in, %s)"
+                        id name
+                        (or ctx "?")
+                        (if (numberp cost)
+                            (format "%.2f" cost)
+                          "?")
+                        (if reason "can reason" "no reason"))))))
+     (if (vectorp models)
+         (append models nil)
+       models))))
 
 (cl-defstruct (crush-hyper-provider
                (:include crush-provider (type 'hyper))

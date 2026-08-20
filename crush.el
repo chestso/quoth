@@ -256,6 +256,10 @@ and `crush-interrupt' dispatch through it.  Buffer-local.")
 (declare-function crush-provider--tool-results "crush-provider" (provider tool-calls))
 (declare-function crush-process--cleanup-buffer "crush-process" (owner))
 (declare-function crush-openai-parse-tool-args "crush-openai" (args-json))
+(declare-function crush-hyper--fetch-models "crush-hyper-provider" (base-url &optional token))
+(declare-function crush-hyper--model-choices "crush-hyper-provider" (catalog))
+(declare-function crush-hyper-provider-p "crush-hyper-provider" (object))
+(declare-function crush-hyper-provider-model "crush-hyper-provider" (object))
 
 ;;; Buffer naming
 
@@ -327,6 +331,7 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
     (define-key map (kbd "i") #'crush-interrupt)
     (define-key map (kbd "k") #'crush-clear-buffer)
     (define-key map (kbd "r") #'crush-reasoning-toggle)
+    (define-key map (kbd "m") #'crush-select-model)
     map)
   "Keymap under `C-c c' for crush chat-buffer commands.")
 
@@ -1993,6 +1998,47 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
     (erase-buffer)
     (crush--insert-input-separator))
   (setq-local buffer-undo-list nil))
+
+(defun crush-select-model ()
+  "Select a model from the Hyper gateway's catalog.
+Fetches the live model catalog from `crush-hyper-base-url'/provider
+(sync) and prompts for a choice; picking a model sets the global
+`crush-model' and the current buffer's provider model slot, so the
+header line updates immediately and future buffers use the choice.
+Choosing the `default' entry clears the selection back to
+`crush-openai-default-model'.  When the catalog fetch fails, offers a
+small fallback list so selection still works offline."
+  (interactive)
+  (let* ((base-url (or (getenv "HYPER_URL")
+                       (and (crush-hyper-provider-p crush-active-provider)
+                            (crush-hyper-provider-base-url crush-active-provider))
+                       crush-hyper-base-url))
+         (fetched (crush-hyper--fetch-models base-url
+                                             crush-hyper-token))
+         (catalog (car fetched))
+         (choices (if catalog
+                      (crush-hyper--model-choices catalog)
+                    (list (cons crush-openai-default-model
+                                (format "%s (default)" crush-openai-default-model))
+                          (cons "qwen3.7-plus" "qwen3.7-plus")
+                          (cons "deepseek-v4-flash" "deepseek-v4-flash"))))
+         (choice (completing-read
+                  "Model: "
+                  (cons (cons "default" "default (provider default)")
+                        choices)
+                  nil t nil)))
+    (if (string= choice "default")
+        (progn
+          (setq crush-model nil)
+          (when (crush-hyper-provider-p crush-active-provider)
+            (setf (crush-hyper-provider-model crush-active-provider) nil)))
+      (setq crush-model choice)
+      (when (crush-hyper-provider-p crush-active-provider)
+        (setf (crush-hyper-provider-model crush-active-provider) choice)))
+    (crush--update-header-line)
+    (message "Model: %s"
+             (or (and (not (string= choice "default")) choice)
+                 crush-openai-default-model))))
 
 ;;; Minor mode commands
 

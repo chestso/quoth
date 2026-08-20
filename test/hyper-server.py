@@ -115,6 +115,80 @@ def main():
                 f.write(f"BODY {body}\n")
                 f.flush()
 
+            if path == "/provider":
+                # Model catalog endpoint (HYPER-API.md section 5). Returns
+                # a deterministic mini-catalog so tests can assert the
+                # parsed model entries.
+                conn.sendall(
+                    (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Connection: close\r\n\r\n"
+                        + json.dumps(
+                            {
+                                "name": "Charm Hyper",
+                                "id": "hyper",
+                                "api_endpoint": "http://127.0.0.1:0/v1/chat/completions",
+                                "type": "hyper",
+                                "default_large_model_id": "qwen3.7-plus",
+                                "default_small_model_id": "deepseek-v4-flash-0731",
+                                "models": [
+                                    {
+                                        "id": "deepseek-v4-flash-0731",
+                                        "name": "DeepSeek V4 Flash",
+                                        "cost_per_1m_in": 0.1,
+                                        "cost_per_1m_out": 0.3,
+                                        "cost_per_1m_in_cached": 0.0,
+                                        "cost_per_1m_out_cached": 0.0,
+                                        "context_window": 131072,
+                                        "default_max_tokens": 8192,
+                                        "can_reason": True,
+                                        "reasoning_levels": ["low", "medium", "high"],
+                                        "default_reasoning_effort": "high",
+                                        "supports_attachments": True,
+                                    },
+                                    {
+                                        "id": "qwen3.7-plus",
+                                        "name": "Qwen 3.7 Plus",
+                                        "cost_per_1m_in": 0.2,
+                                        "cost_per_1m_out": 0.6,
+                                        "cost_per_1m_in_cached": 0.05,
+                                        "cost_per_1m_out_cached": 0.05,
+                                        "context_window": 262144,
+                                        "default_max_tokens": 16384,
+                                        "can_reason": True,
+                                        "reasoning_levels": [
+                                            "low",
+                                            "medium",
+                                            "high",
+                                            "max",
+                                        ],
+                                        "default_reasoning_effort": "max",
+                                        "supports_attachments": True,
+                                    },
+                                    {
+                                        "id": "mini-no-reason",
+                                        "name": "Mini No Reason",
+                                        "cost_per_1m_in": 0.05,
+                                        "cost_per_1m_out": 0.1,
+                                        "cost_per_1m_in_cached": 0.0,
+                                        "cost_per_1m_out_cached": 0.0,
+                                        "context_window": 32768,
+                                        "default_max_tokens": 4096,
+                                        "can_reason": False,
+                                        "reasoning_levels": [],
+                                        "default_reasoning_effort": None,
+                                        "supports_attachments": False,
+                                    },
+                                ],
+                            }
+                        )
+                        + "\r\n"
+                    ).encode()
+                )
+                conn.close()
+                continue
+
             if path != "/chat/completions":
                 conn.sendall(
                     (

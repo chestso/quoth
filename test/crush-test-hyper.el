@@ -1735,5 +1735,129 @@ own (those live in crush-openai.el)."
     (should-not (string-match-p "defun crush--openai-\\(sse\\|curl\\|emit\\|http\\)" src))
     (should-not (string-match-p "defun crush-openai-\\(sse\\|compose\\|request\\)" src))))
 
+;;; C6. Model catalog: fetch, choices, and interactive selection
+
+(ert-deftest crush-test/hyper-fetch-models-parses-catalog ()
+  "`crush-hyper--fetch-models' parses the /provider catalog into an alist.
+The dummy server's catalog has three models; the first must carry the
+id, name, context window, and reasoning flag."
+  (let ((fetched (cons 'unset nil)))
+    (let ((result (crush-test--with-hyper-server
+                   'ok-stream
+                   (lambda (base)
+                     (setq fetched (crush-hyper--fetch-models base "tok"))))))
+      (should (consp fetched))
+      (should-not (eq (car fetched) 'unset))
+      (let* ((catalog (car fetched))
+             (models (crush--openai-alist-get "models" catalog)))
+        (should (vectorp models))
+        (should (= (length models) 3))
+        (let ((m (aref models 0)))
+          (should (string= (crush--openai-alist-get "id" m)
+                           "deepseek-v4-flash-0731"))
+          (should (string= (crush--openai-alist-get "name" m)
+                           "DeepSeek V4 Flash"))
+          (should (= (crush--openai-alist-get "context_window" m) 131072))
+          (should (crush--openai-alist-get "can_reason" m)))
+        (let ((m (aref models 2)))
+          (should (string= (crush--openai-alist-get "id" m) "mini-no-reason"))
+          ;; `can_reason' is `:json-false' (Emacs's JSON false), which is
+          ;; truthy in Lisp; assert it is not a reason-capable model.
+          (should-not (eq (crush--openai-alist-get "can_reason" m) t))))
+      ;; The capture records the GET /provider request.
+      (let ((requests (nth 1 result)))
+        (should (= (length requests) 1))
+        (should (string= (nth 0 (car requests)) "GET"))
+        (should (string= (nth 1 (car requests)) "/provider"))))))
+
+(ert-deftest crush-test/hyper-fetch-models-nil-on-failure ()
+  "`crush-hyper--fetch-models' returns nil when the gateway is unreachable."
+  (should (null (crush-hyper--fetch-models "http://127.0.0.1:1" "tok"))))
+
+(ert-deftest crush-test/hyper-model-choices-format ()
+  "`crush-hyper--model-choices' maps catalog entries to (ID . DISPLAY)."
+  (let* ((catalog '((models .
+                            [(("id" . "m1") ("name" . "Model One")
+                              ("context_window" . 4096) ("cost_per_1m_in" . 0.5)
+                              ("can_reason" . t))
+                             (("id" . "m2") ("name" . "Model Two")
+                              ("context_window" . 8192) ("cost_per_1m_in" . 0.1)
+                              ("can_reason" . nil))])))
+         (choices (crush-hyper--model-choices catalog)))
+    (should (= (length choices) 2))
+    (should (string= (caar choices) "m1"))
+    (should (string-match-p "Model One" (cdar choices)))
+    (should (string-match-p "4096" (cdar choices)))
+    (should (string-match-p "reason" (cdar choices)))
+    (should (string-match-p "no reason" (cdr (cadr choices))))))
+
+(ert-deftest crush-test/select-model-sets-provider-and-global ()
+  "`crush-select-model' updates the provider slot, `crush-model', and header.
+The catalog is fetched from the dummy server; picking a model applies
+it to the current buffer and the global default."
+  (let ((crush-model nil))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((result (crush-test--with-hyper-server
+                           'ok-stream
+                           (lambda (base)
+                             (setf (crush-hyper-provider-base-url
+                                    crush-active-provider)
+                                   base)
+                             (cl-letf (((symbol-function 'completing-read)
+                                        (lambda (&rest _) "qwen3.7-plus")))
+                               (crush-select-model))))))
+              (should (string= (crush-hyper-provider-model
+                                crush-active-provider)
+                               "qwen3.7-plus"))
+              (should (string= crush-model "qwen3.7-plus"))
+              (crush--update-header-line)
+              (should (string-match-p "qwen3.7-plus"
+                                      (format "%s" header-line-format)))
+              (let ((requests (nth 1 result)))
+                (should (string= (nth 0 (car requests)) "GET"))
+                (should (string= (nth 1 (car requests)) "/provider"))))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/select-model-resets-to-default ()
+  "Choosing the `default' entry clears the model back to the default."
+  (let ((crush-model "qwen3.7-plus"))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setf (crush-hyper-provider-model crush-active-provider)
+                  "qwen3.7-plus")
+            (crush-test--with-hyper-server
+             'ok-stream
+             (lambda (base)
+               (setf (crush-hyper-provider-base-url crush-active-provider)
+                     base)
+               (cl-letf (((symbol-function 'completing-read)
+                          (lambda (&rest _) "default")))
+                 (crush-select-model))))
+            (should (null (crush-hyper-provider-model crush-active-provider)))
+            (should (null crush-model))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/select-model-fallback-on-fetch-failure ()
+  "When the catalog fetch fails, `crush-select-model' offers a fallback list."
+  (let ((crush-model nil))
+    (unwind-protect
+        (let ((buf (crush-test--fresh-buffer)))
+          (with-current-buffer buf
+            (cl-letf (((symbol-function 'crush-hyper--fetch-models)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt coll &rest _)
+                         (should (assoc crush-openai-default-model coll))
+                         "qwen3.7-plus")))
+              (crush-select-model))
+            (should (string= (crush-hyper-provider-model
+                              crush-active-provider)
+                             "qwen3.7-plus"))
+            (should (string= crush-model "qwen3.7-plus"))))
+      (crush-test--cleanup))))
+
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here
