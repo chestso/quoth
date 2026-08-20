@@ -483,7 +483,9 @@ announces the `bash' tool and `tool_choice: \"auto\"'."
     body))
 
 (defun crush--openai-tool-schema ()
-  "Return the tool schema vector for `exec_command' and `write_stdin'."
+  "Return the tool schema vector for all registered tools.
+Includes `exec_command', `write_stdin', and `web_search' (when
+`crush-searxng-enabled' is non-nil)."
   (let ((exec-props
          `((cmd . ((type . "string")
                    (description . "Shell command to execute")))
@@ -501,19 +503,38 @@ announces the `bash' tool and `tool_choice: \"auto\"'."
            (input . ((type . "string")
                      (description . "Characters to write to the session's stdin; use \\x04 (EOT) to close stdin")))
            (yield_time_ms . ((type . "number")
-                             (description . "Read window to collect fresh output after writing. Defaults 1000 ms."))))))
-    `[((type . "function")
-       (function . ((name . "exec_command")
-                    (description . "Run a command and return its output plus an exit code, or a session ID when the command is still running.")
-                    (parameters . ((type . "object")
-                                   (properties . ,exec-props)
-                                   (required . ["cmd"]))))))
-      ((type . "function")
-       (function . ((name . "write_stdin")
-                    (description . "Write to a running exec_command session and return recently produced output.")
-                    (parameters . ((type . "object")
-                                   (properties . ,write-props)
-                                   (required . ["session_id"]))))))]))
+                             (description . "Read window to collect fresh output after writing. Defaults 1000 ms.")))))
+        (search-props
+         `((query . ((type . "string")
+                     (description . "Search query")))
+           (categories . ((type . "string")
+                          (description . "Comma-separated SearXNG categories (general, images, news, science, code...). Optional.")))
+           (engines . ((type . "string")
+                       (description . "Comma-separated engine sources. Optional.")))
+           (max_results . ((type . "integer")
+                           (description . "Cap on returned results. Optional."))))))
+    (let ((tools `[((type . "function")
+                    (function . ((name . "exec_command")
+                                 (description . "Run a command and return its output plus an exit code, or a session ID when the command is still running.")
+                                 (parameters . ((type . "object")
+                                                (properties . ,exec-props)
+                                                (required . ["cmd"]))))))
+                   ((type . "function")
+                    (function . ((name . "write_stdin")
+                                 (description . "Write to a running exec_command session and return recently produced output.")
+                                 (parameters . ((type . "object")
+                                                (properties . ,write-props)
+                                                (required . ["session_id"]))))))]))
+      (when (bound-and-true-p crush-searxng-enabled)
+        (setq tools
+              (vconcat tools
+                       `[((type . "function")
+                          (function . ((name . "web_search")
+                                       (description . "Search the web via the local SearXNG instance. Returns results with engine and score metadata.")
+                                       (parameters . ((type . "object")
+                                                      (properties . ,search-props)
+                                                      (required . ["query"]))))))])))
+      tools)))
 
 (defun crush-openai-sse-new-state ()
   "Return a fresh SSE parser state plist."

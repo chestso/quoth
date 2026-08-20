@@ -234,7 +234,8 @@ Buffer-local.")
 ;;; both setups work.
 (eval-and-compile
   (dolist (dep '("crush-provider" "crush-openai" "crush-xxh3" "crush-stream"
-                 "crush-process" "crush-hyper-provider" "crush-tools"))
+                 "crush-process" "crush-hyper-provider" "crush-tools"
+                 "crush-searxng"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -1687,7 +1688,8 @@ of what the raw result contains.")
 
 (defconst crush--tool-icons
   '(("exec_command" . "🔧")
-    ("write_stdin" . "⌨️"))
+    ("write_stdin" . "⌨️")
+    ("web_search" . "🔍"))
   "Alist mapping tool names to the emoji icon for their buffer header.")
 
 (defun crush--yield-ms->human (ms)
@@ -1729,8 +1731,8 @@ when login is disallowed by config, so the header can render
 Every parameter renders, with execution-side defaults filled in when
 the model omitted them, so the line shows what the tool actually ran:
 cmd, workdir, `yield <ms>`, `shell <name>`, and `login yes|no` for
-`exec_command`; session id, wrote/input, and `yield <ms>` for
-`write_stdin`.  A missing `cmd` (required) contributes no clause."
+\"exec_command\"; session id, wrote/input, and `yield <ms>` for
+\"write_stdin\".  A missing `cmd` (required) contributes no clause."
   (let ((clauses nil))
     (cond
      ((string= tool "exec_command")
@@ -1762,6 +1764,18 @@ cmd, workdir, `yield <ms>`, `shell <name>`, and `login yes|no` for
       (push (format "yield %s"
                     (crush--yield-ms->human
                      (crush-exec--yield-ms args crush-process-write-yield-ms)))
+            clauses))
+     ((string= tool "web_search")
+      (when (stringp (plist-get args :query))
+        (push (format "query %s"
+                      (crush--tool-embed-backticks (plist-get args :query)))
+              clauses))
+      (when (stringp (plist-get args :categories))
+        (push (format "categories %s" (plist-get args :categories)) clauses))
+      (when (stringp (plist-get args :engines))
+        (push (format "engines %s" (plist-get args :engines)) clauses))
+      (push (format "max %d" (or (plist-get args :max_results)
+                                 crush-searxng-max-results))
             clauses)))
     (nreverse clauses)))
 

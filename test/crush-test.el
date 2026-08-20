@@ -125,7 +125,7 @@ Initializes with the default hyper provider."
                  "crush-test-openai" "crush-test-hyper"
                  "crush-test-reasoning" "crush-test-stream"
                  "crush-test-xxh3" "crush-test-tools"
-                 "crush-test-process"))
+                 "crush-test-process" "crush-test-searxng"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")

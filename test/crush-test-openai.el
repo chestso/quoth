@@ -95,18 +95,20 @@ The system message should carry the dynamic system prompt (<env> block)."
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 
 (ert-deftest crush-test/openai-compose-tools-by-default ()
-  "With `crush-tools-enabled' t the body announces exec_command.
+  "With `crush-tools-enabled' t the body announces all registered tools.
 The default is non-nil, so `tool_choice' is `auto'."
   (let ((req (crush-openai-compose-request "P" nil "m")))
     (should (assq 'tools req))
     (should (equal (alist-get 'tool_choice req) "auto"))
     (let ((tools (alist-get 'tools req)))
       (should (vectorp tools))
-      (should (= (length tools) 2))
-      (should (equal (cdr (assq 'name (cdr (assq 'function (aref tools 0)))))
-                     "exec_command"))
-      (should (equal (cdr (assq 'name (cdr (assq 'function (aref tools 1)))))
-                     "write_stdin")))))
+      (should (>= (length tools) 2))
+      (let ((names (mapcar (lambda (tool)
+                             (cdr (assq 'name
+                                        (cdr (assq 'function tool)))))
+                           (append tools nil))))
+        (should (member "exec_command" names))
+        (should (member "write_stdin" names))))))
 
 (ert-deftest crush-test/openai-compose-no-tools-when-disabled ()
   "With `crush-tools-enabled' nil the body has no `tools' or `tool_choice'."
