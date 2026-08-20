@@ -374,7 +374,7 @@ Only logs when `crush-debug-mode' is non-nil."
                         category message))))))
 
 (defun crush--generate-id ()
-  "Generate a unique ID for prompt and attachment IDs."
+  "Generate a unique ID for a prompt."
   (format "%s-%s"
           (format-time-string "%Y%m%d-%H%M%S")
           (substring (md5 (format "%s%s" (random) (current-time))) 0 8)))
@@ -764,7 +764,7 @@ no chain-of-thought."
                   text)))))))))
 
 (defun crush--user-turn-text (prompt-id)
-  "Return the user-side text for PROMPT-ID: typed input + attachments.
+  "Return the user-side text for PROMPT-ID: typed input + inserted context.
 The text is the buffer content tagged `crush-region-type' `user' within
 the region tagged `crush-prompt-id' PROMPT-ID, in buffer order.  The
 frozen separator line, the response, and reasoning regions (which share

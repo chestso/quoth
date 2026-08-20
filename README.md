@@ -10,7 +10,7 @@ Everything else follows from that wish. The conversation lives in a real buffer,
 
 ## Goal
 
-crush.el's primary mode of operation is **direct provider interaction**: it talks to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE (no separate CLI binary needed). A dedicated Emacs buffer sends prompts and streams the model's response, including chain-of-thought reasoning. On top of that, any buffer selection can be used as context: the selection is formatted as a markdown fenced code block with the file path and line numbers (relative to the project root), then inserted into the crush buffer before the prompt as an attachment.
+crush.el's primary mode of operation is **direct provider interaction**: it talks to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE (no separate CLI binary needed). A dedicated Emacs buffer sends prompts and streams the model's response, including chain-of-thought reasoning. On top of that, any buffer selection can be used as context: the selection is formatted as a markdown fenced code block with the file path and line numbers (relative to the project root), then inserted into the crush buffer as plain user input and sent as part of the prompt.
 
 Each project gets its own crush buffer (see [Per-Project Buffers](#per-project-buffers)), so work in different projects stays isolated.
 
@@ -141,36 +141,39 @@ Or enable it automatically in programming modes:
 Keybindings (active when `crush-minor-mode` is enabled):
 
 - `C-c C-c` — open/switch to the crush buffer
-- `C-c C-s` — insert the active region as a markdown fenced code block with an attachment header
+- `C-c C-s` — insert the active region as a markdown fenced code block with a context header
 - `C-c C-b` — insert the entire buffer as a markdown fenced code block
 - `C-c C-p` — insert the buffer's file path as context
 
-## Prompt IDs and Attachments
+## Prompt IDs and Context
 
 Each prompt is assigned a unique ID when the input divider is
-inserted, before you type anything. This ID tracks the user input and
-attachments (context blocks) that belong to that prompt, and all
+inserted, before you type anything. This ID tracks the user input
+(typed text and inserted context) that belongs to that prompt, and all
 metadata is stored as text properties on the buffer content.
 
 The chat buffer shows a frozen markdown horizontal divider (`---`,
 framed by blank lines) above the editable input area; everything below
-it is user input, tagged `crush-region-type 'user`. The divider itself
-is tagged `'separator` and never reaches the model.
+it is the user's turn, tagged `crush-region-type 'user`. A second frozen
+divider closes the user turn before the response starts. Dividers are
+tagged `separator` / `user-separator` and never reach the model.
 
-### Attachments
+### Inserting context
 
 Insert context from a source buffer with:
 
-- `C-c c a` (`crush-insert-selection`) — the active region
+- `C-c C-s` (`crush-insert-selection`) — the active region
 - `C-c C-b` (`crush-insert-buffer`) — the entire buffer
 - `C-c C-p` (`crush-insert-filepath`) — the file path as a link
 
-Each attachment is a markdown fenced code block with a
+Inserted content is formatted as a markdown fenced code block with a
 `**Attachment: <relpath> (lines N-M)**` header (paths relative to the
-project root); `crush-insert-filepath` inserts a
-`[relpath](relpath)` link instead. The metadata properties behind
-this, plus the API for retrieving prompts/attachments programmatically,
-are documented in [ARCHITECTURE.md](ARCHITECTURE.md).
+project root); `crush-insert-filepath` inserts a `[relpath](relpath)`
+link instead. It is appended as plain user input (tagged
+`crush-region-type 'user` with the current `crush-prompt-id`), so it is
+sent as part of the prompt — there is no separate attachment tracking.
+The API for retrieving prompts programmatically is documented in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Header Line Display
 
@@ -180,17 +183,17 @@ The header line shows the current model and the region type at point:
 model: deepseek-v4-flash   region: response
 ```
 
-The region type updates as the cursor moves: `prompt` on the input
-line, `attachment` on context blocks, `reasoning` on chain-of-thought
-text, `tool` on tool blocks, `response` on the final answer, and
-`plain` elsewhere. The model is the effective provider model
-(`crush-model` if set, else the provider default).
+The region type updates as the cursor moves: `user` on the input line,
+`separator` on a divider, `reasoning` on chain-of-thought text, `tool`
+and `tool-output` on tool blocks, and `response` on the final answer.
+The model is the effective provider model (`crush-model` if set, else
+the provider default).
 
 ## Rendering
 
-Response text and attachment blocks are rendered as markdown. `markdown-mode` (when installed as the parent mode) provides native font-lock highlighting — including fenced code blocks — for both responses and attachment blocks. When the parent mode is `text-mode` (markdown-mode unavailable), the content is still markdown but no syntax highlighting is applied and crush.el adds no faces of its own.
+Response text and inserted context are rendered as markdown. `markdown-mode` (when installed as the parent mode) provides native font-lock highlighting — including fenced code blocks — for responses, inserted context, and tool output. When the parent mode is `text-mode` (markdown-mode unavailable), the content is still markdown but no syntax highlighting is applied and crush.el adds no faces of its own.
 
-The language inside attachment fences is derived from the file extension (`el` → `emacs-lisp`, `go` → `go`, `py` → `python`, `ts` → `typescript`, etc., falling back to `plaintext` for unknown extensions).
+The language inside context fences is derived from the file extension (`el` → `emacs-lisp`, `go` → `go`, `py` → `python`, `ts` → `typescript`, etc., falling back to `plaintext` for unknown extensions).
 
 ## Input History
 

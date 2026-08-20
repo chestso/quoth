@@ -60,7 +60,7 @@ them, and new code must too.
 
 7. **Everything inserted must be valid markdown.** The chat buffer's
    parent mode is `markdown-mode` (fallback `text-mode`); bodies,
-   attachments, tool blocks, and the input divider are all rendered as
+   inserted context, tool blocks, and the input divider are all rendered as
    markdown constructs (fenced code blocks, bold headers, horizontal
    rules) so native font-lock and preview/export stay correct.
 
@@ -86,7 +86,7 @@ crush.el/               # Package root
 ```
 
 Dependency direction: `crush-provider.el` has no dependencies;
-`crush-openai.el` requires `crush-provider` (for the context preamble);
+`crush-openai.el` requires no sibling package;
 `crush-stream.el` requires `crush-provider`; `crush-xxh3.el` has no
 dependencies (pure math); `crush-process.el` requires only `cl-lib`
 and `subr-x`; `crush-hyper-provider.el` requires `crush-provider` +
@@ -279,25 +279,21 @@ properties, never `read-only`):
 All metadata is stored as **text properties** on buffer content;
 highlighting is left to markdown-mode's native font-lock.
 
-| Text Region                      | Property                                                                                                 | Value                                              |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Input separator (`---` divider)  | `crush-prompt-id` + `crush-region-type 'separator` + `read-only`                                         | Frozen markdown divider above the input area       |
-| User input (typed + attachments) | `crush-prompt-id` + `crush-region-type 'user` + `crush-attachment-id` + `crush-filename` + `crush-lines` | Editable input; attachments appended as user input |
-| Tool blocks                      | `crush-region-type 'tool` + `crush-prompt-id` + `crush-response-to` + `crush-tool-call` (id/name/args)   | Displayed tool call                                |
-| Tool raw result                  | `crush-region-type 'tool-output` (nested) + `crush-prompt-id` + `crush-response-to`                      | Raw result sent in history                         |
-| Response text                    | `crush-response-to` + `crush-region-type 'response`                                                      | The prompt ID being answered                       |
-| Reasoning text                   | `crush-region-type 'reasoning` + `crush-prompt-id` + `crush-response-to`                                 | Chain-of-thought sub-span                          |
+| Text Region                           | Property                                                                                               | Value                                                   |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| Input separator (`---` divider)       | `crush-prompt-id` + `crush-region-type 'separator` + `read-only`                                       | Frozen markdown divider above the input area            |
+| User input (typed + inserted context) | `crush-prompt-id` + `crush-region-type 'user`                                                          | Editable input; inserted context appended as user input |
+| Tool blocks                           | `crush-region-type 'tool` + `crush-prompt-id` + `crush-response-to` + `crush-tool-call` (id/name/args) | Displayed tool call                                     |
+| Tool raw result                       | `crush-region-type 'tool-output` (nested) + `crush-prompt-id` + `crush-response-to`                    | Raw result sent in history                              |
+| Response text                         | `crush-response-to` + `crush-region-type 'response`                                                    | The prompt ID being answered                            |
+| Reasoning text                        | `crush-region-type 'reasoning` + `crush-prompt-id` + `crush-response-to`                               | Chain-of-thought sub-span                               |
 
 ### History Retrieval Functions
 
 ```elisp
-;; Get prompt ID at current point
-(crush-get-prompt-at-point)
+;; Get the prompt ID of the current pending prompt
+(and (boundp 'crush--prompt-id) crush--prompt-id)
 ;; => "20260805-091012-abc123"
-
-;; Get all attachment regions for a specific prompt
-(crush-get-attachments-for-prompt "20260805-091012-abc123")
-;; => ((start end "attach-id-1") (start end "attach-id-2"))
 
 ;; Get all prompt IDs in buffer
 (crush-get-all-prompts)
@@ -311,9 +307,6 @@ Text properties can be accessed directly:
 ```elisp
 ;; Get property at point
 (get-text-property (point) 'crush-prompt-id)
-(get-text-property (point) 'crush-attachment-id)
-(get-text-property (point) 'crush-filename)
-(get-text-property (point) 'crush-lines)
 (get-text-property (point) 'crush-region-type)
 (get-text-property (point) 'crush-response-to)
 ```

@@ -44,18 +44,6 @@
 (require 'json)
 (require 'subr-x)
 (require 'auth-source)
-;;; flycheck's emacs-lisp checker byte-compiles each file in isolation,
-;;; and its batch child's `load-path' excludes the package directory.
-;;; Prefer `require'; fall back to loading the sibling from this file's
-;;; own directory so both flycheck and package-installed loads work.
-(eval-and-compile
-  (dolist (dep '("crush-provider"))
-    (unless (require (intern dep) nil t)
-      (load (expand-file-name
-             (concat dep ".el")
-             (file-name-directory
-              (or buffer-file-name load-file-name default-directory)))
-            nil t))))
 
 (defcustom crush-openai-timeout 300
   "Seconds to wait for an OpenAI-compatible request before giving up."
