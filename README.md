@@ -95,7 +95,6 @@ hacking guide — live in [ARCHITECTURE.md](ARCHITECTURE.md).
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point; otherwise normal TAB
 - `C-c c i` — interrupt the running crush process
 - `C-c c k` — clear the crush buffer (also starts a fresh session and rotates the session UUID)
-- `C-c c a` — insert the current buffer selection as context into the crush buffer
 - `C-c c r` — expand/collapse the reasoning fold at point
 
 ### Per-Project Buffers
