@@ -159,16 +159,16 @@ sanitized `process-environment'."
     (with-current-buffer output-buffer
       ;; The child inherits the output buffer's default-directory.
       (setq-local default-directory cwd)
-      (let ((process-environment (crush-process--spawn-env))
-            (proc (make-process
-                   :name (format "crush-exec-%d" id)
-                   :buffer output-buffer
-                   :command argv
-                   :connection-type 'pty
-                   :noquery t
-                   :sentinel #'ignore)))
-        (when (processp proc)
-          (cons proc output-buffer))))))
+      (let ((process-environment (crush-process--spawn-env)))
+        (let ((proc (make-process
+                     :name (format "crush-exec-%d" id)
+                     :buffer output-buffer
+                     :command argv
+                     :connection-type 'pty
+                     :noquery t
+                     :sentinel #'ignore)))
+          (when (processp proc)
+            (cons proc output-buffer)))))))
 
 (defun crush-process--start (command working-directory owner &optional shell login)
   "Start COMMAND in WORKING-DIRECTORY owned by OWNER.

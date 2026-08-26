@@ -326,7 +326,7 @@ output is a fenced code block tagged `text`."
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "\\*\\*🔧 exec_command\\*\\*" content))
-            (should (string-match-p "ran `ls`" content))
+            (should (string-match-p "ran: ls\n" content))
             (should (string-match-p "```text\n" content))
             (should (string-match-p "```\n$" content))))
       (crush-test--cleanup))))
@@ -383,8 +383,8 @@ ending in a blank line."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "ran `ls`" content))
-            (should (string-match-p "in `/tmp`" content))
+            (should (string-match-p "ran: ls\n" content))
+            (should (string-match-p "in: /tmp\n" content))
             (should (string-match-p "yield 7.5s" content))
             (should (string-match-p "shell /bin/zsh" content))
             (should (string-match-p "login yes" content))))
@@ -404,11 +404,12 @@ login no."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "ran `ls`" content))
-            (should (string-match-p (concat "in `" (regexp-quote
-                                                    (file-name-as-directory
-                                                     (expand-file-name default-directory)))
-                                            "`")
+            (should (string-match-p "ran: ls\n" content))
+            (should (string-match-p (concat "in: "
+                                            (regexp-quote
+                                             (file-name-as-directory
+                                              (expand-file-name default-directory)))
+                                            "\n")
                                     content))
             (should (string-match-p "yield 10s" content))
             (should (string-match-p (concat "shell " (regexp-quote shell-file-name))
@@ -417,7 +418,9 @@ login no."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-escapes-backticks-in-cmd ()
-  "Backtick runs inside the displayed cmd keep the header valid markdown."
+  "Backtick runs inside the displayed cmd are fenced, keeping valid markdown.
+The cmd is rendered as a fenced code block below the header, so
+backticks in the command text never break inline code spans."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -428,10 +431,9 @@ login no."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            ;; Backticks inside the cmd stay literal in the header (single
-            ;; runs are not doubled); the assertion uses the exact
-            ;; rendered text `echo `pwd``.
-            (should (string-match-p (regexp-quote "ran `echo `pwd``,") content))))
+            ;; The cmd is a single line; backticks are literal text.
+            (should (string-match-p "ran: echo `pwd`\n"
+                                    content))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-write-stdin-summary ()
@@ -448,7 +450,7 @@ login no."
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "\\*\\*⌨️ write_stdin\\*\\*" content))
             (should (string-match-p "session 7" content))
-            (should (string-match-p "wrote `hello`" content))
+            (should (string-match-p "wrote: hello\n" content))
             (should (string-match-p "yield 1s" content))))
       (crush-test--cleanup))))
 
@@ -473,8 +475,8 @@ login no."
 
 (ert-deftest crush-test/tool-block-minimal-write-stdin ()
   "Test that a minimal write_stdin block renders session, input, and yield.
-A block with only a session id renders the session, empty input, yield,
-and no output fence."
+A block with only a session id renders the session, empty input
+(as a fenced block), yield, and no output fence."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -484,9 +486,107 @@ and no output fence."
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "session 7" content))
-            (should (string-match-p "wrote ``" content))
+            (should (string-match-p "wrote: \n" content))
             (should (string-match-p "yield 1s" content))
-            (should-not (string-match-p "```" content))))
+            ;; No output fence (no result), but arg blocks use fences.
+            (should-not (string-match-p "```text\nProcess" content))))
+      (crush-test--cleanup))))
+
+
+(ert-deftest crush-test/tool-block-multiline-cmd-is-fenced ()
+  "A multiline cmd renders as a fenced block, not a broken inline span.
+CommonMark inline code is single-line; a multiline cmd must be fenced
+so the header stays valid markdown."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"for i in 1 2 3; do\\necho $i\\ndone\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p
+                     "ran:\n\n```text\nfor i in 1 2 3; do\necho $i\ndone\n```"
+                     content))
+            ;; The header line must not contain the cmd inline.
+            (should-not (string-match-p "ran `for" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-multiline-cmd-backticks-escaped ()
+  "A multiline cmd containing triple backticks uses a 4-backtick fence.
+The `crush--fence-str' mechanism extends the fence to outmatch any
+backtick run in the argument value."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"echo ```markdown\\n# heading\\n```\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            ;; The arg fence is 4 backticks (one more than the 3-run).
+            (should (string-match-p "ran:\n\n````text\n" content))
+            (should (string-match-p "````\n" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-multiline-write-stdin-input ()
+  "A multiline write_stdin input renders as a fenced block."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "write_stdin" :id "call_2"
+                 :args-json "{\"session_id\":3,\"input\":\"line1\\nline2\"}"
+                 :result "ok"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p
+                     "wrote:\n\n```text\nline1\nline2\n```" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-multiline-query ()
+  "A multiline web_search query renders as a fenced block."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "web_search" :id "call_3"
+                 :args-json "{\"query\":\"foo\\nbar\"}"
+                 :result "results"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p
+                     "query:\n\n```text\nfoo\nbar\n```" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-arg-blocks-not-tool-output ()
+  "Argument fenced blocks are `tool' region, not `tool-output'.
+Only the output fence interior is tagged `tool-output' for history
+extraction; argument blocks are display decoration."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\"}"
+                 :result "Process exited with code 0\nOutput:\nfiles"
+                 :exit 0)
+           crush--prompt-id)
+          (goto-char (point-min))
+          (search-forward "ran:")
+          (should (eq (get-text-property (point) 'crush-region-type) 'tool))
+          (should-not (eq (get-text-property (point) 'crush-region-type)
+                          'tool-output))
+          ;; The output fence interior IS tool-output.
+          (search-forward "Process exited")
+          (should (eq (get-text-property (point) 'crush-region-type)
+                      'tool-output)))
       (crush-test--cleanup))))
 
 ;;; 8. Fence escaping: protect against nested fences in tool output

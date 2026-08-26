@@ -200,12 +200,8 @@ verbatim, function, or `nil` to omit).
   "max_tokens": 64000,
   "temperature": 0.7, // optional
   "tool_choice": "auto", // optional
-  "tools": [
-    /* function tool announcements, see 3.3 */
-  ],
-  "messages": [
-    /* the conversation, see 3.4 */
-  ],
+  "tools": [/* function tool announcements, see 3.3 */],
+  "messages": [/* the conversation, see 3.4 */],
 }
 ```
 
@@ -370,11 +366,7 @@ Top-level shape:
   "type": "hyper",
   "default_large_model_id": "qwen3.7-plus",
   "default_small_model_id": "deepseek-v4-flash-0731",
-  "models": [
-    {
-      /* see below */
-    },
-  ],
+  "models": [{/* see below */}],
 }
 ```
 

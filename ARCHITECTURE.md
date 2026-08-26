@@ -192,9 +192,13 @@ wrappers over the `crush-process.el` session handler:
 
 The tool block is rendered in the buffer as valid markdown:
 
-**🔧 exec_command** — ran `ls`, yield 10s, shell /bin/bash, login no
+**🔧 exec_command** — yield 10s, shell /bin/bash, login no
 
-```
+ran: ls
+
+in: /tmp
+
+```text
 Process exited with code 0
 Output:
 ARCHITECTURE.md
@@ -203,16 +207,19 @@ crush.el
 ...
 ```
 
-The output is enclosed in a fenced code block whose fence length is one
-backtick longer than the longest run of backticks in the output
-(`crush--fence-str`), so nested fences never break the block. The tool
-block is read-only and tagged `crush-region-type 'tool'`; inside it,
-the raw result text (between the fences) is tagged
-`crush-region-type 'tool-output'` — a nested region that survives
-response re-tagging — and the block carries the call's
-`crush-tool-call` metadata (id, name, args). When the exchange enters
-conversation history, only the raw result and the real `tool_call_id`
-travel, never the rendered markup.
+The header line carries the tool icon, name, and scalar clauses
+(yield, shell, login, session, max, etc.). Free-text argument values
+(cmd, workdir, input, query) are rendered below the header as
+`label: value` lines, or as fenced code blocks when they span multiple
+lines, so multiline values stay valid markdown. The fence length is one
+backtick longer than the longest run of backticks in the enclosed text
+(`crush--fence-str`), so nested fences never break the block. The tool block is read-only and
+tagged `crush-region-type 'tool'`; inside it, the raw result text
+(between the output fences) is tagged `crush-region-type 'tool-output'`
+— a nested region that survives response re-tagging — and the block
+carries the call's `crush-tool-call` metadata (id, name, args). When
+the exchange enters conversation history, only the raw result and the
+real `tool_call_id` travel, never the rendered markup.
 
 The tool _protocol_ — the `crush-openai-tool-call` struct, the registry
 (`crush-openai-tool-registry`), dispatch (`crush-openai-execute-tool`),

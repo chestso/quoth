@@ -177,6 +177,26 @@
       (when session (crush-process--kill session))
       (crush-test-process--cleanup-owner owner))))
 
+(ert-deftest crush-test-process/spawn-env-reaches-child ()
+  "The sanitized environment (pagers off, TERM=dumb) reaches the child.
+Regression: `crush-process--spawn' once bound `process-environment' and
+`make-process' in the same `let', so the pager vars were bound only
+after the child had already inherited the unsanitized environment."
+  (let ((owner (crush-test-process--owner))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (crush-process--start
+                         "echo PAGER=[$PAGER] GIT_PAGER=[$GIT_PAGER] TERM=[$TERM]"
+                         nil owner))
+          (let ((output (car (crush-process--yield session 2000))))
+            (should (string-search "PAGER=[" output))
+            (should-not (string-search "PAGER=[]" output))
+            (should (string-search "GIT_PAGER=[cat]" output))
+            (should (string-search "TERM=[dumb]" output))))
+      (when session (crush-process--kill session))
+      (crush-test-process--cleanup-owner owner))))
+
 ;;; 4. Stdin writes
 
 (ert-deftest crush-test-process/write-stdin-round-trip ()

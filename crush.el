@@ -1753,13 +1753,14 @@ through unchanged."
                      (number-to-string (/ ms 1000.0)))))
      (t (format "%dms" ms)))))
 
-(defun crush--tool-embed-backticks (text)
-  "Return TEXT wrapped so run of backticks never break inline code.
-Run of two or more backticks inside TEXT (as in a shell command) would
-otherwise close an inline-code span early; each run is rendered as a
-literal doubled pair so the whole string stays a valid single-tick
-inline-code span."
-  (format "`%s`" (replace-regexp-in-string "``" "`` ``" text)))
+(defun crush--tool-fenced-block (text)
+  "Return TEXT as a markdown fenced code block string.
+The fence length is chosen by `crush--fence-str' so nested backtick
+runs never break the block.  TEXT is used verbatim; a trailing newline
+is added when missing so the closing fence sits on its own line."
+  (let* ((fence (crush--fence-str text))
+         (body (if (string-suffix-p "\n" text) text (concat text "\n"))))
+    (concat fence crush--fence-lang "\n" body fence "\n")))
 
 (defun crush--tool-login-requested-p (args)
   "Return non-nil when ARGS requests a login shell.
@@ -1769,73 +1770,88 @@ when login is disallowed by config, so the header can render
   (let ((requested (plist-get args :login)))
     (and requested (not (eq requested :json-false)) t)))
 
-(defun crush--tool-summary-clauses (tool args)
-  "Return the ordered display clauses for TOOL and its ARGS plist.
-Every parameter renders, with execution-side defaults filled in when
-the model omitted them, so the line shows what the tool actually ran:
-cmd, workdir, `yield <ms>`, `shell <name>`, and `login yes|no` for
-\"exec_command\"; session id, wrote/input, and `yield <ms>` for
-\"write_stdin\".  A missing `cmd` (required) contributes no clause."
-  (let ((clauses nil))
+(defun crush--tool-clauses (tool args)
+  "Return the display clauses for TOOL and its ARGS plist.
+Return a plist `(:inline CLAUSES :blocks BLOCKS)' where CLAUSES is the
+ordered list of inline scalar clauses for the header line (yield,
+shell, login, session, max, categories, engines) and BLOCKS is the
+ordered list of `LABEL . VALUE' pairs for argument values rendered
+below the header (ran, in, wrote, query).  Every parameter renders,
+with execution-side defaults filled in when the model omitted them, so
+the display shows what the tool actually ran."
+  (let ((inline nil)
+        (blocks nil))
     (cond
      ((string= tool "exec_command")
       (when (stringp (plist-get args :cmd))
-        (push (format "ran %s"
-                      (crush--tool-embed-backticks (plist-get args :cmd)))
-              clauses))
-      (push (format "in %s"
-                    (crush--tool-embed-backticks
-                     (or (plist-get args :workdir) default-directory)))
-            clauses)
+        (push (cons "ran" (plist-get args :cmd)) blocks))
+      (push (cons "in" (or (plist-get args :workdir) default-directory))
+            blocks)
       (push (format "yield %s"
                     (crush--yield-ms->human
                      (crush-exec--yield-ms args crush-process-yield-ms)))
-            clauses)
-      (push (format "shell %s"
-                    (or (plist-get args :shell) shell-file-name))
-            clauses)
+            inline)
+      (push (format "shell %s" (or (plist-get args :shell) shell-file-name))
+            inline)
       (push (format "login %s"
                     (if (crush--tool-login-requested-p args) "yes" "no"))
-            clauses))
+            inline))
      ((string= tool "write_stdin")
       (when (integerp (plist-get args :session_id))
-        (push (format "session %d" (plist-get args :session_id)) clauses))
-      (push (format "wrote %s"
-                    (crush--tool-embed-backticks
-                     (or (plist-get args :input) "")))
-            clauses)
+        (push (format "session %d" (plist-get args :session_id)) inline))
+      (push (cons "wrote" (or (plist-get args :input) "")) blocks)
       (push (format "yield %s"
                     (crush--yield-ms->human
                      (crush-exec--yield-ms args crush-process-write-yield-ms)))
-            clauses))
+            inline))
      ((string= tool "web_search")
       (when (stringp (plist-get args :query))
-        (push (format "query %s"
-                      (crush--tool-embed-backticks (plist-get args :query)))
-              clauses))
+        (push (cons "query" (plist-get args :query)) blocks))
       (when (stringp (plist-get args :categories))
-        (push (format "categories %s" (plist-get args :categories)) clauses))
+        (push (format "categories %s" (plist-get args :categories)) inline))
       (when (stringp (plist-get args :engines))
-        (push (format "engines %s" (plist-get args :engines)) clauses))
+        (push (format "engines %s" (plist-get args :engines)) inline))
       (push (format "max %d" (or (plist-get args :max_results)
                                  crush-searxng-max-results))
-            clauses)))
-    (nreverse clauses)))
+            inline)))
+    (list :inline (nreverse inline)
+          :blocks (nreverse blocks))))
 
 (defun crush--tool-header-line (tool args)
   "Return the single markdown header line for TOOL and its ARGS plist.
-The line is bold icon + tool name, then a plain-text parameter summary
-\(no inline emphasis, clauses comma-separated), e.g.
-\"**🔧 exec_command** — ran `ls` in `/tmp`, yield 10s, shell /bin/bash,
-login no\".  The tool-call id is deliberately not shown: it is display
-noise, and wire resume reads it from the `crush-tool-call' text
-property."
+The line is bold icon + tool name, then a plain-text summary of the
+scalar clauses (no inline emphasis, comma-separated), e.g.
+\"**🔧 exec_command** — yield 10s, shell /bin/bash, login no\".
+Free-text argument values (cmd, workdir, input, query) are rendered
+below the header as `LABEL: VALUE' lines, or as fenced code blocks when
+they span multiple lines, so multiline values stay valid markdown.  The
+tool-call id is deliberately not shown: it is display noise, and wire
+resume reads it from the `crush-tool-call' text property."
   (let* ((icon (or (cdr (assoc tool crush--tool-icons)) "🛠️"))
          (name (if (string= tool "write_stdin") "write_stdin" tool))
-         (clauses (crush--tool-summary-clauses tool args))
+         (clauses (plist-get (crush--tool-clauses tool args) :inline))
          (summary (when clauses
                     (format " — %s" (mapconcat #'identity clauses ", ")))))
     (format "**%s %s**%s" icon name (or summary ""))))
+
+(defun crush--tool-arg-blocks (tool args)
+  "Return the below-header argument lines for TOOL and its ARGS plist.
+Each argument value renders as a `LABEL: VALUE' line when the value is
+single-line (no embedded newline), and as a `LABEL:' line followed by a
+fenced code block when it spans multiple lines.  Rendered lines are
+separated by blank lines.  Returns nil when there are no argument
+blocks."
+  (let ((blocks (plist-get (crush--tool-clauses tool args) :blocks)))
+    (when blocks
+      (mapconcat
+       (lambda (pair)
+         (let ((value (cdr pair)))
+           (if (string-match-p "\n" value)
+               (format "%s:\n\n%s" (car pair)
+                       (crush--tool-fenced-block value))
+             (format "%s: %s" (car pair) value))))
+       blocks
+       "\n\n"))))
 
 (defun crush--ensure-blank-line ()
   "Ensure the text before point is separated from what follows by one blank line.
@@ -1875,12 +1891,10 @@ for wire resume.  Returns the end position of the inserted block."
                          (plist-get tool-calls :args-json)))
                    (list)))
          (result (plist-get tool-calls :result))
-         (fence (when result (crush--fence-str result)))
          ;; A model often ends its trailing sentence with no newline
          ;; before emitting a tool call; make sure the header starts on
          ;; its own line with one blank line of separation so the block
          ;; stays valid markdown (buffer, HTML, and PDF alike).
-         ;; Count trailing newlines at point-max and pad to two.
          (prefix (unless (bobp)
                    (let ((n 0))
                      (save-excursion
@@ -1892,23 +1906,47 @@ for wire resume.  Returns the end position of the inserted block."
                      (when (< n 2)
                        (make-string (- 2 n) ?\n)))))
          (header (crush--tool-header-line name args))
+         (arg-blocks (crush--tool-arg-blocks name args))
          (raw (when result
                 (concat result (unless (string-suffix-p "\n" result) "\n"))))
-         (block (concat prefix
-                        header "\n\n"
-                        (when result
-                          (concat fence crush--fence-lang "\n"
-                                  raw
-                                  fence "\n"))
-                        "\n"))
+         (output-fence (when result (crush--fence-str result)))
+         (output-block (when result
+                         (concat output-fence crush--fence-lang "\n"
+                                 raw output-fence "\n")))
+         ;; Assemble the block: prefix, header line, then argument
+         ;; blocks (if any), then the output fence (if any).  Each
+         ;; section is separated by a blank line.  Track the offset of
+         ;; the output block within the body so the raw-result region
+         ;; can be tagged without fragile per-field length arithmetic.
+         (segments (delq nil
+                         (list (when arg-blocks arg-blocks)
+                               (when output-block output-block))))
+         (output-offset
+          (when output-block
+            (let ((offset (length header)))
+              (setq offset (+ offset 2)) ; header + "\n\n"
+              (when arg-blocks
+                (setq offset (+ offset (length arg-blocks) 2))) ; + "\n\n"
+              offset)))
+         (body (if segments
+                   (concat header "\n\n"
+                           (mapconcat #'identity segments "\n\n")
+                           "\n\n")
+                 (concat header "\n\n")))
+         (block (concat prefix body))
          (start (point-max)))
     (crush--insert-at-eof block)
     (let* ((inhibit-modification-hooks t)
            (end (point-max))
-           (raw-start (when raw (+ start (length prefix)
-                                   (length header) 2
-                                   (length fence) (length crush--fence-lang) 1)))
-           (raw-end (when raw (+ raw-start (length raw)))))
+           ;; The raw tool result (wire `role: "tool"' content) sits
+           ;; between the output fence's opening line and the closing
+           ;; fence.  Its offset is prefix + output-offset + the
+           ;; opening fence line length.
+           (raw-start
+            (when output-block
+              (+ start (length prefix) output-offset
+                 (length output-fence) (length crush--fence-lang) 1)))
+           (raw-end (when raw-start (+ raw-start (length raw)))))
       (put-text-property start end 'crush-region-type 'tool)
       (put-text-property start end 'crush-prompt-id prompt-id)
       (put-text-property start end 'crush-response-to prompt-id)
