@@ -1777,17 +1777,21 @@ when login is disallowed by config, so the header can render
 Return a plist `(:inline CLAUSES :blocks BLOCKS)' where CLAUSES is the
 ordered list of inline scalar clauses for the header line (yield,
 shell, login, session, max, categories, engines) and BLOCKS is the
-ordered list of `LABEL . VALUE' pairs for argument values rendered
-below the header (ran, in, wrote, query).  Every parameter renders,
-with execution-side defaults filled in when the model omitted them, so
-the display shows what the tool actually ran."
+ordered list of `(:label LABEL :value VALUE :fence FENCE)' plists for
+argument values rendered below the header (ran, in, wrote, query).
+A non-nil `:fence' forces the value into a fenced code block even when
+it is single-line.  Every parameter renders, with execution-side
+defaults filled in when the model omitted them, so the display shows
+what the tool actually ran."
   (let ((inline nil)
         (blocks nil))
     (cond
      ((string= tool "exec_command")
       (when (stringp (plist-get args :cmd))
-        (push (cons "ran" (plist-get args :cmd)) blocks))
-      (push (cons "in" (or (plist-get args :workdir) default-directory))
+        (push (list :label "ran" :value (plist-get args :cmd) :fence t)
+              blocks))
+      (push (list :label "in"
+                  :value (or (plist-get args :workdir) default-directory))
             blocks)
       (push (format "yield %s"
                     (crush--yield-ms->human
@@ -1801,14 +1805,15 @@ the display shows what the tool actually ran."
      ((string= tool "write_stdin")
       (when (integerp (plist-get args :session_id))
         (push (format "session %d" (plist-get args :session_id)) inline))
-      (push (cons "wrote" (or (plist-get args :input) "")) blocks)
+      (push (list :label "wrote" :value (or (plist-get args :input) ""))
+            blocks)
       (push (format "yield %s"
                     (crush--yield-ms->human
                      (crush-exec--yield-ms args crush-process-write-yield-ms)))
             inline))
      ((string= tool "web_search")
       (when (stringp (plist-get args :query))
-        (push (cons "query" (plist-get args :query)) blocks))
+        (push (list :label "query" :value (plist-get args :query)) blocks))
       (when (stringp (plist-get args :categories))
         (push (format "categories %s" (plist-get args :categories)) inline))
       (when (stringp (plist-get args :engines))
@@ -1840,18 +1845,20 @@ resume reads it from the `crush-tool-call' text property."
   "Return the below-header argument lines for TOOL and its ARGS plist.
 Each argument value renders as a `LABEL: VALUE' line when the value is
 single-line (no embedded newline), and as a `LABEL:' line followed by a
-fenced code block when it spans multiple lines.  Rendered lines are
-separated by blank lines.  Returns nil when there are no argument
-blocks."
+fenced code block when it spans multiple lines or carries a non-nil
+`:fence' flag.  Rendered lines are separated by blank lines.  Returns
+nil when there are no argument blocks."
   (let ((blocks (plist-get (crush--tool-clauses tool args) :blocks)))
     (when blocks
       (mapconcat
-       (lambda (pair)
-         (let ((value (cdr pair)))
-           (if (string-match-p "\n" value)
-               (format "%s:\n\n%s" (car pair)
+       (lambda (block)
+         (let ((label (plist-get block :label))
+               (value (plist-get block :value))
+               (fence-p (plist-get block :fence)))
+           (if (or fence-p (string-match-p "\n" value))
+               (format "%s:\n\n%s" label
                        (crush--tool-fenced-block value))
-             (format "%s: %s" (car pair) value))))
+             (format "%s: %s" label value))))
        blocks
        "\n\n"))))
 

@@ -194,7 +194,11 @@ The tool block is rendered in the buffer as valid markdown:
 
 **🔧 exec_command** — yield 10s, shell /bin/bash, login no
 
-ran: ls
+ran:
+
+```text
+ls
+```
 
 in: /tmp
 
@@ -211,7 +215,9 @@ The header line carries the tool icon, name, and scalar clauses
 (yield, shell, login, session, max, etc.). Free-text argument values
 (cmd, workdir, input, query) are rendered below the header as
 `label: value` lines, or as fenced code blocks when they span multiple
-lines, so multiline values stay valid markdown. The fence length is one
+lines. The `exec_command` command (`ran`) is always fenced — single- or
+multi-line — so the command text is a proper code block. Other values
+fence only when multiline. The fence length is one
 backtick longer than the longest run of backticks in the enclosed text
 (`crush--fence-str`), so nested fences never break the block. The tool block is read-only and
 tagged `crush-region-type 'tool'`; inside it, the raw result text

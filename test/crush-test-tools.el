@@ -326,7 +326,7 @@ output is a fenced code block tagged `text`."
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "\\*\\*🔧 exec_command\\*\\*" content))
-            (should (string-match-p "ran: ls\n" content))
+            (should (string-match-p "ran:\n\n```text\nls\n```" content))
             (should (string-match-p "```text\n" content))
             (should (string-match-p "```\n$" content))))
       (crush-test--cleanup))))
@@ -404,7 +404,7 @@ ending in a blank line."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "ran: ls\n" content))
+            (should (string-match-p "ran:\n\n```text\nls\n```" content))
             (should (string-match-p "in: /tmp\n" content))
             (should (string-match-p "yield 7.5s" content))
             (should (string-match-p "shell /bin/zsh" content))
@@ -425,7 +425,7 @@ login no."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "ran: ls\n" content))
+            (should (string-match-p "ran:\n\n```text\nls\n```" content))
             (should (string-match-p (concat "in: "
                                             (regexp-quote
                                              (file-name-as-directory
@@ -439,9 +439,9 @@ login no."
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-escapes-backticks-in-cmd ()
-  "Backtick runs inside the displayed cmd are fenced, keeping valid markdown.
-The cmd is rendered as a fenced code block below the header, so
-backticks in the command text never break inline code spans."
+  "Single-line cmd with backticks renders as a fenced block.
+The cmd is always fenced (single- or multi-line), so backticks in the
+command text are literal text inside the fence, never inline code."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (with-current-buffer (crush-test--fresh-buffer)
@@ -452,9 +452,29 @@ backticks in the command text never break inline code spans."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            ;; The cmd is a single line; backticks are literal text.
-            (should (string-match-p "ran: echo `pwd`\n"
+            ;; The cmd is always fenced; backticks are literal text
+            ;; inside the fence.
+            (should (string-match-p "ran:\n\n```text\necho `pwd`\n```"
                                     content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-single-line-cmd-triple-backticks-escaped ()
+  "A single-line cmd containing triple backticks uses a 4-backtick fence.
+The `crush--fence-str' mechanism extends the fence to outmatch any
+backtick run in the command text, even when the cmd is a single line."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"echo ```markdown\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            ;; The arg fence is 4 backticks (one more than the 3-run).
+            (should (string-match-p "ran:\n\n````text\n" content))
+            (should (string-match-p "````\n" content))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-write-stdin-summary ()
