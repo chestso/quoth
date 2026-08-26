@@ -1757,10 +1757,12 @@ through unchanged."
   "Return TEXT as a markdown fenced code block string.
 The fence length is chosen by `crush--fence-str' so nested backtick
 runs never break the block.  TEXT is used verbatim; a trailing newline
-is added when missing so the closing fence sits on its own line."
+is added when missing so the closing fence sits on its own line.  The
+returned string does not end in a newline: callers own the blank-line
+separator, so joined sections keep exactly one blank line."
   (let* ((fence (crush--fence-str text))
          (body (if (string-suffix-p "\n" text) text (concat text "\n"))))
-    (concat fence crush--fence-lang "\n" body fence "\n")))
+    (concat fence crush--fence-lang "\n" body fence)))
 
 (defun crush--tool-login-requested-p (args)
   "Return non-nil when ARGS requests a login shell.
@@ -1912,7 +1914,7 @@ for wire resume.  Returns the end position of the inserted block."
          (output-fence (when result (crush--fence-str result)))
          (output-block (when result
                          (concat output-fence crush--fence-lang "\n"
-                                 raw output-fence "\n")))
+                                 raw output-fence)))
          ;; Assemble the block: prefix, header line, then argument
          ;; blocks (if any), then the output fence (if any).  Each
          ;; section is separated by a blank line.  Track the offset of

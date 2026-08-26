@@ -331,6 +331,27 @@ output is a fenced code block tagged `text`."
             (should (string-match-p "```\n$" content))))
       (crush-test--cleanup))))
 
+(ert-deftest crush-test/tool-block-output-fence-single-blank-after ()
+  "The output fence is followed by exactly one blank line.
+Regression: the output block previously ended with a trailing newline
+while the assembler also appended a blank-line separator, producing
+two blank lines between the closing fence and the text that follows."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\"}"
+                 :result "Process exited with code 0\nOutput:\nfiles"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            ;; Closing fence, newline, one blank line, then whatever
+            ;; follows the block.
+            (should (string-match-p "```\n\n" content))
+            (should-not (string-match-p "```\n\n\n" content))))
+      (crush-test--cleanup))))
+
 (ert-deftest crush-test/tool-block-adds-blank-line-after-bare-content ()
   "Test that a tool block after bare content gains a blank line.
 The blank line appears before the header so the block stays valid markdown."
