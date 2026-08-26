@@ -389,6 +389,52 @@ Uses the crush.el repo root so AGENTS.md is discovered."
     (should (string= (nth 1 (car deltas)) "hi"))
     (should-not (plist-get (cdr result) :done))))
 
+;;; TDD: leading blank-line content stripping in the SSE parser.
+
+(ert-deftest crush-test/openai-sse-strips-leading-blank-lines-by-default ()
+  "Leading newline-only content deltas are dropped when stripping is on.
+They are display noise before an assistant answer; real content in the
+same chunk is emitted normally."
+  (let ((crush-openai-strip-leading-blank-lines t)
+        (state (crush-test-openai--sse-state)))
+    (let* ((result
+            (crush-openai-sse-feed
+             state
+             "data: {\"choices\":[{\"delta\":{\"content\":\"\\n\\n\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+           (deltas (car result)))
+      (should (= (length deltas) 1))
+      (should (eq (nth 0 (car deltas)) 'content))
+      (should (string= (nth 1 (car deltas)) "hi"))
+      (should (plist-get (cdr result) :content-started)))))
+
+(ert-deftest crush-test/openai-sse-keeps-leading-blank-lines-when-disabled ()
+  "Leading newline-only content deltas are preserved when stripping is nil.
+Users who want to see empty initial blank lines can opt out."
+  (let ((crush-openai-strip-leading-blank-lines nil)
+        (state (crush-test-openai--sse-state)))
+    (let* ((result
+            (crush-openai-sse-feed
+             state
+             "data: {\"choices\":[{\"delta\":{\"content\":\"\\n\\n\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+           (deltas (car result)))
+      (should (= (length deltas) 2))
+      (should (string= (nth 1 (nth 0 deltas)) "\n\n"))
+      (should (string= (nth 1 (nth 1 deltas)) "hi")))))
+
+(ert-deftest crush-test/openai-sse-keeps-blank-lines-after-content-started ()
+  "Newline-only content after real content has started is preserved.
+Only the *leading* blank lines of an assistant turn are stripped."
+  (let ((crush-openai-strip-leading-blank-lines t)
+        (state (crush-test-openai--sse-state)))
+    (let* ((result
+            (crush-openai-sse-feed
+             state
+             "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\\n\\n\"}}]}\n\n"))
+           (deltas (car result)))
+      (should (= (length deltas) 2))
+      (should (string= (nth 1 (nth 0 deltas)) "hi"))
+      (should (string= (nth 1 (nth 1 deltas)) "\n\n")))))
+
 (ert-deftest crush-test/openai-sse-parser-done ()
   "[DONE] marks the stream finished."
   (let* ((state (crush-test-openai--sse-state))

@@ -117,6 +117,17 @@ Matches the Crush CLI's `head -20' cap."
   :type 'integer
   :group 'crush)
 
+(defcustom crush-openai-strip-leading-blank-lines t
+  "Strip leading blank lines from streamed assistant content.
+Models may begin an answer with a run of newlines (for example, a blank
+`content` delta before a `tool_calls` round) that duplicates the
+separator crush already inserts between regions.  When non-nil, such
+newline-only `content` deltas are discarded until the first real answer
+text arrives.  Set this to nil to preserve them verbatim if a provider
+ever uses leading blank lines meaningfully."
+  :type 'boolean
+  :group 'crush)
+
 (declare-function crush--debug-log "crush.el" (category message))
 
 ;;; System prompt construction: <env> block with project context.
@@ -521,7 +532,13 @@ Includes `exec_command', `write_stdin', and `web_search' (when
 
 (defun crush-openai-sse-new-state ()
   "Return a fresh SSE parser state plist."
-  (list :pending "" :done nil :error nil :tool-calls nil))
+  (list :pending "" :done nil :error nil :tool-calls nil :content-started nil))
+
+(defun crush--openai-blank-content-p (text)
+  "Return non-nil when TEXT is a newline-only, non-empty content string."
+  (and (stringp text)
+       (> (length text) 0)
+       (string-match-p "\\`[\n\r]+\\'" text)))
 
 (defun crush-openai-sse-feed (state chunk &optional &rest args)
   "Feed CHUNK into SSE parser STATE and return (DELTAS . NEW-STATE).
@@ -536,6 +553,7 @@ of each COMPLETE `data:' event (before it is dispatched), including
         (done (plist-get state :done))
         (error (plist-get state :error))
         (on-event (plist-get args :on-event))
+        (content-started (plist-get state :content-started))
         (deltas nil))
     ;; Normalize CRLF, then split into events.  An event is one or more
     ;; lines followed by a blank line (\"\\n\\n\").  A trailing fragment
@@ -573,13 +591,24 @@ of each COMPLETE `data:' event (before it is dispatched), including
                         (progn
                           (setq done t)
                           (setq error (crush--openai-alist-get "error" obj)))
-                      (setq deltas (nconc deltas
-                                          (crush--openai-sse-extract-deltas obj))))
-                    (when obj
-                      (crush--openai-sse-merge-tool-calls state obj))))))))))
+                      (dolist (delta (crush--openai-sse-extract-deltas obj))
+                        (if (and (eq (nth 0 delta) 'content)
+                                 (crush--openai-blank-content-p (nth 1 delta)))
+                            (unless (and crush-openai-strip-leading-blank-lines
+                                         (not content-started))
+                              (setq deltas (nconc deltas (list delta))))
+                          ;; Non-blank content (or reasoning/tool_calls)
+                          ;; marks the start of the real answer; from
+                          ;; here on blank content is legitimate.
+                          (when (eq (nth 0 delta) 'content)
+                            (setq content-started t))
+                          (setq deltas (nconc deltas (list delta)))))
+                      (when obj
+                        (crush--openai-sse-merge-tool-calls state obj)))))))))))
       (cons deltas
             (list :pending pending :done done :error error
-                  :tool-calls (plist-get state :tool-calls))))))
+                  :tool-calls (plist-get state :tool-calls)
+                  :content-started content-started)))))
 
 (defun crush--openai-alist-get (key alist)
   "Return the value for KEY in ALIST, handling symbol or string keys."
