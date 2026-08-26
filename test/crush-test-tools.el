@@ -69,6 +69,11 @@
             (crush-openai-parse-tool-args args-json)))
     call))
 
+(defun crush-test--ran-fence-lang (&optional shell)
+  "Return the expected `ran:' fence language for SHELL (default `shell-file-name')."
+  (let ((shell-path (or shell shell-file-name)))
+    (format "```%s" (crush--shell-language shell-path))))
+
 ;;; 1. Tool registry and dispatch
 
 (ert-deftest crush-test/tool-registry-has-exec-command ()
@@ -326,7 +331,8 @@ output is a fenced code block tagged `text`."
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p "\\*\\*🔧 exec_command\\*\\*" content))
-            (should (string-match-p "ran:\n\n```text\nls\n```" content))
+            (should (string-match-p (concat "ran:\n\n" (crush-test--ran-fence-lang)
+                                            "\nls\n```") content))
             (should (string-match-p "```text\n" content))
             (should (string-match-p "```\n$" content))))
       (crush-test--cleanup))))
@@ -404,7 +410,7 @@ ending in a blank line."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "ran:\n\n```text\nls\n```" content))
+            (should (string-match-p "ran:\n\n```zsh\nls\n```" content))
             (should (string-match-p "in: /tmp\n" content))
             (should (string-match-p "yield 7.5s" content))
             (should (string-match-p "shell /bin/zsh" content))
@@ -425,7 +431,8 @@ login no."
                  :exit 0)
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "ran:\n\n```text\nls\n```" content))
+            (should (string-match-p (concat "ran:\n\n" (crush-test--ran-fence-lang)
+                                            "\nls\n```") content))
             (should (string-match-p (concat "in: "
                                             (regexp-quote
                                              (file-name-as-directory
@@ -436,6 +443,56 @@ login no."
             (should (string-match-p (concat "shell " (regexp-quote shell-file-name))
                                     content))
             (should (string-match-p "login no" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-cmd-fence-uses-shell-language ()
+  "The exec_command `ran:' fence uses the shell-derived language.
+An explicit `shell' parameter (zsh) must make the cmd fence ````zsh`,
+not the output ````text` default."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\",\"shell\":\"/bin/zsh\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "ran:\n\n```zsh\nls\n```" content))
+            ;; Output stays a plain text block.
+            (should (string-match-p "```text\nout\n```" content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-cmd-fence-powershell ()
+  "A powershell exec_command renders the cmd fence as `powershell'."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"Get-ChildItem\",\"shell\":\"pwsh\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "ran:\n\n```powershell\nGet-ChildItem\n```"
+                                    content))))
+      (crush-test--cleanup))))
+
+(ert-deftest crush-test/tool-block-cmd-fence-unknown-shell-is-shell ()
+  "An unknown POSIX-style shell renders the cmd fence language as `shell'."
+  (let ((default-directory crush-test--root))
+    (unwind-protect
+        (with-current-buffer (crush-test--fresh-buffer)
+          (crush--tool-block-insert
+           (list :name "exec_command" :id "call_1"
+                 :args-json "{\"cmd\":\"ls\",\"shell\":\"/bin/fish\"}"
+                 :result "out"
+                 :exit 0)
+           crush--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "ran:\n\n```shell\nls\n```" content))))
       (crush-test--cleanup))))
 
 (ert-deftest crush-test/tool-block-escapes-backticks-in-cmd ()
@@ -454,7 +511,8 @@ command text are literal text inside the fence, never inline code."
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             ;; The cmd is always fenced; backticks are literal text
             ;; inside the fence.
-            (should (string-match-p "ran:\n\n```text\necho `pwd`\n```"
+            (should (string-match-p (concat "ran:\n\n" (crush-test--ran-fence-lang)
+                                            "\necho `pwd`\n```")
                                     content))))
       (crush-test--cleanup))))
 
@@ -473,7 +531,10 @@ backtick run in the command text, even when the cmd is a single line."
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             ;; The arg fence is 4 backticks (one more than the 3-run).
-            (should (string-match-p "ran:\n\n````text\n" content))
+            (should (string-match-p (concat "ran:\n\n````"
+                                            (crush--shell-language shell-file-name)
+                                            "\n")
+                                    content))
             (should (string-match-p "````\n" content))))
       (crush-test--cleanup))))
 
@@ -549,7 +610,8 @@ so the header stays valid markdown."
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             (should (string-match-p
-                     "ran:\n\n```text\nfor i in 1 2 3; do\necho $i\ndone\n```"
+                     (concat "ran:\n\n" (crush-test--ran-fence-lang)
+                             "\nfor i in 1 2 3; do\necho $i\ndone\n```")
                      content))
             ;; The header line must not contain the cmd inline.
             (should-not (string-match-p "ran `for" content))))
@@ -570,7 +632,10 @@ backtick run in the argument value."
            crush--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
             ;; The arg fence is 4 backticks (one more than the 3-run).
-            (should (string-match-p "ran:\n\n````text\n" content))
+            (should (string-match-p (concat "ran:\n\n````"
+                                            (crush--shell-language shell-file-name)
+                                            "\n")
+                                    content))
             (should (string-match-p "````\n" content))))
       (crush-test--cleanup))))
 

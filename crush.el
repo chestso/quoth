@@ -251,6 +251,7 @@ and `crush-interrupt' dispatch through it.  Buffer-local.")
 (declare-function crush-provider--tool-results "crush-provider" (provider tool-calls))
 (declare-function crush-process--cleanup-buffer "crush-process" (owner))
 (declare-function crush-openai-parse-tool-args "crush-openai" (args-json))
+(declare-function crush-process--shell-type "crush-process" (shell-path))
 (declare-function crush-hyper--fetch-models "crush-hyper-provider" (base-url &optional token))
 (declare-function crush-hyper--model-choices "crush-hyper-provider" (catalog))
 (declare-function crush-hyper-provider-p "crush-hyper-provider" (object))
@@ -1727,6 +1728,21 @@ of 3 (the standard markdown fenced-code-block delimiter)."
 Always `text' so tool output renders as a plain code block regardless
 of what the raw result contains.")
 
+(defun crush--shell-language (shell-path)
+  "Return the markdown fence language for SHELL-PATH.
+SHELL-PATH is a shell binary path or name (nil means
+`shell-file-name').  The language is derived from the shell type so the
+`exec_command' `ran:' fence highlights correctly: `bash', `zsh', `sh',
+`cmd', `powershell', or `shell' for an unknown POSIX-style shell."
+  (let ((shell-path (or shell-path shell-file-name)))
+    (pcase (crush-process--shell-type shell-path)
+      ('bash "bash")
+      ('zsh "zsh")
+      ('sh "sh")
+      ('cmd "cmd")
+      ('powershell "powershell")
+      ('sh-like "shell"))))
+
 ;;; Tool-block display decoration
 
 (defconst crush--tool-icons
@@ -1753,16 +1769,19 @@ through unchanged."
                      (number-to-string (/ ms 1000.0)))))
      (t (format "%dms" ms)))))
 
-(defun crush--tool-fenced-block (text)
+(defun crush--tool-fenced-block (text &optional lang)
   "Return TEXT as a markdown fenced code block string.
 The fence length is chosen by `crush--fence-str' so nested backtick
 runs never break the block.  TEXT is used verbatim; a trailing newline
-is added when missing so the closing fence sits on its own line.  The
-returned string does not end in a newline: callers own the blank-line
-separator, so joined sections keep exactly one blank line."
+is added when missing so the closing fence sits on its own line.  LANG
+is the language identifier for the opening fence; it defaults to
+`crush--fence-lang'.  The returned string does not end in a newline:
+callers own the blank-line separator, so joined sections keep exactly
+one blank line."
   (let* ((fence (crush--fence-str text))
+         (lang (or lang crush--fence-lang))
          (body (if (string-suffix-p "\n" text) text (concat text "\n"))))
-    (concat fence crush--fence-lang "\n" body fence)))
+    (concat fence lang "\n" body fence)))
 
 (defun crush--tool-login-requested-p (args)
   "Return non-nil when ARGS requests a login shell.
@@ -1788,7 +1807,8 @@ what the tool actually ran."
     (cond
      ((string= tool "exec_command")
       (when (stringp (plist-get args :cmd))
-        (push (list :label "ran" :value (plist-get args :cmd) :fence t)
+        (push (list :label "ran" :value (plist-get args :cmd) :fence t
+                    :lang (crush--shell-language (plist-get args :shell)))
               blocks))
       (push (list :label "in"
                   :value (or (plist-get args :workdir) default-directory))
@@ -1854,10 +1874,11 @@ nil when there are no argument blocks."
        (lambda (block)
          (let ((label (plist-get block :label))
                (value (plist-get block :value))
-               (fence-p (plist-get block :fence)))
+               (fence-p (plist-get block :fence))
+               (lang (plist-get block :lang)))
            (if (or fence-p (string-match-p "\n" value))
                (format "%s:\n\n%s" label
-                       (crush--tool-fenced-block value))
+                       (crush--tool-fenced-block value lang))
              (format "%s: %s" label value))))
        blocks
        "\n\n"))))
