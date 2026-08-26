@@ -333,8 +333,6 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
 
 (defvar crush-chat-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'crush-send-input)
-    (define-key map (kbd "C-j") #'newline)
     (define-key map (kbd "TAB") #'crush--reasoning-tab)
     (define-key map (kbd "C-c c") crush-chat-command-map)
     (define-key map (kbd "M-p") #'crush--input-previous)
