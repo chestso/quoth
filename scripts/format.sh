@@ -1,3 +1,9 @@
+#!/bin/sh
+# Format all source files: Elisp via Emacs indent-region, Markdown via
+# prettier, Shell via shfmt, Python via black.
+set -e
+cd "$(dirname "$0")/.."
+
 echo "=== Formatting Elisp ==="
 # `indent-region' re-indents Emacs Lisp.  It runs with tabs disabled so
 # indentation stays spaces (the repo style).  One file is excluded: its

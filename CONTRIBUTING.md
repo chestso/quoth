@@ -43,12 +43,12 @@ tests are skipped without it.
 After making changes:
 
 ```sh
-sh test/run-tests.sh   # must pass: byte-compile (no new warnings) + ERT suite
-sh format.sh           # format Elisp, Markdown, Shell, Python
+make check     # version gate + tests (byte-compile + ERT)
+make format    # format Elisp, Markdown, Shell, Python
 ```
 
 The test runner treats byte-compiler warnings as errors-in-waiting:
-do not introduce new ones. `format.sh` must produce no further
+do not introduce new ones. `make format` must produce no further
 changes before you push.
 
 ### Test-driven changes
@@ -80,7 +80,7 @@ changes before you push.
 - Base your work on `master`.
 - One logical change per PR; small PRs review faster.
 - Update tests and (if user-visible) README.md / TODO.md.
-- Ensure `sh test/run-tests.sh` and `sh format.sh` are clean.
+- Ensure `make check` and `make format` are clean.
 - Describe what changed and why in the PR body.
 
 ## Scope & Roadmap

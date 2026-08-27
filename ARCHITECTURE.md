@@ -343,7 +343,7 @@ Text properties can be accessed directly:
 ### Running the tests
 
 ```sh
-sh test/run-tests.sh      # byte-compile all sources + run the ERT suite
+make check               # version gate + byte-compile all sources + run the ERT suite
 emacs --batch -L . -L test \
   --eval "(ert-run-tests-batch-and-exit \"quoth-test/region-label\")"   # run a subset
 ```
@@ -360,7 +360,7 @@ Run a single topic file with its own harness helpers; test files load
 ### Formatting
 
 ```sh
-sh format.sh   # Elisp via Emacs indent-region, Markdown via prettier,
+make format    # Elisp via Emacs indent-region, Markdown via prettier,
                # Shell via shfmt, Python (test server) via black
 ```
 

@@ -49,7 +49,7 @@ Quoth talks to providers through a provider abstraction (`quoth-provider-*` gene
 - [x] Context blocks inserted before prompt as attachments
 - [x] Context sent as literal markdown inside the LLM message with an explanatory preamble
 - [x] Shared buffer init helper (`quoth--init-buffer`)
-- [x] `format.sh` for elisp, markdown, and shell formatting
+- [x] Formatting pipeline (`make format`, scripts under `scripts/`)
 - [x] Model selection via `quoth-model` defcustom
 - [x] Manual session selection via `quoth--session`
 - [x] Tool execution policy (`quoth-tool-policy`, `yolo` in v1)
