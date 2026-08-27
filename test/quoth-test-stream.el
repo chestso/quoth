@@ -1,8 +1,8 @@
-;;; crush-test-stream.el --- Stream protocol tests for crush  -*- lexical-binding: t; -*-
+;;; quoth-test-stream.el --- Stream protocol tests for quoth  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
@@ -41,7 +41,7 @@
 ;;; `require'; fall back to loading each dep from this file's directory
 ;;; or its parent (the package root) so flycheck and package loads work.
 (eval-and-compile
-  (dolist (dep '("crush"))
+  (dolist (dep '("quoth"))
     (unless (require (intern dep) nil t)
       (let* ((base (file-name-directory
                     (or buffer-file-name load-file-name default-directory)))
@@ -54,117 +54,117 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
-(declare-function crush-test--fresh-buffer "crush-test")
-(declare-function crush-test--cleanup "crush-test")
-(declare-function crush-test--buffer-name "crush-test")
+(declare-function quoth-test--fresh-buffer "quoth-test")
+(declare-function quoth-test--cleanup "quoth-test")
+(declare-function quoth-test--buffer-name "quoth-test")
 
-(defun crush-test--send-capturing-completion ()
-  "Send a prompt in a fresh buffer with `crush-provider-send-prompt' mocked.
+(defun quoth-test--send-capturing-completion ()
+  "Send a prompt in a fresh buffer with `quoth-provider-send-prompt' mocked.
 Returns the completion action the facade injected."
   (let ((captured-completion nil))
-    (cl-letf (((symbol-function 'crush-provider-send-prompt)
+    (cl-letf (((symbol-function 'quoth-provider-send-prompt)
                (lambda (_provider _prompt &rest args)
                  (setq captured-completion (plist-get args :completion)))))
-      (with-current-buffer (crush-test--fresh-buffer)
+      (with-current-buffer (quoth-test--fresh-buffer)
         (goto-char (point-max))
         (insert "test")
-        (call-interactively #'crush-send-input)))
+        (call-interactively #'quoth-send-input)))
     captured-completion))
 
-(ert-deftest crush-test/stream-progress-idle-before-send ()
+(ert-deftest quoth-test/stream-progress-idle-before-send ()
   "Stream state is idle before any prompt is sent, with one application."
   (unwind-protect
-      (with-current-buffer (crush-test--fresh-buffer)
-        (let ((state (crush-facade--stream-progress)))
+      (with-current-buffer (quoth-test--fresh-buffer)
+        (let ((state (quoth-facade--stream-progress)))
           (should (eq (plist-get state :status) 'idle))
           (should (= (plist-get state :applications) 1))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/stream-progress-active-after-send ()
+(ert-deftest quoth-test/stream-progress-active-after-send ()
   "Sending a prompt marks the stream active with two applications."
   (unwind-protect
-      (let ((completion (crush-test--send-capturing-completion)))
+      (let ((completion (quoth-test--send-capturing-completion)))
         (should (functionp completion))
-        (let ((buf (crush-test--buffer-name)))
+        (let ((buf (quoth-test--buffer-name)))
           (with-current-buffer buf
-            (let ((state (crush-facade--stream-progress)))
+            (let ((state (quoth-facade--stream-progress)))
               (should (eq (plist-get state :status) 'active))
               (should (= (plist-get state :applications) 2))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/stream-progress-done-after-finalize ()
+(ert-deftest quoth-test/stream-progress-done-after-finalize ()
   "The completion action marks the stream done with one application."
   (unwind-protect
-      (let ((completion (crush-test--send-capturing-completion)))
-        (let ((buf (crush-test--buffer-name)))
+      (let ((completion (quoth-test--send-capturing-completion)))
+        (let ((buf (quoth-test--buffer-name)))
           (with-current-buffer buf
             (funcall completion)
-            (let ((state (crush-facade--stream-progress)))
+            (let ((state (quoth-facade--stream-progress)))
               (should (eq (plist-get state :status) 'done))
               (should (= (plist-get state :applications) 1))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/stream-record-error-renders-clickable-pane ()
+(ert-deftest quoth-test/stream-record-error-renders-clickable-pane ()
   "Recording an error marks the stream errored and renders a clickable pane."
   (unwind-protect
-      (with-current-buffer (crush-test--fresh-buffer)
-        (crush-facade--record-error "Boom")
-        (let ((state (crush-facade--stream-progress)))
+      (with-current-buffer (quoth-test--fresh-buffer)
+        (quoth-facade--record-error "Boom")
+        (let ((state (quoth-facade--stream-progress)))
           (should (eq (plist-get state :status) 'error))
           (should (string= (plist-get state :error) "Boom")))
         (let ((ov (cl-find-if
-                   (lambda (o) (overlay-get o 'crush-error-action))
+                   (lambda (o) (overlay-get o 'quoth-error-action))
                    (overlays-in (point-min) (point-max)))))
           (should (overlayp ov))
           (should (string-match-p
                    "boom"
                    (buffer-substring-no-properties
                     (overlay-start ov) (overlay-end ov))))
-          (should (eq (overlay-get ov 'crush-overlay) t))
+          (should (eq (overlay-get ov 'quoth-overlay) t))
           (should (keymapp (overlay-get ov 'keymap)))
           ;; The pane is read-only like the rest of the frozen history.
           (should (get-text-property (overlay-start ov) 'read-only))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/clear-buffer-removes-error-pane ()
-  "Crush-clear-buffer should remove the error pane overlay."
+(ert-deftest quoth-test/clear-buffer-removes-error-pane ()
+  "Quoth-clear-buffer should remove the error pane overlay."
   (unwind-protect
-      (with-current-buffer (crush-test--fresh-buffer)
-        (crush-facade--record-error "Boom")
-        (should (cl-some (lambda (o) (overlay-get o 'crush-error-action))
+      (with-current-buffer (quoth-test--fresh-buffer)
+        (quoth-facade--record-error "Boom")
+        (should (cl-some (lambda (o) (overlay-get o 'quoth-error-action))
                          (overlays-in (point-min) (point-max))))
-        (crush-clear-buffer)
-        (should-not (cl-some (lambda (o) (overlay-get o 'crush-error-action))
+        (quoth-clear-buffer)
+        (should-not (cl-some (lambda (o) (overlay-get o 'quoth-error-action))
                              (overlays-in (point-min) (point-max)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; Physics-free facade harness
 
-;;; A fake process that never actually runs a subprocess: `crush-facade--send'
+;;; A fake process that never actually runs a subprocess: `quoth-facade--send'
 ;;; calls the real provider transport against a dummy pipe process, so all the
 ;;; buffer plumbing (process mark, response-start marker, stream state) runs
 ;;; without spawning anything.
 
-(defun crush-test--fake-pipe-proc ()
+(defun quoth-test--fake-pipe-proc ()
   "Return a disconnected pipe process usable as a fake transport process.
 Uses inert filter/sentinel so ending the response never triggers
 transport callbacks."
-  (let ((proc (make-pipe-process :name "crush-test-facade-fake"
+  (let ((proc (make-pipe-process :name "quoth-test-facade-fake"
                                  :noquery t
                                  :coding 'binary
                                  :filter #'ignore
                                  :sentinel #'ignore)))
     proc))
 
-(defun crush-test--with-facade (thunk)
+(defun quoth-test--with-facade (thunk)
   "Run THUNK with the provider transport mocked to a fake process.
-THUNK receives (PROC COMPLETION) in the fresh crush buffer, where PROC
+THUNK receives (PROC COMPLETION) in the fresh quoth buffer, where PROC
 is the fake transport process and COMPLETION the injected continuation.
 Mocks `make-process' so the hyper provider's curl transport creates the
 fake instead of spawning curl."
-  (let ((fake (crush-test--fake-pipe-proc)))
+  (let ((fake (quoth-test--fake-pipe-proc)))
     (unwind-protect
-        (with-current-buffer (crush-test--fresh-buffer)
+        (with-current-buffer (quoth-test--fresh-buffer)
           (let ((completion nil))
             ;; Give the fake process a live buffer so the process mark
             ;; plumbing works.
@@ -173,54 +173,54 @@ fake instead of spawning curl."
                        (lambda (&rest _args) fake)))
               (goto-char (point-max))
               (insert "test")
-              (call-interactively #'crush-send-input)
+              (call-interactively #'quoth-send-input)
               ;; Capture the injected completion from the provider slot
               ;; (the facade stores it there on send).
-              (setq completion (crush-provider-completion-action
-                                crush-active-provider))
+              (setq completion (quoth-provider-completion-action
+                                quoth-active-provider))
               (funcall thunk fake completion))))
       (when (process-live-p fake)
         (delete-process fake))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
-(ert-deftest crush-test/facade-harness-active-then-complete ()
+(ert-deftest quoth-test/facade-harness-active-then-complete ()
   "The facade harness should expose a live process that completes.
 After send, the session is live (the fake process); running the
 injected completion finalizes the response and the stream transitions
 to done."
   (unwind-protect
-      (crush-test--with-facade
+      (quoth-test--with-facade
        (lambda (_fake completion)
          ;; The completion is the facade's injected continuation.
          (should (functionp completion))
          ;; Complete the stream through the injected continuation.
          (funcall completion)
-         (let ((state (crush-facade--stream-progress)))
+         (let ((state (quoth-facade--stream-progress)))
            (should (eq (plist-get state :status) 'done))
            (should (= (plist-get state :applications) 1)))
          ;; A fresh prompt was inserted.
          (goto-char (point-max))
          (should (search-backward "---" nil t))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-harness-moves-process-mark ()
+(ert-deftest quoth-test/facade-harness-moves-process-mark ()
   "Test that the facade sets the process mark at point-max after send.
 Streamed deltas append at point-max (not via the mark)."
   (unwind-protect
-      (crush-test--with-facade
+      (quoth-test--with-facade
        (lambda (fake _completion)
          (should (= (marker-position (process-mark fake)) (point-max)))
          ;; Deltas streamed through the facade land at point-max.
-         (crush-facade--append-delta "chunk" 'content)
+         (quoth-facade--append-delta "chunk" 'content)
          (goto-char (point-max))
          (should (search-backward "chunk" nil t))
          ;; The facade appends at point-max; the process mark stays at
          ;; the pre-delta send position (it is no longer the append
          ;; cursor).
          (should (< (marker-position (process-mark fake)) (point-max)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(defun crush-test--stream-source (library)
+(defun quoth-test--stream-source (library)
   "Return the uncompiled source of LIBRARY (strip any .elc)."
   (let ((lib (locate-library library)))
     (when (and lib (string-suffix-p ".elc" lib))
@@ -230,19 +230,19 @@ Streamed deltas append at point-max (not via the mark)."
         (insert-file-contents lib)
         (buffer-string)))))
 
-(ert-deftest crush-test/stream-file-provides-protocol ()
+(ert-deftest quoth-test/stream-file-provides-protocol ()
   "The stream protocol lives in its own file, not the core.
-State, progress, and the error pane live in `crush-stream.el'; the
+State, progress, and the error pane live in `quoth-stream.el'; the
 facade delegates to a dedicated stream module."
-  (let ((stream-src (crush-test--stream-source "crush-stream")))
+  (let ((stream-src (quoth-test--stream-source "quoth-stream")))
     (should stream-src)
-    (should (string-match-p "defun crush-facade--stream-progress" stream-src))
-    (should (string-match-p "defun crush-facade--record-error" stream-src))
-    (should (string-match-p "crush--stream-state" stream-src)))
-  ;; crush.el should load it and no longer define the protocol itself.
-  (let ((core (crush-test--stream-source "crush")))
-    (should (string-match-p "\"crush-stream\"" core))
-    (should-not (string-match-p "defun crush-facade--stream-progress" core))))
+    (should (string-match-p "defun quoth-facade--stream-progress" stream-src))
+    (should (string-match-p "defun quoth-facade--record-error" stream-src))
+    (should (string-match-p "quoth--stream-state" stream-src)))
+  ;; quoth.el should load it and no longer define the protocol itself.
+  (let ((core (quoth-test--stream-source "quoth")))
+    (should (string-match-p "\"quoth-stream\"" core))
+    (should-not (string-match-p "defun quoth-facade--stream-progress" core))))
 
-(provide 'crush-test-stream)
-;;; crush-test-stream.el ends here
+(provide 'quoth-test-stream)
+;;; quoth-test-stream.el ends here

@@ -1,12 +1,12 @@
-;;; crush-stream.el --- Facade stream protocol for crush  -*- lexical-binding: t; -*-
+;;; quoth-stream.el --- Facade stream protocol for quoth  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
-;;; Prefix: crush-
+;;; Prefix: quoth-
 
 ;;; This file is not part of GNU Emacs.
 
@@ -30,10 +30,10 @@
 
 ;;; Commentary:
 
-;; The facade stream protocol for crush.el: buffer-local stream state
+;; The facade stream protocol for quoth.el: buffer-local stream state
 ;; (idle/active/done/error), the progress query that exposes the
 ;; application count, and the clickable read-only error pane rendered on
-;; stream failure.  The facade (crush.el) owns the state transitions;
+;; stream failure.  The facade (quoth.el) owns the state transitions;
 ;; this file just provides the protocol and the pane rendering, keeping
 ;; the core file free of stream bookkeeping.
 
@@ -45,7 +45,7 @@
 ;;; Prefer `require'; fall back to loading the sibling from this file's
 ;;; own directory so both flycheck and package-installed loads work.
 (eval-and-compile
-  (dolist (dep '("crush-provider"))
+  (dolist (dep '("quoth-provider"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -53,84 +53,84 @@
               (or buffer-file-name load-file-name default-directory)))
             nil t))))
 
-(defvar crush-active-provider nil
-  "The active crush provider for this buffer; defined in `crush.el'.
+(defvar quoth-active-provider nil
+  "The active quoth provider for this buffer; defined in `quoth.el'.
 Declared here so the compiler accepts the free reference in
-`crush-facade--stream-progress'.")
+`quoth-facade--stream-progress'.")
 
-(defvar crush--stream-state nil
+(defvar quoth--stream-state nil
   "Facade stream state plist: (:status STATUS :error ERR :count N).
 STATUS is `idle', `active', `done', or `error'.  ERR is the error
 message when STATUS is `error', and COUNT is the application count,
 meaning the runnable pipeline, inflight, and blocked applications.
 Buffer-local.")
 
-(defun crush-facade--stream-transition (status &optional count error)
+(defun quoth-facade--stream-transition (status &optional count error)
   "Move the facade stream state to STATUS with optional COUNT and ERROR.
-Records the transition in `crush--stream-state'."
-  (setq-local crush--stream-state
+Records the transition in `quoth--stream-state'."
+  (setq-local quoth--stream-state
               (list :status status
                     :error error
                     :count (or count
-                               (plist-get crush--stream-state :count)
+                               (plist-get quoth--stream-state :count)
                                1))))
 
-(defun crush-facade--stream-progress ()
+(defun quoth-facade--stream-progress ()
   "Return the facade stream state plist (status, error, applications).
-Reads `crush--stream-state', defaulting to a fresh `idle' state with one
+Reads `quoth--stream-state', defaulting to a fresh `idle' state with one
 application when the buffer never sent anything.  Exposes `:applications'
 as the runnable-pipeline/inflight/blocked count for UI consumers."
-  (let* ((state (or crush--stream-state
+  (let* ((state (or quoth--stream-state
                     (list :status 'idle :error nil :count 1)))
          (count (or (plist-get state :count)
-                    (when (and crush-active-provider
-                               (crush-provider-p crush-active-provider))
-                      (crush-provider-application-count crush-active-provider))
+                    (when (and quoth-active-provider
+                               (quoth-provider-p quoth-active-provider))
+                      (quoth-provider-application-count quoth-active-provider))
                     1)))
     (plist-put (copy-sequence state) :applications count)))
 
-(defun crush-facade--stream-clear ()
+(defun quoth-facade--stream-clear ()
   "Reset the facade stream state to a fresh `idle' state."
-  (setq-local crush--stream-state
+  (setq-local quoth--stream-state
               (list :status 'idle :error nil :count 1)))
 
-(defun crush-facade--record-error (message)
+(defun quoth-facade--record-error (message)
   "Record an error MESSAGE on the facade stream and render the error pane.
 Marks the stream `error' and inserts a clickable, read-only error pane
-overlay at point-max carrying `crush-error-action' (so
-`crush-clear-buffer' sweeps it)."
-  (crush-facade--stream-transition 'error nil message)
+overlay at point-max carrying `quoth-error-action' (so
+`quoth-clear-buffer' sweeps it)."
+  (quoth-facade--stream-transition 'error nil message)
   (let ((inhibit-read-only t)
         (pos (point-max)))
     (save-excursion
       (goto-char pos)
       (newline)
       (let ((start (point)))
-        (insert (format "[crush error: %s]" message))
+        (insert (format "[quoth error: %s]" message))
         (let ((ov (make-overlay start (point) (current-buffer) t nil)))
           (overlay-put ov 'face 'error)
-          (overlay-put ov 'crush-overlay t)
-          (overlay-put ov 'crush-error-action #'crush--dismiss-error-pane)
+          (overlay-put ov 'quoth-overlay t)
+          (overlay-put ov 'quoth-error-action #'quoth--dismiss-error-pane)
           (overlay-put ov 'keymap (let ((map (make-sparse-keymap)))
                                     (define-key map (kbd "RET")
-                                      #'crush--dismiss-error-pane)
+                                      #'quoth--dismiss-error-pane)
                                     map)))
         (add-text-properties start (point) '(read-only t))))))
 
-(defun crush--dismiss-error-pane ()
+(defun quoth--dismiss-error-pane ()
   "Dismiss the error pane overlay at point (or the most recent one)."
   (interactive)
   (let ((ov (or (cl-find-if
-                 (lambda (o) (overlay-get o 'crush-error-action))
+                 (lambda (o) (overlay-get o 'quoth-error-action))
                  (overlays-at (point)))
                 (cl-find-if
-                 (lambda (o) (overlay-get o 'crush-error-action))
+                 (lambda (o) (overlay-get o 'quoth-error-action))
                  (overlays-in (point-min) (point-max))))))
     (when (overlayp ov)
       (delete-region (overlay-start ov) (1+ (overlay-end ov)))
       (delete-overlay ov)
-      (crush-facade--stream-clear)
+      (quoth-facade--stream-clear)
       (message "Error dismissed"))))
 
-(provide 'crush-stream)
-;;; crush-stream.el ends here
+(provide 'quoth-stream)
+;;; quoth-stream.el ends here

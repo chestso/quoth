@@ -1,8 +1,8 @@
-;;; crush-test-buffer.el --- Chat buffer tests for crush  -*- lexical-binding: t; -*-
+;;; quoth-test-buffer.el --- Chat buffer tests for quoth  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
@@ -40,7 +40,7 @@
 ;;; `require'; fall back to loading each dep from this file's directory
 ;;; or its parent (the package root) so flycheck and package loads work.
 (eval-and-compile
-  (dolist (dep '("crush"))
+  (dolist (dep '("quoth"))
     (unless (require (intern dep) nil t)
       (let* ((base (file-name-directory
                     (or buffer-file-name load-file-name default-directory)))
@@ -53,169 +53,169 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
-(declare-function crush-test--fresh-buffer "crush-test")
-(declare-function crush-test--cleanup "crush-test")
-(declare-function crush-test--buffer-name "crush-test")
-(defvar crush-test--root)
+(declare-function quoth-test--fresh-buffer "quoth-test")
+(declare-function quoth-test--cleanup "quoth-test")
+(declare-function quoth-test--buffer-name "quoth-test")
+(defvar quoth-test--root)
 
 ;;; Facade simulation helper: lets tests drive the response cycle
 ;;; without any transport process, filter, or sentinel.
 
-(defun crush-test--live-pipe-proc ()
+(defun quoth-test--live-pipe-proc ()
   "Return a live pipe process usable as a fake transport process.
 The hyper provider's curl transport sends stdin (config + JSON body)
 then EOF; a pipe process stays alive to accept that without erroring
 \(the way a short-lived `true' process would not)."
-  (let ((proc (make-pipe-process :name "crush-test-live-fake"
+  (let ((proc (make-pipe-process :name "quoth-test-live-fake"
                                  :noquery t
                                  :coding 'binary
                                  :filter #'ignore
                                  :sentinel #'ignore)))
     proc))
 
-(defun crush-test--simulate-facade-response (content &optional reasoning)
+(defun quoth-test--simulate-facade-response (content &optional reasoning)
   "Append CONTENT as streamed deltas and finalize the response.
-Mimics the post-`crush-send-input' state: `crush--response-start'
+Mimics the post-`quoth-send-input' state: `quoth--response-start'
 must already be set (a marker at the response start).  Streams
 REASONING (when non-nil) then CONTENT through
-`crush-facade--append-delta' and closes the response with
-`crush-facade--finalize'.  With no reasoning, CONTENT is streamed as
-a single `content' delta.  Runs in the crush buffer."
+`quoth-facade--append-delta' and closes the response with
+`quoth-facade--finalize'.  With no reasoning, CONTENT is streamed as
+a single `content' delta.  Runs in the quoth buffer."
   (when (and reasoning (> (length reasoning) 0))
     (let ((i 0))
       (while (< i (length reasoning))
         (let ((next (or (and (string-match "\n" reasoning i)
                              (match-end 0))
                         (length reasoning))))
-          (crush-facade--append-delta
+          (quoth-facade--append-delta
            (substring reasoning i next) 'reasoning)
           (setq i next))))
-    (crush-facade--append-delta "" 'content))
-  (crush-facade--append-delta content 'content)
-  (crush-facade--finalize))
+    (quoth-facade--append-delta "" 'content))
+  (quoth-facade--append-delta content 'content)
+  (quoth-facade--finalize))
 
-;;; 1. No duplicate defvar crush--continue
+;;; 1. No duplicate defvar quoth--continue
 
-(ert-deftest crush-test/no-duplicate-continue-defvar ()
-  "Crush--continue should be defined and buffer-local, default nil."
+(ert-deftest quoth-test/no-duplicate-continue-defvar ()
+  "Quoth--continue should be defined and buffer-local, default nil."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (local-variable-p 'crush--continue))
-          (should (null crush--continue))))
-    (crush-test--cleanup)))
+          (should (local-variable-p 'quoth--continue))
+          (should (null quoth--continue))))
+    (quoth-test--cleanup)))
 
 ;;; 2. Working directory resolution
 
-(ert-deftest crush-test/default-directory-uses-custom-when-set ()
-  "When `crush-working-directory' is set, the crush buffer should use it."
-  (let ((crush-working-directory "/tmp"))
+(ert-deftest quoth-test/default-directory-uses-custom-when-set ()
+  "When `quoth-working-directory' is set, the quoth buffer should use it."
+  (let ((quoth-working-directory "/tmp"))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (should (string= (file-truename default-directory)
                              (file-truename "/tmp/")))))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
-(ert-deftest crush-test/default-directory-uses-default-when-no-project ()
+(ert-deftest quoth-test/default-directory-uses-default-when-no-project ()
   "When no project and no custom dir, uses `default-directory'."
-  (let ((crush-working-directory nil)
-        (default-directory crush-test--root)
-        (expected-dir (file-name-as-directory (file-truename crush-test--root))))
+  (let ((quoth-working-directory nil)
+        (default-directory quoth-test--root)
+        (expected-dir (file-name-as-directory (file-truename quoth-test--root))))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (should (string= (file-truename default-directory)
                              expected-dir))))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
 ;;; 3. Input separator line management
 
 ;;; A frozen markdown horizontal divider (`---`) replaces the old
-;;; `crush> ' prompt marker.  `crush--prompt-start-marker' sits at the
-;;; divider's start; `crush--input-start-marker' sits right after the
+;;; `quoth> ' prompt marker.  `quoth--prompt-start-marker' sits at the
+;;; divider's start; `quoth--input-start-marker' sits right after the
 ;;; divider's trailing blank line, where the editable input region begins.
-;;; The divider is tagged `crush-region-type' `separator' so the header
+;;; The divider is tagged `quoth-region-type' `separator' so the header
 ;;; label is honest: untagged input space reports nil, never `user'.
 
-(ert-deftest crush-test/input-separator-inserted-on-init ()
-  "A fresh buffer starts with the `---' divider, not `crush> '."
+(ert-deftest quoth-test/input-separator-inserted-on-init ()
+  "A fresh buffer starts with the `---' divider, not `quoth> '."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
           (should (looking-at "---\n\n"))
-          (should-not (save-excursion (search-forward "crush> " nil t)))))
-    (crush-test--cleanup)))
+          (should-not (save-excursion (search-forward "quoth> " nil t)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/input-separator-is-frozen ()
+(ert-deftest quoth-test/input-separator-is-frozen ()
   "The divider line is read-only previous content: typing into it errors."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
           (should (get-char-property (point) 'read-only))
           (should-error (insert-and-inherit "X") :type 'text-read-only)))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/input-separator-edge-is-editable ()
+(ert-deftest quoth-test/input-separator-edge-is-editable ()
   "The input area right after the divider's blank line stays editable."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "hello")))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/markers-flank-the-separator ()
+(ert-deftest quoth-test/markers-flank-the-separator ()
   "Test that markers flank the separator.
-`crush--prompt-start-marker' points at the divider, and
-`crush--input-start-marker' directly after its trailing blank line."
+`quoth--prompt-start-marker' points at the divider, and
+`quoth--input-start-marker' directly after its trailing blank line."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should crush--prompt-start-marker)
-          (should (markerp crush--prompt-start-marker))
-          (should (= (marker-position crush--prompt-start-marker) (point-min)))
-          (should crush--input-start-marker)
-          (should (markerp crush--input-start-marker))
-          (should (= (marker-position crush--input-start-marker) (point-max)))))
-    (crush-test--cleanup)))
+          (should quoth--prompt-start-marker)
+          (should (markerp quoth--prompt-start-marker))
+          (should (= (marker-position quoth--prompt-start-marker) (point-min)))
+          (should quoth--input-start-marker)
+          (should (markerp quoth--input-start-marker))
+          (should (= (marker-position quoth--input-start-marker) (point-max)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/separator-tagged-as-separator-region ()
-  "The divider carries `crush-region-type' `separator', not `user'."
+(ert-deftest quoth-test/separator-tagged-as-separator-region ()
+  "The divider carries `quoth-region-type' `separator', not `user'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (eq (get-text-property (point) 'crush-region-type) 'separator))
-          (should-not (eq (get-text-property (point) 'crush-region-type) 'user))))
-    (crush-test--cleanup)))
+          (should (eq (get-text-property (point) 'quoth-region-type) 'separator))
+          (should-not (eq (get-text-property (point) 'quoth-region-type) 'user))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/separator-region-label-shows-separator ()
+(ert-deftest quoth-test/separator-region-label-shows-separator ()
   "The header label at the divider reads `separator'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (string= (crush--region-label-at-point) "separator"))))
-    (crush-test--cleanup)))
+          (should (string= (quoth--region-label-at-point) "separator"))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/untagged-input-area-label-is-nil ()
+(ert-deftest quoth-test/untagged-input-area-label-is-nil ()
   "Untagged editable input space reports nil, never `user'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (should (null (crush--region-label-at-point)))))
-    (crush-test--cleanup)))
+          (should (null (quoth--region-label-at-point)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/separator-has-blank-lines ()
+(ert-deftest quoth-test/separator-has-blank-lines ()
   "Test that the divider is framed by blank lines.
 A blank line below it, and a blank line above it when it follows a response."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           ;; Fresh buffer: divider then a blank line, no blank above.
           (goto-char (point-min))
@@ -223,279 +223,279 @@ A blank line below it, and a blank line above it when it follows a response."
           ;; After a response cycle the divider is preceded by a blank line.
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response text")
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response text")
           (goto-char (point-max))
           (search-backward "---")
           (should (string-match-p "\n\n---\n\n" (buffer-substring-no-properties
                                                  (max (point-min) (- (point) 2))
                                                  (min (point-max) (+ (point) 5)))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/prompt-start-set-on-buffer-init ()
-  "After `crush' creates the buffer, crush--prompt-start-marker should be set."
+(ert-deftest quoth-test/prompt-start-set-on-buffer-init ()
+  "After `quoth' creates the buffer, quoth--prompt-start-marker should be set."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should crush--prompt-start-marker)
-          (should (markerp crush--prompt-start-marker))
-          (should (= (marker-position crush--prompt-start-marker) (point-min)))))
-    (crush-test--cleanup)))
+          (should quoth--prompt-start-marker)
+          (should (markerp quoth--prompt-start-marker))
+          (should (= (marker-position quoth--prompt-start-marker) (point-min)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-finalize-resets-prompt-start ()
-  "After the facade finalizes a response, crush--prompt-start-marker is reset."
+(ert-deftest quoth-test/facade-finalize-resets-prompt-start ()
+  "After the facade finalizes a response, quoth--prompt-start-marker is reset."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response text")
-          (should crush--prompt-start-marker)
-          (should (markerp crush--prompt-start-marker))
-          (should (= (marker-position crush--prompt-start-marker)
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response text")
+          (should quoth--prompt-start-marker)
+          (should (markerp quoth--prompt-start-marker))
+          (should (= (marker-position quoth--prompt-start-marker)
                      (- (point-max) (length "---\n\n"))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; 4. Input locking
 
-(ert-deftest crush-test/send-input-errors-when-process-running ()
-  "`crush-send-input' should signal an error when the provider is active.
+(ert-deftest quoth-test/send-input-errors-when-process-running ()
+  "`quoth-send-input' should signal an error when the provider is active.
 The guard reports provider activity through the protocol."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test prompt")
-          (setf (crush-provider-transport-process crush-active-provider)
+          (setf (quoth-provider-transport-process quoth-active-provider)
                 (make-process
-                 :name "crush-test-fake"
+                 :name "quoth-test-fake"
                  :buffer buf
                  :command '("sleep" "30")
                  :connection-type 'pipe
                  :noquery t))
-          (should-error (call-interactively #'crush-send-input))
-          (crush-provider-cleanup crush-active-provider)))
-    (crush-test--cleanup)))
+          (should-error (call-interactively #'quoth-send-input))
+          (quoth-provider-cleanup quoth-active-provider)))
+    (quoth-test--cleanup)))
 
 ;;; 5. Prompt echoing
 
-(ert-deftest crush-test/send-input-inserts-response-header ()
-  "`crush-send-input' should not error and should leave buffer in valid state."
+(ert-deftest quoth-test/send-input-inserts-response-header ()
+  "`quoth-send-input' should not error and should leave buffer in valid state."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "hello world")
-          (let ((fake-proc (crush-test--live-pipe-proc)))
+          (let ((fake-proc (quoth-test--live-pipe-proc)))
             (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function 'make-process)
                        (lambda (&rest _) fake-proc)))
-              (call-interactively #'crush-send-input))
+              (call-interactively #'quoth-send-input))
             (goto-char (point-min))
             (should (search-forward "hello world" nil t))
             (when (process-live-p fake-proc)
               (delete-process fake-proc)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/send-input-sends-multiline-prompt ()
-  "`crush-send-input' sends the entire input region, not just one line.
+(ert-deftest quoth-test/send-input-sends-multiline-prompt ()
+  "`quoth-send-input' sends the entire input region, not just one line.
 A multiline prompt (typed with naked RET) is sent in full."
   (unwind-protect
       (let ((sent-prompt nil))
-        (cl-letf (((symbol-function 'crush-provider-send-prompt)
+        (cl-letf (((symbol-function 'quoth-provider-send-prompt)
                    (lambda (_provider prompt &rest _args)
                      (setq sent-prompt prompt)
-                     (make-pipe-process :name "crush-test-fake" :noquery t))))
-          (with-current-buffer (crush-test--fresh-buffer)
+                     (make-pipe-process :name "quoth-test-fake" :noquery t))))
+          (with-current-buffer (quoth-test--fresh-buffer)
             (goto-char (point-max))
             (insert "line one\nline two\nline three")
-            (call-interactively #'crush-send-input)))
+            (call-interactively #'quoth-send-input)))
         (should (string= sent-prompt "line one\nline two\nline three")))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/send-input-moves-point-to-eof ()
-  "`crush-send-input' moves point to eof before inserting the separator.
+(ert-deftest quoth-test/send-input-moves-point-to-eof ()
+  "`quoth-send-input' moves point to eof before inserting the separator.
 Sending with point in the middle of the input must not split the
 prompt: the user separator lands at point-max."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "line one\nline two\nline three")
           (goto-char (point-min))
           (search-forward "line two")
-          (cl-letf (((symbol-function 'crush-provider-send-prompt)
+          (cl-letf (((symbol-function 'quoth-provider-send-prompt)
                      (lambda (_provider _prompt &rest _args)
-                       (make-pipe-process :name "crush-test-fake" :noquery t))))
-            (call-interactively #'crush-send-input))
+                       (make-pipe-process :name "quoth-test-fake" :noquery t))))
+            (call-interactively #'quoth-send-input))
           (should (= (point) (point-max)))
           (goto-char (point-min))
           (should (search-forward "line three" nil t))
           ;; The separator follows the last input line at eof.
           (should (search-forward "---" nil t))
           (should (<= (point) (point-max)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; 6. Stderr handling
 
-(ert-deftest crush-test/stderr-goes-to-separate-buffer ()
-  "Stderr output should go to a separate `*crush-errors*' buffer."
+(ert-deftest quoth-test/stderr-goes-to-separate-buffer ()
+  "Stderr output should go to a separate `*quoth-errors*' buffer."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test stderr")
           (let ((captured-stderr nil)
-                (fake-proc (crush-test--live-pipe-proc)))
+                (fake-proc (quoth-test--live-pipe-proc)))
             (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function 'make-process)
                        (lambda (&rest args)
                          (setq captured-stderr (plist-get args :stderr))
                          fake-proc)))
-              (call-interactively #'crush-send-input))
+              (call-interactively #'quoth-send-input))
             (should captured-stderr)
             (should (or (bufferp captured-stderr)
                         (stringp captured-stderr)))
             (when (process-live-p fake-proc)
               (delete-process fake-proc)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-;;; 7. crush-clear-buffer resets session
+;;; 7. quoth-clear-buffer resets session
 
-(ert-deftest crush-test/clear-buffer-resets-continue ()
-  "`crush-clear-buffer' should reset `crush--continue' to nil."
+(ert-deftest quoth-test/clear-buffer-resets-continue ()
+  "`quoth-clear-buffer' should reset `quoth--continue' to nil."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq-local crush--continue t)
-          (call-interactively #'crush-clear-buffer)
-          (should (null crush--continue))))
-    (crush-test--cleanup)))
+          (setq-local quoth--continue t)
+          (call-interactively #'quoth-clear-buffer)
+          (should (null quoth--continue))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/clear-buffer-cleans-provider-transport ()
-  "`crush-clear-buffer' should clean up the active provider's transport."
+(ert-deftest quoth-test/clear-buffer-cleans-provider-transport ()
+  "`quoth-clear-buffer' should clean up the active provider's transport."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (setf (crush-provider-transport-process crush-active-provider)
-                (make-pipe-process :name "crush-test-clear-transport"
+          (setf (quoth-provider-transport-process quoth-active-provider)
+                (make-pipe-process :name "quoth-test-clear-transport"
                                    :noquery t :coding 'binary
                                    :filter #'ignore :sentinel #'ignore))
-          (let ((proc (crush-provider-transport-process crush-active-provider)))
-            (call-interactively #'crush-clear-buffer)
+          (let ((proc (quoth-provider-transport-process quoth-active-provider)))
+            (call-interactively #'quoth-clear-buffer)
             (should-not (process-live-p proc))
-            (should-not (crush-provider-transport-process crush-active-provider)))))
-    (crush-test--cleanup)))
+            (should-not (quoth-provider-transport-process quoth-active-provider)))))
+    (quoth-test--cleanup)))
 
 ;;; 9. Session UUID state: init, rotation, distinctness
 
-(ert-deftest crush-test/session-uuid-init ()
-  "A fresh crush buffer gets a session UUID and its XXH3-64 hash."
+(ert-deftest quoth-test/session-uuid-init ()
+  "A fresh quoth buffer gets a session UUID and its XXH3-64 hash."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (stringp crush--session-uuid))
-          (should (> (length crush--session-uuid) 0))
-          (should (string= crush--session-id
-                           (crush-xxh3-hash64 crush--session-uuid)))
-          (should (string-match-p "\\`[0-9a-f]\\{16\\}\\'" crush--session-id))))
-    (crush-test--cleanup)))
+          (should (stringp quoth--session-uuid))
+          (should (> (length quoth--session-uuid) 0))
+          (should (string= quoth--session-id
+                           (quoth-xxh3-hash64 quoth--session-uuid)))
+          (should (string-match-p "\\`[0-9a-f]\\{16\\}\\'" quoth--session-id))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/session-uuid-distinct-across-buffers ()
-  "Two fresh crush buffers get distinct session UUIDs."
+(ert-deftest quoth-test/session-uuid-distinct-across-buffers ()
+  "Two fresh quoth buffers get distinct session UUIDs."
   (unwind-protect
-      (let* ((_name1 (crush-test--buffer-name))
-             (buf1 (crush-test--fresh-buffer))
-             (uuid1 (with-current-buffer buf1 crush--session-uuid)))
+      (let* ((_name1 (quoth-test--buffer-name))
+             (buf1 (quoth-test--fresh-buffer))
+             (uuid1 (with-current-buffer buf1 quoth--session-uuid)))
         ;; Force a second buffer by turning off buffer reuse (fresh-buffer
         ;; kills the existing one, so create a separately named buffer).
-        (let ((crush--root-buffer-alist nil)
-              (buf2 (get-buffer-create "*crush:sess2*")))
-          (crush--init-buffer buf2)
-          (let ((uuid2 (with-current-buffer buf2 crush--session-uuid)))
+        (let ((quoth--root-buffer-alist nil)
+              (buf2 (get-buffer-create "*quoth:sess2*")))
+          (quoth--init-buffer buf2)
+          (let ((uuid2 (with-current-buffer buf2 quoth--session-uuid)))
             (should-not (equal uuid1 uuid2)))
           (kill-buffer buf2)))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/session-uuid-rotates-on-clear ()
-  "`crush-clear-buffer' rotates the session UUID (fresh cache affinity)."
+(ert-deftest quoth-test/session-uuid-rotates-on-clear ()
+  "`quoth-clear-buffer' rotates the session UUID (fresh cache affinity)."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((old-uuid crush--session-uuid)
-                (old-id crush--session-id))
-            (crush-clear-buffer)
-            (should-not (equal crush--session-uuid old-uuid))
-            (should-not (equal crush--session-id old-id))
-            (should (string= crush--session-id
-                             (crush-xxh3-hash64 crush--session-uuid))))))
-    (crush-test--cleanup)))
+          (let ((old-uuid quoth--session-uuid)
+                (old-id quoth--session-id))
+            (quoth-clear-buffer)
+            (should-not (equal quoth--session-uuid old-uuid))
+            (should-not (equal quoth--session-id old-id))
+            (should (string= quoth--session-id
+                             (quoth-xxh3-hash64 quoth--session-uuid))))))
+    (quoth-test--cleanup)))
 
 ;;; 15. Stderr buffer creation
 
-(ert-deftest crush-test/stderr-buffer-is-created ()
-  "The `*crush-errors*' buffer should be created when sending input."
+(ert-deftest quoth-test/stderr-buffer-is-created ()
+  "The `*quoth-errors*' buffer should be created when sending input."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
-          (let ((fake-proc (crush-test--live-pipe-proc)))
+          (let ((fake-proc (quoth-test--live-pipe-proc)))
             (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function #'make-process)
                        (lambda (&rest _args) fake-proc)))
-              (call-interactively #'crush-send-input))
-            (should (get-buffer "*crush-errors*"))
+              (call-interactively #'quoth-send-input))
+            (should (get-buffer "*quoth-errors*"))
             (when (process-live-p fake-proc)
               (delete-process fake-proc)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; 16. Prompt ID generation
 
-(ert-deftest crush-test/prompt-id-is-set-on-buffer-init ()
-  "After buffer init, `crush--prompt-id' should be a non-nil string."
+(ert-deftest quoth-test/prompt-id-is-set-on-buffer-init ()
+  "After buffer init, `quoth--prompt-id' should be a non-nil string."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (stringp crush--prompt-id))
-          (should (> (length crush--prompt-id) 0))))
-    (crush-test--cleanup)))
+          (should (stringp quoth--prompt-id))
+          (should (> (length quoth--prompt-id) 0))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/prompt-id-regenerated-after-response ()
-  "After facade finalize, `crush--prompt-id' should be a new unique ID."
+(ert-deftest quoth-test/prompt-id-regenerated-after-response ()
+  "After facade finalize, `quoth--prompt-id' should be a new unique ID."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((old-id crush--prompt-id))
+          (let ((old-id quoth--prompt-id))
             (goto-char (point-max))
             (newline)
-            (setq-local crush--response-start (point-marker))
+            (setq-local quoth--response-start (point-marker))
             ;; Simulate stream completion via the facade.
-            (crush-test--simulate-facade-response "response text")
+            (quoth-test--simulate-facade-response "response text")
             ;; New ID should be different
-            (should (stringp crush--prompt-id))
-            (should (not (string= old-id crush--prompt-id))))))
-    (crush-test--cleanup)))
+            (should (stringp quoth--prompt-id))
+            (should (not (string= old-id quoth--prompt-id))))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/interrupt-regenerates-prompt-id ()
-  "After `crush-interrupt', the buffer gets a fresh pending prompt ID."
+(ert-deftest quoth-test/interrupt-regenerates-prompt-id ()
+  "After `quoth-interrupt', the buffer gets a fresh pending prompt ID."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((old-id crush--prompt-id))
+          (let ((old-id quoth--prompt-id))
             (goto-char (point-max))
             (newline)
-            (setq-local crush--response-start (point-marker))
-            (setf (crush-provider-transport-process crush-active-provider)
-                  (make-pipe-process :name "crush-test-interrupt-id"
+            (setq-local quoth--response-start (point-marker))
+            (setf (quoth-provider-transport-process quoth-active-provider)
+                  (make-pipe-process :name "quoth-test-interrupt-id"
                                      :noquery t :coding 'binary
                                      :filter #'ignore :sentinel #'ignore))
-            (cl-letf (((symbol-function 'crush-openai-abort) #'ignore))
-              (crush-interrupt))
-            (should (stringp crush--prompt-id))
-            (should (not (string= old-id crush--prompt-id))))))
-    (crush-test--cleanup)))
+            (cl-letf (((symbol-function 'quoth-openai-abort) #'ignore))
+              (quoth-interrupt))
+            (should (stringp quoth--prompt-id))
+            (should (not (string= old-id quoth--prompt-id))))))
+    (quoth-test--cleanup)))
 
 ;;; 18. Header line display
 
@@ -503,239 +503,239 @@ prompt: the user separator lands at point-max."
 
 ;;; 18b. Header line: model and region type at point
 
-(ert-deftest crush-test/region-label-prompts-and-placeholders ()
-  "`crush--region-label-at-point' maps every region type to a label.
+(ert-deftest quoth-test/region-label-prompts-and-placeholders ()
+  "`quoth--region-label-at-point' maps every region type to a label.
 The fresh buffer has an input divider at point-min tagged `separator',
 so point there resolves to `separator', not `user'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
-          (should (string= (crush--region-label-at-point) "separator"))))
-    (crush-test--cleanup)))
+          (should (string= (quoth--region-label-at-point) "separator"))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/user-input-tagged-as-user-region ()
-  "Text typed in the input area carries `crush-region-type' `user'."
+(ert-deftest quoth-test/user-input-tagged-as-user-region ()
+  "Text typed in the input area carries `quoth-region-type' `user'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "hello world")
-          (should (eq (get-text-property (- (point) 1) 'crush-region-type) 'user))))
-    (crush-test--cleanup)))
+          (should (eq (get-text-property (- (point) 1) 'quoth-region-type) 'user))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/region-label-in-input-without-prompt-id ()
+(ert-deftest quoth-test/region-label-in-input-without-prompt-id ()
   "Test that typed input carries the user region type.
 This is the case even though it starts at the input marker after the separator."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "hello world")
-          (should (eq (get-text-property (- (point) 1) 'crush-region-type) 'user))
+          (should (eq (get-text-property (- (point) 1) 'quoth-region-type) 'user))
           (goto-char (1- (point)))
-          (should (string= (crush--region-label-at-point) "user"))))
-    (crush-test--cleanup)))
+          (should (string= (quoth--region-label-at-point) "user"))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/region-label-user ()
+(ert-deftest quoth-test/region-label-user ()
   "User input (typed or attached) resolves to `user'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((inhibit-read-only t))
             (insert "attach-region-text"))
           (put-text-property (- (point) 18) (point)
-                             'crush-region-type 'user)
+                             'quoth-region-type 'user)
           (put-text-property (- (point) 18) (point)
-                             'crush-prompt-id crush--prompt-id)
+                             'quoth-prompt-id quoth--prompt-id)
           (goto-char (- (point) 9))
-          (should (string= (crush--region-label-at-point) "user"))))
-    (crush-test--cleanup)))
+          (should (string= (quoth--region-label-at-point) "user"))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/region-label-response ()
+(ert-deftest quoth-test/region-label-response ()
   "Response regions resolve to `response'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((start (point-max)))
             (let ((inhibit-read-only t)
                   (inhibit-modification-hooks t))
               (insert "response-text")
               (put-text-property start (point)
-                                 'crush-region-type 'response))
+                                 'quoth-region-type 'response))
             (goto-char (- (point) 5))
-            (should (string= (crush--region-label-at-point) "response")))))
-    (crush-test--cleanup)))
+            (should (string= (quoth--region-label-at-point) "response")))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/region-label-tool-output ()
+(ert-deftest quoth-test/region-label-tool-output ()
   "Test that the nested `tool-output' region resolves to its symbol name.
-It is not the prompt fallback, even though it carries `crush-prompt-id'."
+It is not the prompt fallback, even though it carries `quoth-prompt-id'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((start (point-max)))
             (let ((inhibit-read-only t)
                   (inhibit-modification-hooks t))
               (insert "raw-output-text")
               (put-text-property start (point)
-                                 'crush-region-type 'tool-output)
+                                 'quoth-region-type 'tool-output)
               (put-text-property start (point)
-                                 'crush-prompt-id crush--prompt-id))
+                                 'quoth-prompt-id quoth--prompt-id))
             (goto-char (- (point) 5))
-            (should (string= (crush--region-label-at-point) "tool-output")))))
-    (crush-test--cleanup)))
+            (should (string= (quoth--region-label-at-point) "tool-output")))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/region-label-falls-back-to-nil ()
+(ert-deftest quoth-test/region-label-falls-back-to-nil ()
   "Regions with no region type resolve to nil, not a guessed label."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (should (null (crush--region-label-at-point)))))
-    (crush-test--cleanup)))
+          (should (null (quoth--region-label-at-point)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/header-model-falls-back-to-hyper-default ()
+(ert-deftest quoth-test/header-model-falls-back-to-hyper-default ()
   "Test that the effective model falls back to the hyper default.
-This is `crush-openai-default-model' for hyper providers with a nil
+This is `quoth-openai-default-model' for hyper providers with a nil
 model slot."
-  (let ((crush-model nil))
+  (let ((quoth-model nil))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             ;; A fresh buffer is always a hyper provider; with a nil model
             ;; slot the effective model must be the hyper default.
-            (should (string= (crush--header-model) crush-openai-default-model))
+            (should (string= (quoth--header-model) quoth-openai-default-model))
             ;; A hyper provider with an explicit model uses it.
-            (setq-local crush-active-provider
-                        (crush-make-hyper-provider
+            (setq-local quoth-active-provider
+                        (quoth-make-hyper-provider
                          :buffer buf
                          :working-directory default-directory
-                         :base-url crush-hyper-base-url
-                         :token crush-hyper-token
+                         :base-url quoth-hyper-base-url
+                         :token quoth-hyper-token
                          :model "my-model"))
-            (should (string= (crush--header-model) "my-model"))))
-      (crush-test--cleanup))))
+            (should (string= (quoth--header-model) "my-model"))))
+      (quoth-test--cleanup))))
 
-(ert-deftest crush-test/header-model-uses-provider-slot ()
-  "`crush--header-model' reads the provider model slot set at init."
-  (let ((crush-model "claude-sonnet-4-20250514"))
+(ert-deftest quoth-test/header-model-uses-provider-slot ()
+  "`quoth--header-model' reads the provider model slot set at init."
+  (let ((quoth-model "claude-sonnet-4-20250514"))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (should (string= (crush--header-model) "claude-sonnet-4-20250514"))))
-      (crush-test--cleanup))))
+            (should (string= (quoth--header-model) "claude-sonnet-4-20250514"))))
+      (quoth-test--cleanup))))
 
-(ert-deftest crush-test/header-line-shows-model-and-region ()
+(ert-deftest quoth-test/header-line-shows-model-and-region ()
   "Test that the header line shows both the model and the region type.
 Both the current model and the region type at point appear."
-  (let ((crush-model "my-model"))
+  (let ((quoth-model "my-model"))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (goto-char (point-max))
             (insert "typed")
             (goto-char (1- (point)))
-            (crush--update-header-line)
+            (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
               (should (string-match-p "my-model" h))
               (should (string-match-p "region: user" h)))))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
-(ert-deftest crush-test/header-line-shows-dash-for-nil-region ()
+(ert-deftest quoth-test/header-line-shows-dash-for-nil-region ()
   "Untagged space renders `region: -' in the header line."
-  (let ((crush-model "my-model"))
+  (let ((quoth-model "my-model"))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (goto-char (point-max))
-            (crush--update-header-line)
+            (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
               (should (string-match-p "region: -" h)))))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
 ;;; 19. Input separator has prompt-id property
 
-(ert-deftest crush-test/prompt-marker-has-prompt-id-property ()
-  "The input separator text should have crush-prompt-id text property."
+(ert-deftest quoth-test/prompt-marker-has-prompt-id-property ()
+  "The input separator text should have quoth-prompt-id text property."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           ;; Find the separator text
           (goto-char (point-min))
           (should (search-forward "---" nil t))
-          (let ((prompt-id (get-text-property (- (point) 1) 'crush-prompt-id)))
+          (let ((prompt-id (get-text-property (- (point) 1) 'quoth-prompt-id)))
             (should prompt-id)
-            (should (string= prompt-id crush--prompt-id)))))
-    (crush-test--cleanup)))
+            (should (string= prompt-id quoth--prompt-id)))))
+    (quoth-test--cleanup)))
 
 ;;; 20. User input gets prompt-id property
 
-(ert-deftest crush-test/user-input-gets-prompt-id-property ()
-  "Text typed after the prompt should have crush-prompt-id property."
+(ert-deftest quoth-test/user-input-gets-prompt-id-property ()
+  "Text typed after the prompt should have quoth-prompt-id property."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "hello world")
           ;; Check that the inserted text has the property
-          (let ((prompt-id (get-text-property (- (point) 5) 'crush-prompt-id)))
+          (let ((prompt-id (get-text-property (- (point) 5) 'quoth-prompt-id)))
             (should prompt-id)
-            (should (string= prompt-id crush--prompt-id)))))
-    (crush-test--cleanup)))
+            (should (string= prompt-id quoth--prompt-id)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/response-has-response-to-property ()
-  "Response text should have crush-response-to property linking to prompt."
+(ert-deftest quoth-test/response-has-response-to-property ()
+  "Response text should have quoth-response-to property linking to prompt."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((prompt-id crush--prompt-id))
+          (let ((prompt-id quoth--prompt-id))
             ;; Simulate a response manually
             (goto-char (point-max))
             (let ((response-start (point)))
               (insert "response text\n")
               ;; Tag it manually like sentinel does
-              (put-text-property response-start (point) 'crush-response-to prompt-id)
-              (crush--insert-input-separator))
+              (put-text-property response-start (point) 'quoth-response-to prompt-id)
+              (quoth--insert-input-separator))
             ;; Check response text has property
             (goto-char (point-min))
             (should (search-forward "response text" nil t))
-            (let ((response-to (get-text-property (- (point) 5) 'crush-response-to)))
+            (let ((response-to (get-text-property (- (point) 5) 'quoth-response-to)))
               (should response-to)
               (should (string= response-to prompt-id))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; 23. History retrieval functions
 
-(ert-deftest crush-test/get-all-prompts ()
-  "`crush-get-all-prompts' should return all prompt IDs in buffer."
+(ert-deftest quoth-test/get-all-prompts ()
+  "`quoth-get-all-prompts' should return all prompt IDs in buffer."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((first-id crush--prompt-id))
+          (let ((first-id quoth--prompt-id))
             (goto-char (point-max))
             (insert "first prompt")
-            (let ((fake-proc (crush-test--live-pipe-proc)))
+            (let ((fake-proc (quoth-test--live-pipe-proc)))
               (set-process-buffer fake-proc (current-buffer))
               (cl-letf (((symbol-function #'make-process)
                          (lambda (&rest _) fake-proc)))
-                (crush-send-input))
+                (quoth-send-input))
               ;; Simulate stream completion: invoke the facade finalize
               ;; continuation directly (no process, filter, or sentinel).
-              (let ((completion (crush-provider-completion-action
-                                 crush-active-provider)))
+              (let ((completion (quoth-provider-completion-action
+                                 quoth-active-provider)))
                 (should (functionp completion))
                 (funcall completion))
               (when (process-live-p fake-proc)
                 (delete-process fake-proc)))
-            (let ((second-id crush--prompt-id))
+            (let ((second-id quoth--prompt-id))
               (goto-char (point-max))
               (insert "second prompt")
-              (let ((all-prompts (crush-get-all-prompts)))
+              (let ((all-prompts (quoth-get-all-prompts)))
                 (should (member first-id all-prompts))
                 (should (member second-id all-prompts)))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-;;; The previous body used `crush--process-sentinel' to complete the
+;;; The previous body used `quoth--process-sentinel' to complete the
 ;;; response; the facade's completion-action indirection replaces it.
 
 ;;; 30. Region type tagging: prompt (removed - comint handles via fields)
@@ -744,28 +744,28 @@ Both the current model and the region type at point appear."
 
 ;;; 32. Region type tagging: response
 
-(ert-deftest crush-test/response-region-tagged-as-response ()
-  "Response text should be tagged with crush-region-type 'response."
+(ert-deftest quoth-test/response-region-tagged-as-response ()
+  "Response text should be tagged with quoth-region-type 'response."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           ;; Simulate a response cycle via the facade (no process).
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response text")
-          ;; Check that response text has crush-region-type 'response
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response text")
+          ;; Check that response text has quoth-region-type 'response
           (goto-char (point-min))
           (should (search-forward "response text" nil t))
-          ;; Finalize must not create any crush overlays.
-          (let ((overlays (cl-remove-if-not (lambda (ov) (overlay-get ov 'crush-overlay))
+          ;; Finalize must not create any quoth overlays.
+          (let ((overlays (cl-remove-if-not (lambda (ov) (overlay-get ov 'quoth-overlay))
                                             (overlays-in (point-min) (point-max)))))
             (should-not overlays))
-          (let ((region-type (get-text-property (- (point) 5) 'crush-region-type)))
+          (let ((region-type (get-text-property (- (point) 5) 'quoth-region-type)))
             (should (eq region-type 'response)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; 34. Region type tagging: separator (removed - separators no longer inserted)
 
@@ -773,187 +773,187 @@ Both the current model and the region type at point appear."
 
 ;;; 36. Region type tagging: separator (removed - separators no longer inserted)
 
-;;; 40. Integration: crush-clear-buffer removes overlays
+;;; 40. Integration: quoth-clear-buffer removes overlays
 
-(ert-deftest crush-test/clear-buffer-removes-overlays ()
-  "Crush-clear-buffer should remove old crush-overlay tagged overlays."
+(ert-deftest quoth-test/clear-buffer-removes-overlays ()
+  "Quoth-clear-buffer should remove old quoth-overlay tagged overlays."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           ;; Create an extra overlay manually
           (let ((ov (make-overlay (point-min) (point-max))))
-            (overlay-put ov 'crush-overlay t)
+            (overlay-put ov 'quoth-overlay t)
             (overlay-put ov 'face 'highlight))
           ;; Call clear-buffer
-          (call-interactively #'crush-clear-buffer)
+          (call-interactively #'quoth-clear-buffer)
           ;; Should have no overlay with face 'highlight' (the manual one is gone)
           (should-not (cl-some (lambda (ov)
                                  (and (overlay-buffer ov)
                                       (eq (overlay-get ov 'face) 'highlight)))
                                (overlays-in (point-min) (point-max))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-finalize-tags-and-reprompts ()
+(ert-deftest quoth-test/facade-finalize-tags-and-reprompts ()
   "The facade continuation finalizes the response.
 It tags the response, inserts a fresh prompt, and regenerates the ID."
   (unwind-protect
-      (with-current-buffer (crush-test--fresh-buffer)
+      (with-current-buffer (quoth-test--fresh-buffer)
         (goto-char (point-max))
         (newline)
-        (setq-local crush--response-start (point-marker))
+        (setq-local quoth--response-start (point-marker))
         (insert "mock response")
-        (let ((old-id crush--prompt-id)
+        (let ((old-id quoth--prompt-id)
               (response-start (point-marker)))
-          ;; The facade continuation is exactly what crush-send-input
+          ;; The facade continuation is exactly what quoth-send-input
           ;; injects into the provider.
           (let ((buf (current-buffer)))
             (funcall (lambda ()
                        (when (buffer-live-p buf)
                          (with-current-buffer buf
-                           (crush-facade--finalize))))))
+                           (quoth-facade--finalize))))))
           ;; Fresh prompt inserted after the response, with a new ID.
           (goto-char (point-min))
           (search-forward "mock response")
           (should (eq (get-text-property (match-beginning 0)
-                                         'crush-region-type)
+                                         'quoth-region-type)
                       'response))
-          (should-not (string= crush--prompt-id old-id))
+          (should-not (string= quoth--prompt-id old-id))
           (goto-char (point-max))
           (search-backward "---")
           (should (< (marker-position response-start)
                      (point)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 
 ;;; 56. Region-type/field reconciliation
 
-(ert-deftest crush-test/response-region-type-still-set ()
-  "Response text should still have crush-region-type=response."
+(ert-deftest quoth-test/response-region-type-still-set ()
+  "Response text should still have quoth-region-type=response."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response text")
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response text")
           (goto-char (point-min))
           (should (search-forward "response text" nil t))
-          (should (eq (get-text-property (- (point) 5) 'crush-region-type) 'response))))
-    (crush-test--cleanup)))
+          (should (eq (get-text-property (- (point) 5) 'quoth-region-type) 'response))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/org-region-type-still-set ()
-  "Attachment blocks should have crush-region-type=user (appended input)."
-  (let ((default-directory crush-test--root))
+(ert-deftest quoth-test/org-region-type-still-set ()
+  "Attachment blocks should have quoth-region-type=user (appended input)."
+  (let ((default-directory quoth-test--root))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (with-temp-buffer
               (insert "selected code\n")
               (setq-local buffer-file-name "/test/file.el")
-              (crush-insert-selection (point-min) (point-max)))
+              (quoth-insert-selection (point-min) (point-max)))
             (goto-char (point-min))
             (should (search-forward "Attachment:" nil t))
-            (should (eq (get-text-property (match-beginning 0) 'crush-region-type) 'user))))
-      (crush-test--cleanup))))
+            (should (eq (get-text-property (match-beginning 0) 'quoth-region-type) 'user))))
+      (quoth-test--cleanup))))
 
-;;; 57. Debug logging - crush-debug-mode defcustom
+;;; 57. Debug logging - quoth-debug-mode defcustom
 
-(ert-deftest crush-test/debug-mode-defaults-to-t ()
-  "Crush-debug-mode should default to t."
-  (should (eq crush-debug-mode t)))
+(ert-deftest quoth-test/debug-mode-defaults-to-t ()
+  "Quoth-debug-mode should default to t."
+  (should (eq quoth-debug-mode t)))
 
-;;; 58. Debug logging - crush--debug-log creates buffer and writes
+;;; 58. Debug logging - quoth--debug-log creates buffer and writes
 
-(ert-deftest crush-test/debug-log-creates-buffer ()
-  "Crush--debug-log should create *crush-debug* buffer when enabled."
+(ert-deftest quoth-test/debug-log-creates-buffer ()
+  "Quoth--debug-log should create *quoth-debug* buffer when enabled."
   (unwind-protect
-      (let ((crush-debug-mode t))
-        (should-not (get-buffer "*crush-debug*"))
-        (crush--debug-log 'test "hello world")
-        (should (get-buffer "*crush-debug*"))
-        (with-current-buffer "*crush-debug*"
+      (let ((quoth-debug-mode t))
+        (should-not (get-buffer "*quoth-debug*"))
+        (quoth--debug-log 'test "hello world")
+        (should (get-buffer "*quoth-debug*"))
+        (with-current-buffer "*quoth-debug*"
           (goto-char (point-min))
           (should (search-forward "test: hello world" nil t))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; 59. Debug logging - disabled mode is no-op
 
-(ert-deftest crush-test/debug-log-disabled-no-op ()
-  "Crush--debug-log should do nothing when crush-debug-mode is nil."
+(ert-deftest quoth-test/debug-log-disabled-no-op ()
+  "Quoth--debug-log should do nothing when quoth-debug-mode is nil."
   (unwind-protect
-      (let ((crush-debug-mode nil))
-        (crush--debug-log 'test "should not appear")
-        (should-not (get-buffer "*crush-debug*")))
-    (crush-test--cleanup)))
+      (let ((quoth-debug-mode nil))
+        (quoth--debug-log 'test "should not appear")
+        (should-not (get-buffer "*quoth-debug*")))
+    (quoth-test--cleanup)))
 
 ;;; 60. Debug logging - command logged in input-sender
 
 ;;; 62. Debug logging - streamed output logged via the facade
 
-(ert-deftest crush-test/debug-logs-output ()
+(ert-deftest quoth-test/debug-logs-output ()
   "Streamed content via the facade inserts into the buffer and finalizes.
-The debug *crush-debug* logging is the transport's job (crush-provider);
+The debug *quoth-debug* logging is the transport's job (quoth-provider);
 the facade owns insertion.  This replaces the deleted
-`crush--output-filter' test that asserted filter-level logging."
+`quoth--output-filter' test that asserted filter-level logging."
   (unwind-protect
-      (let ((crush-debug-mode t)
-            (buf (crush-test--fresh-buffer)))
+      (let ((quoth-debug-mode t)
+            (buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-facade--append-delta "some output text" 'content)
+          (setq-local quoth--response-start (point-marker))
+          (quoth-facade--append-delta "some output text" 'content)
           (goto-char (point-min))
           (should (search-forward "some output text" nil t)))
         (with-current-buffer buf
-          (crush-facade--finalize)))
-    (crush-test--cleanup)))
+          (quoth-facade--finalize)))
+    (quoth-test--cleanup)))
 
 ;;; 63. Debug logging - finalize path logs via the facade continuation
 
-(ert-deftest crush-test/debug-logs-finalize ()
+(ert-deftest quoth-test/debug-logs-finalize ()
   "The facade finalize path closes the response and inserts a prompt.
 The run provider's process sentinel (deleted) used to log the sentinel
 event; the facade continuation now owns completion."
   (unwind-protect
-      (let ((crush-debug-mode t)
-            (buf (crush-test--fresh-buffer)))
+      (let ((quoth-debug-mode t)
+            (buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response"))
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response"))
         (with-current-buffer buf
           (goto-char (point-min))
           (should (search-forward "---" nil t))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; 64. Input separator insertion rename
 
-(ert-deftest crush-test/insert-prompt-renamed ()
+(ert-deftest quoth-test/insert-prompt-renamed ()
   "Test that the input separator function was renamed.
-The `crush--insert-input-separator' function replaced
-`crush--insert-prompt'."
-  (should (fboundp 'crush--insert-input-separator)))
+The `quoth--insert-input-separator' function replaced
+`quoth--insert-prompt'."
+  (should (fboundp 'quoth--insert-input-separator)))
 
 ;;; 65. Sentinel freezes previous response read-only
 
-(ert-deftest crush-test/facade-freezes-previous-response ()
+(ert-deftest quoth-test/facade-freezes-previous-response ()
   "The facade should freeze the previous response read-only.
 After the facade finalizes and inserts the next prompt, the prior
 response becomes read-only previous content, blocking edits."
-  (let ((default-directory crush-test--root))
+  (let ((default-directory quoth-test--root))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (goto-char (point-max))
             (insert "test")
             (goto-char (point-max))
             (newline)
-            (setq-local crush--response-start (point-marker))
-            (crush-test--simulate-facade-response "response text")
+            (setq-local quoth--response-start (point-marker))
+            (quoth-test--simulate-facade-response "response text")
             ;; Response text becomes frozen as previous content.
             (goto-char (point-min))
             (should (search-forward "response text" nil t))
@@ -961,145 +961,145 @@ response becomes read-only previous content, blocking edits."
             (should (get-text-property (match-beginning 0) 'read-only))
             (goto-char (match-beginning 0))
             (should-error (insert-and-inherit "X") :type 'text-read-only)))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
-;;; 67. crush--append-as-user-input appends after the input marker
+;;; 67. quoth--append-as-user-input appends after the input marker
 
-(defun crush-test--input-area-text ()
+(defun quoth-test--input-area-text ()
   "Return the editable input area text to the line end.
-The text starts at `crush--input-start-marker' and runs to the line end."
+The text starts at `quoth--input-start-marker' and runs to the line end."
   (buffer-substring-no-properties
-   (marker-position crush--input-start-marker)
+   (marker-position quoth--input-start-marker)
    (line-end-position)))
 
-(ert-deftest crush-test/append-as-user-input-lands-in-input-area ()
-  "Crush--append-as-user-input should insert after crush--input-start-marker."
-  (let ((default-directory crush-test--root))
+(ert-deftest quoth-test/append-as-user-input-lands-in-input-area ()
+  "Quoth--append-as-user-input should insert after quoth--input-start-marker."
+  (let ((default-directory quoth-test--root))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (should crush--input-start-marker)
-            (crush--append-as-user-input buf "INSERTED CONTENT")
-            (goto-char (marker-position crush--input-start-marker))
+            (should quoth--input-start-marker)
+            (quoth--append-as-user-input buf "INSERTED CONTENT")
+            (goto-char (marker-position quoth--input-start-marker))
             (should (string-match-p "INSERTED CONTENT"
-                                    (crush-test--input-area-text)))
-            (should (eq (get-text-property (marker-position crush--input-start-marker)
-                                           'crush-region-type)
+                                    (quoth-test--input-area-text)))
+            (should (eq (get-text-property (marker-position quoth--input-start-marker)
+                                           'quoth-region-type)
                         'user))))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
-;;; 69. crush--after-change uses crush--prompt-start-marker
+;;; 69. quoth--after-change uses quoth--prompt-start-marker
 
-(ert-deftest crush-test/after-change-tags-without-prompt-start ()
-  "Crush--after-change should tag input with prompt-id using crush--prompt-start-marker."
+(ert-deftest quoth-test/after-change-tags-without-prompt-start ()
+  "Quoth--after-change should tag input with prompt-id using quoth--prompt-start-marker."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           ;; Type text after the prompt
           (goto-char (point-max))
           (insert "typed text")
           ;; Check that the inserted text has the prompt-id property
-          (let ((prompt-id (get-text-property (- (point) 5) 'crush-prompt-id)))
+          (let ((prompt-id (get-text-property (- (point) 5) 'quoth-prompt-id)))
             (should prompt-id)
-            (should (string= prompt-id crush--prompt-id)))))
-    (crush-test--cleanup)))
+            (should (string= prompt-id quoth--prompt-id)))))
+    (quoth-test--cleanup)))
 
 ;;; Parallel markers
 
-(ert-deftest crush-test/prompt-start-marker-set-on-init ()
-  "Crush--prompt-start-marker should be set after buffer init."
+(ert-deftest quoth-test/prompt-start-marker-set-on-init ()
+  "Quoth--prompt-start-marker should be set after buffer init."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should crush--prompt-start-marker)
-          (should (markerp crush--prompt-start-marker))))
-    (crush-test--cleanup)))
+          (should quoth--prompt-start-marker)
+          (should (markerp quoth--prompt-start-marker))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/input-start-marker-set-on-init ()
-  "Crush--input-start-marker should be set after buffer init."
+(ert-deftest quoth-test/input-start-marker-set-on-init ()
+  "Quoth--input-start-marker should be set after buffer init."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should crush--input-start-marker)
-          (should (markerp crush--input-start-marker))))
-    (crush-test--cleanup)))
+          (should quoth--input-start-marker)
+          (should (markerp quoth--input-start-marker))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/prompt-start-marker-insertion-type ()
-  "Crush--prompt-start-marker should have insertion-type t (advances on insert before)."
+(ert-deftest quoth-test/prompt-start-marker-insertion-type ()
+  "Quoth--prompt-start-marker should have insertion-type t (advances on insert before)."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (markerp crush--prompt-start-marker))
-          (should (marker-insertion-type crush--prompt-start-marker))))
-    (crush-test--cleanup)))
+          (should (markerp quoth--prompt-start-marker))
+          (should (marker-insertion-type quoth--prompt-start-marker))))
+    (quoth-test--cleanup)))
 
 ;;; Facade delta streaming
 
-(ert-deftest crush-test/facade-delta-inserts-at-end ()
+(ert-deftest quoth-test/facade-delta-inserts-at-end ()
   "A streamed content delta is appended at point-max (the response area)."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-facade--append-delta "hello world" 'content)
+          (setq-local quoth--response-start (point-marker))
+          (quoth-facade--append-delta "hello world" 'content)
           (goto-char (point-min))
           (should (search-forward "hello world" nil t))
           ;; The delta went to point-max (the response area), so the
           ;; response-start marker now sits before the streamed text.
-          (should (< (marker-position crush--response-start) (point-max)))))
-    (crush-test--cleanup)))
+          (should (< (marker-position quoth--response-start) (point-max)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-delta-accumulates ()
+(ert-deftest quoth-test/facade-delta-accumulates ()
   "Multiple deltas accumulate in stream order at the response area."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-facade--append-delta "abc" 'content)
-          (crush-facade--append-delta "xyz" 'content)
+          (setq-local quoth--response-start (point-marker))
+          (quoth-facade--append-delta "abc" 'content)
+          (quoth-facade--append-delta "xyz" 'content)
           (goto-char (point-min))
           (should (search-forward "abcxyz" nil t))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-delta-logged-to-debug ()
+(ert-deftest quoth-test/facade-delta-logged-to-debug ()
   "Streamed deltas insert into the buffer when debug mode is on.
-The *crush-debug* logging is the transport's job (providers), not the
+The *quoth-debug* logging is the transport's job (providers), not the
 facade; this asserts the facade's contract — insertion completes."
   (unwind-protect
-      (let ((crush-debug-mode t)
-            (buf (crush-test--fresh-buffer)))
+      (let ((quoth-debug-mode t)
+            (buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-facade--append-delta "test output" 'content)
+          (setq-local quoth--response-start (point-marker))
+          (quoth-facade--append-delta "test output" 'content)
           (goto-char (point-min))
           (should (search-forward "test output" nil t)))
         (with-current-buffer buf
-          (crush-facade--finalize)))
-    (crush-test--cleanup)))
+          (quoth-facade--finalize)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-delta-no-field-property ()
+(ert-deftest quoth-test/facade-delta-no-field-property ()
   "Streamed deltas should NOT set field on inserted text."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (setq-local crush--response-start (point-marker))
-          (crush-facade--append-delta "response text" 'content)
+          (setq-local quoth--response-start (point-marker))
+          (quoth-facade--append-delta "response text" 'content)
           (should-not (get-text-property (1- (point-max)) 'field))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-delta-dead-buffer-safe ()
-  "The facade's on-delta closure guards a killed crush buffer."
+(ert-deftest quoth-test/facade-delta-dead-buffer-safe ()
+  "The facade's on-delta closure guards a killed quoth buffer."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (kill-buffer buf)
         ;; The closure the facade injects into the provider wraps the
         ;; append in `buffer-live-p', so it must not error after the
@@ -1107,51 +1107,51 @@ facade; this asserts the facade's contract — insertion completes."
         (should-not (funcall (lambda ()
                                (when (buffer-live-p buf)
                                  (with-current-buffer buf
-                                   (crush-facade--append-delta "x" 'content))))))
+                                   (quoth-facade--append-delta "x" 'content))))))
         ;; The raw function itself operates on the current buffer; a
         ;; live current buffer must still work.
         (with-temp-buffer
-          (setq-local crush--response-start (point-marker))
-          (crush-facade--append-delta "works" 'content)))
-    (crush-test--cleanup)))
+          (setq-local quoth--response-start (point-marker))
+          (quoth-facade--append-delta "works" 'content)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-delta-cursor-stays-when-scrolled-back ()
+(ert-deftest quoth-test/facade-delta-cursor-stays-when-scrolled-back ()
   "When cursor is not at point-max, streaming should not move it.
 This allows users to scroll back and read earlier content while
 the response streams in."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           ;; Set up some existing content
           (goto-char (point-max))
           (insert "existing content\n")
-          (setq-local crush--response-start (point-marker))
+          (setq-local quoth--response-start (point-marker))
           ;; Position cursor in the middle of existing content
           (goto-char (point-min))
           (search-forward "existing")
           (let ((saved-point (point)))
             ;; Stream in new content
-            (crush-facade--append-delta "streamed text" 'content)
+            (quoth-facade--append-delta "streamed text" 'content)
             ;; Cursor should stay where it was
             (should (= (point) saved-point))
             ;; New content should be at the end
             (goto-char (point-max))
             (should (search-backward "streamed text" nil t)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/facade-delta-cursor-follows-when-at-end ()
+(ert-deftest quoth-test/facade-delta-cursor-follows-when-at-end ()
   "When cursor is at point-max, streaming should advance it.
 This gives a terminal-like reading experience for users watching
 the live stream."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (setq-local crush--response-start (point-marker))
+          (setq-local quoth--response-start (point-marker))
           ;; Cursor is at point-max
           (should (= (point) (point-max)))
           ;; Stream in content
-          (crush-facade--append-delta "streaming text" 'content)
+          (quoth-facade--append-delta "streaming text" 'content)
           ;; Cursor should have moved to the new point-max
           (should (= (point) (point-max)))
           ;; Content should be visible at point
@@ -1159,21 +1159,21 @@ the live stream."
                             (- (point) (length "streaming text"))
                             (point))
                            "streaming text"))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; Window point preservation
 
 ;; These tests assert the window-point-aware behavior of
-;; `crush--insert-at-eof': it must read the window's point (not the
+;; `quoth--insert-at-eof': it must read the window's point (not the
 ;; stale buffer point) so a user who scrolled back keeps their place
 ;; even when the insertion runs from a process filter/sentinel.
 
-(ert-deftest crush-test/insert-at-eof-preserves-window-point ()
+(ert-deftest quoth-test/insert-at-eof-preserves-window-point ()
   "Test that insertion does not move a window whose point is not at point-max.
 The buffer's own point may be stale (as in a process filter); the
 `window-point' is the authoritative cursor position."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "line one\nline two\n"))
@@ -1186,15 +1186,15 @@ The buffer's own point may be stale (as in a process filter); the
             (should (= saved-win-point 9))
             (should (< saved-win-point (with-current-buffer buf (point-max))))
             (with-current-buffer buf
-              (crush--insert-at-eof "appended text"))
+              (quoth--insert-at-eof "appended text"))
             (should (= (window-point win) saved-win-point))
             (should (= (window-start win) saved-win-start)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/insert-at-eof-follows-window-point-at-end ()
+(ert-deftest quoth-test/insert-at-eof-follows-window-point-at-end ()
   "Insertion must advance a window whose point is at point-max."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "existing\n"))
@@ -1203,34 +1203,34 @@ The buffer's own point may be stale (as in a process filter); the
           (set-window-point win (point-max))
           (let ((old-max (with-current-buffer buf (point-max))))
             (with-current-buffer buf
-              (crush--insert-at-eof "appended text"))
+              (quoth--insert-at-eof "appended text"))
             (should (= (window-point win) (point-max)))
             (should (> (with-current-buffer buf (point-max)) old-max)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/insert-at-eof-accepts-a-position ()
+(ert-deftest quoth-test/insert-at-eof-accepts-a-position ()
   "Insertion at an explicit position must tag exactly that span."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "before\n")
           (let ((pos (point)))
-            (crush--insert-at-eof "middle" (list 'foo 'bar) pos)
+            (quoth--insert-at-eof "middle" (list 'foo 'bar) pos)
             (should (eq (get-text-property pos 'foo) 'bar))
             (should (string= (buffer-substring pos (+ pos (length "middle")))
                              "middle"))
             ;; Inserting at a position must not clobber point-max content.
             (should (string-match-p "before" (buffer-string))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/append-as-user-input-delegates-to-insert-at-eof ()
+(ert-deftest quoth-test/append-as-user-input-delegates-to-insert-at-eof ()
   "Appending user input must preserve a scrolled-back window point.
 Unlike a raw `insert', which leaves the chase of window point to the
-caller, `crush--append-as-user-input' must route through
-`crush--insert-at-eof' so a scrolled-back window keeps its place."
+caller, `quoth--append-as-user-input' must route through
+`quoth--insert-at-eof' so a scrolled-back window keeps its place."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "line one\nline two\n"))
@@ -1239,349 +1239,349 @@ caller, `crush--append-as-user-input' must route through
           (set-window-point win 9)
           (let ((saved-win-point (window-point win)))
             (with-current-buffer buf
-              (crush--append-as-user-input buf "INSERTED CONTENT"))
+              (quoth--append-as-user-input buf "INSERTED CONTENT"))
             (should (= (window-point win) saved-win-point)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; Custom input ring
 
-(ert-deftest crush-test/custom-input-ring-initialized ()
-  "Crush--input-ring should be a ring in a crush buffer."
+(ert-deftest quoth-test/custom-input-ring-initialized ()
+  "Quoth--input-ring should be a ring in a quoth buffer."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (boundp 'crush--input-ring))
-          (should (ring-p crush--input-ring))))
-    (crush-test--cleanup)))
+          (should (boundp 'quoth--input-ring))
+          (should (ring-p quoth--input-ring))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/custom-input-ring-add ()
-  "Crush--input-ring-add should add input to the ring."
+(ert-deftest quoth-test/custom-input-ring-add ()
+  "Quoth--input-ring-add should add input to the ring."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq crush--input-ring (make-ring crush-input-ring-size))
-          (crush--input-ring-add "first prompt")
-          (should (= (ring-length crush--input-ring) 1))
-          (should (string= "first prompt" (ring-ref crush--input-ring 0)))
-          (crush--input-ring-add "second prompt")
-          (should (= (ring-length crush--input-ring) 2))
-          (should (string= "second prompt" (ring-ref crush--input-ring 0)))
-          (should (string= "first prompt" (ring-ref crush--input-ring 1)))))
-    (crush-test--cleanup)))
+          (setq quoth--input-ring (make-ring quoth-input-ring-size))
+          (quoth--input-ring-add "first prompt")
+          (should (= (ring-length quoth--input-ring) 1))
+          (should (string= "first prompt" (ring-ref quoth--input-ring 0)))
+          (quoth--input-ring-add "second prompt")
+          (should (= (ring-length quoth--input-ring) 2))
+          (should (string= "second prompt" (ring-ref quoth--input-ring 0)))
+          (should (string= "first prompt" (ring-ref quoth--input-ring 1)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/custom-input-ring-add-skips-duplicate ()
-  "Crush--input-ring-add should not add consecutive duplicate entries."
+(ert-deftest quoth-test/custom-input-ring-add-skips-duplicate ()
+  "Quoth--input-ring-add should not add consecutive duplicate entries."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq crush--input-ring (make-ring crush-input-ring-size))
-          (crush--input-ring-add "same prompt")
-          (should (= (ring-length crush--input-ring) 1))
-          (crush--input-ring-add "same prompt")
-          (should (= (ring-length crush--input-ring) 1))))
-    (crush-test--cleanup)))
+          (setq quoth--input-ring (make-ring quoth-input-ring-size))
+          (quoth--input-ring-add "same prompt")
+          (should (= (ring-length quoth--input-ring) 1))
+          (quoth--input-ring-add "same prompt")
+          (should (= (ring-length quoth--input-ring) 1))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/custom-input-ring-add-skips-empty ()
-  "Crush--input-ring-add should not add empty strings."
+(ert-deftest quoth-test/custom-input-ring-add-skips-empty ()
+  "Quoth--input-ring-add should not add empty strings."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq crush--input-ring (make-ring crush-input-ring-size))
-          (crush--input-ring-add "")
-          (should (= (ring-length crush--input-ring) 0))))
-    (crush-test--cleanup)))
+          (setq quoth--input-ring (make-ring quoth-input-ring-size))
+          (quoth--input-ring-add "")
+          (should (= (ring-length quoth--input-ring) 0))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/custom-input-ring-read-from-file ()
-  "Crush--input-ring-read should read history from file."
+(ert-deftest quoth-test/custom-input-ring-read-from-file ()
+  "Quoth--input-ring-read should read history from file."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (tmpfile (make-temp-file "crush-ring-test")))
+      (let ((buf (quoth-test--fresh-buffer))
+            (tmpfile (make-temp-file "quoth-ring-test")))
         (with-temp-buffer
           (insert "line one\nline two\nline three\n")
           (write-region (point-min) (point-max) tmpfile nil 'quiet))
         (with-current-buffer buf
-          (setq crush--input-ring (make-ring crush-input-ring-size))
-          (let ((crush--input-ring-file-name tmpfile))
-            (crush--input-ring-read))
-          (should (= (ring-length crush--input-ring) 3))
-          (should (string= "line three" (ring-ref crush--input-ring 0)))
-          (should (string= "line two" (ring-ref crush--input-ring 1)))
-          (should (string= "line one" (ring-ref crush--input-ring 2))))
+          (setq quoth--input-ring (make-ring quoth-input-ring-size))
+          (let ((quoth--input-ring-file-name tmpfile))
+            (quoth--input-ring-read))
+          (should (= (ring-length quoth--input-ring) 3))
+          (should (string= "line three" (ring-ref quoth--input-ring 0)))
+          (should (string= "line two" (ring-ref quoth--input-ring 1)))
+          (should (string= "line one" (ring-ref quoth--input-ring 2))))
         (when (file-exists-p tmpfile) (delete-file tmpfile)))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/custom-input-ring-write-to-file ()
-  "Crush--input-ring-write should write history to file."
+(ert-deftest quoth-test/custom-input-ring-write-to-file ()
+  "Quoth--input-ring-write should write history to file."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (tmpfile (make-temp-file "crush-ring-test")))
+      (let ((buf (quoth-test--fresh-buffer))
+            (tmpfile (make-temp-file "quoth-ring-test")))
         (with-current-buffer buf
-          (setq crush--input-ring (make-ring crush-input-ring-size))
-          (crush--input-ring-add "alpha")
-          (crush--input-ring-add "beta")
-          (let ((crush--input-ring-file-name tmpfile))
-            (crush--input-ring-write))
+          (setq quoth--input-ring (make-ring quoth-input-ring-size))
+          (quoth--input-ring-add "alpha")
+          (quoth--input-ring-add "beta")
+          (let ((quoth--input-ring-file-name tmpfile))
+            (quoth--input-ring-write))
           (with-temp-buffer
             (insert-file-contents tmpfile)
             (goto-char (point-min))
             (should (search-forward "beta" nil t))
             (should (search-forward "alpha" nil t))))
         (when (file-exists-p tmpfile) (delete-file tmpfile)))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/send-input-adds-to-custom-ring ()
-  "Crush-send-input should add prompt to crush--input-ring."
+(ert-deftest quoth-test/send-input-adds-to-custom-ring ()
+  "Quoth-send-input should add prompt to quoth--input-ring."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "history test")
-          (let ((fake-proc (crush-test--live-pipe-proc)))
+          (let ((fake-proc (quoth-test--live-pipe-proc)))
             (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function #'make-process)
                        (lambda (&rest _) fake-proc)))
-              (call-interactively #'crush-send-input))
+              (call-interactively #'quoth-send-input))
             (when (process-live-p fake-proc)
               (delete-process fake-proc)))
-          (should (> (ring-length crush--input-ring) 0))
+          (should (> (ring-length quoth--input-ring) 0))
           (should (string-match-p "history test"
-                                  (ring-ref crush--input-ring 0)))))
-    (crush-test--cleanup)))
+                                  (ring-ref quoth--input-ring 0)))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/no-placeholder-process ()
-  "The crush buffer should not require a placeholder process for input."
+(ert-deftest quoth-test/no-placeholder-process ()
+  "The quoth buffer should not require a placeholder process for input."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (should-not (get-buffer-process (current-buffer)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/input-previous-inserts-from-ring ()
-  "\\[crush--input-previous] inserts the previous ring input."
+(ert-deftest quoth-test/input-previous-inserts-from-ring ()
+  "\\[quoth--input-previous] inserts the previous ring input."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (crush--input-ring-add "old prompt one")
-          (crush--input-ring-add "old prompt two")
-          (setq-local crush--input-ring-index 0)
+          (quoth--input-ring-add "old prompt one")
+          (quoth--input-ring-add "old prompt two")
+          (setq-local quoth--input-ring-index 0)
           (goto-char (point-max))
-          (crush--input-previous)
+          (quoth--input-previous)
           (should (string= "old prompt two"
                            (buffer-substring-no-properties
-                            (marker-position crush--input-start-marker)
+                            (marker-position quoth--input-start-marker)
                             (line-end-position))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/input-next-inserts-from-ring ()
-  "\\[crush--input-next] inserts the next (more recent) ring input."
+(ert-deftest quoth-test/input-next-inserts-from-ring ()
+  "\\[quoth--input-next] inserts the next (more recent) ring input."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (setq crush--input-ring (make-ring crush-input-ring-size))
-          (crush--input-ring-add "old prompt one")
-          (crush--input-ring-add "old prompt two")
-          (setq-local crush--input-ring-index 1)
+          (setq quoth--input-ring (make-ring quoth-input-ring-size))
+          (quoth--input-ring-add "old prompt one")
+          (quoth--input-ring-add "old prompt two")
+          (setq-local quoth--input-ring-index 1)
           (goto-char (point-max))
-          (crush--input-next)
+          (quoth--input-next)
           (should (string= "old prompt two"
                            (buffer-substring-no-properties
-                            (marker-position crush--input-start-marker)
+                            (marker-position quoth--input-start-marker)
                             (line-end-position))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/input-ring-file-name-default ()
-  "`crush--input-ring-file-name' defaults to a file in `user-emacs-directory'."
-  (should (string= crush--input-ring-file-name
-                   (expand-file-name "crush-history" user-emacs-directory))))
+(ert-deftest quoth-test/input-ring-file-name-default ()
+  "`quoth--input-ring-file-name' defaults to a file in `user-emacs-directory'."
+  (should (string= quoth--input-ring-file-name
+                   (expand-file-name "quoth-history" user-emacs-directory))))
 
 ;;; Mode parent resolution
 
-(ert-deftest crush-test/mode-parent-is-text-mode ()
-  "The crush buffer's major mode is the parent mode.
+(ert-deftest quoth-test/mode-parent-is-text-mode ()
+  "The quoth buffer's major mode is the parent mode.
 It derives from `text-mode' (or `markdown-mode'), never `comint-mode'.
-There is no separate `crush-mode' major mode."
+There is no separate `quoth-mode' major mode."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (eq major-mode crush--parent-mode))
+          (should (eq major-mode quoth--parent-mode))
           (should (derived-mode-p 'text-mode))
           (should-not (derived-mode-p 'comint-mode))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/prompt-is-read-only ()
+(ert-deftest quoth-test/prompt-is-read-only ()
   "The input separator text should be read-only (via text property)."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
           (should (search-forward "---" nil t))
           (should (get-char-property (1- (point)) 'read-only))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/clear-buffer-prompt-has-crush-properties ()
-  "After crush-clear-buffer, the new separator should have crush properties."
+(ert-deftest quoth-test/clear-buffer-prompt-has-quoth-properties ()
+  "After quoth-clear-buffer, the new separator should have quoth properties."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (call-interactively #'crush-clear-buffer)
+          (call-interactively #'quoth-clear-buffer)
           (goto-char (point-min))
           (should (search-forward "---" nil t))
           (should (get-char-property (match-beginning 0) 'read-only))
           (should-not (get-text-property (match-beginning 0) 'field))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; Optional markdown-mode base
 
-(ert-deftest crush-test/parent-mode-is-text-or-markdown ()
-  "`crush--parent-mode' is either `text-mode' or `markdown-mode'."
-  (should (memq crush--parent-mode '(text-mode markdown-mode))))
+(ert-deftest quoth-test/parent-mode-is-text-or-markdown ()
+  "`quoth--parent-mode' is either `text-mode' or `markdown-mode'."
+  (should (memq quoth--parent-mode '(text-mode markdown-mode))))
 
-(ert-deftest crush-test/mode-derives-from-parent-mode ()
-  "The crush buffer major mode should derive from crush--parent-mode."
+(ert-deftest quoth-test/mode-derives-from-parent-mode ()
+  "The quoth buffer major mode should derive from quoth--parent-mode."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (derived-mode-p crush--parent-mode))))
-    (crush-test--cleanup)))
+          (should (derived-mode-p quoth--parent-mode))))
+    (quoth-test--cleanup)))
 
 ;;; Text-property-based read-only prompt
 
-(ert-deftest crush-test/can-type-after-prompt ()
+(ert-deftest quoth-test/can-type-after-prompt ()
   "User should be able to type after the prompt without text-read-only error."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "hello")
           (goto-char (point-min))
           (should (search-forward "hello" nil t))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/prompt-is-read-only-via-text-property ()
+(ert-deftest quoth-test/prompt-is-read-only-via-text-property ()
   "The input separator text should be read-only via a text property.
 Backspacing into the separator should be blocked."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
           (should (search-forward "---" nil t))
           (goto-char (match-beginning 0))
           (should (get-text-property (point) 'read-only))
           (should (get-char-property (point) 'read-only))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/cannot-type-into-prompt ()
+(ert-deftest quoth-test/cannot-type-into-prompt ()
   "Typing into the read-only input separator should signal text-read-only."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-min))
           (should (search-forward "---" nil t))
           (goto-char (match-beginning 0))
           (should-error (insert-and-inherit "X") :type 'text-read-only)))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/previous-content-is-read-only ()
+(ert-deftest quoth-test/previous-content-is-read-only ()
   "After a response cycle, previous content should be read-only via text property."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response")
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response")
           (goto-char (point-min))
           (should (search-forward "response" nil t))
           (should (get-text-property (match-beginning 0) 'read-only))
           (should (get-char-property (match-beginning 0) 'read-only))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/cannot-type-into-previous-response ()
+(ert-deftest quoth-test/cannot-type-into-previous-response ()
   "Typing into a frozen previous response should signal text-read-only."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response")
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response")
           (goto-char (point-min))
           (should (search-forward "response" nil t))
           (goto-char (match-beginning 0))
           (should-error (insert-and-inherit "X") :type 'text-read-only)))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/input-area-is-editable ()
+(ert-deftest quoth-test/input-area-is-editable ()
   "After a response cycle, the new input area should be editable."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response")
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response")
           (goto-char (point-max))
           (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "new input")
           (goto-char (point-min))
           (should (search-forward "new input" nil t))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/read-only-via-text-property-tagged ()
+(ert-deftest quoth-test/read-only-via-text-property-tagged ()
   "Read-only should be enforced via a text property, not an overlay."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           ;; The prompt carries a read-only text property.
           (should (get-text-property 1 'read-only))
           ;; No overlay should be responsible for read-only.
           (should-not (cl-some (lambda (ov) (overlay-get ov 'read-only))
                                (overlays-in (point-min) (point-max))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/inhibit-read-only-allows-programmatic-insert ()
+(ert-deftest quoth-test/inhibit-read-only-allows-programmatic-insert ()
   "Programmatic insertion bypasses the freeze with `inhibit-read-only'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((inhibit-read-only t))
             (goto-char (point-min))
             (insert "PROGRAMMATIC"))
           (goto-char (point-min))
           (should (search-forward "PROGRAMMATIC" nil t))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/clear-buffer-keeps-prompt-readable-input ()
-  "Crush-clear-buffer should reset the buffer so input is editable again."
+(ert-deftest quoth-test/clear-buffer-keeps-prompt-readable-input ()
+  "Quoth-clear-buffer should reset the buffer so input is editable again."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (call-interactively #'crush-clear-buffer)
+          (call-interactively #'quoth-clear-buffer)
           (goto-char (point-max))
           (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "hello")
           (goto-char (point-min))
           (should (search-forward "hello" nil t))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/read-only-survives-font-lock ()
+(ert-deftest quoth-test/read-only-survives-font-lock ()
   "Prompt read-only and input editability should survive font-lock refontification."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
-          (crush-test--simulate-facade-response "response")
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-facade-response "response")
           (font-lock-ensure)
           (goto-char (point-min))
           (should (search-forward "---" nil t))
@@ -1590,23 +1590,23 @@ Backspacing into the separator should be blocked."
           (should-error (insert-and-inherit "X") :type 'text-read-only)
           (goto-char (point-max))
           (should-not (get-char-property (point) 'read-only))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/read-only-survives-markdown-font-lock ()
+(ert-deftest quoth-test/read-only-survives-markdown-font-lock ()
   "Read-only should survive markdown font-lock when markdown-mode is available.
 This mirrors the user session where markdown fontification could previously
 fail to enforce read-only."
   (skip-unless (require 'markdown-mode nil t))
-  (let ((default-directory crush-test--root))
+  (let ((default-directory quoth-test--root))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (goto-char (point-max))
             (insert "test")
             (goto-char (point-max))
             (newline)
-            (setq-local crush--response-start (point-marker))
-            (crush-test--simulate-facade-response "# heading")
+            (setq-local quoth--response-start (point-marker))
+            (quoth-test--simulate-facade-response "# heading")
             (font-lock-ensure)
             (goto-char (point-min))
             (should (search-forward "---" nil t))
@@ -1622,18 +1622,18 @@ fail to enforce read-only."
             (insert-and-inherit "b")
             (goto-char (point-min))
             (should (search-forward "ab" nil t))))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
-(ert-deftest crush-test/type-at-fresh-prompt-after-markdown-font-lock ()
+(ert-deftest quoth-test/type-at-fresh-prompt-after-markdown-font-lock ()
   "Typing at a fresh prompt must work after markdown refontification.
 Regression: when markdown-mode fontifies the buffer, it strips
 `rear-nonsticky' from the read-only prompt text.  Without it, text typed
 right after the prompt inherits `read-only' and Emacs signals
 \"Text is read-only\" on the very first insertion."
   (skip-unless (require 'markdown-mode nil t))
-  (let ((default-directory crush-test--root))
+  (let ((default-directory quoth-test--root))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             ;; Fontify without any prior input, as jit-lock does during
             ;; redisplay.  This strips rear-nonsticky from the prompt.
@@ -1648,196 +1648,196 @@ right after the prompt inherits `read-only' and Emacs signals
             (goto-char (point-min))
             (should (get-char-property (point) 'read-only))
             (should-error (insert-and-inherit "X") :type 'text-read-only)))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
 ;;; 90. Per-project buffer naming
 
-(defun crush-test--cleanup-registry ()
-  "Purge `crush--root-buffer-alist' and kill the buffers it names."
-  (dolist (entry crush--root-buffer-alist)
+(defun quoth-test--cleanup-registry ()
+  "Purge `quoth--root-buffer-alist' and kill the buffers it names."
+  (dolist (entry quoth--root-buffer-alist)
     (when (get-buffer (cdr entry))
       (kill-buffer (cdr entry))))
-  (setq crush--root-buffer-alist nil))
+  (setq quoth--root-buffer-alist nil))
 
-(ert-deftest crush-test/current-buffer-uses-default-directory-root ()
-  "`crush--current-crush-buffer' should use `default-directory' as root."
+(ert-deftest quoth-test/current-buffer-uses-default-directory-root ()
+  "`quoth--current-quoth-buffer' should use `default-directory' as root."
   (unwind-protect
-      (let* ((root (expand-file-name "crush-test-x" temporary-file-directory))
+      (let* ((root (expand-file-name "quoth-test-x" temporary-file-directory))
              (buf (with-temp-buffer
                     (setq default-directory root)
-                    (crush--current-crush-buffer))))
+                    (quoth--current-quoth-buffer))))
         (should (buffer-live-p buf))
         (with-current-buffer buf
-          (should (string= (crush--canonical-root crush--project-root)
-                           (crush--canonical-root root)))))
-    (crush-test--cleanup-registry)))
+          (should (string= (quoth--canonical-root quoth--project-root)
+                           (quoth--canonical-root root)))))
+    (quoth-test--cleanup-registry)))
 
-(ert-deftest crush-test/current-buffer-uses-project-root ()
-  "`crush--current-crush-buffer' should prefer the project root."
+(ert-deftest quoth-test/current-buffer-uses-project-root ()
+  "`quoth--current-quoth-buffer' should prefer the project root."
   (cl-letf (((symbol-function 'project-current)
              (lambda (&optional _dir)
-               (list 'vc 'Git "/tmp/crush-proj-root/"))))
+               (list 'vc 'Git "/tmp/quoth-proj-root/"))))
     (unwind-protect
-        (let* ((root (expand-file-name "crush-test-x" temporary-file-directory))
+        (let* ((root (expand-file-name "quoth-test-x" temporary-file-directory))
                (buf (with-temp-buffer
                       (setq default-directory root)
-                      (crush--current-crush-buffer))))
+                      (quoth--current-quoth-buffer))))
           (should (buffer-live-p buf))
           (with-current-buffer buf
-            (should (string= (crush--canonical-root crush--project-root)
-                             (crush--canonical-root
-                              "/tmp/crush-proj-root/")))))
-      (crush-test--cleanup-registry))))
+            (should (string= (quoth--canonical-root quoth--project-root)
+                             (quoth--canonical-root
+                              "/tmp/quoth-proj-root/")))))
+      (quoth-test--cleanup-registry))))
 
-(ert-deftest crush-test/current-buffer-reuses-existing-buffer ()
+(ert-deftest quoth-test/current-buffer-reuses-existing-buffer ()
   "Resolving the same root twice should return the same buffer."
   (unwind-protect
-      (let* ((root (expand-file-name "crush-test-x" temporary-file-directory))
+      (let* ((root (expand-file-name "quoth-test-x" temporary-file-directory))
              (buf1 (with-temp-buffer
                      (setq default-directory root)
-                     (crush--current-crush-buffer)))
+                     (quoth--current-quoth-buffer)))
              (buf2 (with-temp-buffer
                      (setq default-directory root)
-                     (crush--current-crush-buffer))))
+                     (quoth--current-quoth-buffer))))
         (should (eq buf1 buf2)))
-    (crush-test--cleanup-registry)))
+    (quoth-test--cleanup-registry)))
 
-(ert-deftest crush-test/buffer-name-uses-root-basename ()
-  "`crush--buffer-name-for-root' should use the root directory's basename."
-  (should (string= (crush--buffer-name-for-root "/tmp/foo/") "*crush:foo*"))
-  (should (string= (crush--buffer-name-for-root "~/x/y/") "*crush:y*")))
+(ert-deftest quoth-test/buffer-name-uses-root-basename ()
+  "`quoth--buffer-name-for-root' should use the root directory's basename."
+  (should (string= (quoth--buffer-name-for-root "/tmp/foo/") "*quoth:foo*"))
+  (should (string= (quoth--buffer-name-for-root "~/x/y/") "*quoth:y*")))
 
-(ert-deftest crush-test/buffer-name-same-basename-distinct-roots-collide ()
+(ert-deftest quoth-test/buffer-name-same-basename-distinct-roots-collide ()
   "Two roots with the same basename should get distinct buffer names."
-  (let ((crush--root-buffer-alist nil))
-    (should (string= (crush--buffer-name-for-root "/tmp/foo/") "*crush:foo*"))
-    (should (string= (crush--buffer-name-for-root "/tmp/bar/foo/") "*crush:foo(2)*"))))
+  (let ((quoth--root-buffer-alist nil))
+    (should (string= (quoth--buffer-name-for-root "/tmp/foo/") "*quoth:foo*"))
+    (should (string= (quoth--buffer-name-for-root "/tmp/bar/foo/") "*quoth:foo(2)*"))))
 
-(ert-deftest crush-test/buffer-name-stable-per-root ()
+(ert-deftest quoth-test/buffer-name-stable-per-root ()
   "Re-resolving a root should return the same name (no growing suffix)."
-  (let ((crush--root-buffer-alist nil))
-    (crush--buffer-name-for-root "/tmp/foo/")
-    (should (string= (crush--buffer-name-for-root "/tmp/bar/foo/") "*crush:foo(2)*"))
+  (let ((quoth--root-buffer-alist nil))
+    (quoth--buffer-name-for-root "/tmp/foo/")
+    (should (string= (quoth--buffer-name-for-root "/tmp/bar/foo/") "*quoth:foo(2)*"))
     ;; Resolving either root again must not change the mapping.
-    (should (string= (crush--buffer-name-for-root "/tmp/foo/") "*crush:foo*"))
-    (should (string= (crush--buffer-name-for-root "/tmp/bar/foo/") "*crush:foo(2)*"))))
+    (should (string= (quoth--buffer-name-for-root "/tmp/foo/") "*quoth:foo*"))
+    (should (string= (quoth--buffer-name-for-root "/tmp/bar/foo/") "*quoth:foo(2)*"))))
 
-(ert-deftest crush-test/buffer-name-trailing-slash-canonicalized ()
+(ert-deftest quoth-test/buffer-name-trailing-slash-canonicalized ()
   "Roots differing only in trailing slash should map to the same name."
-  (let ((crush--root-buffer-alist nil))
-    (should (string= (crush--buffer-name-for-root "/tmp/foo") "*crush:foo*"))
-    (should (string= (crush--buffer-name-for-root "/tmp/foo/") "*crush:foo*"))))
+  (let ((quoth--root-buffer-alist nil))
+    (should (string= (quoth--buffer-name-for-root "/tmp/foo") "*quoth:foo*"))
+    (should (string= (quoth--buffer-name-for-root "/tmp/foo/") "*quoth:foo*"))))
 
-(ert-deftest crush-test/buffer-name-root-slash-fallback ()
+(ert-deftest quoth-test/buffer-name-root-slash-fallback ()
   "The root \"/\" has no basename and should get a fallback name."
-  (should (string= (crush--buffer-name-for-root "/") "*crush:root*")))
+  (should (string= (quoth--buffer-name-for-root "/") "*quoth:root*")))
 
-(ert-deftest crush-test/buffer-name-three-way-collision ()
+(ert-deftest quoth-test/buffer-name-three-way-collision ()
   "Three roots with the same basename should be suffixed 2 and 3."
-  (let ((crush--root-buffer-alist nil))
-    (should (string= (crush--buffer-name-for-root "/a/foo/") "*crush:foo*"))
-    (should (string= (crush--buffer-name-for-root "/b/foo/") "*crush:foo(2)*"))
-    (should (string= (crush--buffer-name-for-root "/c/foo/") "*crush:foo(3)*"))))
+  (let ((quoth--root-buffer-alist nil))
+    (should (string= (quoth--buffer-name-for-root "/a/foo/") "*quoth:foo*"))
+    (should (string= (quoth--buffer-name-for-root "/b/foo/") "*quoth:foo(2)*"))
+    (should (string= (quoth--buffer-name-for-root "/c/foo/") "*quoth:foo(3)*"))))
 
-(ert-deftest crush-test/buffer-name-fresh-registry-registers-root ()
-  "Resolving a root should register it in `crush--root-buffer-alist'."
-  (let ((crush--root-buffer-alist nil))
-    (crush--buffer-name-for-root "/tmp/x/foo/")
-    (should (assoc "/tmp/x/foo/" crush--root-buffer-alist))
-    (should (equal (alist-get "/tmp/x/foo/" crush--root-buffer-alist nil nil #'equal)
-                   "*crush:foo*"))))
+(ert-deftest quoth-test/buffer-name-fresh-registry-registers-root ()
+  "Resolving a root should register it in `quoth--root-buffer-alist'."
+  (let ((quoth--root-buffer-alist nil))
+    (quoth--buffer-name-for-root "/tmp/x/foo/")
+    (should (assoc "/tmp/x/foo/" quoth--root-buffer-alist))
+    (should (equal (alist-get "/tmp/x/foo/" quoth--root-buffer-alist nil nil #'equal)
+                   "*quoth:foo*"))))
 
 ;;; 33. Conversation history extraction: tagged regions -> turns
 
 ;;; These tests pin the contract of the facade's history extraction:
-;;; `crush--history-turns' reads the buffer's tagged regions (prompt
+;;; `quoth--history-turns' reads the buffer's tagged regions (prompt
 ;;; markers, user input, responses, reasoning) and produces a list of
 ;;; message alists (not (ROLE . TEXT) conses) that the hyper provider
-;;; re-sends.  Role tags (`crush-role') are applied by
-;;; `crush--insert-input-separator' / `crush--after-change' (user) and
-;;; `crush--tag-response-region' (assistant/reasoning); the builder
+;;; re-sends.  Role tags (`quoth-role') are applied by
+;;; `quoth--insert-input-separator' / `quoth--after-change' (user) and
+;;; `quoth--tag-response-region' (assistant/reasoning); the builder
 ;;; groups the buffer by prompt so the pending prompt is never included.
 
-(defun crush-test--msg-role (msg)
+(defun quoth-test--msg-role (msg)
   "Return the `role' of message alist MSG."
   (cdr (assoc 'role msg)))
 
-(defun crush-test--msg-content (msg)
+(defun quoth-test--msg-content (msg)
   "Return the `content' of message alist MSG, or nil."
   (cdr (assoc 'content msg)))
 
-(defun crush-test--seed-exchange (prompt-text reply-text)
-  "Seed a completed exchange in the current crush buffer.
+(defun quoth-test--seed-exchange (prompt-text reply-text)
+  "Seed a completed exchange in the current quoth buffer.
 Types PROMPT-TEXT (which lands in the `user' region via
-`crush--after-change') and simulates a completed exchange: response
+`quoth--after-change') and simulates a completed exchange: response
 region REPLY-TEXT tagged as the turn's answer, then a fresh input
 separator.  Returns the completed prompt's ID."
-  (let ((prompt-id crush--prompt-id))
+  (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
     (insert prompt-text)
     (goto-char (point-max))
     (newline)
     (let ((response-start (point)))
       (insert reply-text)
-      (crush--tag-response-region response-start (point) prompt-id))
+      (quoth--tag-response-region response-start (point) prompt-id))
     (goto-char (point-max))
     (let ((inhibit-read-only t))
       ;; Anticipate the newline the separator insertion would leave; it
       ;; must not become part of the user turn.
       (when (eq (char-before (point)) ?\n)
         (delete-region (1- (point)) (point))))
-    (setq-local crush--prompt-id (crush--generate-id))
-    (crush--insert-input-separator)
+    (setq-local quoth--prompt-id (quoth--generate-id))
+    (quoth--insert-input-separator)
     prompt-id))
 
-(ert-deftest crush-test/history-turns-nil-when-only-one-prompt ()
+(ert-deftest quoth-test/history-turns-nil-when-only-one-prompt ()
   "With a single (pending) prompt there is no history to extract."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (null (crush--history-turns crush--prompt-id)))))
-    (crush-test--cleanup)))
+          (should (null (quoth--history-turns quoth--prompt-id)))))
+    (quoth-test--cleanup)))
 
 ;;; Turn divider: a frozen `---' between the user turn and its response.
 
-(defun crush-test--seed-user-separator (prompt-text reasoning-text answer-text)
-  "Seed a turn with a user separator, as `crush-send-input' does.
-Types PROMPT-TEXT, inserts the separator via `crush--insert-user-separator',
+(defun quoth-test--seed-user-separator (prompt-text reasoning-text answer-text)
+  "Seed a turn with a user separator, as `quoth-send-input' does.
+Types PROMPT-TEXT, inserts the separator via `quoth--insert-user-separator',
 then streams REASONING-TEXT and ANSWER-TEXT and finalizes.  Returns the
 completed prompt's ID."
-  (let ((prompt-id crush--prompt-id))
+  (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
     (insert prompt-text)
     (goto-char (line-end-position))
     (newline)
-    (crush--insert-user-separator)
-    (setq-local crush--response-start (point-marker))
-    (let ((proc (make-pipe-process :name "crush-hyper-test-div"
+    (quoth--insert-user-separator)
+    (setq-local quoth--response-start (point-marker))
+    (let ((proc (make-pipe-process :name "quoth-hyper-test-div"
                                    :noquery t :coding 'binary)))
-      (process-put proc :crush-target (current-buffer))
+      (process-put proc :quoth-target (current-buffer))
       (unwind-protect
           (progn
-            (crush-facade--append-delta reasoning-text 'reasoning)
-            (crush-facade--append-delta answer-text 'content)
-            (crush-facade--finalize))
+            (quoth-facade--append-delta reasoning-text 'reasoning)
+            (quoth-facade--append-delta answer-text 'content)
+            (quoth-facade--finalize))
         (delete-process proc)))
     (goto-char (point-max))
     (let ((inhibit-read-only t))
       (when (eq (char-before (point)) ?\n)
         (delete-region (1- (point)) (point))))
-    (setq-local crush--prompt-id (crush--generate-id))
-    (crush--insert-input-separator)
+    (setq-local quoth--prompt-id (quoth--generate-id))
+    (quoth--insert-input-separator)
     prompt-id))
 
-(ert-deftest crush-test/user-separator-inserted-before-response ()
+(ert-deftest quoth-test/user-separator-inserted-before-response ()
   "Test that the user separator is inserted before the response.
-The `crush--insert-user-separator' function places a frozen, read-only
+The `quoth--insert-user-separator' function places a frozen, read-only
 `---' between the user text and the streamed response, tagged
 `user-separator'."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-user-separator
+          (let ((id (quoth-test--seed-user-separator
                      "describe this file"
                      "The user wants me to describe the file."
                      "This is the answer.")))
@@ -1847,8 +1847,8 @@ The `crush--insert-user-separator' function places a frozen, read-only
             ;; The user separator sits right after the user text, framed by
             ;; a blank line above and below (mirroring the input separator).
             (let* ((sep (text-property-any (point) (point-max)
-                                           'crush-region-type 'user-separator))
-                   (sep-end (or (next-single-property-change sep 'crush-region-type
+                                           'quoth-region-type 'user-separator))
+                   (sep-end (or (next-single-property-change sep 'quoth-region-type
                                                              nil (point-max))
                                 (point-max))))
               (should sep)
@@ -1856,135 +1856,135 @@ The `crush--insert-user-separator' function places a frozen, read-only
               (should (string= (buffer-substring-no-properties (1- sep) sep-end)
                                "\n---\n\n"))
               ;; The blank line below the divider is part of the separator.
-              (should (eq (get-text-property (1- sep-end) 'crush-region-type)
+              (should (eq (get-text-property (1- sep-end) 'quoth-region-type)
                           'user-separator)))
             ;; The response text follows the separator.
             (search-forward "This is the answer.")
-            (should (eq (get-text-property (match-beginning 0) 'crush-region-type)
+            (should (eq (get-text-property (match-beginning 0) 'quoth-region-type)
                         'response)))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/user-separator-ignored-by-history-turns ()
+(ert-deftest quoth-test/user-separator-ignored-by-history-turns ()
   "Test that the user separator does not leak into reconstructed history.
 A turn with reasoning + separator yields exactly `user' then
 `assistant' messages."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-user-separator
+          (let ((id (quoth-test--seed-user-separator
                      "describe this file"
                      "The user wants me to describe the file."
                      "This is the answer.")))
             (ignore id)
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (should (= (length msgs) 2))
-              (should (equal (crush-test--msg-role (nth 0 msgs)) "user"))
-              (should (string= (crush-test--msg-content (nth 0 msgs))
+              (should (equal (quoth-test--msg-role (nth 0 msgs)) "user"))
+              (should (string= (quoth-test--msg-content (nth 0 msgs))
                                "describe this file"))
-              (should (equal (crush-test--msg-role (nth 1 msgs)) "assistant"))
-              (should (string= (crush-test--msg-content (nth 1 msgs))
+              (should (equal (quoth-test--msg-role (nth 1 msgs)) "assistant"))
+              (should (string= (quoth-test--msg-content (nth 1 msgs))
                                "This is the answer."))
               (should-not (cl-some (lambda (m) (string-match-p "---"
-                                                               (or (crush-test--msg-content m) "")))
+                                                               (or (quoth-test--msg-content m) "")))
                                    msgs))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-excludes-pending-prompt ()
+(ert-deftest quoth-test/history-turns-excludes-pending-prompt ()
   "The pending (current) prompt never appears in the messages.
 It is being sent when the history is extracted."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((_completed-id (crush-test--seed-exchange "first prompt" "first reply")))
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+          (let ((_completed-id (quoth-test--seed-exchange "first prompt" "first reply")))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (should (= (length msgs) 2))
-              (should (equal (crush-test--msg-role (car msgs)) "user"))
-              (should (equal (crush-test--msg-content (car msgs)) "first prompt"))))))
-    (crush-test--cleanup)))
+              (should (equal (quoth-test--msg-role (car msgs)) "user"))
+              (should (equal (quoth-test--msg-content (car msgs)) "first prompt"))))))
+    (quoth-test--cleanup)))
 
 ;;; Helper: seed an exchange that carries a tool call.
-(defun crush-test--seed-tool-exchange (prompt-text answer-text tool-calls)
+(defun quoth-test--seed-tool-exchange (prompt-text answer-text tool-calls)
   "Seed an exchange and return the completed prompt's ID.
 PROMPT-TEXT is the user input, ANSWER-TEXT is the assistant answer, and
 TOOL-CALLS is a list of plists (:name :id :args-json :result :exit)
 rendered as tool blocks before the answer, tagged the way the streaming
 machinery tags them."
-  (let ((prompt-id crush--prompt-id))
+  (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
     (insert prompt-text)
     (goto-char (point-max))
     (newline)
     (let ((response-start (point)))
       (dolist (tc tool-calls)
-        (crush--tool-block-insert tc prompt-id))
+        (quoth--tool-block-insert tc prompt-id))
       ;; The answer follows the tool block at point-max (tool-block-insert
       ;; now leaves point at EOF).
       (goto-char (point-max))
       (let ((inhibit-read-only t))
         (insert answer-text))
-      (crush--tag-response-region response-start (point) prompt-id))
+      (quoth--tag-response-region response-start (point) prompt-id))
     (goto-char (point-max))
     (let ((inhibit-read-only t))
       ;; Anticipate the newline the separator insertion would leave; it
       ;; must not become part of the user turn.
       (when (eq (char-before (point)) ?\n)
         (delete-region (1- (point)) (point))))
-    (setq-local crush--prompt-id (crush--generate-id))
-    (crush--insert-input-separator)
+    (setq-local quoth--prompt-id (quoth--generate-id))
+    (quoth--insert-input-separator)
     prompt-id))
 
-(ert-deftest crush-test/answer-text-excludes-tool-blocks ()
+(ert-deftest quoth-test/answer-text-excludes-tool-blocks ()
   "Test that the answer text excludes rendered tool blocks.
-`crush-get-response-text' must not include the rendered tool block in
+`quoth-get-response-text' must not include the rendered tool block in
 the assistant answer.  The tool blocks are display decoration around
 the raw tool result; the assistant turn carries only the model's own
 answer text."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-tool-exchange
+          (let ((id (quoth-test--seed-tool-exchange
                      "run ls"
                      "Here is the listing: AGENTS.md"
                      (list (list :name "bash" :id "call_1"
                                  :args-json "{\"command\":\"ls\"}"
                                  :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
                                  :exit 0)))))
-            (let ((answer (crush-get-response-text id)))
+            (let ((answer (quoth-get-response-text id)))
               (should (string-match-p "Here is the listing: AGENTS.md" answer))
               (should-not (string-match-p "tool:" answer))
               (should-not (string-match-p "<command>" answer))
               (should-not (string-match-p "<output>" answer))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/tool-rounds-raw-output ()
+(ert-deftest quoth-test/tool-rounds-raw-output ()
   "Test that tool rounds emit the raw result as the tool content.
-The `crush--tool-rounds' function emits the raw result, not the
+The `quoth--tool-rounds' function emits the raw result, not the
 rendered decoration."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-tool-exchange
+          (let ((id (quoth-test--seed-tool-exchange
                      "run ls"
                      "Here is the listing"
                      (list (list :name "bash" :id "call_1"
                                  :args-json "{\"command\":\"ls\"}"
                                  :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
                                  :exit 0)))))
-            (let* ((msgs (crush--tool-rounds id))
-                   (tool-msg (cl-find "tool" msgs :key #'crush-test--msg-role :test #'string=)))
+            (let* ((msgs (quoth--tool-rounds id))
+                   (tool-msg (cl-find "tool" msgs :key #'quoth-test--msg-role :test #'string=)))
               (should tool-msg)
-              (should (string-match-p "<command>ls</command>" (crush-test--msg-content tool-msg)))
-              (should (string-match-p "<output>" (crush-test--msg-content tool-msg)))
-              (should (string-match-p "<exit_code>0</exit_code>" (crush-test--msg-content tool-msg)))))))
-    (crush-test--cleanup)))
+              (should (string-match-p "<command>ls</command>" (quoth-test--msg-content tool-msg)))
+              (should (string-match-p "<output>" (quoth-test--msg-content tool-msg)))
+              (should (string-match-p "<exit_code>0</exit_code>" (quoth-test--msg-content tool-msg)))))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-tool-exchange ()
+(ert-deftest quoth-test/history-turns-tool-exchange ()
   "A completed exchange with a tool call emits user + assistant(tool_calls)
 + tool + trailing assistant answer, reconstructed from the buffer."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-tool-exchange
+          (let ((id (quoth-test--seed-tool-exchange
                      "run ls"
                      "Listing done"
                      (list (list :name "bash" :id "call_1"
@@ -1992,28 +1992,28 @@ rendered decoration."
                                  :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
                                  :exit 0)))))
             (ignore id)
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (should (= (length msgs) 4))
-              (should (equal (crush-test--msg-role (nth 0 msgs)) "user"))
-              (should (equal (crush-test--msg-role (nth 1 msgs)) "assistant"))
+              (should (equal (quoth-test--msg-role (nth 0 msgs)) "user"))
+              (should (equal (quoth-test--msg-role (nth 1 msgs)) "assistant"))
               (should (vectorp (cdr (assoc 'tool_calls (nth 1 msgs)))))
-              (should (equal (crush-test--msg-role (nth 2 msgs)) "tool"))
+              (should (equal (quoth-test--msg-role (nth 2 msgs)) "tool"))
               (should (string-match-p "<command>ls</command>"
-                                      (crush-test--msg-content (nth 2 msgs))))
+                                      (quoth-test--msg-content (nth 2 msgs))))
               ;; The answer text seeded after the tool block is a trailing
               ;; plain assistant message.
-              (should (equal (crush-test--msg-role (nth 3 msgs)) "assistant"))
-              (should (string= (crush-test--msg-content (nth 3 msgs)) "Listing done"))))))
-    (crush-test--cleanup)))
+              (should (equal (quoth-test--msg-role (nth 3 msgs)) "assistant"))
+              (should (string= (quoth-test--msg-content (nth 3 msgs)) "Listing done"))))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-carries-tool-metadata ()
+(ert-deftest quoth-test/history-turns-carries-tool-metadata ()
   "Test that the assistant message carries the tool metadata.
-It carries the call's id, name, and args from the `crush-tool-call'
+It carries the call's id, name, and args from the `quoth-tool-call'
 property, and the tool result pairs with the same id."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-tool-exchange
+          (let ((id (quoth-test--seed-tool-exchange
                      "run ls"
                      "Listing done"
                      (list (list :name "bash" :id "call_1"
@@ -2021,7 +2021,7 @@ property, and the tool result pairs with the same id."
                                  :result "<command>ls</command>\n<output>\nAGENTS.md\n</output>\n<exit_code>0</exit_code>"
                                  :exit 0)))))
             (ignore id)
-            (let* ((msgs (crush--history-turns crush--prompt-id))
+            (let* ((msgs (quoth--history-turns quoth--prompt-id))
                    (assistant (nth 1 msgs))
                    (tool (nth 2 msgs))
                    (tc (aref (cdr (assoc 'tool_calls assistant)) 0)))
@@ -2031,18 +2031,18 @@ property, and the tool result pairs with the same id."
               (should (string= (cdr (assoc 'arguments (cdr (assoc 'function tc))))
                                "{\"command\":\"ls\"}"))
               (should (string= (cdr (assoc 'tool_call_id tool)) "call_1"))
-              (let ((content (crush-test--msg-content tool)))
+              (let ((content (quoth-test--msg-content tool)))
                 (should (string-match-p "<command>ls</command>" content))
                 (should-not (string-match-p "tool:" content)))
               ;; Trailing answer after the tool block.
-              (should (equal (crush-test--msg-role (nth 3 msgs)) "assistant"))
-              (should (string= (crush-test--msg-content (nth 3 msgs)) "Listing done"))))))))
+              (should (equal (quoth-test--msg-role (nth 3 msgs)) "assistant"))
+              (should (string= (quoth-test--msg-content (nth 3 msgs)) "Listing done"))))))))
 
-(ert-deftest crush-test/history-turns-legacy-tool-fallback ()
+(ert-deftest quoth-test/history-turns-legacy-tool-fallback ()
   "Test that a tool block without metadata falls back to a bare message.
 The message has `tool_call_id: unknown' so legacy buffers still replay."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "run ls")
@@ -2053,105 +2053,105 @@ The message has `tool_call_id: unknown' so legacy buffers still replay."
                   (inhibit-modification-hooks t))
               (insert "**tool block**\nraw")
               (put-text-property response-start (point)
-                                 'crush-region-type 'tool)
-              (put-text-property response-start (point) 'crush-prompt-id crush--prompt-id)
-              (put-text-property response-start (point) 'crush-response-to crush--prompt-id))
-            (crush--tag-response-region response-start (point) crush--prompt-id))
+                                 'quoth-region-type 'tool)
+              (put-text-property response-start (point) 'quoth-prompt-id quoth--prompt-id)
+              (put-text-property response-start (point) 'quoth-response-to quoth--prompt-id))
+            (quoth--tag-response-region response-start (point) quoth--prompt-id))
           (goto-char (point-max))
           (newline)
           (let ((inhibit-read-only t))
             (delete-region (1- (point)) (point)))
-          (setq-local crush--prompt-id (crush--generate-id))
-          (crush--insert-input-separator)
-          (let* ((msgs (crush--history-turns crush--prompt-id))
-                 (tool-msg (cl-find "tool" msgs :key #'crush-test--msg-role :test #'string=)))
+          (setq-local quoth--prompt-id (quoth--generate-id))
+          (quoth--insert-input-separator)
+          (let* ((msgs (quoth--history-turns quoth--prompt-id))
+                 (tool-msg (cl-find "tool" msgs :key #'quoth-test--msg-role :test #'string=)))
             (should (= (length msgs) 2))
             (should tool-msg)
             (should (string= (cdr (assoc 'tool_call_id tool-msg)) "unknown"))
-            (should (stringp (crush-test--msg-content tool-msg))))))
-    (crush-test--cleanup)))
+            (should (stringp (quoth-test--msg-content tool-msg))))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-includes-multiple-exchanges ()
+(ert-deftest quoth-test/history-turns-includes-multiple-exchanges ()
   "Two completed exchanges both appear, oldest first."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((_id1 (crush-test--seed-exchange "first prompt" "first reply"))
-                (_id2 (crush-test--seed-exchange "second prompt" "second reply")))
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+          (let ((_id1 (quoth-test--seed-exchange "first prompt" "first reply"))
+                (_id2 (quoth-test--seed-exchange "second prompt" "second reply")))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (should (= (length msgs) 4))
-              (should (equal (crush-test--msg-role (nth 0 msgs)) "user"))
-              (should (equal (crush-test--msg-content (nth 0 msgs)) "first prompt"))
-              (should (equal (crush-test--msg-role (nth 1 msgs)) "assistant"))
-              (should (equal (crush-test--msg-content (nth 1 msgs)) "first reply"))
-              (should (equal (crush-test--msg-role (nth 2 msgs)) "user"))
-              (should (equal (crush-test--msg-content (nth 2 msgs)) "second prompt"))
-              (should (equal (crush-test--msg-role (nth 3 msgs)) "assistant"))
-              (should (equal (crush-test--msg-content (nth 3 msgs)) "second reply"))))))
-    (crush-test--cleanup)))
+              (should (equal (quoth-test--msg-role (nth 0 msgs)) "user"))
+              (should (equal (quoth-test--msg-content (nth 0 msgs)) "first prompt"))
+              (should (equal (quoth-test--msg-role (nth 1 msgs)) "assistant"))
+              (should (equal (quoth-test--msg-content (nth 1 msgs)) "first reply"))
+              (should (equal (quoth-test--msg-role (nth 2 msgs)) "user"))
+              (should (equal (quoth-test--msg-content (nth 2 msgs)) "second prompt"))
+              (should (equal (quoth-test--msg-role (nth 3 msgs)) "assistant"))
+              (should (equal (quoth-test--msg-content (nth 3 msgs)) "second reply"))))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-omits-unanswered-prompt-text ()
+(ert-deftest quoth-test/history-turns-omits-unanswered-prompt-text ()
   "An unanswered prompt contributes its user text but no assistant turn."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id1 (crush-test--seed-exchange "first prompt" "first reply")))
+          (let ((id1 (quoth-test--seed-exchange "first prompt" "first reply")))
             (goto-char (point-max))
             (insert "second prompt")
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (ignore id1)
               (should (= (length msgs) 2))
-              (should (equal (crush-test--msg-content (car msgs)) "first prompt"))))))
-    (crush-test--cleanup)))
+              (should (equal (quoth-test--msg-content (car msgs)) "first prompt"))))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-user-text-skips-response-region ()
+(ert-deftest quoth-test/history-turns-user-text-skips-response-region ()
   "The user message never leaks the assistant reply text.
-The response region shares the `crush-prompt-id' tag."
+The response region shares the `quoth-prompt-id' tag."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((completed-id (crush-test--seed-exchange "hello" "answer text")))
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+          (let ((completed-id (quoth-test--seed-exchange "hello" "answer text")))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (ignore completed-id)
-              (should (equal (crush-test--msg-content (car msgs)) "hello"))
-              (should (equal (crush-test--msg-content (cadr msgs)) "answer text"))))))
-    (crush-test--cleanup)))
+              (should (equal (quoth-test--msg-content (car msgs)) "hello"))
+              (should (equal (quoth-test--msg-content (cadr msgs)) "answer text"))))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/user-turn-text-excludes-separator ()
+(ert-deftest quoth-test/user-turn-text-excludes-separator ()
   "Test that the user turn text excludes the frozen separator line.
-`crush--user-turn-text' returns the typed input only."
+`quoth--user-turn-text' returns the typed input only."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "hello world")
-          (should (equal (crush--user-turn-text crush--prompt-id)
+          (should (equal (quoth--user-turn-text quoth--prompt-id)
                          "hello world"))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/user-turn-text-includes-appended-input ()
-  "`crush--user-turn-text' returns typed input plus appended content.
-Content appended via `crush--append-as-user-input' is tagged `user',
+(ert-deftest quoth-test/user-turn-text-includes-appended-input ()
+  "`quoth--user-turn-text' returns typed input plus appended content.
+Content appended via `quoth--append-as-user-input' is tagged `user',
 so extraction reads it back as part of the turn."
-  (let ((default-directory crush-test--root))
+  (let ((default-directory quoth-test--root))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (goto-char (point-max))
             (insert "hello")
-            (crush--append-as-user-input buf "```emacs-lisp\n(code)\n```")
-            (let ((text (crush--user-turn-text crush--prompt-id)))
+            (quoth--append-as-user-input buf "```emacs-lisp\n(code)\n```")
+            (let ((text (quoth--user-turn-text quoth--prompt-id)))
               (should (string-match-p "hello" text))
               (should (string-match-p "(code)" text)))))
-      (crush-test--cleanup))))
+      (quoth-test--cleanup))))
 
 ;; Helper: seed an exchange whose response carries a reasoning span.
-(defun crush-test--seed-reasoning-exchange (prompt-text reasoning-text answer-text)
+(defun quoth-test--seed-reasoning-exchange (prompt-text reasoning-text answer-text)
   "Seed an exchange whose response carries a reasoning span.
 Types PROMPT-TEXT; streams REASONING-TEXT then ANSWER-TEXT as one
 response, tagged as the streaming machinery tags it (reasoning span
 over the CoT, response for the answer).  Returns the prompt ID."
-  (let ((prompt-id crush--prompt-id))
+  (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
     (insert prompt-text)
     (goto-char (point-max))
@@ -2159,115 +2159,115 @@ over the CoT, response for the answer).  Returns the prompt ID."
     (let ((response-start (point)))
       (insert reasoning-text "\n\n" answer-text)
       ;; Tag the whole response, then re-tag the CoT span as reasoning.
-      (crush--tag-response-region response-start (point) prompt-id)
+      (quoth--tag-response-region response-start (point) prompt-id)
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t)
             (rs (+ response-start (length reasoning-text))))
-        (put-text-property response-start rs 'crush-region-type 'reasoning)))
+        (put-text-property response-start rs 'quoth-region-type 'reasoning)))
     (goto-char (point-max))
     (let ((inhibit-read-only t))
       ;; Anticipate the newline the separator insertion would leave; it
       ;; must not become part of the user turn.
       (when (eq (char-before (point)) ?\n)
         (delete-region (1- (point)) (point))))
-    (setq-local crush--prompt-id (crush--generate-id))
-    (crush--insert-input-separator)
+    (setq-local quoth--prompt-id (quoth--generate-id))
+    (quoth--insert-input-separator)
     prompt-id))
 
-(ert-deftest crush-test/history-turns-excludes-reasoning-by-default ()
+(ert-deftest quoth-test/history-turns-excludes-reasoning-by-default ()
   "By default the assistant message carries only the answer text.
-Here `crush-hyper-history-include-reasoning' is nil, so the CoT span is
+Here `quoth-hyper-history-include-reasoning' is nil, so the CoT span is
 dropped."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-reasoning-exchange
+          (let ((id (quoth-test--seed-reasoning-exchange
                      "question" "step one\nstep two" "final answer")))
             (ignore id)
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (should (= (length msgs) 2))
-              (should (equal (crush-test--msg-content (car msgs)) "question"))
-              (should (equal (crush-test--msg-content (cadr msgs)) "final answer"))))))
-    (crush-test--cleanup)))
+              (should (equal (quoth-test--msg-content (car msgs)) "question"))
+              (should (equal (quoth-test--msg-content (cadr msgs)) "final answer"))))))
+    (quoth-test--cleanup)))
 
 ;; Helper: seed an exchange with a multi-round tool loop.  Round 1
 ;; streams reasoning then content then inserts a tool block; round 2
 ;; streams reasoning then content.  Tagged exactly as the tool loop
-;; tags it via `crush--tag-response-region' after each round.
-(defun crush-test--seed-tool-loop-exchange (prompt-text r1-reasoning r1-content
+;; tags it via `quoth--tag-response-region' after each round.
+(defun quoth-test--seed-tool-loop-exchange (prompt-text r1-reasoning r1-content
                                                         tool-calls r2-reasoning r2-content)
   "Seed a two-round tool-loop exchange for PROMPT-TEXT.
 Round 1 streams R1-REASONING then R1-CONTENT then TOOL-CALLS (a list
 of plists rendered as tool blocks); round 2 streams R2-REASONING then
 R2-CONTENT.  Returns the completed prompt's ID."
-  (let ((prompt-id crush--prompt-id))
+  (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
     (insert prompt-text)
     (goto-char (point-max))
     (newline)
     (let ((response-start (point)))
       ;; Round 1: reasoning, content, then the tool block.
-      (setq-local crush--response-start (point-marker))
-      (crush-facade--append-delta r1-reasoning 'reasoning)
-      (crush-facade--append-delta r1-content 'content)
+      (setq-local quoth--response-start (point-marker))
+      (quoth-facade--append-delta r1-reasoning 'reasoning)
+      (quoth-facade--append-delta r1-content 'content)
       (dolist (tc tool-calls)
-        (crush--tool-block-insert tc prompt-id))
-      (crush--tag-response-region (marker-position crush--response-start)
+        (quoth--tool-block-insert tc prompt-id))
+      (quoth--tag-response-region (marker-position quoth--response-start)
                                   (point-max) prompt-id)
-      (crush--reasoning-reset)
+      (quoth--reasoning-reset)
       ;; Round 2: final reasoning and content, no more tools.
-      (setq-local crush--response-start (point-marker))
-      (crush-facade--append-delta r2-reasoning 'reasoning)
-      (crush-facade--append-delta r2-content 'content)
-      (crush--tag-response-region (marker-position crush--response-start)
+      (setq-local quoth--response-start (point-marker))
+      (quoth-facade--append-delta r2-reasoning 'reasoning)
+      (quoth-facade--append-delta r2-content 'content)
+      (quoth--tag-response-region (marker-position quoth--response-start)
                                   (point-max) prompt-id)
-      (crush--reasoning-reset))
+      (quoth--reasoning-reset))
     (goto-char (point-max))
     (let ((inhibit-read-only t))
       (when (eq (char-before (point)) ?\n)
         (delete-region (1- (point)) (point))))
-    (setq-local crush--prompt-id (crush--generate-id))
-    (crush--insert-input-separator)
+    (setq-local quoth--prompt-id (quoth--generate-id))
+    (quoth--insert-input-separator)
     prompt-id))
 
-(ert-deftest crush-test/tool-rounds-no-spurious-unknown-tool ()
+(ert-deftest quoth-test/tool-rounds-no-spurious-unknown-tool ()
   "Test that a multi-round tool exchange emits no spurious tool message.
 It must not emit a bare `tool' message with `tool_call_id: unknown'
 between rounds.
 
 The trailing closing fence of a tool block is `tool'-typed but had no
-`crush-tool-call' property, so the reconstruction walker fell into the
+`quoth-tool-call' property, so the reconstruction walker fell into the
 legacy branch and swallowed the following round's reasoning + content
 as a bogus tool result."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-tool-loop-exchange
+          (let ((id (quoth-test--seed-tool-loop-exchange
                      "push to remotes"
                      "The user wants to push this to remotes."
                      "You have two remotes: `github` and `origin`."
                      (list (list :name "exec_command" :id "call_1"
                                  :args-json "{\"cmd\":\"git remote -v\"}"
-                                 :result "github\tgit@github.com:thomasc1971/crush.el.git"
+                                 :result "github\tgit@github.com:thomasc1971/quoth.git"
                                  :exit 0))
                      "GitHub pushed successfully."
                      "GitHub pushed. Now to Codeberg")))
-            (let ((msgs (crush--tool-rounds id)))
+            (let ((msgs (quoth--tool-rounds id)))
               (should (= (length msgs) 3))
               ;; assistant(tool_calls) + tool pair, then the final
               ;; plain assistant answer; no `unknown' tool message.
-              (should (equal (crush-test--msg-role (nth 0 msgs)) "assistant"))
-              (should (equal (crush-test--msg-role (nth 1 msgs)) "tool"))
+              (should (equal (quoth-test--msg-role (nth 0 msgs)) "assistant"))
+              (should (equal (quoth-test--msg-role (nth 1 msgs)) "tool"))
               (should (string= (cdr (assoc 'tool_call_id (nth 1 msgs))) "call_1"))
-              (should (equal (crush-test--msg-role (nth 2 msgs)) "assistant"))
+              (should (equal (quoth-test--msg-role (nth 2 msgs)) "assistant"))
               (should (string-match-p "Now to Codeberg"
-                                      (crush-test--msg-content (nth 2 msgs))))
+                                      (quoth-test--msg-content (nth 2 msgs))))
               (should-not (cl-find "unknown" msgs
                                    :key (lambda (m) (cdr (assoc 'tool_call_id m)))
                                    :test #'string=))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/tool-rounds-reasoning-stays-reasoning ()
+(ert-deftest quoth-test/tool-rounds-reasoning-stays-reasoning ()
   "Test that second-round reasoning stays tagged as reasoning.
 The span must stay tagged `reasoning', not be overwritten to
 `response' by the round's re-tag.
@@ -2276,9 +2276,9 @@ When reasoning was overwritten, history replay folded the CoT into the
 assistant content and, combined with the fence bug, emitted it as a
 spurious tool result."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-tool-loop-exchange
+          (let ((id (quoth-test--seed-tool-loop-exchange
                      "push to remotes"
                      "R1 reasoning"
                      "R1 content"
@@ -2287,18 +2287,18 @@ spurious tool result."
                                  :result "nothing to commit" :exit 0))
                      "R2 reasoning"
                      "R2 final answer")))
-            (let ((msgs (crush--tool-rounds id)))
+            (let ((msgs (quoth--tool-rounds id)))
               (should (= (length msgs) 3))
               ;; Final assistant message must carry only the answer,
               ;; never the CoT text.
-              (let ((final (crush-test--msg-content (nth 2 msgs))))
+              (let ((final (quoth-test--msg-content (nth 2 msgs))))
                 (should (string-match-p "R2 final answer" final))
                 (should-not (string-match-p "R2 reasoning" final))))
             ;; The reasoning spans themselves must be tagged reasoning.
             (let ((pos (point-min)))
               (while (< pos (point-max))
-                (let ((type (get-text-property pos 'crush-region-type))
-                      (end (or (next-single-property-change pos 'crush-region-type
+                (let ((type (get-text-property pos 'quoth-region-type))
+                      (end (or (next-single-property-change pos 'quoth-region-type
                                                             nil (point-max))
                                (point-max))))
                   (when (eq type 'response)
@@ -2306,234 +2306,234 @@ spurious tool result."
                                                 (buffer-substring-no-properties
                                                  pos (min end (+ pos 40))))))
                   (setq pos end)))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-reasoning-fold-keeps-final-summary ()
+(ert-deftest quoth-test/history-turns-reasoning-fold-keeps-final-summary ()
   "Test that a reasoning fold keeps the final summary in replay.
 A fold between a tool round and the final summary must not drop the
 summary from replay.  The fold marker is a display-only
 `before-string' on the body overlay, so the reasoning region is
-contiguous in the buffer and `crush--tool-rounds' sees the full
+contiguous in the buffer and `quoth--tool-rounds' sees the full
 response."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           ;; Seed a tool round, then reasoning long enough to fold
-          ;; (> `crush-reasoning-preview-lines' lines), then a summary.
+          ;; (> `quoth-reasoning-preview-lines' lines), then a summary.
           (goto-char (point-max))
           (insert "what is this file?")
           (goto-char (line-end-position))
           (newline)
-          (crush--insert-user-separator)
-          (setq-local crush--response-start (point-marker))
-          (let ((pid crush--prompt-id))
-            (let ((proc (make-pipe-process :name "crush-fold-replay"
+          (quoth--insert-user-separator)
+          (setq-local quoth--response-start (point-marker))
+          (let ((pid quoth--prompt-id))
+            (let ((proc (make-pipe-process :name "quoth-fold-replay"
                                            :noquery t :coding 'binary)))
-              (process-put proc :crush-target (current-buffer))
-              (crush-facade--append-delta "Let me check the file." 'reasoning)
-              (crush--tool-block-insert
+              (process-put proc :quoth-target (current-buffer))
+              (quoth-facade--append-delta "Let me check the file." 'reasoning)
+              (quoth--tool-block-insert
                (list :name "exec_command" :id "call_1"
-                     :args-json "{\"cmd\":\"head -100 crush.el\"}"
+                     :args-json "{\"cmd\":\"head -100 quoth.el\"}"
                      :result "Process exited with code 0\nOutput:\n;;; header"
                      :exit 0)
                pid)
-              (crush--tag-response-region (marker-position crush--response-start)
+              (quoth--tag-response-region (marker-position quoth--response-start)
                                           (point-max) pid)
-              (crush--reasoning-reset)
-              (setq-local crush--response-start (point-marker))
-              (crush-facade--append-delta
+              (quoth--reasoning-reset)
+              (setq-local quoth--response-start (point-marker))
+              (quoth-facade--append-delta
                (mapconcat #'identity (make-list 11 "think hard.") "\n")
                'reasoning)
-              (crush-facade--append-delta "FINAL SUMMARY" 'content)
-              (crush-facade--finalize)
+              (quoth-facade--append-delta "FINAL SUMMARY" 'content)
+              (quoth-facade--finalize)
               (delete-process proc))
-            (let* ((msgs (crush--tool-rounds pid))
+            (let* ((msgs (quoth--tool-rounds pid))
                    (last-msg (car (last msgs)))
                    (roles (mapcar (lambda (m) (cdr (assoc 'role m))) msgs)))
               ;; Two tool rounds' worth: assistant(tool_calls) + tool,
               ;; then a trailing assistant with the final summary.
               (should (equal roles
                              '("assistant" "tool" "assistant")))
-              (should (string= (crush-test--msg-content last-msg) "FINAL SUMMARY"))))))
-    (crush-test--cleanup)))
+              (should (string= (quoth-test--msg-content last-msg) "FINAL SUMMARY"))))))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/history-turns-splits-reasoning-when-enabled ()
+(ert-deftest quoth-test/history-turns-splits-reasoning-when-enabled ()
   "Test that reasoning is split out when history includes reasoning.
 The assistant message gains a reasoning_content field holding the CoT
 text."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
-            (crush-hyper-history-include-reasoning t))
+      (let ((buf (quoth-test--fresh-buffer))
+            (quoth-hyper-history-include-reasoning t))
         (with-current-buffer buf
-          (let ((id (crush-test--seed-reasoning-exchange
+          (let ((id (quoth-test--seed-reasoning-exchange
                      "question" "step one\nstep two" "final answer")))
             (ignore id)
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (should (= (length msgs) 2))
-              (should (equal (crush-test--msg-content (car msgs)) "question"))
-              (should (equal (crush-test--msg-content (cadr msgs)) "final answer"))
+              (should (equal (quoth-test--msg-content (car msgs)) "question"))
+              (should (equal (quoth-test--msg-content (cadr msgs)) "final answer"))
               (should (equal (cdr (assoc 'reasoning_content (cadr msgs)))
                              "step one\nstep two"))))))
-    (crush-test--cleanup)))
-(ert-deftest crush-test/history-limit-caps-turns ()
-  "`crush-hyper-history-limit' caps the prior exchanges; the tail stays."
-  (let ((crush-hyper-history-limit 1))
+    (quoth-test--cleanup)))
+(ert-deftest quoth-test/history-limit-caps-turns ()
+  "`quoth-hyper-history-limit' caps the prior exchanges; the tail stays."
+  (let ((quoth-hyper-history-limit 1))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (let ((_id1 (crush-test--seed-exchange "first" "one")))
-              (let ((_id2 (crush-test--seed-exchange "second" "two")))
-                (let ((msgs (crush--history-turns crush--prompt-id)))
+            (let ((_id1 (quoth-test--seed-exchange "first" "one")))
+              (let ((_id2 (quoth-test--seed-exchange "second" "two")))
+                (let ((msgs (quoth--history-turns quoth--prompt-id)))
                   (should (= (length msgs) 2))
-                  (should (equal (crush-test--msg-content (car msgs)) "second"))
-                  (should (equal (crush-test--msg-content (cadr msgs)) "two")))))))
-      (crush-test--cleanup))))
+                  (should (equal (quoth-test--msg-content (car msgs)) "second"))
+                  (should (equal (quoth-test--msg-content (cadr msgs)) "two")))))))
+      (quoth-test--cleanup))))
 
-(ert-deftest crush-test/history-limit-zero-disables ()
-  "`crush-hyper-history-limit' 0 means no history at all."
-  (let ((crush-hyper-history-limit 0))
+(ert-deftest quoth-test/history-limit-zero-disables ()
+  "`quoth-hyper-history-limit' 0 means no history at all."
+  (let ((quoth-hyper-history-limit 0))
     (unwind-protect
-        (let ((buf (crush-test--fresh-buffer)))
+        (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (let ((_id1 (crush-test--seed-exchange "first" "one")))
-              (should (null (crush--history-turns crush--prompt-id))))))
-      (crush-test--cleanup))))
+            (let ((_id1 (quoth-test--seed-exchange "first" "one")))
+              (should (null (quoth--history-turns quoth--prompt-id))))))
+      (quoth-test--cleanup))))
 
-(ert-deftest crush-test/history-turns-always-fresh ()
+(ert-deftest quoth-test/history-turns-always-fresh ()
   "Extraction reads the live buffer; no cache can go stale."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((id1 (crush-test--seed-exchange "first" "reply")))
-            (let ((msgs (crush--history-turns crush--prompt-id)))
+          (let ((id1 (quoth-test--seed-exchange "first" "reply")))
+            (let ((msgs (quoth--history-turns quoth--prompt-id)))
               (should (= (length msgs) 2))
-              (should (equal (crush-test--msg-content (car msgs)) "first"))
-              (should (equal (crush-test--msg-content (cadr msgs)) "reply")))
+              (should (equal (quoth-test--msg-content (car msgs)) "first"))
+              (should (equal (quoth-test--msg-content (cadr msgs)) "reply")))
             ;; Editing a completed region is reflected immediately.
             (let ((inhibit-read-only t)
                   (rs (text-property-any (point-min) (point-max)
-                                         'crush-response-to id1)))
+                                         'quoth-response-to id1)))
               (delete-region rs (1+ rs)))
-            (should-not (equal (crush--history-turns crush--prompt-id)
+            (should-not (equal (quoth--history-turns quoth--prompt-id)
                                (list (list (cons 'role "user") (cons 'content "first"))
                                      (list (cons 'role "assistant") (cons 'content "reply"))))))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; 100. Undo: programmatic changes are not undoable
 
-(ert-deftest crush-test/undo-init-leaves-empty-list ()
+(ert-deftest quoth-test/undo-init-leaves-empty-list ()
   "Fresh buffer init should leave an empty undo list."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (should (null buffer-undo-list))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/undo-user-typing-records-entries ()
+(ert-deftest quoth-test/undo-user-typing-records-entries ()
   "User typing at the prompt should be recorded in the undo list."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (should (null buffer-undo-list))
           (goto-char (point-max))
           (insert "hello")
           (should buffer-undo-list)
           (should (consp buffer-undo-list))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/undo-response-cycle-not-recorded ()
+(ert-deftest quoth-test/undo-response-cycle-not-recorded ()
   "Stream deltas, finalize, and prompt insertion should not record undo."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (should (null buffer-undo-list))
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
+          (setq-local quoth--response-start (point-marker))
           ;; Clear undo entries from the setup typing so we can test
           ;; that the response cycle alone records nothing.
           (setq buffer-undo-list nil)
-          (crush-test--simulate-facade-response "response text")
+          (quoth-test--simulate-facade-response "response text")
           ;; Programmatic changes should not have recorded undo.
           (should (null buffer-undo-list))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
-(ert-deftest crush-test/undo-after-response-user-typing-is-undoable ()
+(ert-deftest quoth-test/undo-after-response-user-typing-is-undoable ()
   "User typing after a response cycle should still be undoable."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
-          (setq-local crush--response-start (point-marker))
+          (setq-local quoth--response-start (point-marker))
           (setq buffer-undo-list nil)
-          (crush-test--simulate-facade-response "response text")
+          (quoth-test--simulate-facade-response "response text")
           (should (null buffer-undo-list))
           (goto-char (point-max))
           (insert "new input")
           (should buffer-undo-list)
           (should (consp buffer-undo-list))))
-    (crush-test--cleanup)))
+    (quoth-test--cleanup)))
 
 ;;; Regression: stale-tagged user text must be retagged at send time
 
-(ert-deftest crush-test/send-input-retags-stale-user-text ()
-  "crush-send-input must tag the input region as 'user even when
+(ert-deftest quoth-test/send-input-retags-stale-user-text ()
+  "quoth-send-input must tag the input region as 'user even when
 after-change didn't fire or text inherited stale tags (e.g. yank
 into read-only, undo).  The user's multi-line description was
 silently lost from history because it kept a stale 'separator
-crush-region-type inherited from the divider."
+quoth-region-type inherited from the divider."
   (unwind-protect
-      (let ((buf (crush-test--fresh-buffer))
+      (let ((buf (quoth-test--fresh-buffer))
             (second-id nil))
         (with-current-buffer buf
           ;; Send a first prompt to get a second prompt area.
           (goto-char (point-max))
           (insert "first prompt")
-          (let ((fake-proc (crush-test--live-pipe-proc)))
+          (let ((fake-proc (quoth-test--live-pipe-proc)))
             (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function #'make-process)
                        (lambda (&rest _) fake-proc)))
-              (crush-send-input))
-            (funcall (crush-provider-completion-action
-                      crush-active-provider))
+              (quoth-send-input))
+            (funcall (quoth-provider-completion-action
+                      quoth-active-provider))
             (when (process-live-p fake-proc)
               (delete-process fake-proc)))
           ;; second-id is the new prompt (created by finalize).
-          (setq second-id crush--prompt-id)
+          (setq second-id quoth--prompt-id)
           ;; Simulate stale tags: insert multi-line text and corrupt
           ;; its region-type to 'separator (as would happen if text
           ;; inherited properties from a yank-undo into the read-only
           ;; separator).
           (goto-char (point-max))
           (insert "line one\nline two\nline three")
-          (let ((input-start (marker-position crush--input-start-marker))
+          (let ((input-start (marker-position quoth--input-start-marker))
                 (inhibit-read-only t)
                 (inhibit-modification-hooks t))
             (put-text-property input-start (point-max)
-                               'crush-region-type 'separator))
+                               'quoth-region-type 'separator))
           ;; Verify the text is stale before send.
           (should (eq (get-text-property
-                       (marker-position crush--input-start-marker)
-                       'crush-region-type)
+                       (marker-position quoth--input-start-marker)
+                       'quoth-region-type)
                       'separator))
           ;; Send the stale-tagged input.
-          (let ((fake-proc (crush-test--live-pipe-proc)))
+          (let ((fake-proc (quoth-test--live-pipe-proc)))
             (set-process-buffer fake-proc (current-buffer))
             (cl-letf (((symbol-function #'make-process)
                        (lambda (&rest _) fake-proc)))
-              (crush-send-input))
+              (quoth-send-input))
             (when (process-live-p fake-proc)
               (delete-process fake-proc))))
         ;; History reconstruction sees the multi-line text as user input.
         (with-current-buffer buf
           (should (string-match "line one"
-                                (crush--user-turn-text second-id)))))
-    (crush-test--cleanup)))
+                                (quoth--user-turn-text second-id)))))
+    (quoth-test--cleanup)))
 
-(provide 'crush-test-buffer)
-;;; crush-test-buffer.el ends here
+(provide 'quoth-test-buffer)
+;;; quoth-test-buffer.el ends here

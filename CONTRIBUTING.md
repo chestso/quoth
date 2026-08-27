@@ -1,6 +1,6 @@
-# Contributing to crush.el
+# Contributing to Quoth
 
-Thanks for your interest in crush.el! This is a small, pre-alpha
+Thanks for your interest in Quoth! This is a small, pre-alpha
 GNU Emacs package. The sections below describe how to contribute
 effectively. For how the code is structured, see
 [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -20,18 +20,18 @@ Before opening an issue:
 2. Search existing issues for duplicates.
 3. Include:
    - Emacs version (`emacs --version`)
-   - `crush.el` version or the commit you're on
+   - `Quoth` version or the commit you're on
    - Whether `markdown-mode` is installed (many read-only / font
      rendering bugs only reproduce with it)
    - The provider in use (hyper, via the Charm Hyper gateway)
    - A minimal repro: steps, expected behavior, actual behavior
    - If a request failed, the request/response log (attach the
-     `*crush-debug*` buffer contents; never paste tokens)
+     `*quoth-debug*` buffer contents; never paste tokens)
 
 ## Setup
 
 ```sh
-git clone <repo> && cd crush.el
+git clone <repo> && cd quoth
 ```
 
 Requires Emacs 28.1+. Optionally install `markdown-mode` (MELPA) —
@@ -56,9 +56,9 @@ changes before you push.
 - Write a failing test first, confirm it fails, then implement, then
   confirm the full suite is green (the package follows this flow
   strictly).
-- Tests are ERT, organized by topic under `test/` (`crush-test-buffer.el`,
-  `crush-test-hyper.el`, `crush-test-openai.el`, `crush-test-tools.el`, ...).
-  Harness helpers (`crush-test--with-hyper-server`) travel
+- Tests are ERT, organized by topic under `test/` (`quoth-test-buffer.el`,
+  `quoth-test-hyper.el`, `quoth-test-openai.el`, `quoth-test-tools.el`, ...).
+  Harness helpers (`quoth-test--with-hyper-server`) travel
   with their topic file.
 - New behavior gets a test; the suite currently runs 300+ tests in
   ~20 seconds.
@@ -66,7 +66,7 @@ changes before you push.
 ## Code Style
 
 - Emacs Lisp, following the built-in conventions (see `elisp` manual)
-  plus the project's: public symbols `crush-*`, internals `crush--*`;
+  plus the project's: public symbols `quoth-*`, internals `quoth--*`;
   checkdoc-clean docstrings; no new byte-compiler warnings.
 - Keep functions short and prefer `let` bindings over deep nesting
   (the codebase's reading order is documented in ARCHITECTURE.md).
@@ -85,7 +85,7 @@ changes before you push.
 
 ## Scope & Roadmap
 
-crush.el is pre-alpha: breaking changes are welcome when they improve
+Quoth is pre-alpha: breaking changes are welcome when they improve
 the design — don't preserve quirks out of caution. Bigger ideas are
 tracked in [TODO.md](TODO.md) (provider features, tooling, MCP
 support, persistence); check it before starting something large so

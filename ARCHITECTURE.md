@@ -1,6 +1,6 @@
-# crush.el Architecture
+# Quoth Architecture
 
-Developer-facing documentation for the crush.el codebase: how the
+Developer-facing documentation for the Quoth codebase: how the
 package is structured, how each provider works, how the chat buffer
 tracks its content, and how to hack on it. User-facing documentation
 lives in [README.md](README.md).
@@ -18,7 +18,7 @@ them, and new code must too.
    rebuilds an identical request. All conversation state lives in the
    buffer; persistence via **file local variables** is the planned
    next step (currently Phase 2 roadmap work — see
-   `crush--session-uuid`).
+   `quoth--session-uuid`).
 
 2. **The buffer is append-only and self-freezing.** The buffer only
    ever grows at point-max; completed content (prompts, responses,
@@ -35,24 +35,24 @@ them, and new code must too.
    clickable error pane — and never carry `read-only`.
 
 4. **Protocols live in their own files.** The provider protocol
-   (`crush-provider.el`), the OpenAI chat-completions + tool protocol
-   (`crush-openai.el`), the facade stream protocol (`crush-stream.el`),
-   and the process-handler session protocol (`crush-process.el`) are
+   (`quoth-provider.el`), the OpenAI chat-completions + tool protocol
+   (`quoth-openai.el`), the facade stream protocol (`quoth-stream.el`),
+   and the process-handler session protocol (`quoth-process.el`) are
    each a dedicated, self-contained file with a single dependency
-   direction. `crush.el` only orchestrates the buffer and calls into
+   direction. `quoth.el` only orchestrates the buffer and calls into
    them.
 
 5. **Providers are abstracted and reuse the protocols.** Every provider
-   is a self-contained file implementing the `crush-provider-*`
+   is a self-contained file implementing the `quoth-provider-*`
    generics. The shared wire work (request composition, SSE parsing,
    curl transport, tool dispatch) is implemented once in
-   `crush-openai.el`; the concrete hyper provider is a thin shim that
+   `quoth-openai.el`; the concrete hyper provider is a thin shim that
    maps its configuration onto that client.
 
 6. **Buffer-unaware, presentation-agnostic layers.** The facade stream
-   protocol (`crush-stream.el`) and the process handler
-   (`crush-process.el`) never read or write the crush buffer. They
-   treat the caller as opaque: the main loop in `crush.el` is the only
+   protocol (`quoth-stream.el`) and the process handler
+   (`quoth-process.el`) never read or write the quoth buffer. They
+   treat the caller as opaque: the main loop in `quoth.el` is the only
    place with buffer access, and it threads progress, deltas, and
    errors through callbacks into those layers. Keeping the protocols
    and providers buffer-unaware is a deliberate separation of
@@ -66,52 +66,52 @@ them, and new code must too.
 
 8. **No persistent process.** Each prompt fires a new HTTP request.
    Tool execution is the one exception: interactive commands run in PTY
-   sessions owned by `crush-process.el`, scoped per crush buffer and
-   capped at `crush-process-max-sessions`.
+   sessions owned by `quoth-process.el`, scoped per quoth buffer and
+   capped at `quoth-process-max-sessions`.
 
 ## Project Layout
 
 ```
-crush.el/               # Package root
-  crush.el              # Core: config, buffer orchestration, chat mode, helpers, commands
-  crush-provider.el     # Provider protocol: base struct + crush-provider-* generics
-  crush-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
-  crush-stream.el       # Facade stream protocol: stream state, progress, error pane
-  crush-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over crush-openai)
-  crush-process.el      # Process handler: PTY sessions, output buffering, yield, stdin, cleanup
-  crush-tools.el        # Local tool implementations: exec_command + write_stdin (over crush-process)
-  crush-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
-  crush-debug-tools.el  # On-demand debug commands (region dump, history reconstruction; not loaded by default)
+quoth/                  # Package root
+  quoth.el              # Core: config, buffer orchestration, chat mode, helpers, commands
+  quoth-provider.el     # Provider protocol: base struct + quoth-provider-* generics
+  quoth-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
+  quoth-stream.el       # Facade stream protocol: stream state, progress, error pane
+  quoth-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over quoth-openai)
+  quoth-process.el      # Process handler: PTY sessions, output buffering, yield, stdin, cleanup
+  quoth-tools.el        # Local tool implementations: exec_command + write_stdin (over quoth-process)
+  quoth-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
+  quoth-debug-tools.el  # On-demand debug commands (region dump, history reconstruction; not loaded by default)
   test/                 # ERT test suite (see "Hacking" below)
 ```
 
-Dependency direction: `crush-provider.el` has no dependencies;
-`crush-openai.el` requires no sibling package;
-`crush-stream.el` requires `crush-provider`; `crush-xxh3.el` has no
-dependencies (pure math); `crush-process.el` requires only `cl-lib`
-and `subr-x`; `crush-hyper-provider.el` requires `crush-provider` +
-`crush-openai` + `crush-xxh3`; `crush-tools.el` requires
-`crush-openai` + `crush-process` and registers its tools at load;
-`crush.el` requires all seven. Shared runtime plumbing
-(`crush-facade--append-delta`, `crush-facade--record-error`,
-`crush--debug-log`) stays in `crush.el` — the providers call it through
+Dependency direction: `quoth-provider.el` has no dependencies;
+`quoth-openai.el` requires no sibling package;
+`quoth-stream.el` requires `quoth-provider`; `quoth-xxh3.el` has no
+dependencies (pure math); `quoth-process.el` requires only `cl-lib`
+and `subr-x`; `quoth-hyper-provider.el` requires `quoth-provider` +
+`quoth-openai` + `quoth-xxh3`; `quoth-tools.el` requires
+`quoth-openai` + `quoth-process` and registers its tools at load;
+`quoth.el` requires all seven. Shared runtime plumbing
+(`quoth-facade--append-delta`, `quoth-facade--record-error`,
+`quoth--debug-log`) stays in `quoth.el` — the providers call it through
 buffer-local process references and `declare-function` stubs.
 
 ## Provider Abstraction
 
 All provider interaction goes through a provider protocol (the
-`cl-defgeneric` methods `crush-provider-send-prompt`,
-`crush-provider-interrupt`, `crush-provider-active-p`,
-`crush-provider-cleanup`, `crush-provider-grant-permission`, plus the
-internal `crush-provider--tool-calls` and
-`crush-provider--tool-results` used by the tool loop). The protocol and
-the shared `crush-provider` base struct live in `crush-provider.el`;
+`cl-defgeneric` methods `quoth-provider-send-prompt`,
+`quoth-provider-interrupt`, `quoth-provider-active-p`,
+`quoth-provider-cleanup`, `quoth-provider-grant-permission`, plus the
+internal `quoth-provider--tool-calls` and
+`quoth-provider--tool-results` used by the tool loop). The protocol and
+the shared `quoth-provider` base struct live in `quoth-provider.el`;
 each concrete provider is a dedicated, buffer-unaware file:
 
-- `crush-hyper-provider.el` — the default implementation: direct HTTP
+- `quoth-hyper-provider.el` — the default implementation: direct HTTP
   to the Charm Hyper gateway (see below).
 
-The shared `crush-provider` base struct has slots `buffer`,
+The shared `quoth-provider` base struct has slots `buffer`,
 `completion-action`, `working-directory`, `transport-process` (the live
 transport process owned by the provider, set by `send-prompt`),
 `application-count` (default 1), and `type`. The hyper provider
@@ -119,41 +119,41 @@ subclasses it and adds its own slots (base URL, token, model,
 session-affinity hash, x-crush-id).
 
 Process control is a provider responsibility, routed through the
-protocol: `crush-send-input` consults `crush-provider-active-p` for its
-"still running" guard, `crush-interrupt` calls
-`crush-provider-interrupt`, and `crush-clear-buffer` calls
-`crush-provider-cleanup`. The facade never reads or kills a transport
+protocol: `quoth-send-input` consults `quoth-provider-active-p` for its
+"still running" guard, `quoth-interrupt` calls
+`quoth-provider-interrupt`, and `quoth-clear-buffer` calls
+`quoth-provider-cleanup`. The facade never reads or kills a transport
 process directly.
 
 ## Hyper provider (primary)
 
-The hyper provider (default) is crush.el's **primary mode of
+The hyper provider (default) is Quoth's **primary mode of
 operation**: it posts the prompt to Hyper's OpenAI-compatible
 chat-completions endpoint (`POST {base-url}/chat/completions`, base URL
 defaulting to `https://hyper.charm.land/v1`) and streams the response
-directly. It needs no `crush` binary — only `curl` (used the same way
+directly. It needs no `quoth` binary — only `curl` (used the same way
 gptel and plz.el use it). The HTTP+SSE wire work is implemented once in
-the reusable OpenAI client `crush-openai.el`; the provider is a thin
+the reusable OpenAI client `quoth-openai.el`; the provider is a thin
 shim supplying hyper config (base URL, token, session-affinity hash,
 x-crush-id) and mapping the provider protocol onto the client's
-`crush-openai-compose-request` and `crush-openai-request`.
+`quoth-openai-compose-request` and `quoth-openai-request`.
 
 ### How it works
 
-1. `crush-provider-send-prompt` composes the request body via
-   `crush-openai-compose-request` (messages array with a minimal
+1. `quoth-provider-send-prompt` composes the request body via
+   `quoth-openai-compose-request` (messages array with a minimal
    system prompt, the user prompt, model, and `stream: t`) and fires a
    `curl --config -` subprocess; the config (URL, `request = POST`,
    JSON content-type, bearer auth header, and `data-binary = @-`) plus
    the JSON body go to curl over stdin. `data-binary = @-` is the
    **last** config line so curl reads the rest of stdin as the body.
 2. SSE frames are parsed incrementally in the process filter
-   (`crush--hyper-curl-filter` → `crush-openai-sse-feed`); content
+   (`quoth--hyper-curl-filter` → `quoth-openai-sse-feed`); content
    deltas are emitted to the facade's `:on-delta` callback
-   (`crush-facade--append-delta`), which appends them in order and
+   (`quoth-facade--append-delta`), which appends them in order and
    drives the reasoning overlay.
 3. A final `[DONE]` event, or the process exiting, runs the injected
-   completion (`crush-facade--finalize`), which tags the response,
+   completion (`quoth-facade--finalize`), which tags the response,
    freezes it, and inserts a fresh input divider (`---`, framed by
    blank lines). Stream errors
    surface through `:on-error` into a clickable error pane.
@@ -164,7 +164,7 @@ The hyper provider is stateful: prior conversation from the buffer's
 tagged regions is folded into each request's messages array as
 `[system, prior-user, prior-assistant, prior-tool, ..., current-user]` (tool
 rounds interleave as assistant `tool_calls` + `role: "tool"` result pairs).
-Set `crush-hyper-history-limit` to `0` for stateless per-prompt requests.
+Set `quoth-hyper-history-limit` to `0` for stateless per-prompt requests.
 Because the buffer is the source of truth, `C-c c k` (clear) starts a
 fresh conversation naturally.
 
@@ -182,17 +182,17 @@ whose XXH3-64 hash is sent as the `x-session-id` /
 `x-session-affinity` headers on every hyper request, enabling
 server-side prefix/token caching (HYPER-API.md §3.1). The raw UUID
 never leaves the machine; only the 16-hex hash goes over TLS. Disable
-with `crush-hyper-session-cache-p` (default t). Persistence of the UUID
+with `quoth-hyper-session-cache-p` (default t). Persistence of the UUID
 as a file local variable is planned but not yet implemented.
 
 ### Tool calls
 
-When `crush-tools-enabled` is non-nil (default), the model may call a
-tool. There are two tools, both implemented in `crush-tools.el` as thin
-wrappers over the `crush-process.el` session handler:
+When `quoth-tools-enabled` is non-nil (default), the model may call a
+tool. There are two tools, both implemented in `quoth-tools.el` as thin
+wrappers over the `quoth-process.el` session handler:
 
 - `exec_command` — starts a command in a new PTY session, yields for
-  the requested window (default `crush-process-yield-ms`, clamped
+  the requested window (default `quoth-process-yield-ms`, clamped
   250–30000 ms), and reports either `Process exited with code N` or
   `Process running with session ID N` plus the captured output.
 - `write_stdin` — writes to a live session (identified by the session
@@ -216,7 +216,7 @@ Process exited with code 0
 Output:
 ARCHITECTURE.md
 CONTRIBUTING.md
-crush.el
+quoth.el
 ...
 ```
 
@@ -228,42 +228,42 @@ lines. The `exec_command` command (`ran`) is always fenced — single- or
 multi-line — so the command text is a proper code block. Other values
 fence only when multiline. The fence length is one
 backtick longer than the longest run of backticks in the enclosed text
-(`crush--fence-str`), so nested fences never break the block. The tool block is read-only and
-tagged `crush-region-type 'tool'`; inside it, the raw result text
-(between the output fences) is tagged `crush-region-type 'tool-output'`
+(`quoth--fence-str`), so nested fences never break the block. The tool block is read-only and
+tagged `quoth-region-type 'tool'`; inside it, the raw result text
+(between the output fences) is tagged `quoth-region-type 'tool-output'`
 — a nested region that survives response re-tagging — and the block
-carries the call's `crush-tool-call` metadata (id, name, args). When
+carries the call's `quoth-tool-call` metadata (id, name, args). When
 the exchange enters conversation history, only the raw result and the
 real `tool_call_id` travel, never the rendered markup.
 
-The tool _protocol_ — the `crush-openai-tool-call` struct, the registry
-(`crush-openai-tool-registry`), dispatch (`crush-openai-execute-tool`),
+The tool _protocol_ — the `quoth-openai-tool-call` struct, the registry
+(`quoth-openai-tool-registry`), dispatch (`quoth-openai-execute-tool`),
 argument parsing, and the execution policy — lives in
-`crush-openai.el`; `crush-tools.el` only implements the concrete tools
+`quoth-openai.el`; `quoth-tools.el` only implements the concrete tools
 and registers them at load.
 
-### Process handler (crush-process.el)
+### Process handler (quoth-process.el)
 
 General-purpose, model-neutral, buffer-unaware layer that owns PTY
 sessions. It handles spawning (with sanitized env: `PAGER=cat`,
 `GIT_PAGER=cat`, `TERM=dumb`), output buffering, yield/deadline
 draining, stdin writes, and cleanup. Sessions live in a global registry
-keyed by session id and are scoped per crush buffer through the `owner`
-slot; `crush-clear-buffer` runs `crush-process--cleanup-buffer` to kill
-every session owned by the cleared buffer. `crush-process-max-sessions`
+keyed by session id and are scoped per quoth buffer through the `owner`
+slot; `quoth-clear-buffer` runs `quoth-process--cleanup-buffer` to kill
+every session owned by the cleared buffer. `quoth-process-max-sessions`
 (default 128) caps concurrent sessions.
 
 ### Current limitations
 
-- Manual token only (`crush-hyper-token`); OAuth device flow is planned.
+- Manual token only (`quoth-hyper-token`); OAuth device flow is planned.
 - No model catalog.
-- `crush-provider-grant-permission` is a no-op (tools run without
+- `quoth-provider-grant-permission` is a no-op (tools run without
   confirmation).
 
 ## Chat Buffer Composition
 
-The crush buffer's major mode is the parent mode (`markdown-mode` if
-available, else `text-mode`); `crush-chat-mode` is a **minor mode** that
+The quoth buffer's major mode is the parent mode (`markdown-mode` if
+available, else `text-mode`); `quoth-chat-mode` is a **minor mode** that
 provides the chat keybindings and hooks. Rendering, prompt tracking,
 and fontification are all implemented with text properties, markers,
 and markdown native font-lock instead of comint.
@@ -284,15 +284,15 @@ properties, never `read-only`):
 
 - **Reasoning (CoT) highlight + fold.** The reasoning span is
   highlighted by an overlay and, when longer than
-  `crush-reasoning-preview-lines`, folded via a two-overlay model: an
+  `quoth-reasoning-preview-lines`, folded via a two-overlay model: an
   always-visible preview overlay over the first N lines, and a body
   overlay carrying `invisible` + a display-only `before-string` marker.
   No buffer text is inserted or deleted during toggle, keeping the
   buffer-as-database intact.
 - **Error pane.** Stream errors render as a clickable, read-only
-  overlay at point-max carrying `crush-error-action`; `RET` dismisses
-  it. Both overlay kinds are tagged `crush-overlay` so
-  `crush-clear-buffer` sweeps them.
+  overlay at point-max carrying `quoth-error-action`; `RET` dismisses
+  it. Both overlay kinds are tagged `quoth-overlay` so
+  `quoth-clear-buffer` sweeps them.
 
 ### Metadata
 
@@ -301,22 +301,22 @@ highlighting is left to markdown-mode's native font-lock.
 
 | Text Region                           | Property                                                                                               | Value                                                   |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| Input separator (`---` divider)       | `crush-prompt-id` + `crush-region-type 'separator` + `read-only`                                       | Frozen markdown divider above the input area            |
-| User input (typed + inserted context) | `crush-prompt-id` + `crush-region-type 'user`                                                          | Editable input; inserted context appended as user input |
-| Tool blocks                           | `crush-region-type 'tool` + `crush-prompt-id` + `crush-response-to` + `crush-tool-call` (id/name/args) | Displayed tool call                                     |
-| Tool raw result                       | `crush-region-type 'tool-output` (nested) + `crush-prompt-id` + `crush-response-to`                    | Raw result sent in history                              |
-| Response text                         | `crush-response-to` + `crush-region-type 'response`                                                    | The prompt ID being answered                            |
-| Reasoning text                        | `crush-region-type 'reasoning` + `crush-prompt-id` + `crush-response-to`                               | Chain-of-thought sub-span                               |
+| Input separator (`---` divider)       | `quoth-prompt-id` + `quoth-region-type 'separator` + `read-only`                                       | Frozen markdown divider above the input area            |
+| User input (typed + inserted context) | `quoth-prompt-id` + `quoth-region-type 'user`                                                          | Editable input; inserted context appended as user input |
+| Tool blocks                           | `quoth-region-type 'tool` + `quoth-prompt-id` + `quoth-response-to` + `quoth-tool-call` (id/name/args) | Displayed tool call                                     |
+| Tool raw result                       | `quoth-region-type 'tool-output` (nested) + `quoth-prompt-id` + `quoth-response-to`                    | Raw result sent in history                              |
+| Response text                         | `quoth-response-to` + `quoth-region-type 'response`                                                    | The prompt ID being answered                            |
+| Reasoning text                        | `quoth-region-type 'reasoning` + `quoth-prompt-id` + `quoth-response-to`                               | Chain-of-thought sub-span                               |
 
 ### History Retrieval Functions
 
 ```elisp
 ;; Get the prompt ID of the current pending prompt
-(and (boundp 'crush--prompt-id) crush--prompt-id)
+(and (boundp 'quoth--prompt-id) quoth--prompt-id)
 ;; => "20260805-091012-abc123"
 
 ;; Get all prompt IDs in buffer
-(crush-get-all-prompts)
+(quoth-get-all-prompts)
 ;; => ("20260805-091012-abc123" "20260805-091000-xyz789")
 ```
 
@@ -326,9 +326,9 @@ Text properties can be accessed directly:
 
 ```elisp
 ;; Get property at point
-(get-text-property (point) 'crush-prompt-id)
-(get-text-property (point) 'crush-region-type)
-(get-text-property (point) 'crush-response-to)
+(get-text-property (point) 'quoth-prompt-id)
+(get-text-property (point) 'quoth-region-type)
+(get-text-property (point) 'quoth-response-to)
 ```
 
 ## Hacking
@@ -345,7 +345,7 @@ Text properties can be accessed directly:
 ```sh
 sh test/run-tests.sh      # byte-compile all sources + run the ERT suite
 emacs --batch -L . -L test \
-  --eval "(ert-run-tests-batch-and-exit \"crush-test/region-label\")"   # run a subset
+  --eval "(ert-run-tests-batch-and-exit \"quoth-test/region-label\")"   # run a subset
 ```
 
 The runner byte-compiles first (compiler warnings are treated as
@@ -355,7 +355,7 @@ errors-in-waiting — do not introduce new ones) and sets
 the fontification regression tests run under the markdown parent.
 
 Run a single topic file with its own harness helpers; test files load
-`crush` via `require` with a fallback to the repo root.
+`quoth` via `require` with a fallback to the repo root.
 
 ### Formatting
 
@@ -370,8 +370,8 @@ Always run it before committing.
 
 - Read-only bugs: many only reproduce under markdown-mode — run with
   it installed.
-- Region/tagging bugs: check which text properties (`crush-region-type`,
-  `crush-prompt-id`, `crush-response-to`) are applied where, using
+- Region/tagging bugs: check which text properties (`quoth-region-type`,
+  `quoth-prompt-id`, `quoth-response-to`) are applied where, using
   `get-text-property` or the header line's `region:` label.
 - Backend wire tests use `test/hyper-server.py` (started as a
   subprocess per test) — inspect the capture file for request bodies.
@@ -381,12 +381,12 @@ Always run it before committing.
 
 ### Conventions
 
-- `crush-` prefix: public commands, defcustoms, defgroup, faces.
-- `crush--` prefix: internal functions, state variables, markers.
-- Provider protocol names: `crush-provider-*` generics; the concrete
-  provider struct is `crush-hyper-provider`.
-- Test names: `crush-test/<topic>` under `ert-deftest`; helpers
-  `crush-test--...`, traveling with their topic file.
+- `quoth-` prefix: public commands, defcustoms, defgroup, faces.
+- `quoth--` prefix: internal functions, state variables, markers.
+- Provider protocol names: `quoth-provider-*` generics; the concrete
+  provider struct is `quoth-hyper-provider`.
+- Test names: `quoth-test/<topic>` under `ert-deftest`; helpers
+  `quoth-test--...`, traveling with their topic file.
 - Docstrings follow checkdoc conventions.
 - Pre-alpha: no backwards-compatibility constraint — change things
   breakingly when a cleaner design is clear.

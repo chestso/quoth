@@ -1,8 +1,8 @@
-;;; crush-test-xxh3.el --- XXH3-64 tests for crush  -*- lexical-binding: t; -*-
+;;; quoth-test-xxh3.el --- XXH3-64 tests for quoth  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
@@ -44,7 +44,7 @@
 ;;; `require'; fall back to loading each dep from this file's directory
 ;;; or its parent (the package root) so flycheck and package loads work.
 (eval-and-compile
-  (dolist (dep '("crush-xxh3"))
+  (dolist (dep '("quoth-xxh3"))
     (unless (require (intern dep) nil t)
       (let* ((base (file-name-directory
                     (or buffer-file-name load-file-name default-directory)))
@@ -57,60 +57,60 @@
                 (load file nil t)
                 (setq loaded t)))))))))
 
-(ert-deftest crush-test/xxh3-empty-string ()
+(ert-deftest quoth-test/xxh3-empty-string ()
   "The empty string hashes to zeebo/xxh3's value (2d06800538d394c2)."
-  (should (string= (crush-xxh3-hash64 "") "2d06800538d394c2")))
+  (should (string= (quoth-xxh3-hash64 "") "2d06800538d394c2")))
 
-(ert-deftest crush-test/xxh3-single-byte ()
+(ert-deftest quoth-test/xxh3-single-byte ()
   "A one-byte input hashes to zeebo/xxh3's value (eaf06c6480b2cd11)."
-  (should (string= (crush-xxh3-hash64 "x") "eaf06c6480b2cd11")))
+  (should (string= (quoth-xxh3-hash64 "x") "eaf06c6480b2cd11")))
 
-(ert-deftest crush-test/xxh3-short-string ()
+(ert-deftest quoth-test/xxh3-short-string ()
   "A short ASCII input hashes to zeebo/xxh3's value (e84c92e9c14c5eb1)."
-  (should (string= (crush-xxh3-hash64 "crush.el") "e84c92e9c14c5eb1")))
+  (should (string= (quoth-xxh3-hash64 "crush.el") "e84c92e9c14c5eb1")))
 
-(ert-deftest crush-test/xxh3-mid-string ()
+(ert-deftest quoth-test/xxh3-mid-string ()
   "A typical sentence hashes to zeebo/xxh3's value (ce7d19a5418fb365)."
-  (should (string= (crush-xxh3-hash64
+  (should (string= (quoth-xxh3-hash64
                     "The quick brown fox jumps over the lazy dog")
                    "ce7d19a5418fb365")))
 
-(ert-deftest crush-test/xxh3-uuid-shaped ()
-  "Hash the Crush session-UUID shape (f47ac10b...).
+(ert-deftest quoth-test/xxh3-uuid-shaped ()
+  "Hash the Quoth session-UUID shape (f47ac10b...).
 zeebo/xxh3 yields db22027126414ba6, the exact wire value for
 x-session-id / x-session-affinity."
-  (should (string= (crush-xxh3-hash64 "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+  (should (string= (quoth-xxh3-hash64 "f47ac10b-58cc-4372-a567-0e02b2c3d479")
                    "db22027126414ba6")))
 
-(ert-deftest crush-test/xxh3-long-string ()
+(ert-deftest quoth-test/xxh3-long-string ()
   "Hash a 48-byte input through the long path (>= 48 bytes).
 zeebo/xxh3 yields e80a6fbd46bf1339."
-  (should (string= (crush-xxh3-hash64
+  (should (string= (quoth-xxh3-hash64
                     "0123456789abcdef0123456789abcdef0123456789abcdef")
                    "e80a6fbd46bf1339")))
 
-(ert-deftest crush-test/xxh3-output-shape ()
+(ert-deftest quoth-test/xxh3-output-shape ()
   "The output is 16 lowercase hex characters regardless of input."
   (dolist (input '("" "a" "abcdefghijklmnopqrstuvwxyz" "0123456789abcdef0123456789abcdef0123456789abcdef"))
-    (let ((digest (crush-xxh3-hash64 input)))
+    (let ((digest (quoth-xxh3-hash64 input)))
       (should (= (length digest) 16))
       (should (string-match-p "\\`[0-9a-f]\\{16\\}\\'" digest)))))
 
-(ert-deftest crush-test/xxh3-deterministic ()
+(ert-deftest quoth-test/xxh3-deterministic ()
   "The same input always hashes to the same value."
-  (should (string= (crush-xxh3-hash64 "crush.el")
-                   (crush-xxh3-hash64 "crush.el"))))
+  (should (string= (quoth-xxh3-hash64 "quoth.el")
+                   (quoth-xxh3-hash64 "quoth.el"))))
 
-(ert-deftest crush-test/xxh3-beam-48-boundary ()
+(ert-deftest quoth-test/xxh3-beam-48-boundary ()
   "Inputs straddling the XXH3 48-byte long/short boundary are stable:
 a 48-byte input and a 47-byte input both hash deterministically."
   (let ((s48 (make-string 48 ?a))
         (s47 (make-string 47 ?a)))
-    (should (string= (crush-xxh3-hash64 s48) (crush-xxh3-hash64 s48)))
-    (should (string= (crush-xxh3-hash64 s47) (crush-xxh3-hash64 s47)))
-    (should-not (string= (crush-xxh3-hash64 s48) (crush-xxh3-hash64 s47)))))
+    (should (string= (quoth-xxh3-hash64 s48) (quoth-xxh3-hash64 s48)))
+    (should (string= (quoth-xxh3-hash64 s47) (quoth-xxh3-hash64 s47)))
+    (should-not (string= (quoth-xxh3-hash64 s48) (quoth-xxh3-hash64 s47)))))
 
-(ert-deftest crush-test/xxh3-official-known-answers ()
+(ert-deftest quoth-test/xxh3-official-known-answers ()
   "Check XXH3-64 against the official known-answer values.
 Reference: Cyan4973/xxHash (independently of zeebo)."
   (let ((pairs '(("" . "2d06800538d394c2")
@@ -123,7 +123,7 @@ Reference: Cyan4973/xxHash (independently of zeebo)."
                  ("12345678901234567890123456789012345678901234567890123456789012345678901234567890"
                   . "7f58aa2520c681f9"))))
     (dolist (pair pairs)
-      (should (string= (crush-xxh3-hash64 (car pair)) (cdr pair))))))
+      (should (string= (quoth-xxh3-hash64 (car pair)) (cdr pair))))))
 
-(provide 'crush-test-xxh3)
-;;; crush-test-xxh3.el ends here
+(provide 'quoth-test-xxh3)
+;;; quoth-test-xxh3.el ends here

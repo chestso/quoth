@@ -1,12 +1,12 @@
-;;; crush.el --- Chat with AI providers from GNU Emacs  -*- lexical-binding: t; -*-
+;;; quoth.el --- Chat with AI providers from GNU Emacs  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
-;;; Prefix: crush-
+;;; Prefix: quoth-
 
 ;;; This file is not part of GNU Emacs.
 
@@ -30,7 +30,7 @@
 
 ;;; Commentary:
 
-;; crush.el is a GNU Emacs package for direct provider interaction: a
+;; quoth.el is a GNU Emacs package for direct provider interaction: a
 ;; dedicated interactive buffer that sends structured prompts to AI
 ;; models over HTTP and receives streamed responses.  The provider talks
 ;; to the Charm Hyper gateway (https://hyper.charm.land) via streaming
@@ -39,7 +39,7 @@
 ;; In addition to the dedicated chat buffer, any buffer selection can
 ;; be used as context.  The selection is formatted as a markdown fenced
 ;; code block with the file path and line numbers, then inserted
-;; into the crush buffer where the user can add additional context
+;; into the quoth buffer where the user can add additional context
 ;; about what to do with it.
 ;;
 ;; See TODO.md for the full project goal and roadmap.
@@ -55,12 +55,12 @@
 
 ;;; Configuration
 
-(defgroup crush nil
+(defgroup quoth nil
   "Chat with AI providers from GNU Emacs."
   :group 'tools
-  :prefix "crush-")
+  :prefix "quoth-")
 
-(defface crush-reasoning-face
+(defface quoth-reasoning-face
   '((t :inherit region :extend t))
   "Face for streamed chain-of-thought reasoning text.
 Applied via an overlay (not a text property) so markdown-mode
@@ -68,157 +68,157 @@ refontification cannot strip it.  Inherits the theme's `region'
 background, a neutral dark tint that leaves markdown's text colors
 visible on top.  `:extend t' paints the background across the full
 window width on every line the reasoning covers."
-  :group 'crush)
+  :group 'quoth)
 
-(defcustom crush-model nil
-  "Model to use for Crush requests.
-When nil, the provider falls back to `crush-openai-default-model'.  The
+(defcustom quoth-model nil
+  "Model to use for Quoth requests.
+When nil, the provider falls back to `quoth-openai-default-model'.  The
 facade passes this into the provider's model slot at buffer
 initialization.  Should be a model name like
 `claude-sonnet-4-20250514' or `gpt-4o'."
   :type '(choice (const nil) string)
-  :group 'crush)
+  :group 'quoth)
 
 ;;; Buffer-local state
 
-;;; `crush--continue', `crush--session-uuid', `crush--session-id', and
-;;; `crush--response-start' are the shared buffer-local state owned by
+;;; `quoth--continue', `quoth--session-uuid', `quoth--session-id', and
+;;; `quoth--response-start' are the shared buffer-local state owned by
 ;;; the facade (defined below); providers must not touch them.  The
 ;;; provider owns its transport process in
-;;; `crush-provider-transport-process' — the facade never touches a
+;;; `quoth-provider-transport-process' — the facade never touches a
 ;;; process directly.
 
-(defcustom crush-reasoning-preview-lines 10
+(defcustom quoth-reasoning-preview-lines 10
   "Number of reasoning lines to show in the collapsed preview.
 When a reasoning region contains more than this many lines, the first
 N lines are shown as a preview and the rest are hidden behind a fold
 marker.  Set to 0 to always collapse with no preview.
 Must be a non-negative integer."
   :type 'integer
-  :group 'crush)
+  :group 'quoth)
 
-(defcustom crush-hyper-history-limit 200
+(defcustom quoth-hyper-history-limit 200
   "Maximum number of prior prompts sent as history by the hyper provider.
 0 disables history entirely (each prompt is a single request).  Only
 the last LIMIT complete exchanges are sent; the current turn is always
 sent in full."
   :type 'integer
-  :group 'crush)
+  :group 'quoth)
 
-(defcustom crush--continue nil
+(defcustom quoth--continue nil
   "Whether the next prompt continues the conversation session.
 When non-nil, the next prompt continues the active session.
-Set to nil by `crush-clear-buffer' so the next prompt starts a fresh
+Set to nil by `quoth-clear-buffer' so the next prompt starts a fresh
 session.
 Buffer-local."
   :type 'boolean
-  :group 'crush)
+  :group 'quoth)
 
-(defcustom crush-working-directory nil
-  "Working directory for the crush provider.
+(defcustom quoth-working-directory nil
+  "Working directory for the quoth provider.
 When nil, uses the project root if `project-current' is non-nil,
 otherwise `default-directory'."
   :type '(choice (const nil) directory)
-  :group 'crush)
+  :group 'quoth)
 
-(defcustom crush-input-ring-size 32
+(defcustom quoth-input-ring-size 32
   "Maximum number of prompts stored in the input ring."
   :type 'integer
-  :group 'crush)
+  :group 'quoth)
 
-(defcustom crush-debug-mode t
-  "When non-nil, log commands, input, and output to a *crush-debug* buffer."
+(defcustom quoth-debug-mode t
+  "When non-nil, log commands, input, and output to a *quoth-debug* buffer."
   :type 'boolean
-  :group 'crush)
+  :group 'quoth)
 
-(defcustom crush--session nil
+(defcustom quoth--session nil
   "Session ID to pass to the provider.
 When non-nil, continues a specific session by ID.
-Takes precedence over `crush--continue'.
+Takes precedence over `quoth--continue'.
 Buffer-local."
   :type '(choice (const nil) string)
-  :group 'crush)
+  :group 'quoth)
 
-(defvar-local crush--session-uuid nil
-  "Opaque UUID identifying this crush buffer's session.
-Generated in `crush--init-buffer' and rotated by `crush-clear-buffer'.
+(defvar-local quoth--session-uuid nil
+  "Opaque UUID identifying this quoth buffer's session.
+Generated in `quoth--init-buffer' and rotated by `quoth-clear-buffer'.
 The hyper provider hashes it (XXH3-64) for the x-session-id /
 x-session-affinity cache-affinity headers; the raw UUID is never sent
 to the network.  Persistence (as a file-local) is Phase 2 roadmap work.
 Buffer-local.")
 
-(defvar-local crush--session-id nil
-  "The 16-hex XXH3-64 of `crush--session-uuid'.
+(defvar-local quoth--session-id nil
+  "The 16-hex XXH3-64 of `quoth--session-uuid'.
 Computed lazily by the hyper provider on request; kept here so the hash
 is stable for the session's life, and to trace as `SESS' in the debug
 log.  Buffer-local.")
 
-(defvar crush--response-start nil
+(defvar quoth--response-start nil
   "Marker for where response text starts.
 Set when prompt is sent, used by sentinel to tag response text.
 Buffer-local.")
 
 ;;; The facade stream protocol (state, progress, error pane) lives in
-;;; `crush-stream.el'; crush.el requires and transitions it.
+;;; `quoth-stream.el'; quoth.el requires and transitions it.
 
-(defvar crush--prompt-id nil
+(defvar quoth--prompt-id nil
   "Unique ID for the current pending prompt.
 Generated when prompt marker is created, used when prompt is sent.
 Buffer-local.")
 
-(defvar crush--initialized nil
-  "Non-nil once a crush buffer has been initialized.
-Used to make `crush--init-buffer' idempotent regardless of the active
+(defvar quoth--initialized nil
+  "Non-nil once a quoth buffer has been initialized.
+Used to make `quoth--init-buffer' idempotent regardless of the active
 parent mode (which may be `markdown-mode' or `text-mode').
 Buffer-local.")
 
-(defvar crush--prompt-start-marker nil
+(defvar quoth--prompt-start-marker nil
   "Marker at the start of the frozen input separator line.
 Buffer-local.")
 
-(defvar crush--reasoning-start nil
+(defvar quoth--reasoning-start nil
   "Marker at the start of the current reasoning region, or nil.
 Set by the hyper provider on the first reasoning delta streamed for
 the current prompt.  Buffer-local.")
 
-(defvar crush--reasoning-end nil
+(defvar quoth--reasoning-end nil
   "Marker at the end of the reasoning region, or nil.
 Set on the first content delta (reasoning stops where the answer
 begins).  Buffer-local.")
 
-(defvar crush--reasoning-overlay nil
+(defvar quoth--reasoning-overlay nil
   "Overlay highlighting the current reasoning region, or nil.
-Carries `crush-reasoning-face' and the `crush-overlay' property so
-`crush-clear-buffer' removes it.  Buffer-local.")
+Carries `quoth-reasoning-face' and the `quoth-overlay' property so
+`quoth-clear-buffer' removes it.  Buffer-local.")
 
-(defvar crush--input-start-marker nil
+(defvar quoth--input-start-marker nil
   "Marker at the start of the editable input region.
 This is right after the frozen input separator line.
 Buffer-local.")
 
-(defvar crush--project-root nil
+(defvar quoth--project-root nil
   "Canonical project root (or `default-directory') this buffer serves.
 Set at initialization; determines the buffer name and the working
-directory for the crush provider.  Buffer-local.")
+directory for the quoth provider.  Buffer-local.")
 
-(defvar crush--input-ring nil
+(defvar quoth--input-ring nil
   "Ring of previously entered prompts.
 Buffer-local.")
 
-(defvar crush--input-ring-index 0
-  "Position in `crush--input-ring' for previously-entered inputs.
-Navigated with `crush--input-previous' / `crush--input-next'.
+(defvar quoth--input-ring-index 0
+  "Position in `quoth--input-ring' for previously-entered inputs.
+Navigated with `quoth--input-previous' / `quoth--input-next'.
 Buffer-local.")
 
-(defvar crush--input-ring-file-name
-  (expand-file-name "crush-history" user-emacs-directory)
+(defvar quoth--input-ring-file-name
+  (expand-file-name "quoth-history" user-emacs-directory)
   "File where input history is persisted.")
 
 ;;; Backend abstraction
 
-;;; The `crush-provider' base struct and the `crush-provider-*' protocol
-;;; live in `crush-provider.el'; the reusable OpenAI client in
-;;; `crush-openai.el'; the concrete provider in `crush-hyper-provider.el'
+;;; The `quoth-provider' base struct and the `quoth-provider-*' protocol
+;;; live in `quoth-provider.el'; the reusable OpenAI client in
+;;; `quoth-openai.el'; the concrete provider in `quoth-hyper-provider.el'
 ;;; (direct HTTP to the Charm Hyper gateway).
 ;;; The dependency files sit next to this file but are not guaranteed to
 ;;; be on `load-path': package.el adds the package dir, while direct
@@ -226,9 +226,9 @@ Buffer-local.")
 ;;; first, then fall back to loading from this file's own directory so
 ;;; both setups work.
 (eval-and-compile
-  (dolist (dep '("crush-provider" "crush-openai" "crush-xxh3" "crush-stream"
-                 "crush-process" "crush-hyper-provider" "crush-tools"
-                 "crush-searxng"))
+  (dolist (dep '("quoth-provider" "quoth-openai" "quoth-xxh3" "quoth-stream"
+                 "quoth-process" "quoth-hyper-provider" "quoth-tools"
+                 "quoth-searxng"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -239,155 +239,155 @@ Buffer-local.")
               (or buffer-file-name load-file-name default-directory)))
             nil t))))
 
-(defvar crush-active-provider nil
-  "The active crush provider for this buffer (facade-owned).
-Set during buffer initialization; the facade's `crush-facade--send'
-and `crush-interrupt' dispatch through it.  Buffer-local.")
+(defvar quoth-active-provider nil
+  "The active quoth provider for this buffer (facade-owned).
+Set during buffer initialization; the facade's `quoth-facade--send'
+and `quoth-interrupt' dispatch through it.  Buffer-local.")
 (declare-function markdown-mode "markdown-mode" ())
-(declare-function crush-xxh3-hash64 "crush-xxh3" (input))
-(declare-function crush-provider--tool-calls "crush-provider" (provider process))
-(declare-function crush-provider--tool-results "crush-provider" (provider tool-calls))
-(declare-function crush-process--cleanup-buffer "crush-process" (owner))
-(declare-function crush-openai-parse-tool-args "crush-openai" (args-json))
-(declare-function crush-process--shell-type "crush-process" (shell-path))
-(declare-function crush-hyper--fetch-models "crush-hyper-provider" (base-url &optional token))
-(declare-function crush-hyper--model-choices "crush-hyper-provider" (catalog))
-(declare-function crush-hyper-provider-p "crush-hyper-provider" (object))
-(declare-function crush-hyper-provider-model "crush-hyper-provider" (object))
-(declare-function crush-provider-transport-process "crush-provider" (provider))
+(declare-function quoth-xxh3-hash64 "quoth-xxh3" (input))
+(declare-function quoth-provider--tool-calls "quoth-provider" (provider process))
+(declare-function quoth-provider--tool-results "quoth-provider" (provider tool-calls))
+(declare-function quoth-process--cleanup-buffer "quoth-process" (owner))
+(declare-function quoth-openai-parse-tool-args "quoth-openai" (args-json))
+(declare-function quoth-process--shell-type "quoth-process" (shell-path))
+(declare-function quoth-hyper--fetch-models "quoth-hyper-provider" (base-url &optional token))
+(declare-function quoth-hyper--model-choices "quoth-hyper-provider" (catalog))
+(declare-function quoth-hyper-provider-p "quoth-hyper-provider" (object))
+(declare-function quoth-hyper-provider-model "quoth-hyper-provider" (object))
+(declare-function quoth-provider-transport-process "quoth-provider" (provider))
 
 ;;; Buffer naming
 
-(defvar crush--root-buffer-alist nil
-  "Alist mapping canonical project root directories to crush buffer names.
+(defvar quoth--root-buffer-alist nil
+  "Alist mapping canonical project root directories to quoth buffer names.
 Each entry is (ROOT . NAME) where ROOT is an absolute directory path
 with a trailing slash.  Entries survive buffer kills so that re-opening
 a root keeps its original buffer name, including any collision suffix.")
 
-(defun crush--canonical-root (root)
+(defun quoth--canonical-root (root)
   "Return ROOT as a canonical absolute directory path with trailing slash."
   (file-name-as-directory (expand-file-name root)))
 
-(defun crush--buffer-name-for-root (root)
-  "Return a stable, unique crush buffer name for project/directory ROOT.
-The name is based on the basename of ROOT, e.g. \"*crush:foo*\".  When
+(defun quoth--buffer-name-for-root (root)
+  "Return a stable, unique quoth buffer name for project/directory ROOT.
+The name is based on the basename of ROOT, e.g. \"*quoth:foo*\".  When
 another distinct root already resolved to that name, an incrementing
-suffix is appended: \"*crush:foo(2)*\", \"*crush:foo(3)*\", and so on.
-The mapping is recorded in `crush--root-buffer-alist' so the same ROOT
+suffix is appended: \"*quoth:foo(2)*\", \"*quoth:foo(3)*\", and so on.
+The mapping is recorded in `quoth--root-buffer-alist' so the same ROOT
 always resolves to the same name."
-  (let* ((canonical (crush--canonical-root root))
-         (existing (cdr (assoc canonical crush--root-buffer-alist))))
+  (let* ((canonical (quoth--canonical-root root))
+         (existing (cdr (assoc canonical quoth--root-buffer-alist))))
     (if existing
         existing
       (let* ((base (file-name-nondirectory
                     (directory-file-name canonical)))
              (base (if (string-empty-p base) "root" base))
-             (name (format "*crush:%s*" base))
+             (name (format "*quoth:%s*" base))
              (counter 2))
-        (while (member name (mapcar #'cdr crush--root-buffer-alist))
-          (setq name (format "*crush:%s(%d)*" base counter))
+        (while (member name (mapcar #'cdr quoth--root-buffer-alist))
+          (setq name (format "*quoth:%s(%d)*" base counter))
           (setq counter (1+ counter)))
-        (push (cons canonical name) crush--root-buffer-alist)
+        (push (cons canonical name) quoth--root-buffer-alist)
         name))))
 
-(defun crush--current-root ()
+(defun quoth--current-root ()
   "Return the canonical project root for the current buffer, if any.
 Returns the `project-root' when the current buffer is inside a project,
 otherwise `default-directory'.  Both as canonical directory paths."
   (let ((proj (project-current)))
-    (crush--canonical-root
+    (quoth--canonical-root
      (or (when proj (project-root proj))
          default-directory))))
 
-(defun crush--current-crush-buffer ()
-  "Return the crush buffer associated with the current context.
+(defun quoth--current-quoth-buffer ()
+  "Return the quoth buffer associated with the current context.
 The root is the project root when in a project, otherwise
 `default-directory'.  Creates and initializes the buffer if needed."
-  (let* ((root (crush--current-root))
-         (name (crush--buffer-name-for-root root))
+  (let* ((root (quoth--current-root))
+         (name (quoth--buffer-name-for-root root))
          (buf (get-buffer-create name)))
-    (crush--init-buffer buf)
+    (quoth--init-buffer buf)
     buf))
 
 ;;; Major mode
 
-(defvar crush--parent-mode
+(defvar quoth--parent-mode
   (if (require 'markdown-mode nil t)
       'markdown-mode
     'text-mode)
-  "Parent mode for the crush buffer.
+  "Parent mode for the quoth buffer.
 Uses `markdown-mode' if available, otherwise `text-mode'.")
 
 ;;; Chat minor mode
 
-(defvar crush-chat-command-map
+(defvar quoth-chat-command-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "s") #'crush-send-input)
-    (define-key map (kbd "i") #'crush-interrupt)
-    (define-key map (kbd "k") #'crush-clear-buffer)
-    (define-key map (kbd "r") #'crush-reasoning-toggle)
-    (define-key map (kbd "m") #'crush-select-model)
+    (define-key map (kbd "s") #'quoth-send-input)
+    (define-key map (kbd "i") #'quoth-interrupt)
+    (define-key map (kbd "k") #'quoth-clear-buffer)
+    (define-key map (kbd "r") #'quoth-reasoning-toggle)
+    (define-key map (kbd "m") #'quoth-select-model)
     map)
-  "Keymap under `C-c c' for crush chat-buffer commands.")
+  "Keymap under `C-c c' for quoth chat-buffer commands.")
 
-(defvar crush-chat-mode-map
+(defvar quoth-chat-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "TAB") #'crush--reasoning-tab)
+    (define-key map (kbd "TAB") #'quoth--reasoning-tab)
     ;; `C-return' is the main send binding in graphical Emacs and on
     ;; terminals that report modifyOtherKeys/kitty CSI-u (e.g. portty).
     ;; `C-c c s' remains the portable send binding.
-    (define-key map (kbd "<C-return>") #'crush-send-input)
-    (define-key map (kbd "C-c c") crush-chat-command-map)
-    (define-key map (kbd "M-p") #'crush--input-previous)
-    (define-key map (kbd "M-n") #'crush--input-next)
+    (define-key map (kbd "<C-return>") #'quoth-send-input)
+    (define-key map (kbd "C-c c") quoth-chat-command-map)
+    (define-key map (kbd "M-p") #'quoth--input-previous)
+    (define-key map (kbd "M-n") #'quoth--input-next)
     map)
-  "Keymap for `crush-chat-mode'.")
+  "Keymap for `quoth-chat-mode'.")
 
-(define-minor-mode crush-chat-mode
-  "Minor mode for interactive Crush chat in a buffer.
+(define-minor-mode quoth-chat-mode
+  "Minor mode for interactive Quoth chat in a buffer.
 
 When enabled, provides keybindings for sending prompts,
 interrupting, clearing, and session management.
 
-\\{crush-chat-mode-map}"
+\\{quoth-chat-mode-map}"
   :lighter " Chat"
-  :group 'crush
-  :keymap crush-chat-mode-map
-  (if crush-chat-mode
+  :group 'quoth
+  :keymap quoth-chat-mode-map
+  (if quoth-chat-mode
       (progn
-        (add-hook 'after-change-functions #'crush--after-change nil t)
-        (add-hook 'post-command-hook #'crush--update-header-line nil t)
-        (add-hook 'post-command-hook #'crush--reassert-read-only-boundaries nil t))
-    (remove-hook 'after-change-functions #'crush--after-change t)
-    (remove-hook 'post-command-hook #'crush--update-header-line t)
-    (remove-hook 'post-command-hook #'crush--reassert-read-only-boundaries t)))
+        (add-hook 'after-change-functions #'quoth--after-change nil t)
+        (add-hook 'post-command-hook #'quoth--update-header-line nil t)
+        (add-hook 'post-command-hook #'quoth--reassert-read-only-boundaries nil t))
+    (remove-hook 'after-change-functions #'quoth--after-change t)
+    (remove-hook 'post-command-hook #'quoth--update-header-line t)
+    (remove-hook 'post-command-hook #'quoth--reassert-read-only-boundaries t)))
 
 ;;; Internal helpers
 
-(defun crush--debug-log (category message)
-  "Log MESSAGE with CATEGORY to *crush-debug* buffer.
-Only logs when `crush-debug-mode' is non-nil."
-  (when crush-debug-mode
-    (with-current-buffer (get-buffer-create "*crush-debug*")
+(defun quoth--debug-log (category message)
+  "Log MESSAGE with CATEGORY to *quoth-debug* buffer.
+Only logs when `quoth-debug-mode' is non-nil."
+  (when quoth-debug-mode
+    (with-current-buffer (get-buffer-create "*quoth-debug*")
       (goto-char (point-max))
       (let ((inhibit-read-only t))
         (insert (format "[%s] %s: %s\n"
                         (format-time-string "%H:%M:%S")
                         category message))))))
 
-(defun crush--generate-id ()
+(defun quoth--generate-id ()
   "Generate a unique ID for a prompt."
   (format "%s-%s"
           (format-time-string "%Y%m%d-%H%M%S")
           (substring (md5 (format "%s%s" (random) (current-time))) 0 8)))
 
-(defun crush--input-ring-read ()
-  "Read input history from `crush--input-ring-file-name'."
-  (setq crush--input-ring (make-ring crush-input-ring-size))
-  (when (file-readable-p crush--input-ring-file-name)
+(defun quoth--input-ring-read ()
+  "Read input history from `quoth--input-ring-file-name'."
+  (setq quoth--input-ring (make-ring quoth-input-ring-size))
+  (when (file-readable-p quoth--input-ring-file-name)
     (let ((lines nil))
       (with-temp-buffer
-        (insert-file-contents crush--input-ring-file-name)
+        (insert-file-contents quoth--input-ring-file-name)
         (goto-char (point-min))
         (while (not (eobp))
           (let ((line (buffer-substring-no-properties
@@ -396,97 +396,97 @@ Only logs when `crush-debug-mode' is non-nil."
               (push line lines))
             (forward-line 1))))
       (dolist (line (nreverse lines))
-        (ring-insert crush--input-ring line)))))
+        (ring-insert quoth--input-ring line)))))
 
-(defun crush--input-ring-write ()
-  "Write input history to `crush--input-ring-file-name'."
-  (when (and crush--input-ring (ring-p crush--input-ring))
-    (let ((ring crush--input-ring)
-          (file crush--input-ring-file-name))
+(defun quoth--input-ring-write ()
+  "Write input history to `quoth--input-ring-file-name'."
+  (when (and quoth--input-ring (ring-p quoth--input-ring))
+    (let ((ring quoth--input-ring)
+          (file quoth--input-ring-file-name))
       (with-temp-buffer
         (dotimes (i (ring-length ring))
           (insert (ring-ref ring i) "\n"))
         (write-region (point-min) (point-max) file nil 'quiet)))))
 
-(defun crush--input-ring-add (input)
+(defun quoth--input-ring-add (input)
   "Add INPUT to the input ring, skipping duplicates."
-  (when (and crush--input-ring (ring-p crush--input-ring)
+  (when (and quoth--input-ring (ring-p quoth--input-ring)
              (not (string-empty-p input)))
-    (unless (and (> (ring-length crush--input-ring) 0)
-                 (string= input (ring-ref crush--input-ring 0)))
-      (ring-insert crush--input-ring input))))
+    (unless (and (> (ring-length quoth--input-ring) 0)
+                 (string= input (ring-ref quoth--input-ring 0)))
+      (ring-insert quoth--input-ring input))))
 
-(defun crush--input-previous ()
+(defun quoth--input-previous ()
   "Insert the previous input from the input ring."
   (interactive)
-  (when (and crush--input-ring (ring-p crush--input-ring)
-             (> (ring-length crush--input-ring) 0))
-    (let ((input-start (marker-position crush--input-start-marker)))
+  (when (and quoth--input-ring (ring-p quoth--input-ring)
+             (> (ring-length quoth--input-ring) 0))
+    (let ((input-start (marker-position quoth--input-start-marker)))
       (when input-start
         (delete-region input-start (point-max))
         (goto-char input-start)
-        (insert (ring-ref crush--input-ring crush--input-ring-index))
-        (setq-local crush--input-ring-index
-                    (min (1+ crush--input-ring-index)
-                         (1- (ring-length crush--input-ring))))))))
+        (insert (ring-ref quoth--input-ring quoth--input-ring-index))
+        (setq-local quoth--input-ring-index
+                    (min (1+ quoth--input-ring-index)
+                         (1- (ring-length quoth--input-ring))))))))
 
-(defun crush--input-next ()
+(defun quoth--input-next ()
   "Insert the next input from the input ring."
   (interactive)
-  (when (and crush--input-ring (ring-p crush--input-ring)
-             (> (ring-length crush--input-ring) 0))
-    (let ((input-start (marker-position crush--input-start-marker)))
+  (when (and quoth--input-ring (ring-p quoth--input-ring)
+             (> (ring-length quoth--input-ring) 0))
+    (let ((input-start (marker-position quoth--input-start-marker)))
       (when input-start
         (delete-region input-start (point-max))
         (goto-char input-start)
-        (if (<= crush--input-ring-index 0)
-            (setq-local crush--input-ring-index 0)
-          (setq-local crush--input-ring-index (1- crush--input-ring-index))
-          (insert (ring-ref crush--input-ring crush--input-ring-index)))))))
+        (if (<= quoth--input-ring-index 0)
+            (setq-local quoth--input-ring-index 0)
+          (setq-local quoth--input-ring-index (1- quoth--input-ring-index))
+          (insert (ring-ref quoth--input-ring quoth--input-ring-index)))))))
 
-(defun crush--header-model ()
+(defun quoth--header-model ()
   "Return the effective model name for the header line, or nil.
-Reads the provider's model slot (derived from `crush-model' at buffer
-init); falls back to `crush-openai-default-model' for hyper providers."
-  (let ((model (and (crush-hyper-provider-p crush-active-provider)
-                    (crush-hyper-provider-model crush-active-provider))))
+Reads the provider's model slot (derived from `quoth-model' at buffer
+init); falls back to `quoth-openai-default-model' for hyper providers."
+  (let ((model (and (quoth-hyper-provider-p quoth-active-provider)
+                    (quoth-hyper-provider-model quoth-active-provider))))
     (or model
-        (and (crush-hyper-provider-p crush-active-provider)
-             crush-openai-default-model))))
+        (and (quoth-hyper-provider-p quoth-active-provider)
+             quoth-openai-default-model))))
 
-(defun crush--region-label-at-point ()
-  "Return the `crush-region-type' at point as a string, or nil.
+(defun quoth--region-label-at-point ()
+  "Return the `quoth-region-type' at point as a string, or nil.
 Any region type symbol maps to its name, so new region types (e.g. the
 nested `tool-output' span and the input `separator') label themselves
 without a static list.  Returns nil when the point carries no region
 type, so untagged space is never mistaken for `user'."
-  (let ((type (get-text-property (point) 'crush-region-type)))
+  (let ((type (get-text-property (point) 'quoth-region-type)))
     (when (and type (symbolp type))
       (symbol-name type))))
 
-(defun crush--update-header-line ()
+(defun quoth--update-header-line ()
   "Update header line with the current model and region type at point."
-  (let* ((model (crush--header-model))
-         (region (crush--region-label-at-point))
+  (let* ((model (quoth--header-model))
+         (region (quoth--region-label-at-point))
          (model-str (if model (format "model: %s" model) "model: -"))
          (region-str (if region (format "region: %s" region) "region: -")))
     (setq header-line-format
           (list (propertize (format "%s   %s" model-str region-str)
                             'face 'bold)))))
 
-(defun crush--after-change (beg end _len)
+(defun quoth--after-change (beg end _len)
   "Tag inserted text with prompt ID and `user' region type.
 Tags only text at or after the input separator marker, so edits inside
 frozen history are left untagged.  BEG and END are standard after-change
 hook arguments."
-  (when (and crush--prompt-start-marker
-             (markerp crush--prompt-start-marker)
-             (>= beg (marker-position crush--prompt-start-marker)))
-    (put-text-property beg end 'crush-prompt-id crush--prompt-id)
-    (put-text-property beg end 'crush-region-type 'user))
-  (crush--update-header-line))
+  (when (and quoth--prompt-start-marker
+             (markerp quoth--prompt-start-marker)
+             (>= beg (marker-position quoth--prompt-start-marker)))
+    (put-text-property beg end 'quoth-prompt-id quoth--prompt-id)
+    (put-text-property beg end 'quoth-region-type 'user))
+  (quoth--update-header-line))
 
-(defun crush--lang-from-extension (filename)
+(defun quoth--lang-from-extension (filename)
   "Return the markdown language identifier for FILENAME's extension.
 Uses `file-name-extension' so paths and dotfiles resolve; falls back to
 `plaintext' for unknown extensions."
@@ -529,7 +529,7 @@ Uses `file-name-extension' so paths and dotfiles resolve; falls back to
       ("clj" "clojure")
       (_ "plaintext"))))
 
-(defun crush--freeze-region (start end)
+(defun quoth--freeze-region (start end)
   "Make the region from START to END read-only via text properties.
 The `read-only' property blocks both insertion into and deletion of the
 covered text.  `front-sticky' and `rear-nonsticky' keep the freeze from
@@ -537,10 +537,10 @@ leaking: text typed just before the region stays read-only, and text typed
 just after it stays editable.  `rear-nonsticky' must stay on the last
 read-only char, otherwise inserting right after it fails with
 \"Text is read-only\" because the new text inherits `read-only'.
-`crush--install-font-lock-guard' keeps `rear-nonsticky' intact across
+`quoth--install-font-lock-guard' keeps `rear-nonsticky' intact across
 font-lock refontification.
 Modification hooks are suppressed while applying so other buffer
-metadata (like prompt IDs) is not re-tagged by `crush--after-change'."
+metadata (like prompt IDs) is not re-tagged by `quoth--after-change'."
   (when (> end start)
     (let ((inhibit-modification-hooks t))
       (add-text-properties
@@ -549,7 +549,7 @@ metadata (like prompt IDs) is not re-tagged by `crush--after-change'."
                    front-sticky (read-only)
                    rear-nonsticky (read-only))))))
 
-(defun crush--reassert-read-only-boundaries (&rest _)
+(defun quoth--reassert-read-only-boundaries (&rest _)
   "Re-assert `rear-nonsticky' on all read-only text.
 font-lock (e.g. markdown-mode) includes `rear-nonsticky' in its managed
 properties and strips it whenever it writes `font-lock-face' over a
@@ -571,50 +571,50 @@ Accepts optional hook arguments so it can also be used as a change hook."
       (setq pos (or (next-single-property-change pos 'read-only nil (point-max))
                     (point-max))))))
 
-(defconst crush--input-separator-text "---"
+(defconst quoth--input-separator-text "---"
   "Text of the frozen markdown horizontal divider.
 This precedes the editable input area.")
 
-(defun crush--insert-input-separator ()
+(defun quoth--insert-input-separator ()
   "Insert the frozen input divider (`---') at point, framed by blank lines.
 The divider text plus all previous content are frozen read-only; the
 editable input area starts right after the divider's trailing blank
 line.  At `bobp' no blank line is inserted above the divider.
-`crush--prompt-start-marker' (insertion type t) anchors the divider's
+`quoth--prompt-start-marker' (insertion type t) anchors the divider's
 start so attachments and prior content can be inserted before it;
-`crush--input-start-marker' marks where typed input begins."
+`quoth--input-start-marker' marks where typed input begins."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t))
     (unless (bobp)
       (insert "\n"))
     (let ((start (point)))
-      (insert crush--input-separator-text "\n\n")
+      (insert quoth--input-separator-text "\n\n")
       (put-text-property start (point)
-                         'crush-region-type 'separator)
-      (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
+                         'quoth-region-type 'separator)
+      (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id)
       (add-text-properties
        start (point)
        '(read-only t
                    front-sticky (read-only)
                    rear-nonsticky (read-only)))
-      (crush--freeze-region (point-min) start)
-      (setq-local crush--prompt-start-marker (copy-marker start))
-      (set-marker-insertion-type crush--prompt-start-marker t)
-      (setq-local crush--input-start-marker (point-marker))
-      (set-marker-insertion-type crush--input-start-marker nil))))
+      (quoth--freeze-region (point-min) start)
+      (setq-local quoth--prompt-start-marker (copy-marker start))
+      (set-marker-insertion-type quoth--prompt-start-marker t)
+      (setq-local quoth--input-start-marker (point-marker))
+      (set-marker-insertion-type quoth--input-start-marker nil))))
 
-(defun crush--insert-user-separator ()
+(defun quoth--insert-user-separator ()
   "Insert a frozen horizontal divider marking the end of the user input.
-Renders the same `---' as `crush--input-separator-text' and frames it
+Renders the same `---' as `quoth--input-separator-text' and frames it
 with a blank line above and below, mirroring
-`crush--insert-input-separator'.  It is a display-only seam between the
+`quoth--insert-input-separator'.  It is a display-only seam between the
 user leg and the assistant leg of a turn, not an editable input prompt:
 inserted at point (on the line after the user's prompt, before the
 response starts) and frozen read-only.  It carries no face; markdown
 renders the `---' itself as a horizontal rule.  Tagged
-`crush-region-type' `user-separator' so the history/continuation readers
-\(`crush--user-turn-text', `crush-get-response-text', `crush--tool-rounds'\)
-all skip it; it carries `crush-prompt-id' but never `crush-response-to',
+`quoth-region-type' `user-separator' so the history/continuation readers
+\(`quoth--user-turn-text', `quoth-get-response-text', `quoth--tool-rounds'\)
+all skip it; it carries `quoth-prompt-id' but never `quoth-response-to',
 so it belongs to the turn yet never leaks into the assistant response
 region."
   (let ((inhibit-read-only t)
@@ -622,9 +622,9 @@ region."
     (unless (bobp)
       (insert "\n"))
     (let ((start (point)))
-      (insert crush--input-separator-text "\n\n")
-      (put-text-property start (point) 'crush-region-type 'user-separator)
-      (put-text-property start (point) 'crush-prompt-id crush--prompt-id)
+      (insert quoth--input-separator-text "\n\n")
+      (put-text-property start (point) 'quoth-region-type 'user-separator)
+      (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id)
       ;; Plain, read-only text: no face.  markdown-mode renders the
       ;; `---' itself as a horizontal rule; the face (and a possible
       ;; overlay) are unnecessary and font-lock would strip them anyway.
@@ -634,20 +634,20 @@ region."
                    front-sticky (read-only)
                    rear-nonsticky (read-only))))))
 
-(defvar-local crush--follow-p nil
-  "Whether the crush buffer's window is following the stream.
-Set by `crush--insert-at-eof' when the `window-point' was at point-max
+(defvar-local quoth--follow-p nil
+  "Whether the quoth buffer's window is following the stream.
+Set by `quoth--insert-at-eof' when the `window-point' was at point-max
 before insertion.  Persists across rapid `process-filter' invocations
 where `window-point' is stale (redisplay hasn't run yet).  Reset to
 nil when the user scrolls back (`window-point' diverges from
 point-max on a redisplay cycle).")
 
-(defvar-local crush--last-follow-point 0
-  "Last point-max value set by `crush--insert-at-eof' when following.
+(defvar-local quoth--last-follow-point 0
+  "Last point-max value set by `quoth--insert-at-eof' when following.
 Used to detect stale `window-point' during rapid process output:
 if `window-point' is behind this, the user scrolled back.")
 
-(defun crush--insert-at-eof (text &optional props position)
+(defun quoth--insert-at-eof (text &optional props position)
   "Insert TEXT at POSITION (default point-max), applying PROPS.
 PROPS is a plist of text properties applied to the inserted text.
 Returns the new point-max.
@@ -658,10 +658,10 @@ and every window's scroll position, so a user who has scrolled back
 can keep reading while content streams in.
 
 Uses `window-point' (not buffer point) because the process filter and
-sentinel run in other buffers, where the crush buffer's saved point is
+sentinel run in other buffers, where the quoth buffer's saved point is
 stale.  This mirrors comint's `comint-adjust-window-point' pattern.
 
-When following, sets `crush--follow-p' so the next call (which may run
+When following, sets `quoth--follow-p' so the next call (which may run
 before redisplay updates `window-point') continues to follow.  When
 `window-point' is behind POSITION AND behind the last follow position,
 the user scrolled back: stop following."
@@ -683,59 +683,59 @@ the user scrolled back: stop following."
          ;; If we were following but window-point is now well behind
          ;; (the user scrolled back during a redisplay cycle), stop.
          (follow (or (= win-point position)
-                     (and crush--follow-p
+                     (and quoth--follow-p
                           (<= win-point position)
-                          (>= win-point (or crush--last-follow-point 0))))))
+                          (>= win-point (or quoth--last-follow-point 0))))))
     (goto-char position)
     (insert text)
     (when props
       (add-text-properties position (point) props))
     (if follow
         (progn
-          (setq-local crush--follow-p t)
-          (setq-local crush--last-follow-point (point-max))
+          (setq-local quoth--follow-p t)
+          (setq-local quoth--last-follow-point (point-max))
           (goto-char (point-max))
           (when selected-win
             (set-window-point selected-win (point-max))))
-      (setq-local crush--follow-p nil)
+      (setq-local quoth--follow-p nil)
       (dolist (s snapshots)
         (set-window-start (nth 0 s) (nth 1 s) nil)
         (set-window-point (nth 0 s) (nth 2 s)))
       (goto-char win-point))
     (point-max)))
 
-(defun crush-get-all-prompts ()
+(defun quoth-get-all-prompts ()
   "Return list of all unique prompt IDs in buffer."
   (let ((pos (point-min))
         prompts)
     (while (< pos (point-max))
-      (let ((prompt-id (get-text-property pos 'crush-prompt-id)))
+      (let ((prompt-id (get-text-property pos 'quoth-prompt-id)))
         (when (and prompt-id (not (member prompt-id prompts)))
           (push prompt-id prompts))
-        (setq pos (or (next-single-property-change pos 'crush-prompt-id nil (point-max))
+        (setq pos (or (next-single-property-change pos 'quoth-prompt-id nil (point-max))
                       (point-max)))))
     (nreverse prompts)))
 
-(defun crush-get-response-text (prompt-id)
+(defun quoth-get-response-text (prompt-id)
   "Return the assistant answer text for PROMPT-ID, or nil.
-The text tagged `crush-response-to' equal to PROMPT-ID, excluding the
+The text tagged `quoth-response-to' equal to PROMPT-ID, excluding the
 streamed reasoning (CoT) span, the reasoning-fold marker line, and any
 tool blocks (display decoration around tool results).  Reasoning
 streams before the answer, and tool blocks may interrupt it, so the
 answer is the concatenation of the non-reasoning, non-tool runs.
 Returns nil when no such region exists."
   (let ((pos (text-property-any (point-min) (point-max)
-                                'crush-response-to prompt-id)))
+                                'quoth-response-to prompt-id)))
     (when pos
-      (let* ((end (or (next-single-property-change pos 'crush-response-to
+      (let* ((end (or (next-single-property-change pos 'quoth-response-to
                                                    nil (point-max))
                       (point-max)))
              (chunks nil)
              (p pos))
         ;; Walk the response, skipping reasoning and tool spans.
         (while (< p end)
-          (let ((type (get-text-property p 'crush-region-type))
-                (run-end (or (next-single-property-change p 'crush-region-type
+          (let ((type (get-text-property p 'quoth-region-type))
+                (run-end (or (next-single-property-change p 'quoth-region-type
                                                           nil end)
                              end)))
             (unless (memq type '(reasoning tool tool-output))
@@ -744,20 +744,20 @@ Returns nil when no such region exists."
         (let ((text (string-join (nreverse chunks) "")))
           (string-trim text))))))
 
-(defun crush-get-reasoning-text (prompt-id)
+(defun quoth-get-reasoning-text (prompt-id)
   "Return the streamed reasoning (CoT) text for PROMPT-ID, or nil.
-The span tagged `crush-region-type' `reasoning' within the response
+The span tagged `quoth-region-type' `reasoning' within the response
 region for PROMPT-ID, trimmed.  Returns nil when the model produced
 no chain-of-thought."
   (let ((pos (text-property-any (point-min) (point-max)
-                                'crush-response-to prompt-id)))
+                                'quoth-response-to prompt-id)))
     (when pos
-      (let ((end (or (next-single-property-change pos 'crush-response-to
+      (let ((end (or (next-single-property-change pos 'quoth-response-to
                                                   nil (point-max))
                      (point-max))))
-        (let ((rs (text-property-any pos end 'crush-region-type 'reasoning)))
+        (let ((rs (text-property-any pos end 'quoth-region-type 'reasoning)))
           (when rs
-            (let ((re (or (next-single-property-change rs 'crush-region-type
+            (let ((re (or (next-single-property-change rs 'quoth-region-type
                                                        nil end)
                           end)))
               (let ((text (string-trim
@@ -765,49 +765,49 @@ no chain-of-thought."
                 (when (> (length text) 0)
                   text)))))))))
 
-(defun crush--user-turn-text (prompt-id)
+(defun quoth--user-turn-text (prompt-id)
   "Return the user-side text for PROMPT-ID: typed input + inserted context.
-The text is the buffer content tagged `crush-region-type' `user' within
-the region tagged `crush-prompt-id' PROMPT-ID, in buffer order.  The
+The text is the buffer content tagged `quoth-region-type' `user' within
+the region tagged `quoth-prompt-id' PROMPT-ID, in buffer order.  The
 frozen separator line, the response, and reasoning regions (which share
-the `crush-prompt-id' tag but belong to the assistant) are excluded.
+the `quoth-prompt-id' tag but belong to the assistant) are excluded.
 Returns nil when nothing remains."
   (let ((pos (text-property-any (point-min) (point-max)
-                                'crush-prompt-id prompt-id))
+                                'quoth-prompt-id prompt-id))
         (chunks nil))
     (while pos
-      (let* ((prompt-end (or (next-single-property-change pos 'crush-prompt-id
+      (let* ((prompt-end (or (next-single-property-change pos 'quoth-prompt-id
                                                           nil (point-max))
                              (point-max)))
-             (type-end (or (next-single-property-change pos 'crush-region-type
+             (type-end (or (next-single-property-change pos 'quoth-region-type
                                                         nil prompt-end)
                            prompt-end))
              (end type-end))
         (when (and (< pos end)
-                   (eq (get-text-property pos 'crush-region-type) 'user))
+                   (eq (get-text-property pos 'quoth-region-type) 'user))
           (push (buffer-substring-no-properties pos end) chunks))
         (setq pos (and (< end (point-max))
                        (text-property-any end (point-max)
-                                          'crush-prompt-id prompt-id)))))
+                                          'quoth-prompt-id prompt-id)))))
     (let ((text (string-join (nreverse chunks) "")))
       (when (> (length (string-trim text)) 0)
         (string-trim text)))))
 
-(defun crush--history-turns (prompt-id)
+(defun quoth--history-turns (prompt-id)
   "Return the conversation history for PROMPT-ID as message alists.
 Iterate the buffer's prompts in order, stopping at PROMPT-ID (the pending
 prompt is being sent and never part of history).  Each prior exchange is
 reconstructed from the buffer's tagged regions: the user message via
-`crush--user-turn-text', the assistant/tool messages via
-`crush--tool-rounds' (which yields message alists directly).  When
-`crush-hyper-history-include-reasoning' is non-nil, the CoT text is folded
+`quoth--user-turn-text', the assistant/tool messages via
+`quoth--tool-rounds' (which yields message alists directly).  When
+`quoth-hyper-history-include-reasoning' is non-nil, the CoT text is folded
 into the exchange's trailing assistant message as `reasoning_content'.
 Returns nil when PROMPT-ID is the first prompt, or when
-`crush-hyper-history-limit' is 0.  This is a pure buffer->wire read."
-  (if (and (boundp 'crush-hyper-history-limit)
-           (= crush-hyper-history-limit 0))
+`quoth-hyper-history-limit' is 0.  This is a pure buffer->wire read."
+  (if (and (boundp 'quoth-hyper-history-limit)
+           (= quoth-hyper-history-limit 0))
       nil
-    (let* ((prompts (crush-get-all-prompts))
+    (let* ((prompts (quoth-get-all-prompts))
            (reached-current nil)
            (messages nil))
       (dolist (id prompts)
@@ -815,24 +815,24 @@ Returns nil when PROMPT-ID is the first prompt, or when
             (setq reached-current t)
           (unless reached-current
             (let ((exchange nil))
-              (let ((user-text (crush--user-turn-text id)))
+              (let ((user-text (quoth--user-turn-text id)))
                 (when user-text
                   (setq exchange
                         (append exchange
                                 (list (list (cons 'role "user")
                                             (cons 'content user-text)))))))
-              (let ((round-msgs (crush--tool-rounds id)))
+              (let ((round-msgs (quoth--tool-rounds id)))
                 (if round-msgs
                     (setq exchange (append exchange round-msgs))
-                  (let ((resp-text (crush-get-response-text id)))
+                  (let ((resp-text (quoth-get-response-text id)))
                     (when resp-text
                       (setq exchange
                             (append exchange
                                     (list (list (cons 'role "assistant")
                                                 (cons 'content resp-text)))))))))
-              (when (and (boundp 'crush-hyper-history-include-reasoning)
-                         crush-hyper-history-include-reasoning)
-                (let ((reasoning-text (crush-get-reasoning-text id)))
+              (when (and (boundp 'quoth-hyper-history-include-reasoning)
+                         quoth-hyper-history-include-reasoning)
+                (let ((reasoning-text (quoth-get-reasoning-text id)))
                   (when (and reasoning-text (> (length reasoning-text) 0))
                     (let ((assistant (car (last exchange))))
                       (when (and assistant
@@ -843,10 +843,10 @@ Returns nil when PROMPT-ID is the first prompt, or when
       (let* ((ordered messages)
              (exchanges (cl-count-if (lambda (m) (string= (cdr (assoc 'role m)) "user"))
                                      ordered)))
-        (if (and (boundp 'crush-hyper-history-limit)
-                 (> crush-hyper-history-limit 0)
-                 (> exchanges crush-hyper-history-limit))
-            (let ((to-cut (- exchanges crush-hyper-history-limit))
+        (if (and (boundp 'quoth-hyper-history-limit)
+                 (> quoth-hyper-history-limit 0)
+                 (> exchanges quoth-hyper-history-limit))
+            (let ((to-cut (- exchanges quoth-hyper-history-limit))
                   (cut 0)
                   (i 0))
               (while (and (< i (length ordered))
@@ -859,30 +859,30 @@ Returns nil when PROMPT-ID is the first prompt, or when
               (seq-subseq ordered i))
           ordered)))))
 
-(defun crush--history-for (buffer)
+(defun quoth--history-for (buffer)
   "Return BUFFER's history without its pending prompt.
 The pending prompt is the one about to be sent (its ID lives in
-BUFFER's `crush--prompt-id'); the transcript stops at the last
+BUFFER's `quoth--prompt-id'); the transcript stops at the last
 completed exchange.  Entering BUFFER is this function's job, which
 keeps the provider buffer-free."
   (with-current-buffer buffer
-    (crush--history-turns crush--prompt-id)))
+    (quoth--history-turns quoth--prompt-id)))
 
-(defun crush--tool-block-raw-result (start end)
+(defun quoth--tool-block-raw-result (start end)
   "Return the raw tool result for the tool block spanning START..END.
 The nested `tool-output' span is the wire `role: \"tool\"' content;
 fall back to the trimmed block text for legacy blocks without it."
-  (let ((raw-pos (text-property-any start end 'crush-region-type 'tool-output)))
+  (let ((raw-pos (text-property-any start end 'quoth-region-type 'tool-output)))
     (string-trim
      (buffer-substring-no-properties
       (or raw-pos start)
       (if raw-pos
-          (or (next-single-property-change raw-pos 'crush-region-type nil end)
+          (or (next-single-property-change raw-pos 'quoth-region-type nil end)
               end)
         end)))))
 
-(defun crush--tool-call-alist (plist)
-  "Return the wire element for `crush-tool-call' PLIST, or nil.
+(defun quoth--tool-call-alist (plist)
+  "Return the wire element for `quoth-tool-call' PLIST, or nil.
 The element is the `tool_calls' field.  PLIST carries :id :name
 :args-json; a missing id or name yields nil so a legacy block degrades
 to a bare tool message."
@@ -894,9 +894,9 @@ to a bare tool message."
                 (list (cons 'name (plist-get plist :name))
                       (cons 'arguments (or (plist-get plist :args-json) "")))))))
 
-(defun crush--tool-rounds (prompt-id &optional start end)
+(defun quoth--tool-rounds (prompt-id &optional start end)
   "Return the assistant/tool message alists for PROMPT-ID's response.
-Walk the response region's `crush-region-type' spans in order and
+Walk the response region's `quoth-region-type' spans in order and
 reconstruct the OpenAI messages the model produced: `response' spans
 accumulate assistant content; each `tool' span contributes an assistant
 `tool_calls' message (carrying any accumulated leading content) followed
@@ -907,10 +907,10 @@ the whole response region for PROMPT-ID.  This is the single buffer->wire
 reconstruction used by both history replay and the live tool loop."
   (let* ((start (or start
                     (text-property-any (point-min) (point-max)
-                                       'crush-response-to prompt-id)))
+                                       'quoth-response-to prompt-id)))
          (end (or end
                   (and start
-                       (or (next-single-property-change start 'crush-response-to
+                       (or (next-single-property-change start 'quoth-response-to
                                                         nil (point-max))
                            (point-max))))))
     (if (not start)
@@ -942,31 +942,31 @@ reconstruction used by both history replay and the live tool loop."
                    (setq calls nil
                          pending nil)))))
           (while (< pos end)
-            (let* ((call-plist (get-text-property pos 'crush-tool-call))
-                   (call-end (or (next-single-property-change pos 'crush-tool-call
+            (let* ((call-plist (get-text-property pos 'quoth-tool-call))
+                   (call-end (or (next-single-property-change pos 'quoth-tool-call
                                                               nil end)
                                  end))
-                   (type (get-text-property pos 'crush-region-type))
-                   (region-end (or (next-single-property-change pos 'crush-region-type
+                   (type (get-text-property pos 'quoth-region-type))
+                   (region-end (or (next-single-property-change pos 'quoth-region-type
                                                                 nil end)
                                    end)))
               (cond
-               ;; A tool block: `crush-tool-call' spans it contiguously, even
+               ;; A tool block: `quoth-tool-call' spans it contiguously, even
                ;; though the nested `tool-output' span splits region-type.  A
-               ;; legacy block has `tool' type but no `crush-tool-call' span.
+               ;; legacy block has `tool' type but no `quoth-tool-call' span.
                ((or call-plist (eq type 'tool))
-                (if (crush--tool-call-alist call-plist)
+                (if (quoth--tool-call-alist call-plist)
                     ;; One tool call per assistant message, preserving round
                     ;; boundaries (no merging of sequential rounds).
                     (progn
                       (setq calls
-                            (list (list (crush--tool-call-alist call-plist)
+                            (list (list (quoth--tool-call-alist call-plist)
                                         (plist-get call-plist :id)
-                                        (crush--tool-block-raw-result pos call-end))))
+                                        (quoth--tool-block-raw-result pos call-end))))
                       (flush-tools))
                   ;; Legacy or metadata-less block: emit a bare tool message
                   ;; only when it carries real result text.
-                  (let ((raw (crush--tool-block-raw-result pos call-end)))
+                  (let ((raw (quoth--tool-block-raw-result pos call-end)))
                     (when (> (length raw) 0)
                       (flush-tools)
                       (setq messages
@@ -1001,7 +1001,7 @@ reconstruction used by both history replay and the live tool loop."
                                           (cons 'content text))))))))
           messages)))))
 
-(defun crush--install-font-lock-guard (&optional enable)
+(defun quoth--install-font-lock-guard (&optional enable)
   "Protect read-only boundaries from font-lock in the current buffer.
 markdown-mode (and other modes) include `rear-nonsticky' in
 `font-lock-extra-managed-props', so font-lock strips it from read-only
@@ -1024,98 +1024,98 @@ unfontifying.  ENABLE nil restores the default."
                     (lambda (beg end)
                       (let ((props (remove 'rear-nonsticky
                                            (remove 'keymap
-                                                   (remove 'crush-fold-mark
+                                                   (remove 'quoth-fold-mark
                                                            (append font-lock-extra-managed-props
                                                                    '(face font-lock-multiline)))))))
                         (remove-list-of-text-properties beg end props)))))
     (kill-local-variable 'font-lock-unfontify-region-function)))
 
-(defun crush--init-session-uuid ()
+(defun quoth--init-session-uuid ()
   "Generate a fresh session UUID and its cached XXH3-64 hash.
-Sets `crush--session-uuid' to an opaque random string and
-`crush--session-id' to the 16-hex XXH3-64 of it.  The UUID is
+Sets `quoth--session-uuid' to an opaque random string and
+`quoth--session-id' to the 16-hex XXH3-64 of it.  The UUID is
 buffer-local and never leaves via the network; only the hash is sent."
-  (setq-local crush--session-uuid
+  (setq-local quoth--session-uuid
               (format "crs-%s-%s-%s"
                       (format-time-string "%Y%m%d%H%M%S")
                       (substring (md5 (format "%s%s" (random) (current-time))) 0 8)
                       (substring (md5 (format "%s%s" (random) (current-time))) 0 8)))
-  (setq-local crush--session-id (crush-xxh3-hash64 crush--session-uuid)))
+  (setq-local quoth--session-id (quoth-xxh3-hash64 quoth--session-uuid)))
 
-(defun crush--init-buffer (buf)
-  "Initialize BUF as a crush buffer if not already initialized."
+(defun quoth--init-buffer (buf)
+  "Initialize BUF as a quoth buffer if not already initialized."
   (with-current-buffer buf
-    (unless crush--initialized
+    (unless quoth--initialized
       ;; Establish the buffer's major mode directly (markdown-mode or
-      ;; text-mode). There is no separate crush-mode major mode.
+      ;; text-mode). There is no separate quoth-mode major mode.
       (funcall (symbol-function
-                (if (and (memq crush--parent-mode '(markdown-mode text-mode))
-                         (fboundp crush--parent-mode))
-                    crush--parent-mode
+                (if (and (memq quoth--parent-mode '(markdown-mode text-mode))
+                         (fboundp quoth--parent-mode))
+                    quoth--parent-mode
                   'text-mode)))
-      ;; Initialize crush state AFTER mode setup, since the mode may have
+      ;; Initialize quoth state AFTER mode setup, since the mode may have
       ;; run kill-all-local-variables.
       ;; Generate prompt ID BEFORE inserting the marker.
-      (setq-local crush--prompt-id (crush--generate-id))
-      (setq-local crush--continue nil)
-      (crush--init-session-uuid)
-      (setq-local crush--response-start nil)
-      (setq-local crush-active-provider nil)
-      (setq-local crush--prompt-start-marker nil)
-      (setq-local crush--input-start-marker nil)
-      (setq-local crush--input-ring nil)
-      (setq-local crush--input-ring-index 0)
-      (setq-local crush--tool-loop-count 0)
-      (crush-chat-mode 1)
-      (crush--install-font-lock-guard t)
-      (crush--update-header-line)
+      (setq-local quoth--prompt-id (quoth--generate-id))
+      (setq-local quoth--continue nil)
+      (quoth--init-session-uuid)
+      (setq-local quoth--response-start nil)
+      (setq-local quoth-active-provider nil)
+      (setq-local quoth--prompt-start-marker nil)
+      (setq-local quoth--input-start-marker nil)
+      (setq-local quoth--input-ring nil)
+      (setq-local quoth--input-ring-index 0)
+      (setq-local quoth--tool-loop-count 0)
+      (quoth-chat-mode 1)
+      (quoth--install-font-lock-guard t)
+      (quoth--update-header-line)
       ;; Named invisibility spec: collapsed reasoning is hidden from
       ;; display but visible to buffer-reading tools (export, preview).
-      (add-to-invisibility-spec 'crush-reasoning-fold)
+      (add-to-invisibility-spec 'quoth-reasoning-fold)
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (erase-buffer)
-        (crush--insert-input-separator))
+        (quoth--insert-input-separator))
       (setq-local buffer-undo-list nil)
-      (crush--input-ring-read)
+      (quoth--input-ring-read)
       (setq-local default-directory
                   (file-name-as-directory
-                   (or crush-working-directory
+                   (or quoth-working-directory
                        (when-let ((proj (project-current)))
                          (project-root proj))
                        default-directory)))
-      (setq-local crush--project-root
-                  (crush--canonical-root default-directory))
-      (setq-local crush-active-provider
-                  (crush-make-hyper-provider
+      (setq-local quoth--project-root
+                  (quoth--canonical-root default-directory))
+      (setq-local quoth-active-provider
+                  (quoth-make-hyper-provider
                    :buffer buf
                    :working-directory default-directory
-                   :base-url crush-hyper-base-url
-                   :token crush-hyper-token
-                   :model crush-model))
+                   :base-url quoth-hyper-base-url
+                   :token quoth-hyper-token
+                   :model quoth-model))
       ;; Mark initialized only after mode setup so the flag is not wiped
       ;; by the parent mode (which calls kill-all-local-variables).
-      (setq-local crush--initialized t))))
+      (setq-local quoth--initialized t))))
 
-(defun crush--append-as-user-input (buf formatted)
+(defun quoth--append-as-user-input (buf formatted)
   "Insert FORMATTED content into BUF as user input.
-Appends after `crush--input-start-marker' (or at point-max), tagging
-the region `crush-region-type' `user' with the current
-`crush--prompt-id' so it reads back as typed input.  Delegates to
-`crush--insert-at-eof' so the insertion preserves a scrolled-back
+Appends after `quoth--input-start-marker' (or at point-max), tagging
+the region `quoth-region-type' `user' with the current
+`quoth--prompt-id' so it reads back as typed input.  Delegates to
+`quoth--insert-at-eof' so the insertion preserves a scrolled-back
 window's point like every other append."
   (with-current-buffer buf
-    (let ((start (if (and crush--input-start-marker
-                          (markerp crush--input-start-marker))
-                     (marker-position crush--input-start-marker)
+    (let ((start (if (and quoth--input-start-marker
+                          (markerp quoth--input-start-marker))
+                     (marker-position quoth--input-start-marker)
                    (point-max))))
-      (crush--insert-at-eof
+      (quoth--insert-at-eof
        (concat formatted "\n\n")
-       (list 'crush-region-type 'user
-             'crush-prompt-id crush--prompt-id)
+       (list 'quoth-region-type 'user
+             'quoth-prompt-id quoth--prompt-id)
        start))))
 
-(defun crush--relative-file (file)
+(defun quoth--relative-file (file)
   "Return FILE relative to the project root or the default directory.
 Resolves against `project-root' when in a project, otherwise
 `default-directory'.  Returns nil when FILE is nil."
@@ -1126,7 +1126,7 @@ Resolves against `project-root' when in a project, otherwise
            (project-root proj))
          default-directory))))
 
-(defun crush--format-selection (file relative-file start end)
+(defun quoth--format-selection (file relative-file start end)
   "Format the selection as a markdown fenced code block.
 FILE is the file path, RELATIVE-FILE is its pre-resolved project-relative
 path (or nil to re-resolve), START and END are the position bounds."
@@ -1137,39 +1137,39 @@ path (or nil to re-resolve), START and END are the position bounds."
                      (goto-char end)
                      (line-number-at-pos)))
          (selected-text (buffer-substring-no-properties start end))
-         (relative-file (or relative-file (crush--relative-file file) "(no file)"))
-         (lang (crush--lang-from-extension (file-name-nondirectory relative-file))))
+         (relative-file (or relative-file (quoth--relative-file file) "(no file)"))
+         (lang (quoth--lang-from-extension (file-name-nondirectory relative-file))))
     (format "**Attachment: %s (lines %d-%d)**\n\n```%s\n%s\n```"
             relative-file start-line end-line lang selected-text)))
 
-(defun crush--reasoning-start-region ()
+(defun quoth--reasoning-start-region ()
   "Start a reasoning region at point-max if none is active.
 Creates the reasoning overlay and the start marker on the first
 reasoning delta streamed for the current prompt.  Returns the
 overlay.  Inert once content has started or when an active
 overlay is already open."
-  (unless (or crush--reasoning-overlay
-              (markerp crush--reasoning-end))
+  (unless (or quoth--reasoning-overlay
+              (markerp quoth--reasoning-end))
     (let ((pos (point)))
-      (setq-local crush--reasoning-start (copy-marker pos nil))
-      (setq-local crush--reasoning-overlay
+      (setq-local quoth--reasoning-start (copy-marker pos nil))
+      (setq-local quoth--reasoning-overlay
                   (make-overlay pos pos nil nil nil))
-      (overlay-put crush--reasoning-overlay 'crush-overlay t)
-      (overlay-put crush--reasoning-overlay 'crush-reasoning t)
-      (overlay-put crush--reasoning-overlay 'face 'crush-reasoning-face)
-      crush--reasoning-overlay)))
+      (overlay-put quoth--reasoning-overlay 'quoth-overlay t)
+      (overlay-put quoth--reasoning-overlay 'quoth-reasoning t)
+      (overlay-put quoth--reasoning-overlay 'face 'quoth-reasoning-face)
+      quoth--reasoning-overlay)))
 
-(defun crush--reasoning-extend-overlay ()
+(defun quoth--reasoning-extend-overlay ()
   "Extend the reasoning overlay to point-max.
 Inert when no reasoning region is active or content already started."
-  (when (overlayp crush--reasoning-overlay)
-    (move-overlay crush--reasoning-overlay
-                  (overlay-start crush--reasoning-overlay)
+  (when (overlayp quoth--reasoning-overlay)
+    (move-overlay quoth--reasoning-overlay
+                  (overlay-start quoth--reasoning-overlay)
                   (point-max))))
 
-(defun crush--reasoning-stop ()
+(defun quoth--reasoning-stop ()
   "Freeze the reasoning region, marking where the answer begins.
-Sets `crush--reasoning-end' at point-max (before the content delta
+Sets `quoth--reasoning-end' at point-max (before the content delta
 is appended), stops moving the overlay, and inserts a separator
 before the answer so the content is visually separated from the
 reasoning.  Inert when no reasoning is active or it already ended.
@@ -1177,12 +1177,12 @@ The separator is inserted at point-max, never at an arbitrary point,
 so it cannot land inside a just-inserted tool block.
 
 The overlay end is frozen *after* ensuring the reasoning text ends
-with a newline.  This guarantees `:extend t' on `crush-reasoning-face'
+with a newline.  This guarantees `:extend t' on `quoth-reasoning-face'
 paints the last line's background to the end of the screen line, and
 gives the fold's `before-string' marker a clean line-end boundary so
 it starts on its own line."
-  (when (and (overlayp crush--reasoning-overlay)
-             (not (markerp crush--reasoning-end)))
+  (when (and (overlayp quoth--reasoning-overlay)
+             (not (markerp quoth--reasoning-end)))
     (goto-char (point-max))
     ;; Ensure the reasoning text ends with a newline so the overlay
     ;; covers a complete last line: `:extend t' needs a newline to
@@ -1190,28 +1190,28 @@ it starts on its own line."
     ;; line (after the overlay's trailing newline).
     (unless (eq (char-before) ?\n)
       (insert "\n"))
-    (setq-local crush--reasoning-end (copy-marker (point-max) nil))
-    (move-overlay crush--reasoning-overlay
-                  (overlay-start crush--reasoning-overlay)
-                  (marker-position crush--reasoning-end))
+    (setq-local quoth--reasoning-end (copy-marker (point-max) nil))
+    (move-overlay quoth--reasoning-overlay
+                  (overlay-start quoth--reasoning-overlay)
+                  (marker-position quoth--reasoning-end))
     ;; Insert a blank-line separator before the content delta.
     (insert "\n")))
 
-(defvar crush--reasoning-fold-keymap
+(defvar quoth--reasoning-fold-keymap
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "TAB") #'crush-reasoning-toggle)
-    (define-key map (kbd "RET") #'crush-reasoning-toggle)
-    (define-key map [mouse-1] #'crush-reasoning-toggle)
+    (define-key map (kbd "TAB") #'quoth-reasoning-toggle)
+    (define-key map (kbd "RET") #'quoth-reasoning-toggle)
+    (define-key map [mouse-1] #'quoth-reasoning-toggle)
     map)
   "Keymap on the reasoning fold body overlay.
 TAB / RET (and mouse-1 on GUIs, ignored harmlessly in TUI) toggle
-`crush-reasoning-toggle'.")
+`quoth-reasoning-toggle'.")
 
-(defun crush--reasoning-fold-marker (start end)
+(defun quoth--reasoning-fold-marker (start end)
   "Return a display-only string for the fold marker.
 START and END are the body overlay boundaries.  The marker shows
 the hidden line and char count.  Carries the toggle keymap and the
-`crush-reasoning-face' so the marker line has the same background
+`quoth-reasoning-face' so the marker line has the same background
 color as the reasoning text.  The leading newline pushes the
 marker onto its own visual line when used as an `after-string' on
 the last visible position of the preview overlay."
@@ -1219,15 +1219,15 @@ the last visible position of the preview overlay."
          (chars (- end start))
          (text (format "\n... reasoning (%d lines, %d chars)" lines chars)))
     (propertize text
-                'face 'crush-reasoning-face
-                'keymap crush--reasoning-fold-keymap)))
+                'face 'quoth-reasoning-face
+                'keymap quoth--reasoning-fold-keymap)))
 
-(defun crush--reasoning-install-fold (region)
+(defun quoth--reasoning-install-fold (region)
   "Install the reasoning fold on REGION (START . END) of current buffer.
 Creates two overlays: a preview overlay (first N lines, always
 visible) and a body overlay (the rest, hidden with a display-only
 `before-string' marker).  No buffer text is inserted.  When the
-reasoning is `crush-reasoning-preview-lines' lines or fewer, the
+reasoning is `quoth-reasoning-preview-lines' lines or fewer, the
 original reasoning overlay stays as-is with no fold.  Returns the
 body overlay, or nil."
   (let* ((start (car region))
@@ -1235,9 +1235,9 @@ body overlay, or nil."
          (start-m (copy-marker start))
          (end-m (copy-marker end t))
          (ov (car (cl-remove-if-not
-                   (lambda (o) (overlay-get o 'crush-overlay))
+                   (lambda (o) (overlay-get o 'quoth-overlay))
                    (overlays-in start end))))
-         (preview-lines (or crush-reasoning-preview-lines 10)))
+         (preview-lines (or quoth-reasoning-preview-lines 10)))
     (when (and (overlayp ov) (> end start))
       (save-excursion
         (goto-char start-m)
@@ -1246,7 +1246,7 @@ body overlay, or nil."
       (let ((total-lines (count-lines start-m end-m)))
         (if (<= total-lines preview-lines)
             (progn
-              (overlay-put ov 'crush-reasoning nil)
+              (overlay-put ov 'quoth-reasoning nil)
               (set-marker start-m nil)
               (set-marker end-m nil)
               nil)
@@ -1267,17 +1267,17 @@ body overlay, or nil."
                 (forward-char))
               (setq preview-end (point)))
             (let ((preview-ov (make-overlay start-m preview-end nil nil nil)))
-              (overlay-put preview-ov 'crush-overlay t)
-              (overlay-put preview-ov 'crush-reasoning-preview t)
-              (overlay-put preview-ov 'face 'crush-reasoning-face)
-              (overlay-put preview-ov 'keymap crush--reasoning-fold-keymap)
+              (overlay-put preview-ov 'quoth-overlay t)
+              (overlay-put preview-ov 'quoth-reasoning-preview t)
+              (overlay-put preview-ov 'face 'quoth-reasoning-face)
+              (overlay-put preview-ov 'keymap quoth--reasoning-fold-keymap)
               (move-overlay ov preview-end end-m)
-              (overlay-put ov 'crush-fold-state 'collapsed)
-              (overlay-put ov 'invisible 'crush-reasoning-fold)
+              (overlay-put ov 'quoth-fold-state 'collapsed)
+              (overlay-put ov 'invisible 'quoth-reasoning-fold)
               (overlay-put ov 'intangible t)
-              (overlay-put ov 'keymap crush--reasoning-fold-keymap)
-              (overlay-put ov 'crush-reasoning nil)
-              (overlay-put ov 'crush-reasoning-origin
+              (overlay-put ov 'keymap quoth--reasoning-fold-keymap)
+              (overlay-put ov 'quoth-reasoning nil)
+              (overlay-put ov 'quoth-reasoning-origin
                            (marker-position start-m))
               ;; Create a separate zero-width marker overlay at the last
               ;; visible position before the body (the trailing newline of
@@ -1294,148 +1294,148 @@ body overlay, or nil."
                 (when (< marker-pos start-m)
                   (setq marker-pos start-m))
                 (let ((marker-ov (make-overlay marker-pos marker-pos nil nil t)))
-                  (overlay-put marker-ov 'crush-overlay t)
-                  (overlay-put marker-ov 'crush-reasoning-marker t)
+                  (overlay-put marker-ov 'quoth-overlay t)
+                  (overlay-put marker-ov 'quoth-reasoning-marker t)
                   (overlay-put marker-ov 'after-string
-                               (crush--reasoning-fold-marker
+                               (quoth--reasoning-fold-marker
                                 preview-end end-m))
                   (overlay-put marker-ov 'keymap
-                               crush--reasoning-fold-keymap)))
+                               quoth--reasoning-fold-keymap)))
               (set-marker start-m nil)
               (set-marker end-m nil)
               ov)))))))
 
-(defun crush--reasoning-marker-overlay-for (body-ov)
+(defun quoth--reasoning-marker-overlay-for (body-ov)
   "Return the marker overlay associated with BODY-OV, or nil.
 The marker overlay is the zero-width overlay carrying the fold
 marker as an `after-string', positioned just before the body overlay."
   (let ((body-start (overlay-start body-ov)))
     (cl-find-if
      (lambda (o)
-       (and (overlay-get o 'crush-reasoning-marker)
+       (and (overlay-get o 'quoth-reasoning-marker)
             (= (overlay-start o) (1- body-start))))
      (overlays-in (max (point-min) (- body-start 2))
                   (min (point-max) (+ body-start 1))))))
 
-(defun crush-reasoning-toggle ()
+(defun quoth-reasoning-toggle ()
   "Toggle the reasoning fold at point.
-Finds an overlay with `crush-fold-state' at point.  If point is on
+Finds an overlay with `quoth-fold-state' at point.  If point is on
 the marker overlay or the preview overlay, finds the adjacent body
 overlay.  If collapsed, expands it (clear `invisible' and
 `intangible').  If expanded, collapses it (re-set `invisible' and
 `intangible').  If no fold overlay is at point, signals a message."
   (interactive)
   (let* ((ov (cl-find-if
-              (lambda (o) (overlay-get o 'crush-fold-state))
+              (lambda (o) (overlay-get o 'quoth-fold-state))
               (overlays-at (point))))
          (marker-ov (when (not ov)
                       (cl-find-if
-                       (lambda (o) (overlay-get o 'crush-reasoning-marker))
+                       (lambda (o) (overlay-get o 'quoth-reasoning-marker))
                        (overlays-at (point)))))
          (preview-ov (when (not ov)
                        (cl-find-if
-                        (lambda (o) (overlay-get o 'crush-reasoning-preview))
+                        (lambda (o) (overlay-get o 'quoth-reasoning-preview))
                         (overlays-at (point))))))
     (when (and marker-ov (not ov))
       (setq ov (cl-find-if
                 (lambda (o)
-                  (and (overlay-get o 'crush-fold-state)
+                  (and (overlay-get o 'quoth-fold-state)
                        (= (overlay-start o) (1+ (overlay-start marker-ov)))))
                 (overlays-in (point-min) (point-max)))))
     (when (and preview-ov (not ov))
       (setq ov (cl-find-if
                 (lambda (o)
-                  (and (overlay-get o 'crush-fold-state)
+                  (and (overlay-get o 'quoth-fold-state)
                        (= (overlay-start o) (overlay-end preview-ov))))
                 (overlays-in (point-min) (point-max)))))
     (if (not (overlayp ov))
         (message "No reasoning fold at point")
-      (if (eq (overlay-get ov 'crush-fold-state) 'collapsed)
-          (crush--reasoning-expand ov)
-        (crush--reasoning-collapse ov)))))
+      (if (eq (overlay-get ov 'quoth-fold-state) 'collapsed)
+          (quoth--reasoning-expand ov)
+        (quoth--reasoning-collapse ov)))))
 
-(defun crush--reasoning-expand (body-ov)
+(defun quoth--reasoning-expand (body-ov)
   "Expand the reasoning body overlay BODY-OV.
 Clears `invisible' and `intangible' so the full reasoning text is
 visible.  Also hides the marker overlay's `after-string'.  No buffer
 text is inserted or deleted."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t))
-    (overlay-put body-ov 'crush-fold-state 'expanded)
+    (overlay-put body-ov 'quoth-fold-state 'expanded)
     (overlay-put body-ov 'invisible nil)
     (overlay-put body-ov 'intangible nil)
     ;; Hide the marker overlay's after-string.
-    (let ((marker-ov (crush--reasoning-marker-overlay-for body-ov)))
+    (let ((marker-ov (quoth--reasoning-marker-overlay-for body-ov)))
       (when marker-ov
         (overlay-put marker-ov 'after-string nil)))
     (message "Reasoning expanded")))
 
-(defun crush--reasoning-collapse (body-ov)
+(defun quoth--reasoning-collapse (body-ov)
   "Collapse the reasoning body overlay BODY-OV.
 Re-sets `invisible' and `intangible' so the body is hidden.  Also
 re-shows the marker overlay's `after-string'.  No buffer text is
 inserted or deleted."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t))
-    (overlay-put body-ov 'crush-fold-state 'collapsed)
-    (overlay-put body-ov 'invisible 'crush-reasoning-fold)
+    (overlay-put body-ov 'quoth-fold-state 'collapsed)
+    (overlay-put body-ov 'invisible 'quoth-reasoning-fold)
     (overlay-put body-ov 'intangible t)
     ;; Re-show the marker overlay's after-string.
-    (let ((marker-ov (crush--reasoning-marker-overlay-for body-ov)))
+    (let ((marker-ov (quoth--reasoning-marker-overlay-for body-ov)))
       (when marker-ov
         (overlay-put marker-ov 'after-string
-                     (crush--reasoning-fold-marker
+                     (quoth--reasoning-fold-marker
                       (overlay-start body-ov) (overlay-end body-ov)))))
     (message "Reasoning collapsed")))
 
-(defun crush--reasoning-tab ()
-  "Handle TAB in crush chat buffers.
+(defun quoth--reasoning-tab ()
+  "Handle TAB in quoth chat buffers.
 Toggles the reasoning fold when point is inside a fold body overlay,
 the marker overlay, or the preview overlay; otherwise falls back to
 the major mode's or global TAB binding."
   (interactive)
   (if (cl-find-if
        (lambda (o)
-         (or (overlay-get o 'crush-fold-state)
-             (overlay-get o 'crush-reasoning-marker)
-             (overlay-get o 'crush-reasoning-preview)))
+         (or (overlay-get o 'quoth-fold-state)
+             (overlay-get o 'quoth-reasoning-marker)
+             (overlay-get o 'quoth-reasoning-preview)))
        (overlays-at (point)))
-      (crush-reasoning-toggle)
+      (quoth-reasoning-toggle)
     (let ((fallback (or (lookup-key (current-local-map) (kbd "TAB"))
                         (lookup-key (current-global-map) (kbd "TAB")))))
       (when (commandp fallback)
         (call-interactively fallback)))))
 
-(defun crush--reasoning-regions ()
+(defun quoth--reasoning-regions ()
   "Return the list of reasoning regions, or nil.
-The active reasoning region runs from `crush--reasoning-start' to the
-answer boundary: `crush--reasoning-end' (where a content delta froze
+The active reasoning region runs from `quoth--reasoning-start' to the
+answer boundary: `quoth--reasoning-end' (where a content delta froze
 the CoT) when set, else the first tool block at or after the start
 \(the model went straight from reasoning to a tool call), else
 `point-max'.  Each tool-loop round gets its own region tracked by its
 own markers; the boundary is computed relative to the start, never the
 response head, so reasoning that follows an earlier round's tool
-blocks is still found after `crush--reasoning-reset'."
-  (when (markerp crush--reasoning-start)
-    (let* ((pos (marker-position crush--reasoning-start))
-           (end (if (markerp crush--reasoning-end)
-                    (marker-position crush--reasoning-end)
-                  (or (cl-loop for (bs . _be) in (crush--tool-block-bounds)
+blocks is still found after `quoth--reasoning-reset'."
+  (when (markerp quoth--reasoning-start)
+    (let* ((pos (marker-position quoth--reasoning-start))
+           (end (if (markerp quoth--reasoning-end)
+                    (marker-position quoth--reasoning-end)
+                  (or (cl-loop for (bs . _be) in (quoth--tool-block-bounds)
                                when (>= bs pos) return bs)
                       (point-max)))))
       (when (< pos end)
         (list (cons pos end))))))
 
-(defun crush--tool-block-bounds ()
+(defun quoth--tool-block-bounds ()
   "Return the list of (START . END) tool blocks in the current buffer.
-A tool block is a span tagged `crush-region-type' `tool' (starting at
+A tool block is a span tagged `quoth-region-type' `tool' (starting at
 its text after the trailing newline).  Blocks run from `response-start'
 to `(point-max)'; search from `(point-min)'."
   (let ((pos (point-min))
         (list nil))
     (while (setq pos (text-property-any pos (point-max)
-                                        'crush-region-type 'tool))
-      (let ((end (or (next-single-property-change pos 'crush-region-type
+                                        'quoth-region-type 'tool))
+      (let ((end (or (next-single-property-change pos 'quoth-region-type
                                                   nil (point-max))
                      (point-max))))
         (when (> end pos)
@@ -1443,26 +1443,26 @@ to `(point-max)'; search from `(point-min)'."
           (setq pos end))))
     (nreverse list)))
 
-(defun crush--reasoning-reset ()
+(defun quoth--reasoning-reset ()
   "Reset per-prompt reasoning state after finalize or interrupt.
-The overlay itself is left in place; `crush-clear-buffer' removes
+The overlay itself is left in place; `quoth-clear-buffer' removes
 it.  Markers are invalidated."
-  (when (markerp crush--reasoning-start)
-    (set-marker crush--reasoning-start nil))
-  (when (markerp crush--reasoning-end)
-    (set-marker crush--reasoning-end nil))
-  (setq-local crush--reasoning-start nil)
-  (setq-local crush--reasoning-end nil)
-  (setq-local crush--reasoning-overlay nil))
+  (when (markerp quoth--reasoning-start)
+    (set-marker quoth--reasoning-start nil))
+  (when (markerp quoth--reasoning-end)
+    (set-marker quoth--reasoning-end nil))
+  (setq-local quoth--reasoning-start nil)
+  (setq-local quoth--reasoning-end nil)
+  (setq-local quoth--reasoning-overlay nil))
 
-(defun crush--tag-response-region (response-start response-end prompt-id)
+(defun quoth--tag-response-region (response-start response-end prompt-id)
   "Tag the response and reasoning regions from RESPONSE-START to RESPONSE-END.
-PROMPT-ID is applied to both regions.  Applies `crush-prompt-id',
-`crush-response-to' and `crush-region-type' (`response', with the
+PROMPT-ID is applied to both regions.  Applies `quoth-prompt-id',
+`quoth-response-to' and `quoth-region-type' (`response', with the
 reasoning sub-span retagged `reasoning').  Shared by
-`crush-facade--finalize' and `crush-interrupt'.  Tool regions within
+`quoth-facade--finalize' and `quoth-interrupt'.  Tool regions within
 the response are tagged `tool' (and their nested raw-result span
-`tool-output') and carry the `crush-tool-call' property for wire
+`tool-output') and carry the `quoth-tool-call' property for wire
 resume."
   (when (and response-start (> response-end response-start))
     (let ((inhibit-read-only t)
@@ -1476,39 +1476,39 @@ resume."
       ;; bare `tool' message (tool_call_id unknown) to be emitted for
       ;; the reasoning text.  User input inside the response range
       ;; (typed text before the stream started) is overwritten to
-      ;; `response': the region spans from `crush--response-start'
+      ;; `response': the region spans from `quoth--response-start'
       ;; onward, past the typed input.
       (let ((pos response-start))
         (while (< pos response-end)
-          (let ((type (get-text-property pos 'crush-region-type))
-                (run-end (or (next-single-property-change pos 'crush-region-type
+          (let ((type (get-text-property pos 'quoth-region-type))
+                (run-end (or (next-single-property-change pos 'quoth-region-type
                                                           nil response-end)
                              response-end)))
             (if (memq type '(tool tool-output reasoning))
                 (setq pos run-end)
               (put-text-property pos run-end
-                                 'crush-prompt-id prompt-id)
+                                 'quoth-prompt-id prompt-id)
               (put-text-property pos run-end
-                                 'crush-response-to prompt-id)
+                                 'quoth-response-to prompt-id)
               (put-text-property pos run-end
-                                 'crush-region-type 'response)
+                                 'quoth-region-type 'response)
               (setq pos run-end)))))
-      (dolist (region (crush--reasoning-regions))
+      (dolist (region (quoth--reasoning-regions))
         (let ((rs (car region))
               (re (cdr region)))
           (when (and (>= rs response-start) (<= re response-end))
             (put-text-property rs re
-                               'crush-prompt-id prompt-id)
+                               'quoth-prompt-id prompt-id)
             (put-text-property rs re
-                               'crush-response-to prompt-id)
+                               'quoth-response-to prompt-id)
             (put-text-property rs re
-                               'crush-region-type 'reasoning)))))))
+                               'quoth-region-type 'reasoning)))))))
 
-(defun crush-facade--close-response (response-start prompt-id)
+(defun quoth-facade--close-response (response-start prompt-id)
   "Close the response started at RESPONSE-START with PROMPT-ID.
 Tags the response text (including any reasoning sub-span), auto-collapses
 the reasoning fold, resets reasoning state, and inserts a fresh prompt.
-Runs in the crush buffer, which owns all response text."
+Runs in the quoth buffer, which owns all response text."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t))
     (save-excursion
@@ -1519,194 +1519,194 @@ Runs in the crush buffer, which owns all response text."
         ;; Tag the full response text with the prompt ID it answers and
         ;; region type.  Deltas were inserted with modification hooks
         ;; suppressed, so this is the only tagging the response gets.
-        (crush--tag-response-region response-start response-end prompt-id)
+        (quoth--tag-response-region response-start response-end prompt-id)
         ;; Auto-collapse every reasoning overlay in the response
         ;; (there may be multiple across tool-call rounds).
         ;; Use (point-min) instead of response-start because
-        ;; crush--response-start is relocated after tool blocks
-        ;; in crush-facade--tool-loop, so the first round's
+        ;; quoth--response-start is relocated after tool blocks
+        ;; in quoth-facade--tool-loop, so the first round's
         ;; reasoning overlay would be outside the range.
         (dolist (ov (overlays-in (point-min) response-end))
-          (when (and (overlay-get ov 'crush-reasoning)
-                     (not (overlay-get ov 'crush-fold-state)))
-            (crush--reasoning-install-fold
+          (when (and (overlay-get ov 'quoth-reasoning)
+                     (not (overlay-get ov 'quoth-fold-state)))
+            (quoth--reasoning-install-fold
              (cons (overlay-start ov) (overlay-end ov)))))
-        (crush--reasoning-reset))
+        (quoth--reasoning-reset))
       ;; Generate new prompt ID BEFORE inserting marker
-      (setq-local crush--prompt-id (crush--generate-id))
-      (crush--insert-input-separator))
+      (setq-local quoth--prompt-id (quoth--generate-id))
+      (quoth--insert-input-separator))
     ;; If the window was following the stream, advance cursor to the
     ;; new input separator so the user lands at the editable prompt.
-    (when crush--follow-p
+    (when quoth--follow-p
       (let ((win (get-buffer-window (current-buffer) 'visible)))
         (goto-char (point-max))
         (when win
           (set-window-point win (point-max)))
-        (setq-local crush--last-follow-point (point-max))))
-    (setq-local crush--response-start nil)
-    (setq-local crush--tool-loop-count 0)
-    (crush--input-ring-write)
-    (crush--update-header-line)
+        (setq-local quoth--last-follow-point (point-max))))
+    (setq-local quoth--response-start nil)
+    (setq-local quoth--tool-loop-count 0)
+    (quoth--input-ring-write)
+    (quoth--update-header-line)
     (setq-local buffer-undo-list nil)))
 
-(defun crush-facade--finalize ()
+(defun quoth-facade--finalize ()
   "Finalize the current response via the facade.
 Check for pending tool invocation from the SSE stream; when present,
 drive the tool loop (execute, insert blocks, send follow-up).
 Otherwise close the response and insert a fresh prompt.  The
 provider's completion action invokes this."
-  (if (and crush-tools-enabled
-           crush-active-provider
-           (let ((tcs (crush-provider--tool-calls
-                       crush-active-provider
-                       (crush-provider-transport-process crush-active-provider))))
+  (if (and quoth-tools-enabled
+           quoth-active-provider
+           (let ((tcs (quoth-provider--tool-calls
+                       quoth-active-provider
+                       (quoth-provider-transport-process quoth-active-provider))))
              (and (vectorp tcs) (> (length tcs) 0))))
-      (crush-facade--tool-loop)
-    (crush-facade--stream-transition 'done 1)
-    (let ((response-start (when (markerp crush--response-start)
-                            (marker-position crush--response-start)))
-          (prompt-id crush--prompt-id))
-      (crush-facade--close-response response-start prompt-id))))
+      (quoth-facade--tool-loop)
+    (quoth-facade--stream-transition 'done 1)
+    (let ((response-start (when (markerp quoth--response-start)
+                            (marker-position quoth--response-start)))
+          (prompt-id quoth--prompt-id))
+      (quoth-facade--close-response response-start prompt-id))))
 
-(defvar-local crush--tool-loop-count 0
+(defvar-local quoth--tool-loop-count 0
   "Number of tool-loop rounds executed for the current prompt.")
 
-(defun crush-facade--tool-loop ()
+(defun quoth-facade--tool-loop ()
   "Execute pending tool invocations and send a follow-up request.
 Extracts tool invocations from the transport's SSE state, executes them
-via `crush-provider--tool-results', inserts tool blocks into the
+via `quoth-provider--tool-results', inserts tool blocks into the
 buffer, then reconstructs the follow-up continuation from the buffer's
-tagged regions via `crush--tool-rounds' (no in-memory cache).  Loop up
-to `crush-tool-loop-max' rounds; when the cap is hit or no invocation
-come back, finalize via `crush-facade--close-response'."
-  (if (>= crush--tool-loop-count crush-tool-loop-max)
+tagged regions via `quoth--tool-rounds' (no in-memory cache).  Loop up
+to `quoth-tool-loop-max' rounds; when the cap is hit or no invocation
+come back, finalize via `quoth-facade--close-response'."
+  (if (>= quoth--tool-loop-count quoth-tool-loop-max)
       (progn
-        (setq-local crush--tool-loop-count 0)
-        (crush-facade--stream-transition 'done 1)
-        (let ((response-start (when (markerp crush--response-start)
-                                (marker-position crush--response-start)))
-              (prompt-id crush--prompt-id))
-          (crush-facade--close-response response-start prompt-id)))
-    (let* ((tool-calls (crush-provider--tool-calls
-                        crush-active-provider
-                        (crush-provider-transport-process crush-active-provider)))
-           (result (crush-provider--tool-results
-                    crush-active-provider tool-calls))
+        (setq-local quoth--tool-loop-count 0)
+        (quoth-facade--stream-transition 'done 1)
+        (let ((response-start (when (markerp quoth--response-start)
+                                (marker-position quoth--response-start)))
+              (prompt-id quoth--prompt-id))
+          (quoth-facade--close-response response-start prompt-id)))
+    (let* ((tool-calls (quoth-provider--tool-calls
+                        quoth-active-provider
+                        (quoth-provider-transport-process quoth-active-provider)))
+           (result (quoth-provider--tool-results
+                    quoth-active-provider tool-calls))
            (blocks (nth 2 result))
-           (prompt-id crush--prompt-id)
+           (prompt-id quoth--prompt-id)
            (buf (current-buffer)))
-      (setq-local crush--tool-loop-count (1+ crush--tool-loop-count))
+      (setq-local quoth--tool-loop-count (1+ quoth--tool-loop-count))
       ;; Insert tool blocks before the response-start marker so they
       ;; appear as part of the current response.
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (dolist (block blocks)
-          (crush--tool-block-insert block prompt-id)))
+          (quoth--tool-block-insert block prompt-id)))
       ;; Tag the response so far (streamed content + the just-inserted
-      ;; tool blocks), so `crush--tool-rounds' can rebuild the wire
+      ;; tool blocks), so `quoth--tool-rounds' can rebuild the wire
       ;; continuation from the buffer alone.
-      (let ((response-start (when (markerp crush--response-start)
-                              (marker-position crush--response-start))))
-        (crush--tag-response-region response-start (point-max) prompt-id))
-      (crush--reasoning-reset)
+      (let ((response-start (when (markerp quoth--response-start)
+                              (marker-position quoth--response-start))))
+        (quoth--tag-response-region response-start (point-max) prompt-id))
+      (quoth--reasoning-reset)
       ;; Reconstruct the continuation: the current prompt's user message
       ;; followed by every assistant(tool_calls)/tool exchange so far,
       ;; walking the whole response region for this prompt so prior rounds
       ;; are included.
-      (let* ((user-msg (let ((text (crush--user-turn-text prompt-id)))
+      (let* ((user-msg (let ((text (quoth--user-turn-text prompt-id)))
                          (and text
                               (> (length text) 0)
                               (list (cons 'role "user")
                                     (cons 'content text)))))
              (continuation (append (and user-msg (list user-msg))
-                                   (crush--tool-rounds prompt-id))))
+                                   (quoth--tool-rounds prompt-id))))
         ;; Clear the old transport and set up for the follow-up.
-        (setf (crush-provider-transport-process crush-active-provider) nil)
-        (setq-local crush--response-start (point-marker))
-        (crush-facade--stream-transition 'active 2)
-        (let ((real-proc (crush-provider-send-prompt
-                          crush-active-provider ""
-                          :session-id crush--session
-                          :session-uuid crush--session-uuid
-                          :continue-p crush--continue
+        (setf (quoth-provider-transport-process quoth-active-provider) nil)
+        (setq-local quoth--response-start (point-marker))
+        (quoth-facade--stream-transition 'active 2)
+        (let ((real-proc (quoth-provider-send-prompt
+                          quoth-active-provider ""
+                          :session-id quoth--session
+                          :session-uuid quoth--session-uuid
+                          :continue-p quoth--continue
                           :completion (lambda ()
                                         (when (buffer-live-p buf)
                                           (with-current-buffer buf
-                                            (crush-facade--finalize))))
+                                            (quoth-facade--finalize))))
                           :on-delta (lambda (delta kind)
                                       (when (buffer-live-p buf)
                                         (with-current-buffer buf
-                                          (crush-facade--append-delta delta kind))))
+                                          (quoth-facade--append-delta delta kind))))
                           :on-error (lambda (message)
                                       (when (buffer-live-p buf)
                                         (with-current-buffer buf
-                                          (crush-facade--record-error message))))
+                                          (quoth-facade--record-error message))))
                           :buffer buf
-                          :stderr (get-buffer-create "*crush-errors*")
+                          :stderr (get-buffer-create "*quoth-errors*")
                           :continuation continuation)))
           (when (and real-proc (processp real-proc))
             (set-marker (process-mark real-proc) (point-max))))))))
 
 ;;; Major mode commands
 
-(defun crush-facade--append-delta (delta kind)
+(defun quoth-facade--append-delta (delta kind)
   "Append streamed DELTA of KIND (`content' or `reasoning') to the buffer.
 The facade's buffer-aware consumer for streaming providers inserts at
 point-max, the growing response area, and drives the reasoning overlay:
 the first reasoning delta opens the region, later ones extend it, the
-first content delta freezes it.  `crush--response-start' is never touched;
+first content delta freezes it.  `quoth--response-start' is never touched;
 it stays at the response start for finalization.
 
-Uses `crush--insert-at-eof' for insertion, which only advances the cursor
+Uses `quoth--insert-at-eof' for insertion, which only advances the cursor
 if it was already at point-max, allowing users to scroll back while the
-response streams in.  Runs in the crush buffer (the facade's `:on-delta'
+response streams in.  Runs in the quoth buffer (the facade's `:on-delta'
 closure enters it)."
   (save-excursion
     (goto-char (point-max))
     (pcase kind
       ('reasoning
-       (crush--reasoning-start-region)
-       (crush--reasoning-extend-overlay))
+       (quoth--reasoning-start-region)
+       (quoth--reasoning-extend-overlay))
       ('content
-       (crush--reasoning-stop))))
-  (crush--insert-at-eof delta)
+       (quoth--reasoning-stop))))
+  (quoth--insert-at-eof delta)
   (when (eq kind 'reasoning)
     (save-excursion
       (goto-char (point-max))
-      (crush--reasoning-extend-overlay))))
+      (quoth--reasoning-extend-overlay))))
 
-(defun crush-facade--send (prompt)
+(defun quoth-facade--send (prompt)
   "Send PROMPT via the active provider.
 Injects the facade's continuation as the provider's completion action so
 providers signal stream completion without touching buffers.  Runs in the
-crush buffer, which owns all streamed output."
+quoth buffer, which owns all streamed output."
   (let ((buf (current-buffer)))
-    (crush-facade--stream-transition 'active 2)
-    (let ((real-proc (crush-provider-send-prompt
-                      crush-active-provider prompt
-                      :session-id crush--session
-                      :session-uuid crush--session-uuid
-                      :continue-p crush--continue
+    (quoth-facade--stream-transition 'active 2)
+    (let ((real-proc (quoth-provider-send-prompt
+                      quoth-active-provider prompt
+                      :session-id quoth--session
+                      :session-uuid quoth--session-uuid
+                      :continue-p quoth--continue
                       :completion (lambda ()
                                     (when (buffer-live-p buf)
                                       (with-current-buffer buf
-                                        (crush-facade--finalize))))
+                                        (quoth-facade--finalize))))
                       :on-delta (lambda (delta kind)
                                   (when (buffer-live-p buf)
                                     (with-current-buffer buf
-                                      (crush-facade--append-delta delta kind))))
+                                      (quoth-facade--append-delta delta kind))))
                       :on-error (lambda (message)
                                   (when (buffer-live-p buf)
                                     (with-current-buffer buf
-                                      (crush-facade--record-error message))))
+                                      (quoth-facade--record-error message))))
                       :buffer buf
-                      :stderr (get-buffer-create "*crush-errors*"))))
+                      :stderr (get-buffer-create "*quoth-errors*"))))
       (when (and real-proc (processp real-proc))
         (set-marker (process-mark real-proc) (point-max)))
-      (setq-local crush--continue t)
-      (setq-local crush--response-start (point-marker)))))
+      (setq-local quoth--continue t)
+      (setq-local quoth--response-start (point-marker)))))
 
-(defun crush--fence-str (text)
+(defun quoth--fence-str (text)
   "Return a markdown fence string long enough to enclose TEXT.
 Scan TEXT for the longest run of consecutive backtick (`` ` ``)
 characters and return one more backtick than that, with a minimum
@@ -1721,19 +1721,19 @@ of 3 (the standard markdown fenced-code-block delimiter)."
     (setq max-run (max max-run run))
     (make-string (max 3 (1+ max-run)) ?\`)))
 
-(defconst crush--fence-lang "text"
+(defconst quoth--fence-lang "text"
   "Language tag for tool-output fenced blocks.
 Always `text' so tool output renders as a plain code block regardless
 of what the raw result contains.")
 
-(defun crush--shell-language (shell-path)
+(defun quoth--shell-language (shell-path)
   "Return the markdown fence language for SHELL-PATH.
 SHELL-PATH is a shell binary path or name (nil means
 `shell-file-name').  The language is derived from the shell type so the
 `exec_command' `ran:' fence highlights correctly: `bash', `zsh', `sh',
 `cmd', `powershell', or `shell' for an unknown POSIX-style shell."
   (let ((shell-path (or shell-path shell-file-name)))
-    (pcase (crush-process--shell-type shell-path)
+    (pcase (quoth-process--shell-type shell-path)
       ('bash "bash")
       ('zsh "zsh")
       ('sh "sh")
@@ -1743,13 +1743,13 @@ SHELL-PATH is a shell binary path or name (nil means
 
 ;;; Tool-block display decoration
 
-(defconst crush--tool-icons
+(defconst quoth--tool-icons
   '(("exec_command" . "🔧")
     ("write_stdin" . "⌨️")
     ("web_search" . "🔍"))
   "Alist mapping tool names to the emoji icon for their buffer header.")
 
-(defun crush--yield-ms->human (ms)
+(defun quoth--yield-ms->human (ms)
   "Render a millisecond duration MS as a short human string.
 7500 → \"7.5s\", 60000 → \"1m\", 300 → \"300ms\".  Non-numbers pass
 through unchanged."
@@ -1767,29 +1767,29 @@ through unchanged."
                      (number-to-string (/ ms 1000.0)))))
      (t (format "%dms" ms)))))
 
-(defun crush--tool-fenced-block (text &optional lang)
+(defun quoth--tool-fenced-block (text &optional lang)
   "Return TEXT as a markdown fenced code block string.
-The fence length is chosen by `crush--fence-str' so nested backtick
+The fence length is chosen by `quoth--fence-str' so nested backtick
 runs never break the block.  TEXT is used verbatim; a trailing newline
 is added when missing so the closing fence sits on its own line.  LANG
 is the language identifier for the opening fence; it defaults to
-`crush--fence-lang'.  The returned string does not end in a newline:
+`quoth--fence-lang'.  The returned string does not end in a newline:
 callers own the blank-line separator, so joined sections keep exactly
 one blank line."
-  (let* ((fence (crush--fence-str text))
-         (lang (or lang crush--fence-lang))
+  (let* ((fence (quoth--fence-str text))
+         (lang (or lang quoth--fence-lang))
          (body (if (string-suffix-p "\n" text) text (concat text "\n"))))
     (concat fence lang "\n" body fence)))
 
-(defun crush--tool-login-requested-p (args)
+(defun quoth--tool-login-requested-p (args)
   "Return non-nil when ARGS requests a login shell.
-A pure display predicate: unlike `crush-exec--login', it never signals
+A pure display predicate: unlike `quoth-exec--login', it never signals
 when login is disallowed by config, so the header can render
 `login yes|no' without erroring on a rejected request."
   (let ((requested (plist-get args :login)))
     (and requested (not (eq requested :json-false)) t)))
 
-(defun crush--tool-clauses (tool args)
+(defun quoth--tool-clauses (tool args)
   "Return the display clauses for TOOL and its ARGS plist.
 Return a plist `(:inline CLAUSES :blocks BLOCKS)' where CLAUSES is the
 ordered list of inline scalar clauses for the header line (yield,
@@ -1806,19 +1806,19 @@ what the tool actually ran."
      ((string= tool "exec_command")
       (when (stringp (plist-get args :cmd))
         (push (list :label "ran" :value (plist-get args :cmd) :fence t
-                    :lang (crush--shell-language (plist-get args :shell)))
+                    :lang (quoth--shell-language (plist-get args :shell)))
               blocks))
       (push (list :label "in"
                   :value (or (plist-get args :workdir) default-directory))
             blocks)
       (push (format "yield %s"
-                    (crush--yield-ms->human
-                     (crush-exec--yield-ms args crush-process-yield-ms)))
+                    (quoth--yield-ms->human
+                     (quoth-exec--yield-ms args quoth-process-yield-ms)))
             inline)
       (push (format "shell %s" (or (plist-get args :shell) shell-file-name))
             inline)
       (push (format "login %s"
-                    (if (crush--tool-login-requested-p args) "yes" "no"))
+                    (if (quoth--tool-login-requested-p args) "yes" "no"))
             inline))
      ((string= tool "write_stdin")
       (when (integerp (plist-get args :session_id))
@@ -1826,8 +1826,8 @@ what the tool actually ran."
       (push (list :label "wrote" :value (or (plist-get args :input) ""))
             blocks)
       (push (format "yield %s"
-                    (crush--yield-ms->human
-                     (crush-exec--yield-ms args crush-process-write-yield-ms)))
+                    (quoth--yield-ms->human
+                     (quoth-exec--yield-ms args quoth-process-write-yield-ms)))
             inline))
      ((string= tool "web_search")
       (when (stringp (plist-get args :query))
@@ -1837,12 +1837,12 @@ what the tool actually ran."
       (when (stringp (plist-get args :engines))
         (push (format "engines %s" (plist-get args :engines)) inline))
       (push (format "max %d" (or (plist-get args :max_results)
-                                 crush-searxng-max-results))
+                                 quoth-searxng-max-results))
             inline)))
     (list :inline (nreverse inline)
           :blocks (nreverse blocks))))
 
-(defun crush--tool-header-line (tool args)
+(defun quoth--tool-header-line (tool args)
   "Return the single markdown header line for TOOL and its ARGS plist.
 The line is bold icon + tool name, then a plain-text summary of the
 scalar clauses (no inline emphasis, comma-separated), e.g.
@@ -1851,22 +1851,22 @@ Free-text argument values (cmd, workdir, input, query) are rendered
 below the header as `LABEL: VALUE' lines, or as fenced code blocks when
 they span multiple lines, so multiline values stay valid markdown.  The
 tool-call id is deliberately not shown: it is display noise, and wire
-resume reads it from the `crush-tool-call' text property."
-  (let* ((icon (or (cdr (assoc tool crush--tool-icons)) "🛠️"))
+resume reads it from the `quoth-tool-call' text property."
+  (let* ((icon (or (cdr (assoc tool quoth--tool-icons)) "🛠️"))
          (name (if (string= tool "write_stdin") "write_stdin" tool))
-         (clauses (plist-get (crush--tool-clauses tool args) :inline))
+         (clauses (plist-get (quoth--tool-clauses tool args) :inline))
          (summary (when clauses
                     (format " — %s" (mapconcat #'identity clauses ", ")))))
     (format "**%s %s**%s" icon name (or summary ""))))
 
-(defun crush--tool-arg-blocks (tool args)
+(defun quoth--tool-arg-blocks (tool args)
   "Return the below-header argument lines for TOOL and its ARGS plist.
 Each argument value renders as a `LABEL: VALUE' line when the value is
 single-line (no embedded newline), and as a `LABEL:' line followed by a
 fenced code block when it spans multiple lines or carries a non-nil
 `:fence' flag.  Rendered lines are separated by blank lines.  Returns
 nil when there are no argument blocks."
-  (let ((blocks (plist-get (crush--tool-clauses tool args) :blocks)))
+  (let ((blocks (plist-get (quoth--tool-clauses tool args) :blocks)))
     (when blocks
       (mapconcat
        (lambda (block)
@@ -1876,12 +1876,12 @@ nil when there are no argument blocks."
                (lang (plist-get block :lang)))
            (if (or fence-p (string-match-p "\n" value))
                (format "%s:\n\n%s" label
-                       (crush--tool-fenced-block value lang))
+                       (quoth--tool-fenced-block value lang))
              (format "%s: %s" label value))))
        blocks
        "\n\n"))))
 
-(defun crush--ensure-blank-line ()
+(defun quoth--ensure-blank-line ()
   "Ensure the text before point is separated from what follows by one blank line.
 At point, count trailing newlines and insert the minimum number needed to
 leave exactly two newlines (one blank line) before the next insertion.
@@ -1897,25 +1897,25 @@ untouched."
       (when (< newlines 2)
         (insert (make-string (- 2 newlines) ?\n))))))
 
-(defun crush--tool-block-insert (tool-calls prompt-id)
+(defun quoth--tool-block-insert (tool-calls prompt-id)
   "Insert a tool-call block for TOOL-CALLS into the buffer.
 TOOL-CALLS is a plist of :name :id :args-json :result :exit.
 PROMPT-ID is the current prompt's ID.  The block is read-only,
-tagged `crush-region-type' `tool' with `crush-prompt-id' /
-`crush-response-to', and carries the `crush-tool-call' property
+tagged `quoth-region-type' `tool' with `quoth-prompt-id' /
+`quoth-response-to', and carries the `quoth-tool-call' property
 for wire resume.  Returns the end position of the inserted block."
   ;; When reasoning was streamed but no content delta ever arrived
   ;; (the model went straight to tool calls), the reasoning text
   ;; is still active and lacks a trailing newline.  Stop reasoning
   ;; now so the tool block is visually separated from the reasoning
   ;; and the reasoning region boundaries are correct.
-  ;; Wrap in `save-excursion' so `crush--reasoning-stop`'s internal
+  ;; Wrap in `save-excursion' so `quoth--reasoning-stop`'s internal
   ;; `goto-char (point-max)` does not yank the user's cursor.
-  (save-excursion (crush--reasoning-stop))
+  (save-excursion (quoth--reasoning-stop))
   (let* ((name (plist-get tool-calls :name))
          (id (plist-get tool-calls :id))
          (args (or (and (stringp (plist-get tool-calls :args-json))
-                        (crush-openai-parse-tool-args
+                        (quoth-openai-parse-tool-args
                          (plist-get tool-calls :args-json)))
                    (list)))
          (result (plist-get tool-calls :result))
@@ -1933,13 +1933,13 @@ for wire resume.  Returns the end position of the inserted block."
                          (setq n (1+ n))))
                      (when (< n 2)
                        (make-string (- 2 n) ?\n)))))
-         (header (crush--tool-header-line name args))
-         (arg-blocks (crush--tool-arg-blocks name args))
+         (header (quoth--tool-header-line name args))
+         (arg-blocks (quoth--tool-arg-blocks name args))
          (raw (when result
                 (concat result (unless (string-suffix-p "\n" result) "\n"))))
-         (output-fence (when result (crush--fence-str result)))
+         (output-fence (when result (quoth--fence-str result)))
          (output-block (when result
-                         (concat output-fence crush--fence-lang "\n"
+                         (concat output-fence quoth--fence-lang "\n"
                                  raw output-fence)))
          ;; Assemble the block: prefix, header line, then argument
          ;; blocks (if any), then the output fence (if any).  Each
@@ -1963,7 +1963,7 @@ for wire resume.  Returns the end position of the inserted block."
                  (concat header "\n\n")))
          (block (concat prefix body))
          (start (point-max)))
-    (crush--insert-at-eof block)
+    (quoth--insert-at-eof block)
     (let* ((inhibit-modification-hooks t)
            (end (point-max))
            ;; The raw tool result (wire `role: "tool"' content) sits
@@ -1973,20 +1973,20 @@ for wire resume.  Returns the end position of the inserted block."
            (raw-start
             (when output-block
               (+ start (length prefix) output-offset
-                 (length output-fence) (length crush--fence-lang) 1)))
+                 (length output-fence) (length quoth--fence-lang) 1)))
            (raw-end (when raw-start (+ raw-start (length raw)))))
-      (put-text-property start end 'crush-region-type 'tool)
-      (put-text-property start end 'crush-prompt-id prompt-id)
-      (put-text-property start end 'crush-response-to prompt-id)
+      (put-text-property start end 'quoth-region-type 'tool)
+      (put-text-property start end 'quoth-prompt-id prompt-id)
+      (put-text-property start end 'quoth-response-to prompt-id)
       ;; Tag the whole block (including the closing fence) so the
-      ;; wire-reconstruction walk in `crush--tool-rounds' treats it as
+      ;; wire-reconstruction walk in `quoth--tool-rounds' treats it as
       ;; one call span.  A trailing fence char left without the call
       ;; property is itself `tool'-typed and, having no metadata, makes
       ;; the walker fall into the legacy branch, whose raw-result bound
-      ;; (the next `crush-tool-call' change) extends to the end of the
+      ;; (the next `quoth-tool-call' change) extends to the end of the
       ;; response and swallows every following turn as a bare `tool'
       ;; message with `tool_call_id: unknown'.
-      (put-text-property start end 'crush-tool-call
+      (put-text-property start end 'quoth-tool-call
                          (list :id id
                                :name name
                                :args-json (plist-get tool-calls :args-json)))
@@ -1997,65 +1997,65 @@ for wire resume.  Returns the end position of the inserted block."
       ;; the same prompt/response tags so it survives re-tagging and
       ;; persistence.
       (when raw-start
-        (put-text-property raw-start raw-end 'crush-region-type 'tool-output)
-        (put-text-property raw-start raw-end 'crush-prompt-id prompt-id)
-        (put-text-property raw-start raw-end 'crush-response-to prompt-id))
-      (crush--freeze-region start end)
+        (put-text-property raw-start raw-end 'quoth-region-type 'tool-output)
+        (put-text-property raw-start raw-end 'quoth-prompt-id prompt-id)
+        (put-text-property raw-start raw-end 'quoth-response-to prompt-id))
+      (quoth--freeze-region start end)
       end)))
 
-(defun crush-send-input ()
+(defun quoth-send-input ()
   "Send the current prompt to the provider."
   (interactive)
-  (when (and crush-active-provider
-             (crush-provider-p crush-active-provider)
-             (crush-provider-active-p crush-active-provider))
-    (user-error "Crush is still running; interrupt with C-c c i"))
-  (let* ((input-start (or (when (and crush--input-start-marker
-                                     (markerp crush--input-start-marker))
-                            (marker-position crush--input-start-marker))
+  (when (and quoth-active-provider
+             (quoth-provider-p quoth-active-provider)
+             (quoth-provider-active-p quoth-active-provider))
+    (user-error "Quoth is still running; interrupt with C-c c i"))
+  (let* ((input-start (or (when (and quoth--input-start-marker
+                                     (markerp quoth--input-start-marker))
+                            (marker-position quoth--input-start-marker))
                           (point-min)))
          (input (buffer-substring-no-properties
                  input-start (point-max)))
          (prompt (string-trim input)))
     (when (string-empty-p prompt)
       (user-error "No prompt to send"))
-    (crush--input-ring-add prompt)
+    (quoth--input-ring-add prompt)
     ;; Explicitly tag the user input region as `user' so history
-    ;; extraction (crush--user-turn-text) can find it.  after-change
+    ;; extraction (quoth--user-turn-text) can find it.  after-change
     ;; tagging may be incomplete when text is inserted via yank, undo,
     ;; or other non-interactive paths that don't fire the hook or fire
     ;; it with beg before prompt-start-marker.
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t))
       (put-text-property input-start (point-max)
-                         'crush-region-type 'user)
+                         'quoth-region-type 'user)
       (put-text-property input-start (point-max)
-                         'crush-prompt-id crush--prompt-id))
+                         'quoth-prompt-id quoth--prompt-id))
     (goto-char (point-max))
     (newline)
     ;; Draw a horizontal divider after the user turn so the response is
     ;; visually decoupled from the prompt text; the response region and
     ;; reasoning overlay begin after it.
-    (crush--insert-user-separator)
-    (setq-local crush--response-start (point-marker))
-    (setq-local crush--input-ring-index 0)
-    (setq-local crush--tool-loop-count 0)
-    (setq-local crush--follow-p t)
-    (setq-local crush--last-follow-point (point-max))
-    (crush-facade--send prompt)))
+    (quoth--insert-user-separator)
+    (setq-local quoth--response-start (point-marker))
+    (setq-local quoth--input-ring-index 0)
+    (setq-local quoth--tool-loop-count 0)
+    (setq-local quoth--follow-p t)
+    (setq-local quoth--last-follow-point (point-max))
+    (quoth-facade--send prompt)))
 
-(defun crush-interrupt ()
+(defun quoth-interrupt ()
   "Interrupt the active provider's in-flight request.
-Dispatches through `crush-provider-interrupt' so the provider owns its
+Dispatches through `quoth-provider-interrupt' so the provider owns its
 transport process.  The partial response is tagged/frozen and a fresh
 input divider inserted, mirroring normal finalization."
   (interactive)
-  (let ((active (and crush-active-provider
-                     (crush-provider-p crush-active-provider)
-                     (crush-provider-active-p crush-active-provider))))
+  (let ((active (and quoth-active-provider
+                     (quoth-provider-p quoth-active-provider)
+                     (quoth-provider-active-p quoth-active-provider))))
     (if (not active)
-        (message "No crush process running")
-      (crush-provider-interrupt crush-active-provider)
+        (message "No quoth process running")
+      (quoth-provider-interrupt quoth-active-provider)
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (save-excursion
@@ -2063,80 +2063,80 @@ input divider inserted, mirroring normal finalization."
           (newline)
           ;; Tag the partial response (including any streamed reasoning)
           ;; up to the interrupt point, and auto-collapse the reasoning.
-          (let ((response-start (when (markerp crush--response-start)
-                                  (marker-position crush--response-start))))
-            (crush--tag-response-region response-start (point) crush--prompt-id)
+          (let ((response-start (when (markerp quoth--response-start)
+                                  (marker-position quoth--response-start))))
+            (quoth--tag-response-region response-start (point) quoth--prompt-id)
             (dolist (ov (overlays-in (or response-start (point-min)) (point)))
-              (when (and (overlay-get ov 'crush-reasoning)
-                         (not (overlay-get ov 'crush-fold-state)))
-                (crush--reasoning-install-fold
+              (when (and (overlay-get ov 'quoth-reasoning)
+                         (not (overlay-get ov 'quoth-fold-state)))
+                (quoth--reasoning-install-fold
                  (cons (overlay-start ov) (overlay-end ov)))))
-            (crush--reasoning-reset))
+            (quoth--reasoning-reset))
           ;; Generate a fresh pending ID before the new marker, exactly
-          ;; like `crush-facade--close-response'.
-          (setq-local crush--prompt-id (crush--generate-id))
-          (crush--insert-input-separator)))
-      (when crush--follow-p
+          ;; like `quoth-facade--close-response'.
+          (setq-local quoth--prompt-id (quoth--generate-id))
+          (quoth--insert-input-separator)))
+      (when quoth--follow-p
         (let ((win (get-buffer-window (current-buffer) 'visible)))
           (goto-char (point-max))
           (when win
             (set-window-point win (point-max)))
-          (setq-local crush--last-follow-point (point-max))))
-      (setq-local crush--response-start nil)
-      (setq-local crush--tool-loop-count 0)
-      (crush-facade--stream-transition 'done 1)
+          (setq-local quoth--last-follow-point (point-max))))
+      (setq-local quoth--response-start nil)
+      (setq-local quoth--tool-loop-count 0)
+      (quoth-facade--stream-transition 'done 1)
       (setq-local buffer-undo-list nil)
-      (message "Crush process interrupted"))))
+      (message "Quoth process interrupted"))))
 
-(defun crush-clear-buffer ()
-  "Clear the Crush buffer output and start a fresh session.
+(defun quoth-clear-buffer ()
+  "Clear the Quoth buffer output and start a fresh session.
 Also rotates the buffer's session UUID, so the next prompt gets a
 cold hyperscale cache (new x-session-id / x-session-affinity)."
   (interactive)
-  (setq-local crush--continue nil)
-  (setq-local crush--follow-p nil)
-  (setq-local crush--last-follow-point 0)
-  (setq-local crush-openai--cached-system-prompt nil)
-  (setq-local crush-openai--cache-key nil)
-  (crush--init-session-uuid)
-  (crush-facade--stream-clear)
+  (setq-local quoth--continue nil)
+  (setq-local quoth--follow-p nil)
+  (setq-local quoth--last-follow-point 0)
+  (setq-local quoth-openai--cached-system-prompt nil)
+  (setq-local quoth-openai--cache-key nil)
+  (quoth--init-session-uuid)
+  (quoth-facade--stream-clear)
   ;; Kill any in-flight provider transport before clearing.
-  (when (and crush-active-provider
-             (crush-provider-p crush-active-provider))
-    (crush-provider-cleanup crush-active-provider))
+  (when (and quoth-active-provider
+             (quoth-provider-p quoth-active-provider))
+    (quoth-provider-cleanup quoth-active-provider))
   ;; Kill any live process sessions this buffer owns.
-  (crush-process--cleanup-buffer (current-buffer))
-  ;; Delete all crush-overlay tagged overlays
+  (quoth-process--cleanup-buffer (current-buffer))
+  ;; Delete all quoth-overlay tagged overlays
   (dolist (ov (overlays-in (point-min) (point-max)))
-    (when (overlay-get ov 'crush-overlay)
+    (when (overlay-get ov 'quoth-overlay)
       (delete-overlay ov)))
-  (crush--reasoning-reset)
+  (quoth--reasoning-reset)
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (crush--insert-input-separator))
+    (quoth--insert-input-separator))
   (setq-local buffer-undo-list nil))
 
-(defun crush-select-model ()
+(defun quoth-select-model ()
   "Select a model from the Hyper gateway's catalog.
-Fetches the live model catalog from `crush-hyper-base-url'/provider
+Fetches the live model catalog from `quoth-hyper-base-url'/provider
 \(sync) and prompts for a choice; picking a model sets the global
-`crush-model' and the current buffer's provider model slot, so the
+`quoth-model' and the current buffer's provider model slot, so the
 header line updates immediately and future buffers use the choice.
 Choosing the `default' entry clears the selection back to
-`crush-openai-default-model'.  When the catalog fetch fails, offers a
+`quoth-openai-default-model'.  When the catalog fetch fails, offers a
 small fallback list so selection still works offline."
   (interactive)
   (let* ((base-url (or (getenv "HYPER_URL")
-                       (and (crush-hyper-provider-p crush-active-provider)
-                            (crush-hyper-provider-base-url crush-active-provider))
-                       crush-hyper-base-url))
-         (fetched (crush-hyper--fetch-models base-url
-                                             crush-hyper-token))
+                       (and (quoth-hyper-provider-p quoth-active-provider)
+                            (quoth-hyper-provider-base-url quoth-active-provider))
+                       quoth-hyper-base-url))
+         (fetched (quoth-hyper--fetch-models base-url
+                                             quoth-hyper-token))
          (catalog (car fetched))
          (choices (if catalog
-                      (crush-hyper--model-choices catalog)
-                    (list (cons crush-openai-default-model
-                                (format "%s (default)" crush-openai-default-model))
+                      (quoth-hyper--model-choices catalog)
+                    (list (cons quoth-openai-default-model
+                                (format "%s (default)" quoth-openai-default-model))
                           (cons "qwen3.7-plus" "qwen3.7-plus")
                           (cons "deepseek-v4-flash" "deepseek-v4-flash"))))
          (choice (completing-read
@@ -2146,86 +2146,86 @@ small fallback list so selection still works offline."
                   nil t nil)))
     (if (string= choice "default")
         (progn
-          (setq crush-model nil)
-          (when (crush-hyper-provider-p crush-active-provider)
-            (setf (crush-hyper-provider-model crush-active-provider) nil)))
-      (setq crush-model choice)
-      (when (crush-hyper-provider-p crush-active-provider)
-        (setf (crush-hyper-provider-model crush-active-provider) choice)))
-    (crush--update-header-line)
+          (setq quoth-model nil)
+          (when (quoth-hyper-provider-p quoth-active-provider)
+            (setf (quoth-hyper-provider-model quoth-active-provider) nil)))
+      (setq quoth-model choice)
+      (when (quoth-hyper-provider-p quoth-active-provider)
+        (setf (quoth-hyper-provider-model quoth-active-provider) choice)))
+    (quoth--update-header-line)
     (message "Model: %s"
              (or (and (not (string= choice "default")) choice)
-                 crush-openai-default-model))))
+                 quoth-openai-default-model))))
 
 ;;; Minor mode commands
 
-(defun crush-insert-selection (beg end)
-  "Insert the current buffer selection into the Crush buffer.
+(defun quoth-insert-selection (beg end)
+  "Insert the current buffer selection into the Quoth buffer.
 BEG and END are the bounds of the selection."
   (interactive "r")
   (let* ((file (buffer-file-name))
-         (relative (crush--relative-file file))
-         (formatted (crush--format-selection file relative beg end))
-         (buf (crush--current-crush-buffer)))
+         (relative (quoth--relative-file file))
+         (formatted (quoth--format-selection file relative beg end))
+         (buf (quoth--current-quoth-buffer)))
     (with-current-buffer buf
-      (crush--append-as-user-input buf formatted)
-      (crush--update-header-line))
+      (quoth--append-as-user-input buf formatted)
+      (quoth--update-header-line))
     (switch-to-buffer-other-window buf)))
 
-(defun crush-insert-buffer ()
-  "Insert the entire current buffer into the Crush buffer as context."
+(defun quoth-insert-buffer ()
+  "Insert the entire current buffer into the Quoth buffer as context."
   (interactive)
-  (crush-insert-selection (point-min) (point-max)))
+  (quoth-insert-selection (point-min) (point-max)))
 
-(defun crush-insert-filepath ()
-  "Insert the current buffer's file path into the Crush buffer as context."
+(defun quoth-insert-filepath ()
+  "Insert the current buffer's file path into the Quoth buffer as context."
   (interactive)
   (let ((file (buffer-file-name)))
     (unless file
       (user-error "Current buffer has no file"))
-    (let* ((relative-file (crush--relative-file file))
+    (let* ((relative-file (quoth--relative-file file))
            (formatted (if relative-file
                           (format "[%s](%s)" relative-file relative-file)
                         ""))
-           (buf (crush--current-crush-buffer)))
+           (buf (quoth--current-quoth-buffer)))
       (with-current-buffer buf
-        (crush--append-as-user-input buf formatted)
-        (crush--update-header-line))
+        (quoth--append-as-user-input buf formatted)
+        (quoth--update-header-line))
       (switch-to-buffer-other-window buf))))
 
 ;;; Entry point
 
 ;;;###autoload
-(defun crush ()
-  "Start an interactive Crush session.
+(defun quoth ()
+  "Start an interactive Quoth session.
 Creates a buffer if none exists, switches to it, and prepares it for input."
   (interactive)
-  (let ((buf (crush--current-crush-buffer)))
+  (let ((buf (quoth--current-quoth-buffer)))
     (switch-to-buffer-other-window buf)))
 
 ;;; Minor mode
 
-(defvar crush-minor-mode-map
+(defvar quoth-minor-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-s") #'crush-insert-selection)
-    (define-key map (kbd "C-c C-b") #'crush-insert-buffer)
-    (define-key map (kbd "C-c C-p") #'crush-insert-filepath)
-    (define-key map (kbd "C-c C-c") #'crush)
+    (define-key map (kbd "C-c C-s") #'quoth-insert-selection)
+    (define-key map (kbd "C-c C-b") #'quoth-insert-buffer)
+    (define-key map (kbd "C-c C-p") #'quoth-insert-filepath)
+    (define-key map (kbd "C-c C-c") #'quoth)
     map)
-  "Keymap for `crush-minor-mode'.")
+  "Keymap for `quoth-minor-mode'.")
 
 ;;;###autoload
-(define-minor-mode crush-minor-mode
-  "Minor mode for sending buffer content to the crush provider.
+(define-minor-mode quoth-minor-mode
+  "Minor mode for sending buffer content to the quoth provider.
 
 When enabled, provides keybindings under the `C-c C-' prefix for
-sending selections, whole buffers, and file paths to the Crush
+sending selections, whole buffers, and file paths to the Quoth
 interaction buffer.
 
-\\{crush-minor-mode-map}"
-  :lighter " Crush"
-  :group 'crush
-  :keymap crush-minor-mode-map)
+\\{quoth-minor-mode-map}"
+  :lighter " Quoth"
+  :group 'quoth
+  :keymap quoth-minor-mode-map)
 
-(provide 'crush)
-;;; crush.el ends here
+(provide 'quoth)
+;;; quoth.el ends here

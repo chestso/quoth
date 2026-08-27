@@ -8,8 +8,8 @@ in Crush. The gateway's OpenAI-compatible chat-completions API lives
 under `/v1`; tokens (`sk-hyper-` prefixed) come from the Hyper
 Dashboard.
 
-crush.el consumes this API through the hyper provider: the reusable
-OpenAI client (`crush-openai.el`) runs a curl subprocess transport with SSE
+Quoth consumes this API through the hyper provider: the reusable
+OpenAI client (`quoth-openai.el`) runs a curl subprocess transport with SSE
 parsed in the process filter (see the integration fixture
 `test/hyper-server.py`).
 
@@ -25,7 +25,7 @@ and the embedded [`provider.json`](https://github.com/charmbracelet/crush/blob/m
 | Override           | `$HYPER_URL` — when set, Chat + provider endpoints use `$HYPER_URL` |
 | Auth               | `Authorization: Bearer sk-hyper-...` (except device-flow endpoints) |
 | Content type       | `application/json`                                                  |
-| User-Agent         | `crush` (device/token/introspect endpoints)                         |
+| User-Agent         | `quoth` (device/token/introspect endpoints)                         |
 
 The chat-completions, credits, and model-catalog endpoints live under
 `{base}` = `https://hyper.charm.land/v1` (or `$HYPER_URL` when set).
@@ -154,7 +154,7 @@ Authorization: Bearer <access_token>
 ```
 
 Hyper exposes the **OpenAI Chat Completions** wire format with a few
-Hyper-specific fields. This is the endpoint crush.el targets.
+Hyper-specific fields. This is the endpoint Quoth targets.
 
 ### 3.1 Headers
 
@@ -184,9 +184,9 @@ opaque, stable per machine, and carries no user payload. It lets the
 gateway recognize repeat clients (rate/pricing/cache correlation) the
 way the CLI's own requests do.
 
-crush.el mirrors this: the hyper backend sends `x-crush-id` on every
+Quoth mirrors this: the hyper backend sends `x-crush-id` on every
 request by default, deriving a stable per-machine value (XXH3-64 of the
-local system identity) via `crush-hyper-x-crush-id` (`t` derive, string
+local system identity) via `quoth-hyper-x-crush-id` (`t` derive, string
 verbatim, function, or `nil` to omit).
 
 ### 3.2 Request body

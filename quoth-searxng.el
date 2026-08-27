@@ -1,8 +1,8 @@
-;;; crush-searxng.el --- SearXNG web_search tool for crush  -*- lexical-binding: t; -*-
+;;; quoth-searxng.el --- SearXNG web_search tool for quoth  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
@@ -29,7 +29,7 @@
 
 ;;; Commentary:
 
-;; Local `web_search' tool implementation for crush.el: queries a
+;; Local `web_search' tool implementation for quoth.el: queries a
 ;; local SearXNG instance over HTTP and returns normalized results in
 ;; the Codex-style prose convention (`Process exited with code N' +
 ;; `Output:').  The tool is a thin synchronous wrapper: it fetches JSON
@@ -39,7 +39,7 @@
 ;;
 ;; Gating: the search request itself is the probe.  The first call
 ;; determines connectivity and caches the result in a buffer-local
-;; `crush-searxng--healthy'.  A healthy state (`t') just searches; an
+;; `quoth-searxng--healthy'.  A healthy state (`t') just searches; an
 ;; unreachable state (`unreachable') short-circuits with no HTTP request
 ;; so a dead server is not hammered on every tool round.
 
@@ -50,7 +50,7 @@
 (require 'subr-x)
 (require 'url-util)
 (eval-and-compile
-  (dolist (dep '("crush-openai" "crush-tools"))
+  (dolist (dep '("quoth-openai" "quoth-tools"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -58,43 +58,43 @@
               (or buffer-file-name load-file-name default-directory)))
             nil t))))
 
-(declare-function crush-openai-tool-call-args "crush-openai" (tool-call))
-(declare-function crush-exec--error "crush-tools" (message tool-call))
-(declare-function crush-exec--format-result "crush-tools" (output exit-code))
-(declare-function crush-exec--truncate-output "crush-tools" (output))
+(declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
+(declare-function quoth-exec--error "quoth-tools" (message tool-call))
+(declare-function quoth-exec--format-result "quoth-tools" (output exit-code))
+(declare-function quoth-exec--truncate-output "quoth-tools" (output))
 
-(defgroup crush-searxng nil
-  "Local SearXNG search tool for crush."
-  :group 'crush
-  :prefix "crush-searxng-")
+(defgroup quoth-searxng nil
+  "Local SearXNG search tool for quoth."
+  :group 'quoth
+  :prefix "quoth-searxng-")
 
-(defcustom crush-searxng-base-url "http://127.0.0.1:8888"
+(defcustom quoth-searxng-base-url "http://127.0.0.1:8888"
   "Base URL of the local SearXNG instance."
   :type 'string
-  :group 'crush-searxng)
+  :group 'quoth-searxng)
 
-(defcustom crush-searxng-timeout 10
+(defcustom quoth-searxng-timeout 10
   "HTTP timeout in seconds for SearXNG requests."
   :type 'integer
-  :group 'crush-searxng)
+  :group 'quoth-searxng)
 
-(defcustom crush-searxng-max-results 8
+(defcustom quoth-searxng-max-results 8
   "Default and cap on number of results returned."
   :type 'integer
-  :group 'crush-searxng)
+  :group 'quoth-searxng)
 
-(defcustom crush-searxng-enabled t
+(defcustom quoth-searxng-enabled t
   "Announce the `web_search' tool and allow search calls.
 When nil, `web_search' is not in the schema and calls error."
   :type 'boolean
-  :group 'crush-searxng)
+  :group 'quoth-searxng)
 
-(defvar-local crush-searxng--healthy nil
+(defvar-local quoth-searxng--healthy nil
   "Cached SearXNG health state (nil means unknown).
 The value is nil \(unknown), t \(healthy), or `unreachable' \(dead,
 which short-circuits future calls).")
 
-(defun crush-searxng--query (tool-call-args)
+(defun quoth-searxng--query (tool-call-args)
   "Return the resolved query string for TOOL-CALL-ARGS, or nil.
 The `query' argument must be a non-empty string after trimming."
   (let ((q (plist-get tool-call-args :query)))
@@ -102,15 +102,15 @@ The `query' argument must be a non-empty string after trimming."
          (not (string-empty-p (string-trim q)))
          q)))
 
-(defun crush-searxng--max-results (tool-call-args)
+(defun quoth-searxng--max-results (tool-call-args)
   "Return the resolved max-results from TOOL-CALL-ARGS or the default.
-Clamped to at least 1 and at most `crush-searxng-max-results'."
+Clamped to at least 1 and at most `quoth-searxng-max-results'."
   (let ((raw (plist-get tool-call-args :max_results)))
     (if (integerp raw)
-        (max 1 (min crush-searxng-max-results raw))
-      crush-searxng-max-results)))
+        (max 1 (min quoth-searxng-max-results raw))
+      quoth-searxng-max-results)))
 
-(defun crush-searxng--build-url (query args)
+(defun quoth-searxng--build-url (query args)
   "Build the SearXNG search URL for QUERY with optional ARGS."
   (let* ((params (list (list "q" query)
                        (list "format" "json")))
@@ -120,10 +120,10 @@ Clamped to at least 1 and at most `crush-searxng-max-results'."
       (push (list "categories" cats) params))
     (when (and (stringp engs) (not (string-empty-p (string-trim engs))))
       (push (list "engines" engs) params))
-    (concat crush-searxng-base-url "/search?"
+    (concat quoth-searxng-base-url "/search?"
             (url-build-query-string (nreverse params)))))
 
-(defun crush-searxng--response-body (buf)
+(defun quoth-searxng--response-body (buf)
   "Extract the HTTP body from BUF, stripping the status line and headers."
   (when (buffer-live-p buf)
     (with-current-buffer buf
@@ -132,20 +132,20 @@ Clamped to at least 1 and at most `crush-searxng-max-results'."
           (buffer-substring-no-properties (point) (point-max))
         ""))))
 
-(defun crush-searxng--http-ok-p (buf)
+(defun quoth-searxng--http-ok-p (buf)
   "Return t if BUF's HTTP status line indicates success (2xx)."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (goto-char (point-min))
       (looking-at-p "HTTP/[0-9.]+ 2[0-9][0-9]"))))
 
-(defun crush-searxng--format-score (score)
+(defun quoth-searxng--format-score (score)
   "Format SCORE as a decimal string, or `unknown' if nil."
   (if (numberp score)
       (number-to-string score)
     "unknown"))
 
-(defun crush-searxng--format-engines (result)
+(defun quoth-searxng--format-engines (result)
   "Format the engine name(s) from a SearXNG RESULT alist.
 Prefers the `engines' vector (real SearXNG); falls back to the
 singular `engine' string for simplified test payloads."
@@ -156,17 +156,17 @@ singular `engine' string for simplified test payloads."
             (and (stringp e) e))
           "unknown"))))
 
-(defun crush-searxng--result-string (result)
+(defun quoth-searxng--result-string (result)
   "Format a single SearXNG RESULT alist as a markdown block."
   (let* ((title (or (cdr (assq 'title result)) ""))
          (url (or (cdr (assq 'url result)) ""))
          (content (or (cdr (assq 'content result)) ""))
-         (engine (crush-searxng--format-engines result))
-         (score (crush-searxng--format-score (cdr (assq 'score result)))))
+         (engine (quoth-searxng--format-engines result))
+         (score (quoth-searxng--format-score (cdr (assq 'score result)))))
     (format "Result [engine: %s, score: %s]:\n# %s\n%s\n%s"
             engine score title url content)))
 
-(defun crush-searxng--dedup (results)
+(defun quoth-searxng--dedup (results)
   "Deduplicate RESULTS by URL, keeping the first (highest-scoring after sort)."
   (let ((seen nil)
         (out nil))
@@ -177,7 +177,7 @@ singular `engine' string for simplified test payloads."
           (push r out))))
     (nreverse out)))
 
-(defun crush-searxng--normalize (obj max)
+(defun quoth-searxng--normalize (obj max)
   "Normalize parsed SearXNG JSON OBJ into a markdown result list.
 Limits to MAX results after deduplication."
   (let* ((results-raw (or (cdr (assq 'results obj)) []))
@@ -190,12 +190,12 @@ Limits to MAX results after deduplication."
                                (sb (cdr (assq 'score b))))
                            (> (or (and (numberp sa) sa) 0)
                               (or (and (numberp sb) sb) 0))))))
-         (deduped (crush-searxng--dedup sorted))
+         (deduped (quoth-searxng--dedup sorted))
          (top (cl-subseq deduped 0 (min max (length deduped))))
-         (blocks (mapconcat #'crush-searxng--result-string top "\n\n"))
-         (info (crush-searxng--format-infoboxes
+         (blocks (mapconcat #'quoth-searxng--result-string top "\n\n"))
+         (info (quoth-searxng--format-infoboxes
                 (cdr (assq 'infoboxes obj))))
-         (sugg (crush-searxng--format-suggestions
+         (sugg (quoth-searxng--format-suggestions
                 (cdr (assq 'suggestions obj)))))
     (concat
      (if (string-empty-p blocks)
@@ -204,7 +204,7 @@ Limits to MAX results after deduplication."
      (when info (concat "\n\n" info))
      (when sugg (concat "\n\n" sugg)))))
 
-(defun crush-searxng--format-infoboxes (infoboxes)
+(defun quoth-searxng--format-infoboxes (infoboxes)
   "Format INFOBOXES vector as Info: lines, or nil if empty."
   (when (and infoboxes (vectorp infoboxes) (> (length infoboxes) 0))
     (let ((titles nil))
@@ -216,69 +216,69 @@ Limits to MAX results after deduplication."
       (when titles
         (format "Info: %s" (mapconcat #'identity (nreverse titles) ", "))))))
 
-(defun crush-searxng--format-suggestions (suggestions)
+(defun quoth-searxng--format-suggestions (suggestions)
   "Format SUGGESTIONS vector as a Suggestions: line, or nil if empty."
   (when (and suggestions (vectorp suggestions) (> (length suggestions) 0))
     (let ((items (append suggestions nil)))
       (when items
         (format "Suggestions: %s" (mapconcat #'identity items ", "))))))
 
-(defun crush-searxng--exec (tool-call)
+(defun quoth-searxng--exec (tool-call)
   "Execute TOOL-CALL as `web_search' and return (RESULT . EXIT).
 Validates the `query' arg, checks the cached health state, fetches
 JSON from SearXNG, normalizes it, and returns the prose result.
 Errors yield an error result with exit code -1."
-  (let ((args (crush-openai-tool-call-args tool-call)))
+  (let ((args (quoth-openai-tool-call-args tool-call)))
     (cond
-     ((not (bound-and-true-p crush-searxng-enabled))
-      (crush-exec--error "Web search is disabled" tool-call))
-     ((not (crush-searxng--query args))
-      (crush-exec--error "Missing query" tool-call))
-     ((eq crush-searxng--healthy 'unreachable)
-      (crush-exec--error
+     ((not (bound-and-true-p quoth-searxng-enabled))
+      (quoth-exec--error "Web search is disabled" tool-call))
+     ((not (quoth-searxng--query args))
+      (quoth-exec--error "Missing query" tool-call))
+     ((eq quoth-searxng--healthy 'unreachable)
+      (quoth-exec--error
        "SearXNG is unreachable (cached); check the local server"
        tool-call))
      (t
       (condition-case err
-          (let* ((query (crush-searxng--query args))
-                 (url (crush-searxng--build-url query args))
-                 (max (crush-searxng--max-results args))
+          (let* ((query (quoth-searxng--query args))
+                 (url (quoth-searxng--build-url query args))
+                 (max (quoth-searxng--max-results args))
                  (buf (url-retrieve-synchronously
-                       url t t crush-searxng-timeout)))
+                       url t t quoth-searxng-timeout)))
             (if (or (null buf)
-                    (not (crush-searxng--http-ok-p buf))
+                    (not (quoth-searxng--http-ok-p buf))
                     (string-empty-p
-                     (or (crush-searxng--response-body buf) "")))
+                     (or (quoth-searxng--response-body buf) "")))
                 (progn
-                  (setq-local crush-searxng--healthy 'unreachable)
-                  (crush-exec--error
+                  (setq-local quoth-searxng--healthy 'unreachable)
+                  (quoth-exec--error
                    (format "SearXNG is unreachable (HTTP %s)"
                            (with-current-buffer buf
                              (buffer-substring-no-properties
                               (point-min) (line-end-position))))
                    tool-call))
-              (let ((body (crush-searxng--response-body buf)))
+              (let ((body (quoth-searxng--response-body buf)))
                 (let ((obj (json-read-from-string body)))
                   (if (not obj)
                       (progn
-                        (setq-local crush-searxng--healthy 'unreachable)
-                        (crush-exec--error
+                        (setq-local quoth-searxng--healthy 'unreachable)
+                        (quoth-exec--error
                          "SearXNG returned malformed JSON"
                          tool-call))
-                    (setq-local crush-searxng--healthy t)
-                    (let* ((normalized (crush-searxng--normalize obj max))
-                           (text (crush-exec--format-result normalized 0)))
-                      (setf (crush-openai-tool-call-result tool-call) text
-                            (crush-openai-tool-call-exit tool-call) 0)
+                    (setq-local quoth-searxng--healthy t)
+                    (let* ((normalized (quoth-searxng--normalize obj max))
+                           (text (quoth-exec--format-result normalized 0)))
+                      (setf (quoth-openai-tool-call-result tool-call) text
+                            (quoth-openai-tool-call-exit tool-call) 0)
                       (cons text 0)))))))
         (error
-         (setq-local crush-searxng--healthy 'unreachable)
-         (crush-exec--error (error-message-string err) tool-call)))))))
+         (setq-local quoth-searxng--healthy 'unreachable)
+         (quoth-exec--error (error-message-string err) tool-call)))))))
 
 ;;; Register the tool into the protocol registry.
 
-(push (cons "web_search" #'crush-searxng--exec)
-      crush-openai-tool-registry)
+(push (cons "web_search" #'quoth-searxng--exec)
+      quoth-openai-tool-registry)
 
-(provide 'crush-searxng)
-;;; crush-searxng.el ends here
+(provide 'quoth-searxng)
+;;; quoth-searxng.el ends here

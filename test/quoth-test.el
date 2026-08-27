@@ -1,8 +1,8 @@
-;;; crush-test.el --- Tests for crush  -*- lexical-binding: t; -*-
+;;; quoth-test.el --- Tests for quoth  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
@@ -29,7 +29,7 @@
 
 ;;; Commentary:
 
-;; Entry point for the crush test suite: loads the topic test files.
+;; Entry point for the quoth test suite: loads the topic test files.
 
 ;;; Code:
 
@@ -41,7 +41,7 @@
 ;;; `require'; fall back to loading each dep from this file's directory
 ;;; or its parent (the package root) so flycheck and package loads work.
 (eval-and-compile
-  (dolist (dep '("crush"))
+  (dolist (dep '("quoth"))
     (unless (require (intern dep) nil t)
       (let* ((base (file-name-directory
                     (or buffer-file-name load-file-name default-directory)))
@@ -56,76 +56,76 @@
 
 ;;; Helper
 
-(defconst crush-test--root
-  (expand-file-name "crush-test" temporary-file-directory)
-  "Root directory used by tests to derive a deterministic crush buffer name.")
+(defconst quoth-test--root
+  (expand-file-name "quoth-test" temporary-file-directory)
+  "Root directory used by tests to derive a deterministic quoth buffer name.")
 
-(defvar crush-test--root-created-by-us nil
-  "Non-nil when this run created `crush-test--root'.
+(defvar quoth-test--root-created-by-us nil
+  "Non-nil when this run created `quoth-test--root'.
 Set so the `kill-emacs-hook' cleanup only removes a directory this
 run provisioned, never one that pre-existed (parallel runs, leftover
 state from an earlier run).")
 
-;; The suite binds `default-directory' to `crush-test--root' and spawns
+;; The suite binds `default-directory' to `quoth-test--root' and spawns
 ;; subprocesses (fake providers, `sleep', hyper-server.py) there.  An
 ;; arbitrary system cannot be expected to already have this directory,
 ;; so provision it at load time, before any test body runs; register
 ;; cleanup so batch runs leave nothing behind.
-(unless (file-directory-p crush-test--root)
-  (make-directory crush-test--root t)
-  (when (file-directory-p crush-test--root)
-    (setq crush-test--root-created-by-us t)
+(unless (file-directory-p quoth-test--root)
+  (make-directory quoth-test--root t)
+  (when (file-directory-p quoth-test--root)
+    (setq quoth-test--root-created-by-us t)
     (add-hook 'kill-emacs-hook
               (lambda ()
-                (when (and crush-test--root-created-by-us
-                           (file-directory-p crush-test--root))
-                  (delete-directory crush-test--root t))))))
+                (when (and quoth-test--root-created-by-us
+                           (file-directory-p quoth-test--root))
+                  (delete-directory quoth-test--root t))))))
 
-(ert-deftest crush-test/test-root-exists ()
+(ert-deftest quoth-test/test-root-exists ()
   "The deterministic test root directory exists (suite self-provisions).
-Cannot expect an arbitrary system to already have /tmp/crush-test;
-tests bind `default-directory' to `crush-test--root' and spawn
+Cannot expect an arbitrary system to already have /tmp/quoth-test;
+tests bind `default-directory' to `quoth-test--root' and spawn
 processes there, so the entry file must create it."
-  (should (file-directory-p crush-test--root)))
+  (should (file-directory-p quoth-test--root)))
 
-(defun crush-test--buffer-name ()
-  "Return the deterministic crush buffer name for `crush-test--root'."
-  (let ((crush--root-buffer-alist nil))
-    (crush--buffer-name-for-root crush-test--root)))
+(defun quoth-test--buffer-name ()
+  "Return the deterministic quoth buffer name for `quoth-test--root'."
+  (let ((quoth--root-buffer-alist nil))
+    (quoth--buffer-name-for-root quoth-test--root)))
 
-(defun crush-test--fresh-buffer ()
-  "Create a fresh crush test buffer and return it.
-The buffer is bound to `crush-test--root' and deterministically named.
+(defun quoth-test--fresh-buffer ()
+  "Create a fresh quoth test buffer and return it.
+The buffer is bound to `quoth-test--root' and deterministically named.
 Initializes with the default hyper provider."
-  (let ((name (crush-test--buffer-name)))
+  (let ((name (quoth-test--buffer-name)))
     (when (get-buffer name)
       (kill-buffer name))
     (cl-letf (((symbol-function 'project-current) (lambda (&optional _dir) nil)))
-      (let ((default-directory crush-test--root))
-        (crush)))
-    (get-buffer (crush-test--buffer-name))))
+      (let ((default-directory quoth-test--root))
+        (quoth)))
+    (get-buffer (quoth-test--buffer-name))))
 
-(defun crush-test--kill-crush-buffer ()
-  "Kill any test crush buffer bound to `crush-test--root'."
-  (let ((name (crush-test--buffer-name)))
+(defun quoth-test--kill-quoth-buffer ()
+  "Kill any test quoth buffer bound to `quoth-test--root'."
+  (let ((name (quoth-test--buffer-name)))
     (when (get-buffer name)
       (kill-buffer name))))
 
-(defun crush-test--cleanup ()
+(defun quoth-test--cleanup ()
   "Kill test buffers."
-  (crush-test--kill-crush-buffer)
-  (dolist (name '("*crush-errors*" "*crush-debug*"))
+  (quoth-test--kill-quoth-buffer)
+  (dolist (name '("*quoth-errors*" "*quoth-debug*"))
     (when (get-buffer name)
       (kill-buffer name))))
 
 ;;; Load the topic test files the same way: `require' first, then
 ;;; fall back to this directory so flycheck and direct loads work.
 (eval-and-compile
-  (dolist (dep '("crush-test-buffer" "crush-test-commands"
-                 "crush-test-openai" "crush-test-hyper"
-                 "crush-test-reasoning" "crush-test-stream"
-                 "crush-test-xxh3" "crush-test-tools"
-                 "crush-test-process" "crush-test-searxng"))
+  (dolist (dep '("quoth-test-buffer" "quoth-test-commands"
+                 "quoth-test-openai" "quoth-test-hyper"
+                 "quoth-test-reasoning" "quoth-test-stream"
+                 "quoth-test-xxh3" "quoth-test-tools"
+                 "quoth-test-process" "quoth-test-searxng"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -133,5 +133,5 @@ Initializes with the default hyper provider."
               (or buffer-file-name load-file-name default-directory)))
             nil t))))
 
-(provide 'crush-test)
-;;; crush-test.el ends here
+(provide 'quoth-test)
+;;; quoth-test.el ends here

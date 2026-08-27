@@ -1,6 +1,6 @@
-# Setting up SearXNG for crush.el
+# Setting up SearXNG for Quoth
 
-crush.el includes a `web_search` tool that queries a local [SearXNG](https://searxng.org) instance over HTTP. The tool is enabled by default and expects the server at `http://127.0.0.1:8888`.
+Quoth includes a `web_search` tool that queries a local [SearXNG](https://searxng.org) instance over HTTP. The tool is enabled by default and expects the server at `http://127.0.0.1:8888`.
 
 If you already have SearXNG running on that address with the JSON format enabled, no further setup is needed — the model can call `web_search` automatically during a tool round.
 
@@ -47,7 +47,7 @@ If you use plain `pip` instead of `uv`, the equivalent is:
 
 ### Prepare the settings file
 
-Copy the shipped defaults and enable the JSON format (required for crush), a loopback bind, and a real secret key.
+Copy the shipped defaults and enable the JSON format (required for quoth), a loopback bind, and a real secret key.
 
 ```bash
 cp ~/.local/share/searxng/src/searxng/searx/settings.yml \
@@ -60,7 +60,7 @@ Edit `~/.local/share/searxng/settings/settings.yml`:
 general:
   instance_name: "agent-search"
 search:
-  formats: # default is [html] only — add json for crush
+  formats: # default is [html] only — add json for quoth
     - html
     - json
 server:
@@ -92,7 +92,7 @@ curl 'http://127.0.0.1:8888/search?q=searxng&format=json'
 
 Expect `HTTP 200` and a JSON document with a `"results"` array.
 
-Once the server is running, open `M-x crush` in Emacs and ask the model to search for something. The `web_search` tool fires automatically during a tool round — no extra config needed.
+Once the server is running, open `M-x quoth` in Emacs and ask the model to search for something. The `web_search` tool fires automatically during a tool round — no extra config needed.
 
 ---
 
@@ -209,23 +209,23 @@ Install inside WSL using the common git + venv steps (Section 1) and the systemd
 
 ---
 
-## 6. crush.el configuration
+## 6. Quoth configuration
 
-The `web_search` tool is announced to the model alongside `exec_command` and `write_stdin` when `crush-searxng-enabled` is non-nil (default `t`). The server URL defaults to `http://127.0.0.1:8888`.
+The `web_search` tool is announced to the model alongside `exec_command` and `write_stdin` when `quoth-searxng-enabled` is non-nil (default `t`). The server URL defaults to `http://127.0.0.1:8888`.
 
 To change the server URL:
 
 ```elisp
-(setq crush-searxng-base-url "http://127.0.0.1:9999")
+(setq quoth-searxng-base-url "http://127.0.0.1:9999")
 ```
 
 To disable the tool entirely:
 
 ```elisp
-(setq crush-searxng-enabled nil)
+(setq quoth-searxng-enabled nil)
 ```
 
-Other options in the `crush-searxng` customize group: `crush-searxng-timeout` (HTTP timeout, default 10s), `crush-searxng-max-results` (default 8).
+Other options in the `quoth-searxng` customize group: `quoth-searxng-timeout` (HTTP timeout, default 10s), `quoth-searxng-max-results` (default 8).
 
 Keyless engines (Wikipedia, DuckDuckGo) work out of the box. Google, Bing, Brave, and others generally need API keys configured under `engines:` in the SearXNG settings.
 
@@ -240,7 +240,7 @@ Keyless engines (Wikipedia, DuckDuckGo) work out of the box. Google, Bing, Brave
 | Log spam `fatal: not a git repository`                     | Cosmetic; caused by `--depth 1` clone. Safe to ignore.                                                                                                                                                         |
 | Some engines error with 403/captcha `(suspended_time=...)` | Normal per-engine rate limiting. Other engines still return results; add API keys for reliable coverage.                                                                                                       |
 | `X-Forwarded-For already set` / proxy warnings             | Expected on a plain loopback instance; relevant only when behind a reverse proxy.                                                                                                                              |
-| crush reports "SearXNG is unreachable"                     | Server is not running or not on the configured URL. Check `crush-searxng-base-url` and that the server is listening. The tool caches the unreachable state for the session; restart the crush buffer to retry. |
+| quoth reports "SearXNG is unreachable"                     | Server is not running or not on the configured URL. Check `quoth-searxng-base-url` and that the server is listening. The tool caches the unreachable state for the session; restart the quoth buffer to retry. |
 
 ---
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dummy SearXNG server for crush tests.
+"""Dummy SearXNG server for quoth tests.
 
 Captures every GET request and serves a canned JSON search payload so the
 `web_search' tool exercises the real HTTP transport without touching a

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run crush tests: byte-compile + ERT suite
+# Run quoth tests: byte-compile + ERT suite
 set -e
 cd "$(dirname "$0")/.."
 
@@ -12,11 +12,11 @@ if [ -n "$MD_DIR" ]; then
 fi
 
 echo "=== Byte-compile ==="
-for f in crush.el crush-provider.el crush-openai.el crush-stream.el crush-hyper-provider.el crush-tools.el crush-xxh3.el crush-process.el crush-searxng.el; do
+for f in quoth.el quoth-provider.el quoth-openai.el quoth-stream.el quoth-hyper-provider.el quoth-tools.el quoth-xxh3.el quoth-process.el quoth-searxng.el; do
 	emacs --batch -L . -f batch-byte-compile "$f" 2>&1 | grep -v "site-start" || true
 done
 
 echo "=== ERT tests ==="
 emacs --batch -L . -L test $MD_L \
-	--eval "(progn (setq load-prefer-newer t) (require 'crush) (require 'crush-test) \
+	--eval "(progn (setq load-prefer-newer t) (require 'quoth) (require 'quoth-test) \
               (ert-run-tests-batch-and-exit))" 2>&1 | grep -v "site-start" || true

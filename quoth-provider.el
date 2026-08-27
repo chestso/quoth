@@ -1,12 +1,12 @@
-;;; crush-provider.el --- crush provider protocol  -*- lexical-binding: t; -*-
+;;; quoth-provider.el --- quoth provider protocol  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
-;;; Prefix: crush-
+;;; Prefix: quoth-
 
 ;;; This file is not part of GNU Emacs.
 
@@ -30,25 +30,25 @@
 
 ;;; Commentary:
 
-;; Shared provider protocol for crush.el: the `crush-provider' base struct
-;; and the `crush-provider-*' generic functions implemented by
-;; `crush-hyper-provider.el' (direct HTTP to the Charm Hyper gateway).
+;; Shared provider protocol for quoth.el: the `quoth-provider' base struct
+;; and the `quoth-provider-*' generic functions implemented by
+;; `quoth-hyper-provider.el' (direct HTTP to the Charm Hyper gateway).
 
 ;;; Code:
 
 (require 'cl-lib)
 
-(cl-defstruct (crush-provider
+(cl-defstruct (quoth-provider
                (:constructor nil)
                (:copier nil))
-  "Base structure for a crush provider."
+  "Base structure for a quoth provider."
   buffer
   completion-action
   working-directory
   ;; The live transport process (e.g. curl) returned by the provider's
-  ;; `crush-provider-send-prompt'.  Owned by the provider; the facade
-  ;; reads activity through `crush-provider-active-p' and kills it via
-  ;; `crush-provider-interrupt'/`crush-provider-cleanup'.
+  ;; `quoth-provider-send-prompt'.  Owned by the provider; the facade
+  ;; reads activity through `quoth-provider-active-p' and kills it via
+  ;; `quoth-provider-interrupt'/`quoth-provider-cleanup'.
   (transport-process nil)
   ;; Application count: the number of pipeline applications (runnable,
   ;; inflight, blocked) this provider accounts for.  The facade reads it
@@ -56,11 +56,11 @@
   (application-count 1)
   (type nil))
 
-(cl-defgeneric crush-provider-send-prompt (provider prompt &key session-id continue-p completion buffer stderr on-delta on-error continuation)
+(cl-defgeneric quoth-provider-send-prompt (provider prompt &key session-id continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to PROVIDER with optional CONTEXT, SESSION-ID, and CONTINUE-P.
 COMPLETION is a zero-argument closure (the facade's continuation) that
 the provider must invoke exactly once when the response stream finishes.
-BUFFER is the crush buffer the provider may associate its transport
+BUFFER is the quoth buffer the provider may associate its transport
 process with, and STDERR is the stderr buffer; both are passed purely
 as data objects, never read or switched to.  ON-DELTA is a (DELTA
 KIND) callback that consumes streamed output, and ON-ERROR receives
@@ -70,44 +70,44 @@ CONTINUATION, when non-nil, is a list of structured message alists
 that replace the user message in the request body; used by the
 tool loop to send follow-up requests with tool results.")
 
-(cl-defgeneric crush-provider-interrupt (provider)
+(cl-defgeneric quoth-provider-interrupt (provider)
   "Interrupt the currently running operation on PROVIDER.
 Providers own their transport processes; the facade dispatches through
 this method rather than checking or interrupting a buffer-local process.")
 
-(cl-defgeneric crush-provider-active-p (provider)
+(cl-defgeneric quoth-provider-active-p (provider)
   "Return non-nil if PROVIDER has an active operation.
 Providers should return the liveness of their transport process.")
 
-(cl-defgeneric crush-provider-cleanup (provider)
+(cl-defgeneric quoth-provider-cleanup (provider)
   "Clean up any resources held by PROVIDER.
 Kill any live transport process, clear the transport slot, and clear
-`crush-provider-completion-action'.")
+`quoth-provider-completion-action'.")
 
-(cl-defgeneric crush-provider-grant-permission (provider permission-id action)
+(cl-defgeneric quoth-provider-grant-permission (provider permission-id action)
   "Respond to a permission request on PROVIDER identified by PERMISSION-ID.
 ACTION is `allow', `allow-session', or `deny'.")
 
-(cl-defgeneric crush-provider--tool-results (provider tool-calls)
+(cl-defgeneric quoth-provider--tool-results (provider tool-calls)
   "Build the tool-result messages and display blocks for TOOL-CALLS.
 PROVIDER is the provider instance.  TOOL-CALLS is a vector of
 tool-call alists from the SSE stream, accumulated by
-`crush--hyper-sse-merge-tool-calls'.  Returns a list
+`quoth--hyper-sse-merge-tool-calls'.  Returns a list
 \(ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS) where ASSISTANT-MSG is
 the assistant message carrying `tool_calls', TOOL-RESULT-MSGS is a
 list of `role: \"tool\"' messages, and TOOL-BLOCKS is a list of plists
-\(:name :id :args-json :result :exit) for `crush--tool-block-insert'."
+\(:name :id :args-json :result :exit) for `quoth--tool-block-insert'."
   (ignore provider tool-calls)
   nil)
 
-(cl-defgeneric crush-provider--tool-calls (provider process)
+(cl-defgeneric quoth-provider--tool-calls (provider process)
   "Return the accumulated tool-calls vector from PROVIDER's PROCESS, or nil.
-PROCESS is the transport process returned by `crush-provider-send-prompt'.
+PROCESS is the transport process returned by `quoth-provider-send-prompt'.
 For streaming providers, the SSE state on PROCESS carries the
 `:tool-calls' vector accumulated by the parser; non-streaming
 providers return nil."
   (ignore provider process)
   nil)
 
-(provide 'crush-provider)
-;;; crush-provider.el ends here
+(provide 'quoth-provider)
+;;; quoth-provider.el ends here

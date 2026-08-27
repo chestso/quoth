@@ -1,12 +1,12 @@
-;;; crush-debug-tools.el --- Debugging utilities for crush buffers -*- lexical-binding: t; -*-
+;;; quoth-debug-tools.el --- Debugging utilities for quoth buffers -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/crush.el
+;;; URL: https://github.com/thomasc1971/quoth
 ;;; Version: 0.1.0
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
-;;; Prefix: crush-
+;;; Prefix: quoth-
 
 ;;; This file is not part of GNU Emacs.
 
@@ -30,7 +30,7 @@
 
 ;;; Commentary:
 
-;; On-demand debugging helpers for the crush chat buffer.  The crush
+;; On-demand debugging helpers for the quoth chat buffer.  The quoth
 ;; buffer stores all conversation state (prompts, responses, reasoning,
 ;; tool blocks, attachments) as text properties on the buffer content;
 ;; that tagged state is the single source of truth for history replay,
@@ -43,46 +43,46 @@
 ;; path: it is a debug tool, loaded on demand.  To use it, load the
 ;; file once from any buffer:
 ;;
-;;   M-x load-file RET <repo>/crush-debug-tools.el RET
+;;   M-x load-file RET <repo>/quoth-debug-tools.el RET
 ;;
 ;; or, from Lisp:
 ;;
-;;   (load "/path/to/crush.el/crush-debug-tools.el")
+;;   (load "/path/to/quoth.el/quoth-debug-tools.el")
 ;;
-;; It does not change any crush behavior; it only adds the commands
-;; below.  crush.el itself must be loaded for the history command to
+;; It does not change any quoth behavior; it only adds the commands
+;; below.  quoth.el itself must be loaded for the history command to
 ;; work (the region dump works standalone).
 ;;
-;; Commands (run them with point in the crush buffer):
+;; Commands (run them with point in the quoth buffer):
 ;;
-;;   M-x crush-dump-buffer
-;;     Dump every region in the buffer: its span, `crush-region-type',
-;;     `crush-prompt-id', `crush-response-to', `crush-tool-call',
+;;   M-x quoth-dump-buffer
+;;     Dump every region in the buffer: its span, `quoth-region-type',
+;;     `quoth-prompt-id', `quoth-response-to', `quoth-tool-call',
 ;;     read-only flag, and a 40-character text sample, plus the buffer's
-;;     prompt id and response-start.  Output goes to *crush-dump*.
+;;     prompt id and response-start.  Output goes to *quoth-dump*.
 ;;     Use this first when debugging history or tagging problems.
 ;;
-;;   M-x crush-dump-region-type-at-point
+;;   M-x quoth-dump-region-type-at-point
 ;;     Show just the tags at point.  Quick inspection while navigating.
 ;;
-;;   M-x crush-dump-history-for-prompt
+;;   M-x quoth-dump-history-for-prompt
 ;;     Show what the next request would carry: the reconstructed wire
 ;;     messages (user/assistant/tool alists) for the pending prompt,
-;;     pretty-printed into *crush-dump*.  This is exactly what
-;;     `crush--history-turns' would send on the next prompt.
+;;     pretty-printed into *quoth-dump*.  This is exactly what
+;;     `quoth--history-turns' would send on the next prompt.
 ;;
-;; All output goes to a single *crush-dump* buffer, one dump per call.
+;; All output goes to a single *quoth-dump* buffer, one dump per call.
 
 ;;; Code:
 
 (require 'cl-lib)
-(declare-function crush--history-turns "crush" (prompt-id))
+(declare-function quoth--history-turns "quoth" (prompt-id))
 
-(defun crush-dump-buffer ()
-  "Dump the current crush buffer's regions and text properties.
+(defun quoth-dump-buffer ()
+  "Dump the current quoth buffer's regions and text properties.
 Writes a region-by-region listing (type, prompt id, response-to,
 tool-call, read-only, and a text sample) plus key buffer-local state
-into the *crush-dump* buffer.  For debugging region tagging and
+into the *quoth-dump* buffer.  For debugging region tagging and
 history replay."
   (interactive)
   (let* ((buf (current-buffer))
@@ -91,20 +91,20 @@ history replay."
                 (princ (format "buffer=%s mode=%s prompt-id=%S response-start=%S continue=%S\n"
                                (buffer-name buf)
                                major-mode
-                               (and (boundp 'crush--prompt-id) crush--prompt-id)
-                               (and (boundp 'crush--response-start)
-                                    (markerp crush--response-start)
-                                    (marker-position crush--response-start))
-                               (and (boundp 'crush--continue) crush--continue)))
+                               (and (boundp 'quoth--prompt-id) quoth--prompt-id)
+                               (and (boundp 'quoth--response-start)
+                                    (markerp quoth--response-start)
+                                    (marker-position quoth--response-start))
+                               (and (boundp 'quoth--continue) quoth--continue)))
                 (let ((pos (point-min))
                       (count 0))
                   (while (and (< pos (point-max)) (< count 5000))
-                    (let* ((type (get-text-property pos 'crush-region-type))
-                           (pid (get-text-property pos 'crush-prompt-id))
-                           (rt (get-text-property pos 'crush-response-to))
-                           (cc (get-text-property pos 'crush-tool-call))
+                    (let* ((type (get-text-property pos 'quoth-region-type))
+                           (pid (get-text-property pos 'quoth-prompt-id))
+                           (rt (get-text-property pos 'quoth-response-to))
+                           (cc (get-text-property pos 'quoth-tool-call))
                            (ro (get-text-property pos 'read-only))
-                           (end (or (next-single-property-change pos 'crush-region-type
+                           (end (or (next-single-property-change pos 'quoth-region-type
                                                                  nil (point-max))
                                     (point-max)))
                            (txt (buffer-substring-no-properties
@@ -113,46 +113,46 @@ history replay."
                                      pos end type pid rt cc ro txt))
                       (setq pos (if (> end pos) end (1+ pos)))
                       (setq count (1+ count)))))))))
-    (with-current-buffer (get-buffer-create "*crush-dump*")
+    (with-current-buffer (get-buffer-create "*quoth-dump*")
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert s)))
-    (display-buffer "*crush-dump*")
-    (message "Crush buffer dumped to *crush-dump*")))
+    (display-buffer "*quoth-dump*")
+    (message "Quoth buffer dumped to *quoth-dump*")))
 
-(defun crush-dump-region-type-at-point ()
-  "Show the crush region type and related tags at point.
-Useful for quick inspection while navigating a crush buffer."
+(defun quoth-dump-region-type-at-point ()
+  "Show the quoth region type and related tags at point.
+Useful for quick inspection while navigating a quoth buffer."
   (interactive)
   (let ((p (point)))
     (message "type=%S pid=%S rt=%S cc=%S at %d"
-             (get-text-property p 'crush-region-type)
-             (get-text-property p 'crush-prompt-id)
-             (get-text-property p 'crush-response-to)
-             (get-text-property p 'crush-tool-call)
+             (get-text-property p 'quoth-region-type)
+             (get-text-property p 'quoth-prompt-id)
+             (get-text-property p 'quoth-response-to)
+             (get-text-property p 'quoth-tool-call)
              p)))
 
-(defun crush-dump-history-for-prompt (&optional prompt-id)
+(defun quoth-dump-history-for-prompt (&optional prompt-id)
   "Show the reconstructed wire messages for PROMPT-ID.
 Defaults to the current buffer's pending prompt, showing the history
 that the next request would carry.  Displays the message alists as
-pretty-printed Lisp in the *crush-dump* buffer.  Requires crush.el to
+pretty-printed Lisp in the *quoth-dump* buffer.  Requires quoth.el to
 be loaded."
   (interactive)
-  (if (not (fboundp 'crush--history-turns))
-      (message "crush.el not loaded; cannot reconstruct history")
-    (let* ((id (or prompt-id (and (boundp 'crush--prompt-id) crush--prompt-id)))
+  (if (not (fboundp 'quoth--history-turns))
+      (message "quoth.el not loaded; cannot reconstruct history")
+    (let* ((id (or prompt-id (and (boundp 'quoth--prompt-id) quoth--prompt-id)))
            (s (when id
                 (with-output-to-string
                   (princ (format "history for %S:\n" id))
-                  (pp (crush--history-turns id))))))
+                  (pp (quoth--history-turns id))))))
       (when s
-        (with-current-buffer (get-buffer-create "*crush-dump*")
+        (with-current-buffer (get-buffer-create "*quoth-dump*")
           (let ((inhibit-read-only t))
             (erase-buffer)
             (insert s)))
-        (display-buffer "*crush-dump*")
-        (message "History shown in *crush-dump*")))))
+        (display-buffer "*quoth-dump*")
+        (message "History shown in *quoth-dump*")))))
 
-(provide 'crush-debug-tools)
-;;; crush-debug-tools.el ends here
+(provide 'quoth-debug-tools)
+;;; quoth-debug-tools.el ends here

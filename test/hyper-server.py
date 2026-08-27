@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dummy Hyper gateway server for crush tests.
+"""Dummy Hyper gateway server for quoth tests.
 
 Capture every request and stream configurable responses, so tests
 exercise the real transport (sockets, filters) without touching the
@@ -359,7 +359,7 @@ def main():
             elif mode == "tool-call-loop":
                 # Always emit tool_calls, never a content answer.
                 # Exercises the loop cap: the client should stop after
-                # `crush-tool-loop-max' rounds and finalize.
+                # `quoth-tool-loop-max' rounds and finalize.
                 conn.sendall(sse_ok.encode())
                 tc_frame = json.dumps(
                     {
