@@ -22,7 +22,46 @@ Tool calls run without confirmation: the provider executes the `exec_command` to
 
 ## Installing
 
-Not yet on MELPA. For now, clone and load manually:
+Not yet on MELPA. For now, install from one of the repositories:
+
+- **GitHub**: `https://github.com/thomasc1971/quoth.git`
+- **Codeberg**: `https://codeberg.org/thomasc/quoth.git`
+
+Both carry version tags (`v0.1.0`). A plain clone gets the latest commit, or pin to a tag for a stable release (see below).
+
+### package.el (Emacs 29+)
+
+```elisp
+(package-vc-install
+ '(quoth :url "https://github.com/thomasc1971/quoth.git"
+         :branch "v0.1.0"))         ; omit :branch for latest
+```
+
+### straight.el
+
+```elisp
+(straight-use-package
+ '(quoth :type git :host github :repo "thomasc1971/quoth"
+         :branch "v0.1.0"))         ; omit :branch for latest
+```
+
+Or with `use-package`:
+
+```elisp
+(use-package quoth
+  :straight (quoth :type git :host github :repo "thomasc1971/quoth"
+                   :branch "v0.1.0")   ; omit :branch for latest
+  :bind ("C-c c" . quoth)
+  :hook (prog-mode . quoth-minor-mode))
+```
+
+### Manual clone
+
+```sh
+git clone --branch v0.1.0 https://github.com/thomasc1971/quoth.git
+```
+
+Then load with `load-path`:
 
 ```elisp
 (use-package quoth
