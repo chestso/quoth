@@ -433,6 +433,8 @@ with markdown-mode's `C-c C-*' bindings."
     (should-not (lookup-key map (kbd "C-c C-k")))
     (should-not (lookup-key map (kbd "C-c C-s")))
     (should-not (lookup-key map (kbd "C-c C-i")))
+    (should (eq (lookup-key map (kbd "TAB")) #'crush--reasoning-tab))
+    (should (eq (lookup-key map (kbd "<C-return>")) #'crush-send-input))
     (should (eq (lookup-key map (kbd "M-p")) #'crush--input-previous))
     (should (eq (lookup-key map (kbd "M-n")) #'crush--input-next))))
 

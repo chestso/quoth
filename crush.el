@@ -334,6 +334,10 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
 (defvar crush-chat-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "TAB") #'crush--reasoning-tab)
+    ;; `C-return' is the main send binding in graphical Emacs and on
+    ;; terminals that report modifyOtherKeys/kitty CSI-u (e.g. portty).
+    ;; `C-c c s' remains the portable send binding.
+    (define-key map (kbd "<C-return>") #'crush-send-input)
     (define-key map (kbd "C-c c") crush-chat-command-map)
     (define-key map (kbd "M-p") #'crush--input-previous)
     (define-key map (kbd "M-n") #'crush--input-next)
