@@ -60,6 +60,21 @@
   :group 'tools
   :prefix "quoth-")
 
+(defgroup quoth-facade nil
+  "Buffer, streaming, input, and debugging behavior."
+  :group 'quoth
+  :prefix "quoth-")
+
+(defgroup quoth-openai nil
+  "Reusable OpenAI-compatible client."
+  :group 'quoth
+  :prefix "quoth-openai-")
+
+(defgroup quoth-hyper nil
+  "Charm Hyper gateway provider."
+  :group 'quoth
+  :prefix "quoth-hyper-")
+
 (defface quoth-reasoning-face
   '((t :inherit region :extend t))
   "Face for streamed chain-of-thought reasoning text.
@@ -68,15 +83,6 @@ refontification cannot strip it.  Inherits the theme's `region'
 background, a neutral dark tint that leaves markdown's text colors
 visible on top.  `:extend t' paints the background across the full
 window width on every line the reasoning covers."
-  :group 'quoth)
-
-(defcustom quoth-model nil
-  "Model to use for Quoth requests.
-When nil, the provider falls back to `quoth-openai-default-model'.  The
-facade passes this into the provider's model slot at buffer
-initialization.  Should be a model name like
-`claude-sonnet-4-20250514' or `gpt-4o'."
-  :type '(choice (const nil) string)
   :group 'quoth)
 
 ;;; Buffer-local state
@@ -95,49 +101,35 @@ N lines are shown as a preview and the rest are hidden behind a fold
 marker.  Set to 0 to always collapse with no preview.
 Must be a non-negative integer."
   :type 'integer
-  :group 'quoth)
+  :group 'quoth-facade)
 
-(defcustom quoth-hyper-history-limit 200
-  "Maximum number of prior prompts sent as history by the hyper provider.
-0 disables history entirely (each prompt is a single request).  Only
-the last LIMIT complete exchanges are sent; the current turn is always
-sent in full."
-  :type 'integer
-  :group 'quoth)
-
-(defcustom quoth--continue nil
+(defvar-local quoth--continue nil
   "Whether the next prompt continues the conversation session.
 When non-nil, the next prompt continues the active session.
 Set to nil by `quoth-clear-buffer' so the next prompt starts a fresh
-session.
-Buffer-local."
-  :type 'boolean
-  :group 'quoth)
+session.")
 
 (defcustom quoth-working-directory nil
   "Working directory for the quoth provider.
 When nil, uses the project root if `project-current' is non-nil,
 otherwise `default-directory'."
   :type '(choice (const nil) directory)
-  :group 'quoth)
+  :group 'quoth-facade)
 
 (defcustom quoth-input-ring-size 32
   "Maximum number of prompts stored in the input ring."
   :type 'integer
-  :group 'quoth)
+  :group 'quoth-facade)
 
 (defcustom quoth-debug-mode t
   "When non-nil, log commands, input, and output to a *quoth-debug* buffer."
   :type 'boolean
-  :group 'quoth)
+  :group 'quoth-facade)
 
-(defcustom quoth--session nil
+(defvar-local quoth--session nil
   "Session ID to pass to the provider.
 When non-nil, continues a specific session by ID.
-Takes precedence over `quoth--continue'.
-Buffer-local."
-  :type '(choice (const nil) string)
-  :group 'quoth)
+Takes precedence over `quoth--continue'.")
 
 (defvar-local quoth--session-uuid nil
   "Opaque UUID identifying this quoth buffer's session.
@@ -153,10 +145,9 @@ Computed lazily by the hyper provider on request; kept here so the hash
 is stable for the session's life, and to trace as `SESS' in the debug
 log.  Buffer-local.")
 
-(defvar quoth--response-start nil
+(defvar-local quoth--response-start nil
   "Marker for where response text starts.
-Set when prompt is sent, used by sentinel to tag response text.
-Buffer-local.")
+Set when prompt is sent, used by sentinel to tag response text.")
 
 ;;; The facade stream protocol (state, progress, error pane) lives in
 ;;; `quoth-stream.el'; quoth.el requires and transitions it.
@@ -804,8 +795,7 @@ reconstructed from the buffer's tagged regions: the user message via
 into the exchange's trailing assistant message as `reasoning_content'.
 Returns nil when PROMPT-ID is the first prompt, or when
 `quoth-hyper-history-limit' is 0.  This is a pure buffer->wire read."
-  (if (and (boundp 'quoth-hyper-history-limit)
-           (= quoth-hyper-history-limit 0))
+  (if (= quoth-hyper-history-limit 0)
       nil
     (let* ((prompts (quoth-get-all-prompts))
            (reached-current nil)
@@ -830,8 +820,7 @@ Returns nil when PROMPT-ID is the first prompt, or when
                             (append exchange
                                     (list (list (cons 'role "assistant")
                                                 (cons 'content resp-text)))))))))
-              (when (and (boundp 'quoth-hyper-history-include-reasoning)
-                         quoth-hyper-history-include-reasoning)
+              (when quoth-hyper-history-include-reasoning
                 (let ((reasoning-text (quoth-get-reasoning-text id)))
                   (when (and reasoning-text (> (length reasoning-text) 0))
                     (let ((assistant (car (last exchange))))
@@ -843,8 +832,7 @@ Returns nil when PROMPT-ID is the first prompt, or when
       (let* ((ordered messages)
              (exchanges (cl-count-if (lambda (m) (string= (cdr (assoc 'role m)) "user"))
                                      ordered)))
-        (if (and (boundp 'quoth-hyper-history-limit)
-                 (> quoth-hyper-history-limit 0)
+        (if (and (> quoth-hyper-history-limit 0)
                  (> exchanges quoth-hyper-history-limit))
             (let ((to-cut (- exchanges quoth-hyper-history-limit))
                   (cut 0)

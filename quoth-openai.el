@@ -48,17 +48,17 @@
 (defcustom quoth-openai-timeout 300
   "Seconds to wait for an OpenAI-compatible request before giving up."
   :type 'number
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-max-tokens 64000
   "Default `max_tokens' for OpenAI-compatible requests."
   :type 'number
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-temperature nil
   "Sampling temperature for OpenAI-compatible requests; nil means unset."
   :type '(choice (const nil) number)
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-thinking nil
   "Enable chain-of-thought reasoning for each request.
@@ -68,7 +68,7 @@ before the final answer.  This is the master switch:
 `quoth-openai-reasoning-effort' only tunes the depth of that reasoning
 and is a no-op while thinking is disabled."
   :type 'boolean
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-reasoning-effort nil
   "Reasoning depth for the model; nil means use the model default.
@@ -76,12 +76,12 @@ Values like `low', `medium', `high', `max'.  Gated by
 `quoth-openai-thinking': effort tunes how deep the chain-of-thought
 reasoning goes, but only when thinking is enabled."
   :type '(choice (const nil) string)
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-curl-program "curl"
   "Path to the curl executable used by the OpenAI client transport."
   :type 'string
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-user-agent
   "Charm-Fantasy/0.41.0 (https://charm.land/fantasy)"
@@ -92,7 +92,7 @@ the CLI's go.mod (charm.land/fantasy v0.41.0), rendered as
 `Charm-Fantasy/<version> (https://charm.land/fantasy)'.  We send the
 same string so the gateway sees an identical client."
   :type 'string
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-system-prompt
   "You are a helpful assistant.  You answer concisely and correctly."
@@ -101,7 +101,16 @@ and <user_preferences> blocks on every request.
 Read at request-build time; edits apply on the next cache miss
 (context-file change, `quoth-clear-buffer', or a new buffer)."
   :type 'string
-  :group 'quoth)
+  :group 'quoth-openai)
+
+(defcustom quoth-model nil
+  "Model to use for Quoth requests.
+When nil, the provider falls back to `quoth-openai-default-model'.  The
+facade passes this into the provider's model slot at buffer
+initialization.  Should be a model name like
+`claude-sonnet-4-20250514' or `gpt-4o'."
+  :type '(choice (const nil) string)
+  :group 'quoth-openai)
 
 (defconst quoth-openai-default-model "deepseek-v4-flash"
   "Model used when the provider model slot and `quoth-model' are both nil.")
@@ -110,12 +119,12 @@ Read at request-build time; edits apply on the next cache miss
   "Maximum lines of `git status --short' output in the <env> block.
 Matches the Crush CLI's `head -20' cap."
   :type 'integer
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-git-commits 3
   "Number of recent commits to include in the <env> block."
   :type 'integer
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-strip-leading-blank-lines t
   "Strip leading blank lines from streamed assistant content.
@@ -126,7 +135,7 @@ newline-only `content` deltas are discarded until the first real answer
 text arrives.  Set this to nil to preserve them verbatim if a provider
 ever uses leading blank lines meaningfully."
   :type 'boolean
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (declare-function quoth--debug-log "quoth.el" (category message))
 
@@ -209,7 +218,7 @@ fails (git unavailable, broken repo)."
 Paths are relative to the working directory.  Directories are
 walked recursively.  Defaults match the Crush CLI's list."
   :type '(repeat string)
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defcustom quoth-openai-global-context-paths
   (list (expand-file-name "crush/CRUSH.md"
@@ -220,7 +229,7 @@ walked recursively.  Defaults match the Crush CLI's list."
                               "~/.config")))
   "Global context files applied across all projects."
   :type '(repeat string)
-  :group 'quoth)
+  :group 'quoth-openai)
 
 (defun quoth-openai--discover-context-files (paths)
   "Scan PATHS relative to `default-directory' for context files.

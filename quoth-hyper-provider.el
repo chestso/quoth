@@ -65,7 +65,7 @@ UUID, pinning the conversation to a server-side prefix/token cache.
 The hash is opaque and stable for the session; disable to opt out of
 affinity (each request misses the cache)."
   :type 'boolean
-  :group 'quoth)
+  :group 'quoth-hyper)
 
 (defcustom quoth-hyper-base-url "https://hyper.charm.land/v1"
   "Base URL of the Charm Hyper gateway.
@@ -73,7 +73,7 @@ The OpenAI-compatible chat-completions endpoint is
 `BASE-URL/chat/completions'.  Overridden by the HYPER_URL
 environment variable when set."
   :type 'string
-  :group 'quoth)
+  :group 'quoth-hyper)
 
 (defcustom quoth-hyper-token #'quoth-hyper--token-from-auth-source
   "Bearer access token for the Charm Hyper gateway.
@@ -86,7 +86,7 @@ or nil to request without a token.  The default looks the token up in
                  (const :tag "No token" nil)
                  string
                  function)
-  :group 'quoth)
+  :group 'quoth-hyper)
 
 (defun quoth-hyper--token-from-auth-source ()
   "Return the hyper bearer token from `auth-source'.
@@ -185,13 +185,21 @@ to a static list."
                        (format "fetch failed for %s: %s" base-url err))
      nil)))
 
+(defcustom quoth-hyper-history-limit 200
+  "Maximum number of prior prompts sent as history by the hyper provider.
+0 disables history entirely (each prompt is a single request).  Only
+the last LIMIT complete exchanges are sent; the current turn is always
+sent in full."
+  :type 'integer
+  :group 'quoth-hyper)
+
 (defcustom quoth-hyper-history-include-reasoning nil
   "Non-nil re-sends streamed reasoning (CoT) with assistant turns.
 The reasoning is emitted as `reasoning_content' (per HYPER-API.md
 section 3.4).  The default nil keeps reasoning out of the
 model-visible history."
   :type 'boolean
-  :group 'quoth)
+  :group 'quoth-hyper)
 
 (defcustom quoth-hyper-x-crush-id t
   "Value for the x-crush-id header on hyper requests.
@@ -209,7 +217,7 @@ package."
                  (const :tag "Omit" nil)
                  string
                  function)
-  :group 'quoth)
+  :group 'quoth-hyper)
 
 (defun quoth-hyper--x-crush-id ()
   "Return the resolved x-crush-id value, or nil to omit."
