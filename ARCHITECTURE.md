@@ -112,9 +112,18 @@ each concrete provider is a dedicated, buffer-unaware file:
   to the Charm Hyper gateway (see below).
 
 The shared `crush-provider` base struct has slots `buffer`,
-`completion-action`, `working-directory`, `application-count`
-(default 1), and `type`. The hyper provider subclasses it and adds its
-own slots (base URL, token, model, session-affinity hash, x-crush-id).
+`completion-action`, `working-directory`, `transport-process` (the live
+transport process owned by the provider, set by `send-prompt`),
+`application-count` (default 1), and `type`. The hyper provider
+subclasses it and adds its own slots (base URL, token, model,
+session-affinity hash, x-crush-id).
+
+Process control is a provider responsibility, routed through the
+protocol: `crush-send-input` consults `crush-provider-active-p` for its
+"still running" guard, `crush-interrupt` calls
+`crush-provider-interrupt`, and `crush-clear-buffer` calls
+`crush-provider-cleanup`. The facade never reads or kills a transport
+process directly.
 
 ## Hyper provider (primary)
 
@@ -248,8 +257,6 @@ every session owned by the cleared buffer. `crush-process-max-sessions`
 
 - Manual token only (`crush-hyper-token`); OAuth device flow is planned.
 - No model catalog.
-- Interrupt is a stub; the "still running" guard does not block during
-  hyper requests, so avoid typing another prompt mid-stream.
 - `crush-provider-grant-permission` is a no-op (tools run without
   confirmation).
 

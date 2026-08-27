@@ -123,7 +123,7 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 - [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection
 - [ ] Error handling and retry
 - [ ] Hypercredit display from `usage.remaining.hypercredits`, with `GET /v1/credits` fallback ([HYPER-API.md §4](HYPER-API.md))
-- [ ] Interrupt support for in-flight hyper requests (currently a cleanup stub; the "still running" guard does not block)
+- [x] Interrupt support for in-flight hyper requests (`crush-interrupt` aborts the provider transport; `crush-send-input` blocks while the provider is active)
 - [x] Tool call visibility in responses
 - [ ] Conversation persistence to plain-text files (gptel-style, deferred): save `crush-region-type`/`crush-response-to`/attachment bounds plus `crush--session-uuid` as file-locals, recreate properties and recompute `crush--session-id` on open. Only the 16-hex XXH3 hash ever goes over the wire (to Hyper).
 

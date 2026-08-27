@@ -61,17 +61,19 @@
 ;;; 8. Selection insertion during running process
 
 (ert-deftest crush-test/insert-selection-works-while-process-running ()
-  "`crush-insert-selection' should work even when `crush-process' is non-nil."
+  "`crush-insert-selection' should work even while the provider is active.
+Context insertion does not touch the transport."
   (let ((default-directory crush-test--root))
     (unwind-protect
         (let ((buf (crush-test--fresh-buffer)))
           (with-current-buffer buf
-            (setq-local crush-process (make-process
-                                       :name "crush-test-fake"
-                                       :buffer buf
-                                       :command '("sleep" "30")
-                                       :connection-type 'pipe
-                                       :noquery t)))
+            (setf (crush-provider-transport-process crush-active-provider)
+                  (make-process
+                   :name "crush-test-fake"
+                   :buffer buf
+                   :command '("sleep" "30")
+                   :connection-type 'pipe
+                   :noquery t)))
           ;; Use a temp buffer as the source
           (with-temp-buffer
             (insert "some selected code\n")
@@ -80,9 +82,7 @@
           (with-current-buffer buf
             (goto-char (point-min))
             (should (search-forward "some selected code" nil t))
-            (when (process-live-p crush-process)
-              (interrupt-process crush-process))
-            (setq-local crush-process nil)))
+            (crush-provider-cleanup crush-active-provider)))
       (crush-test--cleanup))))
 
 ;;; Minor mode
@@ -149,21 +149,20 @@
         (progn
           (crush-test--fresh-buffer)
           (with-current-buffer (crush-test--buffer-name)
-            (setq-local crush-process (make-process
-                                       :name "crush-test-fake"
-                                       :buffer (current-buffer)
-                                       :command '("sleep" "30")
-                                       :connection-type 'pipe
-                                       :noquery t)))
+            (setf (crush-provider-transport-process crush-active-provider)
+                  (make-process
+                   :name "crush-test-fake"
+                   :buffer (current-buffer)
+                   :command '("sleep" "30")
+                   :connection-type 'pipe
+                   :noquery t)))
           (with-temp-buffer
             (insert "buffer content\n")
             (crush-insert-buffer))
           (with-current-buffer (crush-test--buffer-name)
             (goto-char (point-min))
             (should (search-forward "buffer content" nil t))
-            (when (process-live-p crush-process)
-              (interrupt-process crush-process))
-            (setq-local crush-process nil)))
+            (crush-provider-cleanup crush-active-provider)))
       (crush-test--cleanup))))
 
 ;;; crush-insert-filepath

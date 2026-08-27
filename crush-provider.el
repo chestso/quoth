@@ -45,6 +45,11 @@
   buffer
   completion-action
   working-directory
+  ;; The live transport process (e.g. curl) returned by the provider's
+  ;; `crush-provider-send-prompt'.  Owned by the provider; the facade
+  ;; reads activity through `crush-provider-active-p' and kills it via
+  ;; `crush-provider-interrupt'/`crush-provider-cleanup'.
+  (transport-process nil)
   ;; Application count: the number of pipeline applications (runnable,
   ;; inflight, blocked) this provider accounts for.  The facade reads it
   ;; via stream progress; a value of 0 means the provider is idle.
@@ -66,13 +71,18 @@ that replace the user message in the request body; used by the
 tool loop to send follow-up requests with tool results.")
 
 (cl-defgeneric crush-provider-interrupt (provider)
-  "Interrupt the currently running operation on PROVIDER.")
+  "Interrupt the currently running operation on PROVIDER.
+Providers own their transport processes; the facade dispatches through
+this method rather than checking or interrupting a buffer-local process.")
 
 (cl-defgeneric crush-provider-active-p (provider)
-  "Return non-nil if PROVIDER has an active operation.")
+  "Return non-nil if PROVIDER has an active operation.
+Providers should return the liveness of their transport process.")
 
 (cl-defgeneric crush-provider-cleanup (provider)
-  "Clean up any resources held by PROVIDER.")
+  "Clean up any resources held by PROVIDER.
+Kill any live transport process, clear the transport slot, and clear
+`crush-provider-completion-action'.")
 
 (cl-defgeneric crush-provider-grant-permission (provider permission-id action)
   "Respond to a permission request on PROVIDER identified by PERMISSION-ID.

@@ -81,19 +81,18 @@ REASONING (when non-nil) then CONTENT through
 `crush-facade--append-delta' and closes the response with
 `crush-facade--finalize'.  With no reasoning, CONTENT is streamed as
 a single `content' delta.  Runs in the crush buffer."
-  (let ((crush-process nil))
-    (when (and reasoning (> (length reasoning) 0))
-      (let ((i 0))
-        (while (< i (length reasoning))
-          (let ((next (or (and (string-match "\n" reasoning i)
-                               (match-end 0))
-                          (length reasoning))))
-            (crush-facade--append-delta
-             (substring reasoning i next) 'reasoning)
-            (setq i next))))
-      (crush-facade--append-delta "" 'content))
-    (crush-facade--append-delta content 'content)
-    (crush-facade--finalize)))
+  (when (and reasoning (> (length reasoning) 0))
+    (let ((i 0))
+      (while (< i (length reasoning))
+        (let ((next (or (and (string-match "\n" reasoning i)
+                             (match-end 0))
+                        (length reasoning))))
+          (crush-facade--append-delta
+           (substring reasoning i next) 'reasoning)
+          (setq i next))))
+    (crush-facade--append-delta "" 'content))
+  (crush-facade--append-delta content 'content)
+  (crush-facade--finalize))
 
 ;;; 1. No duplicate defvar crush--continue
 
@@ -261,21 +260,22 @@ A blank line below it, and a blank line above it when it follows a response."
 ;;; 4. Input locking
 
 (ert-deftest crush-test/send-input-errors-when-process-running ()
-  "`crush-send-input' should signal an error when a process is running."
+  "`crush-send-input' should signal an error when the provider is active.
+The guard reports provider activity through the protocol."
   (unwind-protect
       (let ((buf (crush-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test prompt")
-          (setq-local crush-process (make-process
-                                     :name "crush-test-fake"
-                                     :buffer buf
-                                     :command '("sleep" "30")
-                                     :connection-type 'pipe
-                                     :noquery t))
+          (setf (crush-provider-transport-process crush-active-provider)
+                (make-process
+                 :name "crush-test-fake"
+                 :buffer buf
+                 :command '("sleep" "30")
+                 :connection-type 'pipe
+                 :noquery t))
           (should-error (call-interactively #'crush-send-input))
-          (interrupt-process crush-process)
-          (setq-local crush-process nil)))
+          (crush-provider-cleanup crush-active-provider)))
     (crush-test--cleanup)))
 
 ;;; 5. Prompt echoing
@@ -373,6 +373,21 @@ prompt: the user separator lands at point-max."
           (should (null crush--continue))))
     (crush-test--cleanup)))
 
+(ert-deftest crush-test/clear-buffer-cleans-provider-transport ()
+  "`crush-clear-buffer' should clean up the active provider's transport."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setf (crush-provider-transport-process crush-active-provider)
+                (make-pipe-process :name "crush-test-clear-transport"
+                                   :noquery t :coding 'binary
+                                   :filter #'ignore :sentinel #'ignore))
+          (let ((proc (crush-provider-transport-process crush-active-provider)))
+            (call-interactively #'crush-clear-buffer)
+            (should-not (process-live-p proc))
+            (should-not (crush-provider-transport-process crush-active-provider)))))
+    (crush-test--cleanup)))
+
 ;;; 9. Session UUID state: init, rotation, distinctness
 
 (ert-deftest crush-test/session-uuid-init ()
@@ -459,6 +474,25 @@ prompt: the user separator lands at point-max."
             ;; Simulate stream completion via the facade.
             (crush-test--simulate-facade-response "response text")
             ;; New ID should be different
+            (should (stringp crush--prompt-id))
+            (should (not (string= old-id crush--prompt-id))))))
+    (crush-test--cleanup)))
+
+(ert-deftest crush-test/interrupt-regenerates-prompt-id ()
+  "After `crush-interrupt', the buffer gets a fresh pending prompt ID."
+  (unwind-protect
+      (let ((buf (crush-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((old-id crush--prompt-id))
+            (goto-char (point-max))
+            (newline)
+            (setq-local crush--response-start (point-marker))
+            (setf (crush-provider-transport-process crush-active-provider)
+                  (make-pipe-process :name "crush-test-interrupt-id"
+                                     :noquery t :coding 'binary
+                                     :filter #'ignore :sentinel #'ignore))
+            (cl-letf (((symbol-function 'crush-openai-abort) #'ignore))
+              (crush-interrupt))
             (should (stringp crush--prompt-id))
             (should (not (string= old-id crush--prompt-id))))))
     (crush-test--cleanup)))

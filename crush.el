@@ -81,10 +81,12 @@ initialization.  Should be a model name like
 
 ;;; Buffer-local state
 
-;;; `crush--continue', `crush--session-uuid', `crush--session-id',
-;;; `crush--response-start', and `crush-process' are the shared
-;;; buffer-local state owned by the facade (defined below); providers
-;;; must not touch them.
+;;; `crush--continue', `crush--session-uuid', `crush--session-id', and
+;;; `crush--response-start' are the shared buffer-local state owned by
+;;; the facade (defined below); providers must not touch them.  The
+;;; provider owns its transport process in
+;;; `crush-provider-transport-process' — the facade never touches a
+;;; process directly.
 
 (defcustom crush-reasoning-preview-lines 10
   "Number of reasoning lines to show in the collapsed preview.
@@ -154,10 +156,6 @@ log.  Buffer-local.")
 (defvar crush--response-start nil
   "Marker for where response text starts.
 Set when prompt is sent, used by sentinel to tag response text.
-Buffer-local.")
-
-(defvar crush-process nil
-  "The currently running Crush process, if any.
 Buffer-local.")
 
 ;;; The facade stream protocol (state, progress, error pane) lives in
@@ -256,6 +254,7 @@ and `crush-interrupt' dispatch through it.  Buffer-local.")
 (declare-function crush-hyper--model-choices "crush-hyper-provider" (catalog))
 (declare-function crush-hyper-provider-p "crush-hyper-provider" (object))
 (declare-function crush-hyper-provider-model "crush-hyper-provider" (object))
+(declare-function crush-provider-transport-process "crush-provider" (provider))
 
 ;;; Buffer naming
 
@@ -1058,7 +1057,6 @@ buffer-local and never leaves via the network; only the hash is sent."
       ;; run kill-all-local-variables.
       ;; Generate prompt ID BEFORE inserting the marker.
       (setq-local crush--prompt-id (crush--generate-id))
-      (setq-local crush-process nil)
       (setq-local crush--continue nil)
       (crush--init-session-uuid)
       (setq-local crush--response-start nil)
@@ -1545,7 +1543,6 @@ Runs in the crush buffer, which owns all response text."
         (when win
           (set-window-point win (point-max)))
         (setq-local crush--last-follow-point (point-max))))
-    (setq-local crush-process nil)
     (setq-local crush--response-start nil)
     (setq-local crush--tool-loop-count 0)
     (crush--input-ring-write)
@@ -1560,9 +1557,9 @@ Otherwise close the response and insert a fresh prompt.  The
 provider's completion action invokes this."
   (if (and crush-tools-enabled
            crush-active-provider
-           crush-process
            (let ((tcs (crush-provider--tool-calls
-                       crush-active-provider crush-process)))
+                       crush-active-provider
+                       (crush-provider-transport-process crush-active-provider))))
              (and (vectorp tcs) (> (length tcs) 0))))
       (crush-facade--tool-loop)
     (crush-facade--stream-transition 'done 1)
@@ -1591,7 +1588,8 @@ come back, finalize via `crush-facade--close-response'."
               (prompt-id crush--prompt-id))
           (crush-facade--close-response response-start prompt-id)))
     (let* ((tool-calls (crush-provider--tool-calls
-                        crush-active-provider crush-process))
+                        crush-active-provider
+                        (crush-provider-transport-process crush-active-provider)))
            (result (crush-provider--tool-results
                     crush-active-provider tool-calls))
            (blocks (nth 2 result))
@@ -1622,8 +1620,8 @@ come back, finalize via `crush-facade--close-response'."
                                     (cons 'content text)))))
              (continuation (append (and user-msg (list user-msg))
                                    (crush--tool-rounds prompt-id))))
-        ;; Clear the old process and set up for the follow-up.
-        (setq-local crush-process nil)
+        ;; Clear the old transport and set up for the follow-up.
+        (setf (crush-provider-transport-process crush-active-provider) nil)
         (setq-local crush--response-start (point-marker))
         (crush-facade--stream-transition 'active 2)
         (let ((real-proc (crush-provider-send-prompt
@@ -1647,8 +1645,7 @@ come back, finalize via `crush-facade--close-response'."
                           :stderr (get-buffer-create "*crush-errors*")
                           :continuation continuation)))
           (when (and real-proc (processp real-proc))
-            (set-marker (process-mark real-proc) (point-max))
-            (setq-local crush-process real-proc)))))))
+            (set-marker (process-mark real-proc) (point-max))))))))
 
 ;;; Major mode commands
 
@@ -1705,10 +1702,9 @@ crush buffer, which owns all streamed output."
                       :buffer buf
                       :stderr (get-buffer-create "*crush-errors*"))))
       (when (and real-proc (processp real-proc))
-        (set-marker (process-mark real-proc) (point-max))
-        (setq-local crush-process real-proc)
-        (setq-local crush--continue t)
-        (setq-local crush--response-start (point-marker))))))
+        (set-marker (process-mark real-proc) (point-max)))
+      (setq-local crush--continue t)
+      (setq-local crush--response-start (point-marker)))))
 
 (defun crush--fence-str (text)
   "Return a markdown fence string long enough to enclose TEXT.
@@ -2010,7 +2006,9 @@ for wire resume.  Returns the end position of the inserted block."
 (defun crush-send-input ()
   "Send the current prompt to the provider."
   (interactive)
-  (when (and crush-process (process-live-p crush-process))
+  (when (and crush-active-provider
+             (crush-provider-p crush-active-provider)
+             (crush-provider-active-p crush-active-provider))
     (user-error "Crush is still running; interrupt with C-c c i"))
   (let* ((input-start (or (when (and crush--input-start-marker
                                      (markerp crush--input-start-marker))
@@ -2047,17 +2045,17 @@ for wire resume.  Returns the end position of the inserted block."
     (crush-facade--send prompt)))
 
 (defun crush-interrupt ()
-  "Interrupt the currently running Crush process."
+  "Interrupt the active provider's in-flight request.
+Dispatches through `crush-provider-interrupt' so the provider owns its
+transport process.  The partial response is tagged/frozen and a fresh
+input divider inserted, mirroring normal finalization."
   (interactive)
-  (let ((interrupted nil))
-    (cond
-     (crush-process
-      (interrupt-process crush-process)
-      (setq-local crush-process nil)
-      (setq interrupted t))
-     (t
-      (message "No crush process running")))
-    (when interrupted
+  (let ((active (and crush-active-provider
+                     (crush-provider-p crush-active-provider)
+                     (crush-provider-active-p crush-active-provider))))
+    (if (not active)
+        (message "No crush process running")
+      (crush-provider-interrupt crush-active-provider)
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (save-excursion
@@ -2068,12 +2066,15 @@ for wire resume.  Returns the end position of the inserted block."
           (let ((response-start (when (markerp crush--response-start)
                                   (marker-position crush--response-start))))
             (crush--tag-response-region response-start (point) crush--prompt-id)
-            (dolist (ov (overlays-in response-start (point)))
+            (dolist (ov (overlays-in (or response-start (point-min)) (point)))
               (when (and (overlay-get ov 'crush-reasoning)
                          (not (overlay-get ov 'crush-fold-state)))
                 (crush--reasoning-install-fold
                  (cons (overlay-start ov) (overlay-end ov)))))
             (crush--reasoning-reset))
+          ;; Generate a fresh pending ID before the new marker, exactly
+          ;; like `crush-facade--close-response'.
+          (setq-local crush--prompt-id (crush--generate-id))
           (crush--insert-input-separator)))
       (when crush--follow-p
         (let ((win (get-buffer-window (current-buffer) 'visible)))
@@ -2081,7 +2082,9 @@ for wire resume.  Returns the end position of the inserted block."
           (when win
             (set-window-point win (point-max)))
           (setq-local crush--last-follow-point (point-max))))
+      (setq-local crush--response-start nil)
       (setq-local crush--tool-loop-count 0)
+      (crush-facade--stream-transition 'done 1)
       (setq-local buffer-undo-list nil)
       (message "Crush process interrupted"))))
 
@@ -2097,6 +2100,10 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (setq-local crush-openai--cache-key nil)
   (crush--init-session-uuid)
   (crush-facade--stream-clear)
+  ;; Kill any in-flight provider transport before clearing.
+  (when (and crush-active-provider
+             (crush-provider-p crush-active-provider))
+    (crush-provider-cleanup crush-active-provider))
   ;; Kill any live process sessions this buffer owns.
   (crush-process--cleanup-buffer (current-buffer))
   ;; Delete all crush-overlay tagged overlays

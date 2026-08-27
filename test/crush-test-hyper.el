@@ -1850,5 +1850,93 @@ it to the current buffer and the global default."
             (should (string= crush-model "qwen3.7-plus"))))
       (crush-test--cleanup))))
 
+;;; 94. Hyper provider: process control
+
+(ert-deftest crush-test/hyper-interrupt-calls-cleanup ()
+  "C-c c i path delegates to provider cleanup, not a raw interrupt-process.
+With a live transport slot, cleanup must abort the transport, clear the
+slot, and clear the provider's completion action."
+  (let ((aborted nil)
+        (provider (crush-make-hyper-provider
+                   :buffer (current-buffer)
+                   :working-directory default-directory)))
+    (setf (crush-provider-transport-process provider)
+          (make-pipe-process :name "crush-hyper-process-control"
+                             :noquery t :coding 'binary
+                             :filter #'ignore :sentinel #'ignore))
+    (setf (crush-provider-completion-action provider) (lambda () 'done))
+    (cl-letf (((symbol-function 'crush-openai-abort)
+               (lambda (proc)
+                 (setq aborted t)
+                 (process-put proc :crush-finished t))))
+      (crush-provider-interrupt provider)
+      (should aborted)
+      (should-not (crush-provider-transport-process provider))
+      (should-not (crush-provider-completion-action provider)))))
+
+(ert-deftest crush-test/hyper-active-p-checks-transport ()
+  "Crush-provider-active-p does transport liveness, not a buffer variable."
+  (let ((provider (crush-make-hyper-provider
+                   :buffer (current-buffer)
+                   :working-directory default-directory)))
+    (should-not (crush-provider-active-p provider))
+    (setf (crush-provider-transport-process provider)
+          (make-pipe-process :name "crush-hyper-active"
+                             :noquery t :coding 'binary
+                             :filter #'ignore :sentinel #'ignore))
+    (should (crush-provider-active-p provider))
+    (delete-process (crush-provider-transport-process provider))
+    (should-not (crush-provider-active-p provider))))
+
+(ert-deftest crush-test/hyper-cleanup-without-transport ()
+  "Crush-provider-cleanup only clears completion when there is no transport."
+  (let ((provider (crush-make-hyper-provider
+                   :buffer (current-buffer)
+                   :working-directory default-directory)))
+    (setf (crush-provider-completion-action provider) (lambda () 'x))
+    (cl-letf (((symbol-function 'crush-openai-abort)
+               (lambda (_proc) (error "must not be called"))))
+      (crush-provider-cleanup provider))
+    (should-not (crush-provider-completion-action provider))))
+
+(ert-deftest crush-test/hyper-send-provider-stores-transport ()
+  "Crush-provider-send-prompt should put the transport into the struct."
+  (let ((provider (crush-make-hyper-provider
+                   :buffer (current-buffer)
+                   :base-url "http://127.0.0.1:1"
+                   :token "tok")))
+    (cl-letf (((symbol-function 'crush-openai-request)
+               (lambda (&rest _args)
+                 (make-pipe-process :name "crush-hyper-transport"
+                                    :noquery t))))
+      (let ((proc (crush-provider-send-prompt provider "hi")))
+        (should (processp proc))
+        (should (eq (crush-provider-transport-process provider) proc))
+        (delete-process proc)))))
+
+(ert-deftest crush-test/hyper-send-cleans-stale-transport ()
+  "Crush-provider-send-prompt cleans a stale transport before starting.
+A previous failed request must not leak into the next send."
+  (let ((provider (crush-make-hyper-provider
+                   :buffer (current-buffer)
+                   :base-url "http://127.0.0.1:1"
+                   :token "tok"))
+        (aborted nil))
+    (setf (crush-provider-transport-process provider)
+          (make-pipe-process :name "crush-hyper-old"
+                             :noquery t :coding 'binary
+                             :filter #'ignore :sentinel #'ignore))
+    (cl-letf* (((symbol-function 'crush-openai-abort)
+                (lambda (_proc) (setq aborted t)))
+               ((symbol-function 'crush-openai-request)
+                (lambda (&rest _args)
+                  (make-pipe-process :name "crush-hyper-new"
+                                     :noquery t))))
+      (let ((proc (crush-provider-send-prompt provider "hi")))
+        (should aborted)
+        (should (processp proc))
+        (should (eq (crush-provider-transport-process provider) proc))
+        (delete-process proc)))))
+
 (provide 'crush-test-hyper)
 ;;; crush-test-hyper.el ends here

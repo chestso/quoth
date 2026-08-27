@@ -607,15 +607,17 @@ All text from the first reasoning char to the last has
                 (progn
                   (crush-facade--append-delta (crush-test--reasoning-lines 11)
                                               'reasoning)
-                  ;; The transport process is the interrupt target; the
-                  ;; pipe process cannot be interrupted, so mock the kill.
-                  (setq-local crush-process proc)
+                  ;; The provider transport is the interrupt target; the
+                  ;; pipe process cannot be interrupted, so mock the abort.
                   (setq-local crush-active-provider
                               (crush-make-hyper-provider
                                :buffer (current-buffer)
                                :working-directory default-directory))
-                  (cl-letf (((symbol-function 'interrupt-process)
-                             (lambda (_p &optional _fg) nil)))
+                  (setf (crush-provider-transport-process
+                         crush-active-provider)
+                        proc)
+                  (cl-letf (((symbol-function 'crush-openai-abort)
+                             (lambda (_p) nil)))
                     (crush-interrupt)))
               (delete-process proc)))
           (let ((ov (crush-test--reasoning-fold-overlay)))
@@ -655,15 +657,17 @@ All text from the first reasoning char to the last has
             (unwind-protect
                 (progn
                   (crush-facade--append-delta "think hard" 'reasoning)
-                  ;; The transport process is the interrupt target; the
-                  ;; pipe process cannot be interrupted, so mock the kill.
-                  (setq-local crush-process proc)
+                  ;; The provider transport is the interrupt target; the
+                  ;; pipe process cannot be interrupted, so mock the abort.
                   (setq-local crush-active-provider
                               (crush-make-hyper-provider
                                :buffer (current-buffer)
                                :working-directory default-directory))
-                  (cl-letf (((symbol-function 'interrupt-process)
-                             (lambda (_p &optional _fg) nil)))
+                  (setf (crush-provider-transport-process
+                         crush-active-provider)
+                        proc)
+                  (cl-letf (((symbol-function 'crush-openai-abort)
+                             (lambda (_p) nil)))
                     (crush-interrupt)))
               (delete-process proc)))
           (let ((start (save-excursion

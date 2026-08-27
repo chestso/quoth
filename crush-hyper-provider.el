@@ -220,6 +220,7 @@ for the value; nil omits the header."
     (and (stringp id) (> (length id) 0) id)))
 
 (declare-function crush--debug-log "crush.el" (category message))
+(declare-function crush-openai-abort "crush-openai" (proc))
 (declare-function crush--history-for "crush.el" (buffer))
 (declare-function crush-make-openai-tool-call "crush-openai" (&rest args))
 (declare-function crush-openai-execute-tool "crush-openai" (tool-call))
@@ -283,6 +284,8 @@ of message alists (user, assistant with `tool_calls', `role: \"tool\"')
 that replace the user message — used by the tool loop to send follow-up
 requests with tool results.  The provider never touches buffers itself."
   (ignore session-id continue-p stderr)
+  ;; A previous in-flight request must not outlive this send.
+  (crush-provider-cleanup provider)
   (let* ((history (and buffer
                        (crush--history-for buffer)))
          (body (crush-openai-compose-request
@@ -297,25 +300,33 @@ requests with tool results.  The provider never touches buffers itself."
                           (crush-xxh3-hash64 session-uuid)))
          (x-crush-id (crush-hyper--x-crush-id)))
     (setf (crush-provider-completion-action provider) completion)
-    (crush-openai-request
-     base-url token body
-     (or on-delta #'ignore)
-     (or completion #'ignore)
-     (or on-error #'ignore)
-     session-id
-     x-crush-id)))
+    (setf (crush-provider-transport-process provider)
+          (crush-openai-request
+           base-url token body
+           (or on-delta #'ignore)
+           (or completion #'ignore)
+           (or on-error #'ignore)
+           session-id
+           x-crush-id))))
 
 (cl-defmethod crush-provider-interrupt ((provider crush-hyper-provider))
   "Interrupt the hyper request for PROVIDER."
   (crush-provider-cleanup provider))
 
-(cl-defmethod crush-provider-active-p ((_provider crush-hyper-provider))
+(cl-defmethod crush-provider-active-p ((provider crush-hyper-provider))
   "Return non-nil while a hyper request is in flight for PROVIDER."
-  nil)
+  (let ((proc (crush-provider-transport-process provider)))
+    (and (processp proc) (process-live-p proc))))
 
-(cl-defmethod crush-provider-cleanup ((_provider crush-hyper-provider))
-  "Clean up any hyper request resources; phase 1 has none to kill."
-  nil)
+(cl-defmethod crush-provider-cleanup ((provider crush-hyper-provider))
+  "Clean up any hyper request resources held by PROVIDER.
+Aborts the live curl transport (if any), clears the transport slot, and
+drops the injected completion action so a late sentinel cannot run it."
+  (let ((proc (crush-provider-transport-process provider)))
+    (when (processp proc)
+      (crush-openai-abort proc))
+    (setf (crush-provider-transport-process provider) nil)
+    (setf (crush-provider-completion-action provider) nil)))
 
 (cl-defmethod crush-provider-grant-permission ((_provider crush-hyper-provider) _permission-id _action)
   "No permissions are issued in phase 1."

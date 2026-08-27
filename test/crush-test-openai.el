@@ -507,5 +507,44 @@ A stubbed tool registered in the protocol registry is invoked."
     (should (= (cdr result) -1))
     (should (string-match-p "boom" (car result)))))
 
+;;; 7. Transport abort
+
+(ert-deftest crush-test/openai-abort-marks-finished-first ()
+  "`crush-openai-abort' marks :crush-finished before killing.
+The sentinel must not re-finalize after a deliberate interrupt."
+  (let ((proc (make-pipe-process :name "crush-test-abort"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (unwind-protect
+        (progn
+          (crush-openai-abort proc)
+          (should (process-get proc :crush-finished)))
+      (when (process-live-p proc) (delete-process proc)))))
+
+(ert-deftest crush-test/openai-abort-kills-live-process ()
+  "`crush-openai-abort' deletes a live process."
+  (let ((proc (make-pipe-process :name "crush-test-abort2"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (crush-openai-abort proc)
+    (should-not (process-live-p proc))))
+
+(ert-deftest crush-test/openai-abort-nil-is-inert ()
+  "`crush-openai-abort' on a non-process returns nil without error."
+  (should-not (crush-openai-abort nil)))
+
+(ert-deftest crush-test/openai-abort-prevents-sentinel-finalize ()
+  "After abort, the curl sentinel must not run the finish callback."
+  (let ((finished nil)
+        (proc (make-pipe-process :name "crush-test-abort3"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (process-put proc :crush-done-callback (lambda () (setq finished t)))
+    (process-put proc :crush-finished nil)
+    (crush-openai-abort proc)
+    ;; Simulate the sentinel firing after the abort.
+    (crush--openai-curl-sentinel proc "finished\n")
+    (should-not finished)))
+
 (provide 'crush-test-openai)
 ;;; crush-test-openai.el ends here

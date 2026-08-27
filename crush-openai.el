@@ -717,6 +717,21 @@ overlay, and the cursor.  The transport never touches buffers."
     (when (functionp on-delta)
       (funcall on-delta delta kind))))
 
+(defun crush-openai-abort (proc)
+  "Abort the in-flight OpenAI transport process PROC.
+Marks PROC finished before sending any signal so the curl sentinel
+cannot re-finalize after a deliberate interrupt, then interrupts and
+deletes the process.  Returns nil, and is inert when PROC is not a
+process."
+  (when (processp proc)
+    ;; Mark finished first: a racing sentinel must observe
+    ;; `:crush-finished' and skip the completion/error callbacks.
+    (process-put proc :crush-finished t)
+    (ignore-errors (interrupt-process proc))
+    (when (process-live-p proc)
+      (ignore-errors (delete-process proc))))
+  nil)
+
 (defun crush--openai-http-finish (proc error)
   "Finalize the curl request on PROC with optional ERROR.
 Emits ERROR through the facade's `:crush-on-error' callback when
