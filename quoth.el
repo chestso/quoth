@@ -164,7 +164,7 @@ parent mode (which may be `markdown-mode' or `text-mode').
 Buffer-local.")
 
 (defvar quoth--prompt-start-marker nil
-  "Marker at the start of the frozen input separator line.
+  "Marker at the start of the input separator line.
 Buffer-local.")
 
 (defvar quoth--reasoning-start nil
@@ -184,7 +184,7 @@ Carries `quoth-reasoning-face' and the `quoth-overlay' property so
 
 (defvar quoth--input-start-marker nil
   "Marker at the start of the editable input region.
-This is right after the frozen input separator line.
+This is right after the input separator line.
 Buffer-local.")
 
 (defvar quoth--project-root nil
@@ -347,11 +347,9 @@ interrupting, clearing, and session management.
   (if quoth-chat-mode
       (progn
         (add-hook 'after-change-functions #'quoth--after-change nil t)
-        (add-hook 'post-command-hook #'quoth--update-header-line nil t)
-        (add-hook 'post-command-hook #'quoth--reassert-read-only-boundaries nil t))
+        (add-hook 'post-command-hook #'quoth--update-header-line nil t))
     (remove-hook 'after-change-functions #'quoth--after-change t)
-    (remove-hook 'post-command-hook #'quoth--update-header-line t)
-    (remove-hook 'post-command-hook #'quoth--reassert-read-only-boundaries t)))
+    (remove-hook 'post-command-hook #'quoth--update-header-line t)))
 
 ;;; Internal helpers
 
@@ -361,10 +359,9 @@ Only logs when `quoth-debug-mode' is non-nil."
   (when quoth-debug-mode
     (with-current-buffer (get-buffer-create "*quoth-debug*")
       (goto-char (point-max))
-      (let ((inhibit-read-only t))
-        (insert (format "[%s] %s: %s\n"
-                        (format-time-string "%H:%M:%S")
-                        category message))))))
+      (insert (format "[%s] %s: %s\n"
+                      (format-time-string "%H:%M:%S")
+                      category message)))))
 
 (defun quoth--generate-id ()
   "Generate a unique ID for a prompt."
@@ -468,7 +465,7 @@ type, so untagged space is never mistaken for `user'."
 (defun quoth--after-change (beg end _len)
   "Tag inserted text with prompt ID and `user' region type.
 Tags only text at or after the input separator marker, so edits inside
-frozen history are left untagged.  BEG and END are standard after-change
+prior history are left untagged.  BEG and END are standard after-change
 hook arguments."
   (when (and quoth--prompt-start-marker
              (markerp quoth--prompt-start-marker)
@@ -520,62 +517,18 @@ Uses `file-name-extension' so paths and dotfiles resolve; falls back to
       ("clj" "clojure")
       (_ "plaintext"))))
 
-(defun quoth--freeze-region (start end)
-  "Make the region from START to END read-only via text properties.
-The `read-only' property blocks both insertion into and deletion of the
-covered text.  `front-sticky' and `rear-nonsticky' keep the freeze from
-leaking: text typed just before the region stays read-only, and text typed
-just after it stays editable.  `rear-nonsticky' must stay on the last
-read-only char, otherwise inserting right after it fails with
-\"Text is read-only\" because the new text inherits `read-only'.
-`quoth--install-font-lock-guard' keeps `rear-nonsticky' intact across
-font-lock refontification.
-Modification hooks are suppressed while applying so other buffer
-metadata (like prompt IDs) is not re-tagged by `quoth--after-change'."
-  (when (> end start)
-    (let ((inhibit-modification-hooks t))
-      (add-text-properties
-       start end
-       '(read-only t
-                   front-sticky (read-only)
-                   rear-nonsticky (read-only))))))
-
-(defun quoth--reassert-read-only-boundaries (&rest _)
-  "Re-assert `rear-nonsticky' on all read-only text.
-font-lock (e.g. markdown-mode) includes `rear-nonsticky' in its managed
-properties and strips it whenever it writes `font-lock-face' over a
-region.  Without `rear-nonsticky', text typed just after a read-only char
-inherits `read-only' and Emacs refuses the insertion (\"Text is
-read-only\").  This restores the boundary on every read-only position.
-Runs in `post-command-hook' so any `rear-nonsticky' stripped by a
-completed command (including font-lock refontification) is restored
-before the next user input.
-Accepts optional hook arguments so it can also be used as a change hook."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t)
-        (pos (point-min)))
-    (while (< pos (point-max))
-      (when (get-text-property pos 'read-only)
-        (add-text-properties
-         pos (1+ pos)
-         '(rear-nonsticky (read-only font-lock-face))))
-      (setq pos (or (next-single-property-change pos 'read-only nil (point-max))
-                    (point-max))))))
-
 (defconst quoth--input-separator-text "---"
-  "Text of the frozen markdown horizontal divider.
+  "Text of the markdown horizontal divider.
 This precedes the editable input area.")
 
 (defun quoth--insert-input-separator ()
-  "Insert the frozen input divider (`---') at point, framed by blank lines.
-The divider text plus all previous content are frozen read-only; the
-editable input area starts right after the divider's trailing blank
-line.  At `bobp' no blank line is inserted above the divider.
+  "Insert the input divider (`---') at point, framed by blank lines.
+The editable input area starts right after the divider's trailing
+blank line.  At `bobp' no blank line is inserted above the divider.
 `quoth--prompt-start-marker' (insertion type t) anchors the divider's
 start so attachments and prior content can be inserted before it;
 `quoth--input-start-marker' marks where typed input begins."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t))
+  (let ((inhibit-modification-hooks t))
     (unless (bobp)
       (insert "\n"))
     (let ((start (point)))
@@ -583,47 +536,32 @@ start so attachments and prior content can be inserted before it;
       (put-text-property start (point)
                          'quoth-region-type 'separator)
       (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id)
-      (add-text-properties
-       start (point)
-       '(read-only t
-                   front-sticky (read-only)
-                   rear-nonsticky (read-only)))
-      (quoth--freeze-region (point-min) start)
       (setq-local quoth--prompt-start-marker (copy-marker start))
       (set-marker-insertion-type quoth--prompt-start-marker t)
       (setq-local quoth--input-start-marker (point-marker))
       (set-marker-insertion-type quoth--input-start-marker nil))))
 
 (defun quoth--insert-user-separator ()
-  "Insert a frozen horizontal divider marking the end of the user input.
+  "Insert a horizontal divider marking the end of the user input.
 Renders the same `---' as `quoth--input-separator-text' and frames it
 with a blank line above and below, mirroring
 `quoth--insert-input-separator'.  It is a display-only seam between the
 user leg and the assistant leg of a turn, not an editable input prompt:
 inserted at point (on the line after the user's prompt, before the
-response starts) and frozen read-only.  It carries no face; markdown
-renders the `---' itself as a horizontal rule.  Tagged
-`quoth-region-type' `user-separator' so the history/continuation readers
+response starts).  It carries no face; markdown renders the `---'
+itself as a horizontal rule.  Tagged `quoth-region-type'
+`user-separator' so the history/continuation readers
 \(`quoth--user-turn-text', `quoth-get-response-text', `quoth--tool-rounds'\)
 all skip it; it carries `quoth-prompt-id' but never `quoth-response-to',
 so it belongs to the turn yet never leaks into the assistant response
 region."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t))
+  (let ((inhibit-modification-hooks t))
     (unless (bobp)
       (insert "\n"))
     (let ((start (point)))
       (insert quoth--input-separator-text "\n\n")
       (put-text-property start (point) 'quoth-region-type 'user-separator)
-      (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id)
-      ;; Plain, read-only text: no face.  markdown-mode renders the
-      ;; `---' itself as a horizontal rule; the face (and a possible
-      ;; overlay) are unnecessary and font-lock would strip them anyway.
-      (add-text-properties
-       start (point)
-       '(read-only t
-                   front-sticky (read-only)
-                   rear-nonsticky (read-only))))))
+      (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id))))
 
 (defvar-local quoth--follow-p nil
   "Whether the quoth buffer's window is following the stream.
@@ -656,8 +594,7 @@ When following, sets `quoth--follow-p' so the next call (which may run
 before redisplay updates `window-point') continues to follow.  When
 `window-point' is behind POSITION AND behind the last follow position,
 the user scrolled back: stop following."
-  (let* ((inhibit-read-only t)
-         (inhibit-modification-hooks t)
+  (let* ((inhibit-modification-hooks t)
          (position (or position (point-max)))
          (windows (get-buffer-window-list (current-buffer) nil t))
          (selected-win (or (get-buffer-window (current-buffer) 'visible)
@@ -760,7 +697,7 @@ no chain-of-thought."
   "Return the user-side text for PROMPT-ID: typed input + inserted context.
 The text is the buffer content tagged `quoth-region-type' `user' within
 the region tagged `quoth-prompt-id' PROMPT-ID, in buffer order.  The
-frozen separator line, the response, and reasoning regions (which share
+separator line, the response, and reasoning regions (which share
 the `quoth-prompt-id' tag but belong to the assistant) are excluded.
 Returns nil when nothing remains."
   (let ((pos (text-property-any (point-min) (point-max)
@@ -990,32 +927,25 @@ reconstruction used by both history replay and the live tool loop."
           messages)))))
 
 (defun quoth--install-font-lock-guard (&optional enable)
-  "Protect read-only boundaries from font-lock in the current buffer.
-markdown-mode (and other modes) include `rear-nonsticky' in
-`font-lock-extra-managed-props', so font-lock strips it from read-only
-prompts and frozen responses during refontification.  Without
-`rear-nonsticky', text typed just after a read-only char inherits
-`read-only' and Emacs refuses the insertion (\"Text is read-only\"),
-making the input area uneditable.
-ENABLE non-nil (or omitted) installs a buffer-local
-`font-lock-unfontify-region-function' that skips `rear-nonsticky' when
-unfontifying.  ENABLE nil restores the default."
+  "Protect reasoning fold properties from font-lock in the current buffer.
+markdown-mode (and other modes) include `keymap' and arbitrary text
+properties in `font-lock-extra-managed-props', so font-lock strips them
+from the reasoning fold marker during refontification, breaking the
+fold's TAB/RET toggle.  This installs a buffer-local
+`font-lock-unfontify-region-function' that preserves `keymap' and
+`quoth-fold-mark' when unfontifying.
+ENABLE non-nil (or omitted) installs the guard.  ENABLE nil restores
+the default."
   (if (called-interactively-p 'any)
       (setq enable (not (local-variable-p 'font-lock-unfontify-region-function))))
   (if enable
-      (progn
-        ;; Keep the reasoning fold marker's keymap and fold mark through
-        ;; refontification: font-lock otherwise strips arbitrary text
-        ;; properties (same failure mode as `rear-nonsticky').  Both are
-        ;; removed from the strip list so unfontify preserves them.
-        (setq-local font-lock-unfontify-region-function
-                    (lambda (beg end)
-                      (let ((props (remove 'rear-nonsticky
-                                           (remove 'keymap
-                                                   (remove 'quoth-fold-mark
-                                                           (append font-lock-extra-managed-props
-                                                                   '(face font-lock-multiline)))))))
-                        (remove-list-of-text-properties beg end props)))))
+      (setq-local font-lock-unfontify-region-function
+                  (lambda (beg end)
+                    (let ((props (remove 'keymap
+                                         (remove 'quoth-fold-mark
+                                                 (append font-lock-extra-managed-props
+                                                         '(face font-lock-multiline))))))
+                      (remove-list-of-text-properties beg end props))))
     (kill-local-variable 'font-lock-unfontify-region-function)))
 
 (defun quoth--init-session-uuid ()
@@ -1060,8 +990,7 @@ buffer-local and never leaves via the network; only the hash is sent."
       ;; Named invisibility spec: collapsed reasoning is hidden from
       ;; display but visible to buffer-reading tools (export, preview).
       (add-to-invisibility-spec 'quoth-reasoning-fold)
-      (let ((inhibit-read-only t)
-            (inhibit-modification-hooks t))
+      (let ((inhibit-modification-hooks t))
         (erase-buffer)
         (quoth--insert-input-separator))
       (setq-local buffer-undo-list nil)
@@ -1164,7 +1093,7 @@ reasoning.  Inert when no reasoning is active or it already ended.
 The separator is inserted at point-max, never at an arbitrary point,
 so it cannot land inside a just-inserted tool block.
 
-The overlay end is frozen *after* ensuring the reasoning text ends
+The overlay end is set *after* ensuring the reasoning text ends
 with a newline.  This guarantees `:extend t' on `quoth-reasoning-face'
 paints the last line's background to the end of the screen line, and
 gives the fold's `before-string' marker a clean line-end boundary so
@@ -1238,8 +1167,7 @@ body overlay, or nil."
               (set-marker start-m nil)
               (set-marker end-m nil)
               nil)
-          (let ((inhibit-read-only t)
-                (inhibit-modification-hooks t)
+          (let ((inhibit-modification-hooks t)
                 (preview-end nil))
             (save-excursion
               (goto-char start-m)
@@ -1347,8 +1275,7 @@ overlay.  If collapsed, expands it (clear `invisible' and
 Clears `invisible' and `intangible' so the full reasoning text is
 visible.  Also hides the marker overlay's `after-string'.  No buffer
 text is inserted or deleted."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t))
+  (let ((inhibit-modification-hooks t))
     (overlay-put body-ov 'quoth-fold-state 'expanded)
     (overlay-put body-ov 'invisible nil)
     (overlay-put body-ov 'intangible nil)
@@ -1363,8 +1290,7 @@ text is inserted or deleted."
 Re-sets `invisible' and `intangible' so the body is hidden.  Also
 re-shows the marker overlay's `after-string'.  No buffer text is
 inserted or deleted."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t))
+  (let ((inhibit-modification-hooks t))
     (overlay-put body-ov 'quoth-fold-state 'collapsed)
     (overlay-put body-ov 'invisible 'quoth-reasoning-fold)
     (overlay-put body-ov 'intangible t)
@@ -1453,8 +1379,7 @@ the response are tagged `tool' (and their nested raw-result span
 `tool-output') and carry the `quoth-tool-call' property for wire
 resume."
   (when (and response-start (> response-end response-start))
-    (let ((inhibit-read-only t)
-          (inhibit-modification-hooks t))
+    (let ((inhibit-modification-hooks t))
       ;; Tag the response span, but never overwrite existing `tool',
       ;; `tool-output', or `reasoning' regions: the tool loop tags its
       ;; blocks (and their nested raw-result spans) before this runs,
@@ -1497,8 +1422,7 @@ resume."
 Tags the response text (including any reasoning sub-span), auto-collapses
 the reasoning fold, resets reasoning state, and inserts a fresh prompt.
 Runs in the quoth buffer, which owns all response text."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t))
+  (let ((inhibit-modification-hooks t))
     (save-excursion
       (goto-char (point-max))
       (newline)
@@ -1586,8 +1510,7 @@ come back, finalize via `quoth-facade--close-response'."
       (setq-local quoth--tool-loop-count (1+ quoth--tool-loop-count))
       ;; Insert tool blocks before the response-start marker so they
       ;; appear as part of the current response.
-      (let ((inhibit-read-only t)
-            (inhibit-modification-hooks t))
+      (let ((inhibit-modification-hooks t))
         (dolist (block blocks)
           (quoth--tool-block-insert block prompt-id)))
       ;; Tag the response so far (streamed content + the just-inserted
@@ -1642,7 +1565,7 @@ come back, finalize via `quoth-facade--close-response'."
 The facade's buffer-aware consumer for streaming providers inserts at
 point-max, the growing response area, and drives the reasoning overlay:
 the first reasoning delta opens the region, later ones extend it, the
-first content delta freezes it.  `quoth--response-start' is never touched;
+first content delta stops it.  `quoth--response-start' is never touched;
 it stays at the response start for finalization.
 
 Uses `quoth--insert-at-eof' for insertion, which only advances the cursor
@@ -1888,7 +1811,7 @@ untouched."
 (defun quoth--tool-block-insert (tool-calls prompt-id)
   "Insert a tool-call block for TOOL-CALLS into the buffer.
 TOOL-CALLS is a plist of :name :id :args-json :result :exit.
-PROMPT-ID is the current prompt's ID.  The block is read-only,
+PROMPT-ID is the current prompt's ID.  The block is
 tagged `quoth-region-type' `tool' with `quoth-prompt-id' /
 `quoth-response-to', and carries the `quoth-tool-call' property
 for wire resume.  Returns the end position of the inserted block."
@@ -1988,7 +1911,6 @@ for wire resume.  Returns the end position of the inserted block."
         (put-text-property raw-start raw-end 'quoth-region-type 'tool-output)
         (put-text-property raw-start raw-end 'quoth-prompt-id prompt-id)
         (put-text-property raw-start raw-end 'quoth-response-to prompt-id))
-      (quoth--freeze-region start end)
       end)))
 
 (defun quoth-send-input ()
@@ -2013,8 +1935,7 @@ for wire resume.  Returns the end position of the inserted block."
     ;; tagging may be incomplete when text is inserted via yank, undo,
     ;; or other non-interactive paths that don't fire the hook or fire
     ;; it with beg before prompt-start-marker.
-    (let ((inhibit-read-only t)
-          (inhibit-modification-hooks t))
+    (let ((inhibit-modification-hooks t))
       (put-text-property input-start (point-max)
                          'quoth-region-type 'user)
       (put-text-property input-start (point-max)
@@ -2035,7 +1956,7 @@ for wire resume.  Returns the end position of the inserted block."
 (defun quoth-interrupt ()
   "Interrupt the active provider's in-flight request.
 Dispatches through `quoth-provider-interrupt' so the provider owns its
-transport process.  The partial response is tagged/frozen and a fresh
+transport process.  The partial response is tagged and a fresh
 input divider inserted, mirroring normal finalization."
   (interactive)
   (let ((active (and quoth-active-provider
@@ -2044,8 +1965,7 @@ input divider inserted, mirroring normal finalization."
     (if (not active)
         (message "No quoth process running")
       (quoth-provider-interrupt quoth-active-provider)
-      (let ((inhibit-read-only t)
-            (inhibit-modification-hooks t))
+      (let ((inhibit-modification-hooks t))
         (save-excursion
           (goto-char (point-max))
           (newline)
@@ -2099,7 +2019,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
     (when (overlay-get ov 'quoth-overlay)
       (delete-overlay ov)))
   (quoth--reasoning-reset)
-  (let ((inhibit-read-only t))
+  (let ((inhibit-modification-hooks t))
     (erase-buffer)
     (quoth--insert-input-separator))
   (setq-local buffer-undo-list nil))

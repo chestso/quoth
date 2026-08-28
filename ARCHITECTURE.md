@@ -20,19 +20,19 @@ them, and new code must too.
    next step (currently Phase 2 roadmap work — see
    `quoth--session-uuid`).
 
-2. **The buffer is append-only and self-freezing.** The buffer only
-   ever grows at point-max; completed content (prompts, responses,
-   tool blocks, reasoning) is frozen read-only, and history/state is
-   enforced on the frozen regions. Read-only is applied via **text
-   properties** (`read-only` with `front-sticky`/`rear-nonsticky`
-   boundaries), never overlays; the current input area stays editable.
+2. **The buffer is append-only.** The buffer only ever grows at
+   point-max; completed content (prompts, responses, tool blocks,
+   reasoning) is plain editable text, and history/state is derived
+   from its tagged regions. Nothing is made read-only; the whole
+   buffer — history included — stays editable, and edits flow into the
+   next request because requests are rebuilt from the buffer.
 
 3. **Text properties carry state; overlays are for special UI only.**
    Metadata (region type, prompt id, response linkage, tool-call
    payloads) is stored as text properties so it survives
    font-lock refontification. Overlays are reserved for transient,
    display-only features — the reasoning highlight + fold and the
-   clickable error pane — and never carry `read-only`.
+   clickable error pane.
 
 4. **Protocols live in their own files.** The provider protocol
    (`quoth-provider.el`), the OpenAI chat-completions + tool protocol
@@ -153,9 +153,9 @@ x-crush-id) and mapping the provider protocol onto the client's
    (`quoth-facade--append-delta`), which appends them in order and
    drives the reasoning overlay.
 3. A final `[DONE]` event, or the process exiting, runs the injected
-   completion (`quoth-facade--finalize`), which tags the response,
-   freezes it, and inserts a fresh input divider (`---`, framed by
-   blank lines). Stream errors
+   completion (`quoth-facade--finalize`), which tags the response and
+   inserts a fresh input divider (`---`, framed by blank lines). Stream
+   errors
    surface through `:on-error` into a clickable error pane.
 
 ### Session continuity
@@ -228,7 +228,7 @@ lines. The `exec_command` command (`ran`) is always fenced — single- or
 multi-line — so the command text is a proper code block. Other values
 fence only when multiline. The fence length is one
 backtick longer than the longest run of backticks in the enclosed text
-(`quoth--fence-str`), so nested fences never break the block. The tool block is read-only and
+(`quoth--fence-str`), so nested fences never break the block. The tool block is
 tagged `quoth-region-type 'tool'`; inside it, the raw result text
 (between the output fences) is tagged `quoth-region-type 'tool-output'`
 — a nested region that survives response re-tagging — and the block
@@ -268,19 +268,20 @@ provides the chat keybindings and hooks. Rendering, prompt tracking,
 and fontification are all implemented with text properties, markers,
 and markdown native font-lock instead of comint.
 
-### Append-Only and Read-Only Handling
+### Append-Only Handling
 
 The buffer only grows at point-max (streamed deltas, responses, tool
-blocks, and new input dividers are all inserted at EOF). Prompt text
-and completed exchanges are frozen read-only via **text properties**
-(`read-only` with `front-sticky`/`rear-nonsticky` boundaries), so the
-history can't be edited while the current input area stays fully
-editable. A font-lock guard
-(`font-lock-unfontify-region-function`) and a `post-command-hook`
-re-assert the boundaries after markdown-mode refontifies the buffer.
+blocks, and new input dividers are all inserted at EOF). Nothing is
+made read-only: the entire buffer — history, dividers, tool blocks,
+and the current input area alike — stays editable, and any edits are
+reflected in the next request because requests are rebuilt from the
+buffer's tagged regions at send time. A font-lock guard
+(`font-lock-unfontify-region-function`) preserves the reasoning fold's
+`keymap`/`quoth-fold-mark` properties across markdown-mode
+refontification.
 
 The **sanctioned overlay exceptions** (they carry faces and display
-properties, never `read-only`):
+properties):
 
 - **Reasoning (CoT) highlight + fold.** The reasoning span is
   highlighted by an overlay and, when longer than
@@ -289,10 +290,10 @@ properties, never `read-only`):
   overlay carrying `invisible` + a display-only `before-string` marker.
   No buffer text is inserted or deleted during toggle, keeping the
   buffer-as-database intact.
-- **Error pane.** Stream errors render as a clickable, read-only
-  overlay at point-max carrying `quoth-error-action`; `RET` dismisses
-  it. Both overlay kinds are tagged `quoth-overlay` so
-  `quoth-clear-buffer` sweeps them.
+- **Error pane.** Stream errors render as a clickable overlay at
+  point-max carrying `quoth-error-action`; `RET` dismisses it. Both
+  overlay kinds are tagged `quoth-overlay` so `quoth-clear-buffer`
+  sweeps them.
 
 ### Metadata
 
@@ -301,7 +302,7 @@ highlighting is left to markdown-mode's native font-lock.
 
 | Text Region                           | Property                                                                                               | Value                                                   |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| Input separator (`---` divider)       | `quoth-prompt-id` + `quoth-region-type 'separator` + `read-only`                                       | Frozen markdown divider above the input area            |
+| Input separator (`---` divider)       | `quoth-prompt-id` + `quoth-region-type 'separator`                                                     | Markdown divider above the input area                   |
 | User input (typed + inserted context) | `quoth-prompt-id` + `quoth-region-type 'user`                                                          | Editable input; inserted context appended as user input |
 | Tool blocks                           | `quoth-region-type 'tool` + `quoth-prompt-id` + `quoth-response-to` + `quoth-tool-call` (id/name/args) | Displayed tool call                                     |
 | Tool raw result                       | `quoth-region-type 'tool-output` (nested) + `quoth-prompt-id` + `quoth-response-to`                    | Raw result sent in history                              |

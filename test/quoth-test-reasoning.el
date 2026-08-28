@@ -112,8 +112,8 @@
                          (overlay-start ov) (overlay-end ov))
                         "think harder"))))))
 
-(ert-deftest quoth-test/hyper-content-delta-freezes-reasoning-overlay ()
-  "First content delta freezes the reasoning overlay."
+(ert-deftest quoth-test/hyper-content-delta-stops-reasoning-overlay ()
+  "First content delta stops the reasoning overlay."
   (quoth-test--with-reasoning-process
    (lambda (_proc)
      (quoth-facade--append-delta "think" 'reasoning)

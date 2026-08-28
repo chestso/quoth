@@ -284,7 +284,7 @@ def main():
             elif mode == "reasoning-tool":
                 # Reasoning followed by tool_calls with no content delta,
                 # then [DONE].  Exercises the reasoning-only overlay
-                # finalization path (no content delta to freeze it).
+                # finalization path (no content delta to stop it).
                 conn.sendall(sse_ok.encode())
                 conn.sendall(reasoning_frame("think step ").encode())
                 conn.sendall(reasoning_frame("hidden").encode())

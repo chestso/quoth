@@ -21,8 +21,8 @@ Before opening an issue:
 3. Include:
    - Emacs version (`emacs --version`)
    - `Quoth` version or the commit you're on
-   - Whether `markdown-mode` is installed (many read-only / font
-     rendering bugs only reproduce with it)
+   - Whether `markdown-mode` is installed (many font rendering bugs
+     only reproduce with it)
    - The provider in use (hyper, via the Charm Hyper gateway)
    - A minimal repro: steps, expected behavior, actual behavior
    - If a request failed, the request/response log (attach the
@@ -70,8 +70,8 @@ changes before you push.
   checkdoc-clean docstrings; no new byte-compiler warnings.
 - Keep functions short and prefer `let` bindings over deep nesting
   (the codebase's reading order is documented in ARCHITECTURE.md).
-- Respect the "no overlay faces / text-property read-only / markdown
-  validity" invariants in ARCHITECTURE.md — they are load-bearing.
+- Respect the "no overlay faces / markdown validity" invariants in
+  ARCHITECTURE.md — they are load-bearing.
 - Commit messages: concise, explain _why_; reference any related
   issue/PR.
 

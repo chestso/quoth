@@ -57,7 +57,7 @@
 ;;   M-x quoth-dump-buffer
 ;;     Dump every region in the buffer: its span, `quoth-region-type',
 ;;     `quoth-prompt-id', `quoth-response-to', `quoth-tool-call',
-;;     read-only flag, and a 40-character text sample, plus the buffer's
+;;     and a 40-character text sample, plus the buffer's
 ;;     prompt id and response-start.  Output goes to *quoth-dump*.
 ;;     Use this first when debugging history or tagging problems.
 ;;
@@ -80,7 +80,7 @@
 (defun quoth-dump-buffer ()
   "Dump the current quoth buffer's regions and text properties.
 Writes a region-by-region listing (type, prompt id, response-to,
-tool-call, read-only, and a text sample) plus key buffer-local state
+tool-call, and a text sample) plus key buffer-local state
 into the *quoth-dump* buffer.  For debugging region tagging and
 history replay."
   (interactive)
@@ -102,20 +102,18 @@ history replay."
                            (pid (get-text-property pos 'quoth-prompt-id))
                            (rt (get-text-property pos 'quoth-response-to))
                            (cc (get-text-property pos 'quoth-tool-call))
-                           (ro (get-text-property pos 'read-only))
                            (end (or (next-single-property-change pos 'quoth-region-type
                                                                  nil (point-max))
                                     (point-max)))
                            (txt (buffer-substring-no-properties
                                  pos (min end (+ pos 40)))))
-                      (princ (format "[%d..%d) type=%S pid=%S rt=%S cc=%S ro=%S txt=%S\n"
-                                     pos end type pid rt cc ro txt))
+                      (princ (format "[%d..%d) type=%S pid=%S rt=%S cc=%S txt=%S\n"
+                                     pos end type pid rt cc txt))
                       (setq pos (if (> end pos) end (1+ pos)))
                       (setq count (1+ count)))))))))
     (with-current-buffer (get-buffer-create "*quoth-dump*")
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert s)))
+      (erase-buffer)
+      (insert s))
     (display-buffer "*quoth-dump*")
     (message "Quoth buffer dumped to *quoth-dump*")))
 
@@ -147,9 +145,8 @@ be loaded."
                   (pp (quoth--history-turns id))))))
       (when s
         (with-current-buffer (get-buffer-create "*quoth-dump*")
-          (let ((inhibit-read-only t))
-            (erase-buffer)
-            (insert s)))
+          (erase-buffer)
+          (insert s))
         (display-buffer "*quoth-dump*")
         (message "History shown in *quoth-dump*")))))
 

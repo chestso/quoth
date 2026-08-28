@@ -120,9 +120,7 @@ Returns the completion action the facade injected."
                    (buffer-substring-no-properties
                     (overlay-start ov) (overlay-end ov))))
           (should (eq (overlay-get ov 'quoth-overlay) t))
-          (should (keymapp (overlay-get ov 'keymap)))
-          ;; The pane is read-only like the rest of the frozen history.
-          (should (get-text-property (overlay-start ov) 'read-only))))
+          (should (keymapp (overlay-get ov 'keymap)))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/clear-buffer-removes-error-pane ()

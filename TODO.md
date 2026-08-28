@@ -56,14 +56,13 @@ Quoth talks to providers through a provider abstraction (`quoth-provider-*` gene
 
 ### Phase 1b: Comint removal & text-mode migration (complete)
 
-The package originally derived from `comint-mode`; it no longer does. Commit `435d89b` removed the comint backend and subsequent commits finished the migration: the buffer's parent mode is now markdown/text-mode with a custom output filter, marker-based prompt tracking, text-property read-only, and the `quoth-chat-mode` minor mode.
+The package originally derived from `comint-mode`; it no longer does. Commit `435d89b` removed the comint backend and subsequent commits finished the migration: the buffer's parent mode is now markdown/text-mode with a custom output filter, marker-based prompt tracking, and the `quoth-chat-mode` minor mode.
 
 - [x] `quoth-chat-mode` minor mode (keybindings, hooks) on top of a markdown-mode/text-mode parent
 - [x] Marker-based prompt tracking (`quoth--prompt-start-marker`, `quoth--input-start-marker`) replacing comint prompt fields
 - [x] Custom output filter (`quoth--openai-curl-filter`) inserting at the process mark
 - [x] Custom input ring (M-p/M-n) persisted to `~/.emacs.d/quoth-history`
-- [x] Read-only prompt and history via text properties (`rear-nonsticky` boundaries)
-- [x] Font-lock guard and post-command re-assertion so markdown refontification cannot break input editability
+- [x] Font-lock guard so markdown refontification preserves reasoning fold properties
 - [x] Debug logging to `*quoth-debug*` buffer
 - [x] Removal-assertion tests (no `(require 'comint)`, no `quoth-mode`, no `quoth--build-command`, no separator region type)
 
@@ -113,7 +112,7 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 - [x] `x-session-id` / `x-session-affinity` headers for server-side prefix/token caching ([HYPER-API.md §3.1](HYPER-API.md)), via a dedicated pure-Elisp XXH3-64 (`quoth-xxh3.el`, seed 0, big-endian, 16-hex); per-buffer UUID (`quoth--session-uuid`), rotated by `quoth-clear-buffer`, gate `quoth-hyper-session-cache-p`
 - [x] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages. Two tools: `exec_command` and `write_stdin`
   - [x] Tool blocks rendered as markdown in the buffer (bold 🔧 tool name, inline parameter summary, fenced code block for output)
-  - [x] Tool blocks are read-only, tagged `quoth-region-type 'tool'`, and carry `quoth-tool-call` for wire resume; the raw result span inside the block is tagged `quoth-region-type 'tool-output'` so history sends the raw result text (never the rendered toolbar)
+  - [x] Tool blocks are tagged `quoth-region-type 'tool'` and carry `quoth-tool-call` for wire resume; the raw result span inside the block is tagged `quoth-region-type 'tool-output'` so history sends the raw result text (never the rendered toolbar)
   - [x] Tool loop: up to `quoth-tool-loop-max` (8) consecutive rounds, each round sends the assistant message with `tool_calls` plus `role: "tool"` results
   - [x] Tool output fenced code blocks escape nested fences via longest-backtick-run detection
   - [x] Tools run without confirmation (yolo)

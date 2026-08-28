@@ -363,9 +363,8 @@ The blank line appears before the header so the block stays valid markdown."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (let ((inhibit-read-only t))
-            (goto-char (point-max))
-            (insert "what it does"))
+          (goto-char (point-max))
+          (insert "what it does")
           (quoth--tool-block-insert
            (list :name "exec_command" :id "call_1"
                  :args-json "{\"cmd\":\"ls\"}"
@@ -384,9 +383,8 @@ ending in a blank line."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (let ((inhibit-read-only t))
-            (goto-char (point-max))
-            (insert "what it does\n\n"))
+          (goto-char (point-max))
+          (insert "what it does\n\n")
           (quoth--tool-block-insert
            (list :name "exec_command" :id "call_1"
                  :args-json "{\"cmd\":\"ls\"}"
@@ -555,8 +553,8 @@ backtick run in the command text, even when the cmd is a single line."
             (should (string-match-p "yield 1s" content))))
       (quoth-test--cleanup))))
 
-(ert-deftest quoth-test/tool-block-read-only-and-tagged ()
-  "Tool blocks should be read-only and tagged `quoth-region-type' tool."
+(ert-deftest quoth-test/tool-block-tagged ()
+  "Tool blocks should be tagged `quoth-region-type' tool."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -569,9 +567,7 @@ backtick run in the command text, even when the cmd is a single line."
           (goto-char (point-min))
           (search-forward "🔧 exec_command")
           (goto-char (match-beginning 0))
-          (should (eq (get-text-property (point) 'quoth-region-type) 'tool))
-          (should (get-text-property (point) 'read-only))
-          (should-error (insert "x") :type 'text-read-only))
+          (should (eq (get-text-property (point) 'quoth-region-type) 'tool)))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/tool-block-minimal-write-stdin ()

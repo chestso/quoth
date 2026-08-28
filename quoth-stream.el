@@ -31,7 +31,7 @@
 
 ;; The facade stream protocol for quoth.el: buffer-local stream state
 ;; (idle/active/done/error), the progress query that exposes the
-;; application count, and the clickable read-only error pane rendered on
+;; application count, and the clickable error pane rendered on
 ;; stream failure.  The facade (quoth.el) owns the state transitions;
 ;; this file just provides the protocol and the pane rendering, keeping
 ;; the core file free of stream bookkeeping.
@@ -95,12 +95,11 @@ as the runnable-pipeline/inflight/blocked count for UI consumers."
 
 (defun quoth-facade--record-error (message)
   "Record an error MESSAGE on the facade stream and render the error pane.
-Marks the stream `error' and inserts a clickable, read-only error pane
-overlay at point-max carrying `quoth-error-action' (so
-`quoth-clear-buffer' sweeps it)."
+Marks the stream `error' and inserts a clickable error pane overlay at
+point-max carrying `quoth-error-action' (so `quoth-clear-buffer' sweeps
+it)."
   (quoth-facade--stream-transition 'error nil message)
-  (let ((inhibit-read-only t)
-        (pos (point-max)))
+  (let ((pos (point-max)))
     (save-excursion
       (goto-char pos)
       (newline)
@@ -113,8 +112,7 @@ overlay at point-max carrying `quoth-error-action' (so
           (overlay-put ov 'keymap (let ((map (make-sparse-keymap)))
                                     (define-key map (kbd "RET")
                                       #'quoth--dismiss-error-pane)
-                                    map)))
-        (add-text-properties start (point) '(read-only t))))))
+                                    map)))))))
 
 (defun quoth--dismiss-error-pane ()
   "Dismiss the error pane overlay at point (or the most recent one)."

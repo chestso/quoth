@@ -1320,7 +1320,7 @@ The SSE state carries them and the parser reports them."
 The reasoning overlay's rear-advance must not eat the input separator
 inserted at finalization.  This reproduces the bug where a reasoning-only
 stream (reasoning + tool_calls, no content delta) leaves the overlay
-un-frozen, so its advancing end marker hides the next prompt under
+un-stopped, so its advancing end marker hides the next prompt under
 `invisible t'."
   (let ((default-directory quoth-test--root))
     (unwind-protect

@@ -27,7 +27,7 @@
 ;;; SOFTWARE.
 
 ;;; Commentary:
-;;; Buffer lifecycle, prompt/response regions, read-only text properties, input ring.
+;;; Buffer lifecycle, prompt/response regions, text properties, input ring.
 
 ;;; Code:
 
@@ -130,7 +130,7 @@ a single `content' delta.  Runs in the quoth buffer."
 
 ;;; 3. Input separator line management
 
-;;; A frozen markdown horizontal divider (`---`) replaces the old
+;;; A markdown horizontal divider (`---`) replaces the old
 ;;; `quoth> ' prompt marker.  `quoth--prompt-start-marker' sits at the
 ;;; divider's start; `quoth--input-start-marker' sits right after the
 ;;; divider's trailing blank line, where the editable input region begins.
@@ -147,23 +147,12 @@ a single `content' delta.  Runs in the quoth buffer."
           (should-not (save-excursion (search-forward "quoth> " nil t)))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/input-separator-is-frozen ()
-  "The divider line is read-only previous content: typing into it errors."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (get-char-property (point) 'read-only))
-          (should-error (insert-and-inherit "X") :type 'text-read-only)))
-    (quoth-test--cleanup)))
-
 (ert-deftest quoth-test/input-separator-edge-is-editable ()
   "The input area right after the divider's blank line stays editable."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "hello")))
     (quoth-test--cleanup)))
 
@@ -541,8 +530,7 @@ This is the case even though it starts at the input marker after the separator."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (let ((inhibit-read-only t))
-            (insert "attach-region-text"))
+          (insert "attach-region-text")
           (put-text-property (- (point) 18) (point)
                              'quoth-region-type 'user)
           (put-text-property (- (point) 18) (point)
@@ -557,8 +545,7 @@ This is the case even though it starts at the input marker after the separator."
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((start (point-max)))
-            (let ((inhibit-read-only t)
-                  (inhibit-modification-hooks t))
+            (let ((inhibit-modification-hooks t))
               (insert "response-text")
               (put-text-property start (point)
                                  'quoth-region-type 'response))
@@ -573,8 +560,7 @@ It is not the prompt fallback, even though it carries `quoth-prompt-id'."
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (let ((start (point-max)))
-            (let ((inhibit-read-only t)
-                  (inhibit-modification-hooks t))
+            (let ((inhibit-modification-hooks t))
               (insert "raw-output-text")
               (put-text-property start (point)
                                  'quoth-region-type 'tool-output)
@@ -937,35 +923,8 @@ The `quoth--insert-input-separator' function replaced
 `quoth--insert-prompt'."
   (should (fboundp 'quoth--insert-input-separator)))
 
-;;; 65. Sentinel freezes previous response read-only
-
-(ert-deftest quoth-test/facade-freezes-previous-response ()
-  "The facade should freeze the previous response read-only.
-After the facade finalizes and inserts the next prompt, the prior
-response becomes read-only previous content, blocking edits."
-  (let ((default-directory quoth-test--root))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (goto-char (point-max))
-            (insert "test")
-            (goto-char (point-max))
-            (newline)
-            (setq-local quoth--response-start (point-marker))
-            (quoth-test--simulate-facade-response "response text")
-            ;; Response text becomes frozen as previous content.
-            (goto-char (point-min))
-            (should (search-forward "response text" nil t))
-            (should (get-char-property (match-beginning 0) 'read-only))
-            (should (get-text-property (match-beginning 0) 'read-only))
-            (goto-char (match-beginning 0))
-            (should-error (insert-and-inherit "X") :type 'text-read-only)))
-      (quoth-test--cleanup))))
-
-;;; 67. quoth--append-as-user-input appends after the input marker
-
 (defun quoth-test--input-area-text ()
-  "Return the editable input area text to the line end.
+  "Return the input area text to the line end.
 The text starts at `quoth--input-start-marker' and runs to the line end."
   (buffer-substring-no-properties
    (marker-position quoth--input-start-marker)
@@ -1407,16 +1366,6 @@ There is no separate `quoth-mode' major mode."
           (should-not (derived-mode-p 'comint-mode))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/prompt-is-read-only ()
-  "The input separator text should be read-only (via text property)."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (search-forward "---" nil t))
-          (should (get-char-property (1- (point)) 'read-only))))
-    (quoth-test--cleanup)))
-
 (ert-deftest quoth-test/clear-buffer-prompt-has-quoth-properties ()
   "After quoth-clear-buffer, the new separator should have quoth properties."
   (unwind-protect
@@ -1425,7 +1374,6 @@ There is no separate `quoth-mode' major mode."
           (call-interactively #'quoth-clear-buffer)
           (goto-char (point-min))
           (should (search-forward "---" nil t))
-          (should (get-char-property (match-beginning 0) 'read-only))
           (should-not (get-text-property (match-beginning 0) 'field))))
     (quoth-test--cleanup)))
 
@@ -1443,76 +1391,15 @@ There is no separate `quoth-mode' major mode."
           (should (derived-mode-p quoth--parent-mode))))
     (quoth-test--cleanup)))
 
-;;; Text-property-based read-only prompt
-
 (ert-deftest quoth-test/can-type-after-prompt ()
-  "User should be able to type after the prompt without text-read-only error."
+  "User should be able to type after the prompt."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "hello")
           (goto-char (point-min))
           (should (search-forward "hello" nil t))))
-    (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/prompt-is-read-only-via-text-property ()
-  "The input separator text should be read-only via a text property.
-Backspacing into the separator should be blocked."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (search-forward "---" nil t))
-          (goto-char (match-beginning 0))
-          (should (get-text-property (point) 'read-only))
-          (should (get-char-property (point) 'read-only))))
-    (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/cannot-type-into-prompt ()
-  "Typing into the read-only input separator should signal text-read-only."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (search-forward "---" nil t))
-          (goto-char (match-beginning 0))
-          (should-error (insert-and-inherit "X") :type 'text-read-only)))
-    (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/previous-content-is-read-only ()
-  "After a response cycle, previous content should be read-only via text property."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test")
-          (goto-char (point-max))
-          (newline)
-          (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response")
-          (goto-char (point-min))
-          (should (search-forward "response" nil t))
-          (should (get-text-property (match-beginning 0) 'read-only))
-          (should (get-char-property (match-beginning 0) 'read-only))))
-    (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/cannot-type-into-previous-response ()
-  "Typing into a frozen previous response should signal text-read-only."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test")
-          (goto-char (point-max))
-          (newline)
-          (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response")
-          (goto-char (point-min))
-          (should (search-forward "response" nil t))
-          (goto-char (match-beginning 0))
-          (should-error (insert-and-inherit "X") :type 'text-read-only)))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/input-area-is-editable ()
@@ -1527,34 +1414,9 @@ Backspacing into the separator should be blocked."
           (setq-local quoth--response-start (point-marker))
           (quoth-test--simulate-facade-response "response")
           (goto-char (point-max))
-          (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "new input")
           (goto-char (point-min))
           (should (search-forward "new input" nil t))))
-    (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/read-only-via-text-property-tagged ()
-  "Read-only should be enforced via a text property, not an overlay."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          ;; The prompt carries a read-only text property.
-          (should (get-text-property 1 'read-only))
-          ;; No overlay should be responsible for read-only.
-          (should-not (cl-some (lambda (ov) (overlay-get ov 'read-only))
-                               (overlays-in (point-min) (point-max))))))
-    (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/inhibit-read-only-allows-programmatic-insert ()
-  "Programmatic insertion bypasses the freeze with `inhibit-read-only'."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (let ((inhibit-read-only t))
-            (goto-char (point-min))
-            (insert "PROGRAMMATIC"))
-          (goto-char (point-min))
-          (should (search-forward "PROGRAMMATIC" nil t))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/clear-buffer-keeps-prompt-readable-input ()
@@ -1564,92 +1426,10 @@ Backspacing into the separator should be blocked."
         (with-current-buffer buf
           (call-interactively #'quoth-clear-buffer)
           (goto-char (point-max))
-          (should-not (get-char-property (point) 'read-only))
           (insert-and-inherit "hello")
           (goto-char (point-min))
           (should (search-forward "hello" nil t))))
     (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/read-only-survives-font-lock ()
-  "Prompt read-only and input editability should survive font-lock refontification."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "test")
-          (goto-char (point-max))
-          (newline)
-          (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response")
-          (font-lock-ensure)
-          (goto-char (point-min))
-          (should (search-forward "---" nil t))
-          (should (get-char-property (match-beginning 0) 'read-only))
-          (goto-char (match-beginning 0))
-          (should-error (insert-and-inherit "X") :type 'text-read-only)
-          (goto-char (point-max))
-          (should-not (get-char-property (point) 'read-only))))
-    (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/read-only-survives-markdown-font-lock ()
-  "Read-only should survive markdown font-lock when markdown-mode is available.
-This mirrors the user session where markdown fontification could previously
-fail to enforce read-only."
-  (skip-unless (require 'markdown-mode nil t))
-  (let ((default-directory quoth-test--root))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (goto-char (point-max))
-            (insert "test")
-            (goto-char (point-max))
-            (newline)
-            (setq-local quoth--response-start (point-marker))
-            (quoth-test--simulate-facade-response "# heading")
-            (font-lock-ensure)
-            (goto-char (point-min))
-            (should (search-forward "---" nil t))
-            (goto-char (match-beginning 0))
-            (should (get-text-property (point) 'read-only))
-            (should-error (insert-and-inherit "X") :type 'text-read-only)
-            (goto-char (point-max))
-            (should-not (get-char-property (point) 'read-only))
-            ;; Crash regression: after markdown fontify, typing in the
-            ;; input area must still work (font-lock must not leak the
-            ;; prompt's read-only into new input). Insert twice.
-            (insert-and-inherit "a")
-            (insert-and-inherit "b")
-            (goto-char (point-min))
-            (should (search-forward "ab" nil t))))
-      (quoth-test--cleanup))))
-
-(ert-deftest quoth-test/type-at-fresh-prompt-after-markdown-font-lock ()
-  "Typing at a fresh prompt must work after markdown refontification.
-Regression: when markdown-mode fontifies the buffer, it strips
-`rear-nonsticky' from the read-only prompt text.  Without it, text typed
-right after the prompt inherits `read-only' and Emacs signals
-\"Text is read-only\" on the very first insertion."
-  (skip-unless (require 'markdown-mode nil t))
-  (let ((default-directory quoth-test--root))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            ;; Fontify without any prior input, as jit-lock does during
-            ;; redisplay.  This strips rear-nonsticky from the prompt.
-            (font-lock-ensure)
-            (goto-char (point-max))
-            (should-not (get-char-property (point) 'read-only))
-            (insert-and-inherit "hello")
-            (insert-and-inherit " world")
-            (goto-char (point-min))
-            (should (search-forward "hello world" nil t))
-            ;; The prompt itself must still be read-only and frozen.
-            (goto-char (point-min))
-            (should (get-char-property (point) 'read-only))
-            (should-error (insert-and-inherit "X") :type 'text-read-only)))
-      (quoth-test--cleanup))))
-
-;;; 90. Per-project buffer naming
 
 (defun quoth-test--cleanup-registry ()
   "Purge `quoth--root-buffer-alist' and kill the buffers it names."
@@ -1780,11 +1560,10 @@ separator.  Returns the completed prompt's ID."
       (insert reply-text)
       (quoth--tag-response-region response-start (point) prompt-id))
     (goto-char (point-max))
-    (let ((inhibit-read-only t))
-      ;; Anticipate the newline the separator insertion would leave; it
-      ;; must not become part of the user turn.
-      (when (eq (char-before (point)) ?\n)
-        (delete-region (1- (point)) (point))))
+    ;; Anticipate the newline the separator insertion would leave; it
+    ;; must not become part of the user turn.
+    (when (eq (char-before (point)) ?\n)
+      (delete-region (1- (point)) (point)))
     (setq-local quoth--prompt-id (quoth--generate-id))
     (quoth--insert-input-separator)
     prompt-id))
@@ -1797,7 +1576,7 @@ separator.  Returns the completed prompt's ID."
           (should (null (quoth--history-turns quoth--prompt-id)))))
     (quoth-test--cleanup)))
 
-;;; Turn divider: a frozen `---' between the user turn and its response.
+;;; Turn divider: a `---' between the user turn and its response.
 
 (defun quoth-test--seed-user-separator (prompt-text reasoning-text answer-text)
   "Seed a turn with a user separator, as `quoth-send-input' does.
@@ -1821,18 +1600,16 @@ completed prompt's ID."
             (quoth-facade--finalize))
         (delete-process proc)))
     (goto-char (point-max))
-    (let ((inhibit-read-only t))
-      (when (eq (char-before (point)) ?\n)
-        (delete-region (1- (point)) (point))))
+    (when (eq (char-before (point)) ?\n)
+      (delete-region (1- (point)) (point)))
     (setq-local quoth--prompt-id (quoth--generate-id))
     (quoth--insert-input-separator)
     prompt-id))
 
 (ert-deftest quoth-test/user-separator-inserted-before-response ()
   "Test that the user separator is inserted before the response.
-The `quoth--insert-user-separator' function places a frozen, read-only
-`---' between the user text and the streamed response, tagged
-`user-separator'."
+The `quoth--insert-user-separator' function places a `---' between the
+user text and the streamed response, tagged `user-separator'."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1851,7 +1628,6 @@ The `quoth--insert-user-separator' function places a frozen, read-only
                                                              nil (point-max))
                                 (point-max))))
               (should sep)
-              (should (get-text-property sep 'read-only))
               (should (string= (buffer-substring-no-properties (1- sep) sep-end)
                                "\n---\n\n"))
               ;; The blank line below the divider is part of the separator.
@@ -1919,15 +1695,13 @@ machinery tags them."
       ;; The answer follows the tool block at point-max (tool-block-insert
       ;; now leaves point at EOF).
       (goto-char (point-max))
-      (let ((inhibit-read-only t))
-        (insert answer-text))
+      (insert answer-text)
       (quoth--tag-response-region response-start (point) prompt-id))
     (goto-char (point-max))
-    (let ((inhibit-read-only t))
-      ;; Anticipate the newline the separator insertion would leave; it
-      ;; must not become part of the user turn.
-      (when (eq (char-before (point)) ?\n)
-        (delete-region (1- (point)) (point))))
+    ;; Anticipate the newline the separator insertion would leave; it
+    ;; must not become part of the user turn.
+    (when (eq (char-before (point)) ?\n)
+      (delete-region (1- (point)) (point)))
     (setq-local quoth--prompt-id (quoth--generate-id))
     (quoth--insert-input-separator)
     prompt-id))
@@ -2048,8 +1822,7 @@ The message has `tool_call_id: unknown' so legacy buffers still replay."
           (goto-char (point-max))
           (newline)
           (let ((response-start (point)))
-            (let ((inhibit-read-only t)
-                  (inhibit-modification-hooks t))
+            (let ((inhibit-modification-hooks t))
               (insert "**tool block**\nraw")
               (put-text-property response-start (point)
                                  'quoth-region-type 'tool)
@@ -2058,8 +1831,7 @@ The message has `tool_call_id: unknown' so legacy buffers still replay."
             (quoth--tag-response-region response-start (point) quoth--prompt-id))
           (goto-char (point-max))
           (newline)
-          (let ((inhibit-read-only t))
-            (delete-region (1- (point)) (point)))
+          (delete-region (1- (point)) (point))
           (setq-local quoth--prompt-id (quoth--generate-id))
           (quoth--insert-input-separator)
           (let* ((msgs (quoth--history-turns quoth--prompt-id))
@@ -2117,7 +1889,7 @@ The response region shares the `quoth-prompt-id' tag."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/user-turn-text-excludes-separator ()
-  "Test that the user turn text excludes the frozen separator line.
+  "Test that the user turn text excludes the separator line.
 `quoth--user-turn-text' returns the typed input only."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
@@ -2159,16 +1931,14 @@ over the CoT, response for the answer).  Returns the prompt ID."
       (insert reasoning-text "\n\n" answer-text)
       ;; Tag the whole response, then re-tag the CoT span as reasoning.
       (quoth--tag-response-region response-start (point) prompt-id)
-      (let ((inhibit-read-only t)
-            (inhibit-modification-hooks t)
+      (let ((inhibit-modification-hooks t)
             (rs (+ response-start (length reasoning-text))))
         (put-text-property response-start rs 'quoth-region-type 'reasoning)))
     (goto-char (point-max))
-    (let ((inhibit-read-only t))
-      ;; Anticipate the newline the separator insertion would leave; it
-      ;; must not become part of the user turn.
-      (when (eq (char-before (point)) ?\n)
-        (delete-region (1- (point)) (point))))
+    ;; Anticipate the newline the separator insertion would leave; it
+    ;; must not become part of the user turn.
+    (when (eq (char-before (point)) ?\n)
+      (delete-region (1- (point)) (point)))
     (setq-local quoth--prompt-id (quoth--generate-id))
     (quoth--insert-input-separator)
     prompt-id))
@@ -2222,9 +1992,8 @@ R2-CONTENT.  Returns the completed prompt's ID."
                                   (point-max) prompt-id)
       (quoth--reasoning-reset))
     (goto-char (point-max))
-    (let ((inhibit-read-only t))
-      (when (eq (char-before (point)) ?\n)
-        (delete-region (1- (point)) (point))))
+    (when (eq (char-before (point)) ?\n)
+      (delete-region (1- (point)) (point)))
     (setq-local quoth--prompt-id (quoth--generate-id))
     (quoth--insert-input-separator)
     prompt-id))
@@ -2409,8 +2178,7 @@ text."
               (should (equal (quoth-test--msg-content (car msgs)) "first"))
               (should (equal (quoth-test--msg-content (cadr msgs)) "reply")))
             ;; Editing a completed region is reflected immediately.
-            (let ((inhibit-read-only t)
-                  (rs (text-property-any (point-min) (point-max)
+            (let ((rs (text-property-any (point-min) (point-max)
                                          'quoth-response-to id1)))
               (delete-region rs (1+ rs)))
             (should-not (equal (quoth--history-turns quoth--prompt-id)
@@ -2482,8 +2250,8 @@ text."
 
 (ert-deftest quoth-test/send-input-retags-stale-user-text ()
   "quoth-send-input must tag the input region as 'user even when
-after-change didn't fire or text inherited stale tags (e.g. yank
-into read-only, undo).  The user's multi-line description was
+after-change didn't fire or text inherited stale tags (e.g. yank,
+undo).  The user's multi-line description was
 silently lost from history because it kept a stale 'separator
 quoth-region-type inherited from the divider."
   (unwind-protect
@@ -2506,12 +2274,10 @@ quoth-region-type inherited from the divider."
           (setq second-id quoth--prompt-id)
           ;; Simulate stale tags: insert multi-line text and corrupt
           ;; its region-type to 'separator (as would happen if text
-          ;; inherited properties from a yank-undo into the read-only
-          ;; separator).
+          ;; inherited properties from a yank-undo into the separator).
           (goto-char (point-max))
           (insert "line one\nline two\nline three")
           (let ((input-start (marker-position quoth--input-start-marker))
-                (inhibit-read-only t)
                 (inhibit-modification-hooks t))
             (put-text-property input-start (point-max)
                                'quoth-region-type 'separator))

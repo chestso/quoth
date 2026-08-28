@@ -140,8 +140,8 @@ and `quoth-searxng.el`. The chat buffer behaves identically
 whichever provider is active.
 
 Details — how requests are composed and streamed, session continuity,
-tool-call replay, buffer metadata and read-only internals, and a
-hacking guide — live in [ARCHITECTURE.md](ARCHITECTURE.md).
+tool-call replay, buffer metadata internals, and a hacking guide —
+live in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Usage
 
@@ -191,11 +191,11 @@ inserted, before you type anything. This ID tracks the user input
 (typed text and inserted context) that belongs to that prompt, and all
 metadata is stored as text properties on the buffer content.
 
-The chat buffer shows a frozen markdown horizontal divider (`---`,
-framed by blank lines) above the editable input area; everything below
-it is the user's turn, tagged `quoth-region-type 'user`. A second frozen
-divider closes the user turn before the response starts. Dividers are
-tagged `separator` / `user-separator` and never reach the model.
+The chat buffer shows a markdown horizontal divider (`---`, framed by
+blank lines) above the input area; everything below it is the user's
+turn, tagged `quoth-region-type 'user`. A second divider closes the
+user turn before the response starts. Dividers are tagged `separator` /
+`user-separator` and never reach the model.
 
 ### Inserting context
 
