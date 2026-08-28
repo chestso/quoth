@@ -503,26 +503,25 @@ so point there resolves to `separator', not `user'."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/user-input-tagged-as-user-region ()
-  "Text typed in the input area carries `quoth-region-type' `user'."
+  "Sent user input is tagged `quoth-region-type' `user' at send time."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "hello world")
-          (should (eq (get-text-property (- (point) 1) 'quoth-region-type) 'user))))
-    (quoth-test--cleanup)))
-
-(ert-deftest quoth-test/region-label-in-input-without-prompt-id ()
-  "Test that typed input carries the user region type.
-This is the case even though it starts at the input marker after the separator."
-  (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
-        (with-current-buffer buf
-          (goto-char (point-max))
-          (insert "hello world")
-          (should (eq (get-text-property (- (point) 1) 'quoth-region-type) 'user))
-          (goto-char (1- (point)))
-          (should (string= (quoth--region-label-at-point) "user"))))
+          ;; Before send: untagged.
+          (should-not (eq (get-text-property (- (point) 1) 'quoth-region-type) 'user))
+          (let ((fake-proc (quoth-test--live-pipe-proc)))
+            (set-process-buffer fake-proc (current-buffer))
+            (cl-letf (((symbol-function #'make-process)
+                       (lambda (&rest _) fake-proc)))
+              (quoth-send-input))
+            (when (process-live-p fake-proc)
+              (delete-process fake-proc)))
+          ;; After send: tagged `user'.
+          (goto-char (point-min))
+          (should (search-forward "hello world" nil t))
+          (should (eq (get-text-property (match-beginning 0) 'quoth-region-type) 'user))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/region-label-user ()
@@ -618,7 +617,9 @@ Both the current model and the region type at point appear."
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (goto-char (point-max))
-            (insert "typed")
+            (let ((start (point)))
+              (insert "typed")
+              (put-text-property start (point) 'quoth-region-type 'user))
             (goto-char (1- (point)))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
@@ -653,19 +654,33 @@ Both the current model and the region type at point appear."
             (should (string= prompt-id quoth--prompt-id)))))
     (quoth-test--cleanup)))
 
-;;; 20. User input gets prompt-id property
+;;; 20. User input gets prompt-id property at send time
 
 (ert-deftest quoth-test/user-input-gets-prompt-id-property ()
-  "Text typed after the prompt should have quoth-prompt-id property."
+  "Sent user input is tagged with quoth-prompt-id at send time."
   (unwind-protect
-      (let ((buf (quoth-test--fresh-buffer)))
+      (let ((buf (quoth-test--fresh-buffer))
+            (sent-id nil))
         (with-current-buffer buf
+          (setq sent-id quoth--prompt-id)
           (goto-char (point-max))
           (insert "hello world")
-          ;; Check that the inserted text has the property
-          (let ((prompt-id (get-text-property (- (point) 5) 'quoth-prompt-id)))
+          ;; Before send: untagged.
+          (should-not (get-text-property (- (point) 5) 'quoth-prompt-id))
+          (let ((fake-proc (quoth-test--live-pipe-proc)))
+            (set-process-buffer fake-proc (current-buffer))
+            (cl-letf (((symbol-function #'make-process)
+                       (lambda (&rest _) fake-proc)))
+              (quoth-send-input))
+            (when (process-live-p fake-proc)
+              (delete-process fake-proc))))
+        ;; After send: the input region (now history) carries the prompt-id.
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (search-forward "hello world" nil t))
+          (let ((prompt-id (get-text-property (match-beginning 0) 'quoth-prompt-id)))
             (should prompt-id)
-            (should (string= prompt-id quoth--prompt-id)))))
+            (should (string= prompt-id sent-id)))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/response-has-response-to-property ()
@@ -946,20 +961,19 @@ The text starts at `quoth--input-start-marker' and runs to the line end."
                         'user))))
       (quoth-test--cleanup))))
 
-;;; 69. quoth--after-change uses quoth--prompt-start-marker
+;;; 69. Typed input is NOT tagged live (no after-change hook)
 
-(ert-deftest quoth-test/after-change-tags-without-prompt-start ()
-  "Quoth--after-change should tag input with prompt-id using quoth--prompt-start-marker."
+(ert-deftest quoth-test/typed-input-not-tagged-live ()
+  "Text typed at the prompt carries no region-type until send time.
+There is no after-change hook; tagging happens in `quoth-send-input'."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          ;; Type text after the prompt
           (goto-char (point-max))
           (insert "typed text")
-          ;; Check that the inserted text has the prompt-id property
-          (let ((prompt-id (get-text-property (- (point) 5) 'quoth-prompt-id)))
-            (should prompt-id)
-            (should (string= prompt-id quoth--prompt-id)))))
+          ;; No region-type, no prompt-id until send.
+          (should-not (get-text-property (- (point) 5) 'quoth-region-type))
+          (should-not (get-text-property (- (point) 5) 'quoth-prompt-id))))
     (quoth-test--cleanup)))
 
 ;;; Parallel markers
@@ -1533,9 +1547,10 @@ There is no separate `quoth-mode' major mode."
 ;;; markers, user input, responses, reasoning) and produces a list of
 ;;; message alists (not (ROLE . TEXT) conses) that the hyper provider
 ;;; re-sends.  Role tags (`quoth-role') are applied by
-;;; `quoth--insert-input-separator' / `quoth--after-change' (user) and
-;;; `quoth--tag-response-region' (assistant/reasoning); the builder
-;;; groups the buffer by prompt so the pending prompt is never included.
+;;; `quoth--insert-input-separator' (separator) / `quoth-send-input'
+;;; (user, at send time) and `quoth--tag-response-region'
+;;; (assistant/reasoning); the builder groups the buffer by prompt so
+;;; the pending prompt is never included.
 
 (defun quoth-test--msg-role (msg)
   "Return the `role' of message alist MSG."
@@ -1547,13 +1562,16 @@ There is no separate `quoth-mode' major mode."
 
 (defun quoth-test--seed-exchange (prompt-text reply-text)
   "Seed a completed exchange in the current quoth buffer.
-Types PROMPT-TEXT (which lands in the `user' region via
-`quoth--after-change') and simulates a completed exchange: response
-region REPLY-TEXT tagged as the turn's answer, then a fresh input
-separator.  Returns the completed prompt's ID."
+Types PROMPT-TEXT and tags it `user' explicitly (no after-change hook),
+then simulates a completed exchange: response region REPLY-TEXT tagged
+as the turn's answer, then a fresh input separator.  Returns the
+completed prompt's ID."
   (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
-    (insert prompt-text)
+    (let ((start (point)))
+      (insert prompt-text)
+      (put-text-property start (point) 'quoth-region-type 'user)
+      (put-text-property start (point) 'quoth-prompt-id prompt-id))
     (goto-char (point-max))
     (newline)
     (let ((response-start (point)))
@@ -1580,12 +1598,16 @@ separator.  Returns the completed prompt's ID."
 
 (defun quoth-test--seed-user-separator (prompt-text reasoning-text answer-text)
   "Seed a turn with a user separator, as `quoth-send-input' does.
-Types PROMPT-TEXT, inserts the separator via `quoth--insert-user-separator',
-then streams REASONING-TEXT and ANSWER-TEXT and finalizes.  Returns the
-completed prompt's ID."
+Types PROMPT-TEXT and tags it `user' explicitly (no after-change hook),
+inserts the separator via `quoth--insert-user-separator', then streams
+REASONING-TEXT and ANSWER-TEXT and finalizes.  Returns the completed
+prompt's ID."
   (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
-    (insert prompt-text)
+    (let ((start (point)))
+      (insert prompt-text)
+      (put-text-property start (point) 'quoth-region-type 'user)
+      (put-text-property start (point) 'quoth-prompt-id prompt-id))
     (goto-char (line-end-position))
     (newline)
     (quoth--insert-user-separator)
@@ -1680,13 +1702,17 @@ It is being sent when the history is extracted."
 ;;; Helper: seed an exchange that carries a tool call.
 (defun quoth-test--seed-tool-exchange (prompt-text answer-text tool-calls)
   "Seed an exchange and return the completed prompt's ID.
-PROMPT-TEXT is the user input, ANSWER-TEXT is the assistant answer, and
+PROMPT-TEXT is the user input (tagged `user' explicitly, no
+after-change hook), ANSWER-TEXT is the assistant answer, and
 TOOL-CALLS is a list of plists (:name :id :args-json :result :exit)
 rendered as tool blocks before the answer, tagged the way the streaming
 machinery tags them."
   (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
-    (insert prompt-text)
+    (let ((start (point)))
+      (insert prompt-text)
+      (put-text-property start (point) 'quoth-region-type 'user)
+      (put-text-property start (point) 'quoth-prompt-id prompt-id))
     (goto-char (point-max))
     (newline)
     (let ((response-start (point)))
@@ -1818,7 +1844,10 @@ The message has `tool_call_id: unknown' so legacy buffers still replay."
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (insert "run ls")
+          (let ((start (point)))
+            (insert "run ls")
+            (put-text-property start (point) 'quoth-region-type 'user)
+            (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id))
           (goto-char (point-max))
           (newline)
           (let ((response-start (point)))
@@ -1895,7 +1924,10 @@ The response region shares the `quoth-prompt-id' tag."
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
-          (insert "hello world")
+          (let ((start (point)))
+            (insert "hello world")
+            (put-text-property start (point) 'quoth-region-type 'user)
+            (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id))
           (should (equal (quoth--user-turn-text quoth--prompt-id)
                          "hello world"))))
     (quoth-test--cleanup)))
@@ -1909,7 +1941,10 @@ so extraction reads it back as part of the turn."
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (goto-char (point-max))
-            (insert "hello")
+            (let ((start (point)))
+              (insert "hello")
+              (put-text-property start (point) 'quoth-region-type 'user)
+              (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id))
             (quoth--append-as-user-input buf "```emacs-lisp\n(code)\n```")
             (let ((text (quoth--user-turn-text quoth--prompt-id)))
               (should (string-match-p "hello" text))
@@ -1919,12 +1954,16 @@ so extraction reads it back as part of the turn."
 ;; Helper: seed an exchange whose response carries a reasoning span.
 (defun quoth-test--seed-reasoning-exchange (prompt-text reasoning-text answer-text)
   "Seed an exchange whose response carries a reasoning span.
-Types PROMPT-TEXT; streams REASONING-TEXT then ANSWER-TEXT as one
-response, tagged as the streaming machinery tags it (reasoning span
-over the CoT, response for the answer).  Returns the prompt ID."
+Types PROMPT-TEXT and tags it `user' explicitly (no after-change hook);
+streams REASONING-TEXT then ANSWER-TEXT as one response, tagged as the
+streaming machinery tags it (reasoning span over the CoT, response for
+the answer).  Returns the prompt ID."
   (let ((prompt-id quoth--prompt-id))
     (goto-char (point-max))
-    (insert prompt-text)
+    (let ((start (point)))
+      (insert prompt-text)
+      (put-text-property start (point) 'quoth-region-type 'user)
+      (put-text-property start (point) 'quoth-prompt-id prompt-id))
     (goto-char (point-max))
     (newline)
     (let ((response-start (point)))
@@ -2249,11 +2288,10 @@ text."
 ;;; Regression: stale-tagged user text must be retagged at send time
 
 (ert-deftest quoth-test/send-input-retags-stale-user-text ()
-  "quoth-send-input must tag the input region as 'user even when
-after-change didn't fire or text inherited stale tags (e.g. yank,
-undo).  The user's multi-line description was
-silently lost from history because it kept a stale 'separator
-quoth-region-type inherited from the divider."
+  "quoth-send-input must tag the input region as 'user even when text
+inherited stale tags (e.g. yank, undo).  The user's multi-line
+description was silently lost from history because it kept a stale
+'separator quoth-region-type inherited from the divider."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer))
             (second-id nil))

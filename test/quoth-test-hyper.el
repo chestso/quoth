@@ -1006,9 +1006,12 @@ messages array is [system, prior-user, prior-assistant, current]."
                   'history
                   (lambda (base)
                     (let ((buf (current-buffer)))
-                      ;; Turn 1: type the prompt, send with history on.
+                      ;; Turn 1: type the prompt, tag it, send with history on.
                       (goto-char (point-max))
-                      (insert "first")
+                      (let ((start (point)))
+                        (insert "first")
+                        (put-text-property start (point) 'quoth-region-type 'user)
+                        (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id))
                       (save-excursion (goto-char (point-max)) (newline))
                       (setq-local quoth--response-start (point-marker))
                       (let ((provider (quoth-make-hyper-provider
@@ -1031,7 +1034,10 @@ messages array is [system, prior-user, prior-assistant, current]."
                       (quoth--insert-input-separator)
                       (goto-char (point-max))
                       (newline)
-                      (insert "second")
+                      (let ((start (point)))
+                        (insert "second")
+                        (put-text-property start (point) 'quoth-region-type 'user)
+                        (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id))
                       (goto-char (point-max))
                       (setq-local quoth--response-start (point-marker))
                       (let ((provider (quoth-make-hyper-provider

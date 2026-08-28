@@ -345,10 +345,7 @@ interrupting, clearing, and session management.
   :group 'quoth
   :keymap quoth-chat-mode-map
   (if quoth-chat-mode
-      (progn
-        (add-hook 'after-change-functions #'quoth--after-change nil t)
-        (add-hook 'post-command-hook #'quoth--update-header-line nil t))
-    (remove-hook 'after-change-functions #'quoth--after-change t)
+      (add-hook 'post-command-hook #'quoth--update-header-line nil t)
     (remove-hook 'post-command-hook #'quoth--update-header-line t)))
 
 ;;; Internal helpers
@@ -461,18 +458,6 @@ type, so untagged space is never mistaken for `user'."
     (setq header-line-format
           (list (propertize (format "%s   %s" model-str region-str)
                             'face 'bold)))))
-
-(defun quoth--after-change (beg end _len)
-  "Tag inserted text with prompt ID and `user' region type.
-Tags only text at or after the input separator marker, so edits inside
-prior history are left untagged.  BEG and END are standard after-change
-hook arguments."
-  (when (and quoth--prompt-start-marker
-             (markerp quoth--prompt-start-marker)
-             (>= beg (marker-position quoth--prompt-start-marker)))
-    (put-text-property beg end 'quoth-prompt-id quoth--prompt-id)
-    (put-text-property beg end 'quoth-region-type 'user))
-  (quoth--update-header-line))
 
 (defun quoth--lang-from-extension (filename)
   "Return the markdown language identifier for FILENAME's extension.
@@ -1931,10 +1916,9 @@ for wire resume.  Returns the end position of the inserted block."
       (user-error "No prompt to send"))
     (quoth--input-ring-add prompt)
     ;; Explicitly tag the user input region as `user' so history
-    ;; extraction (quoth--user-turn-text) can find it.  after-change
-    ;; tagging may be incomplete when text is inserted via yank, undo,
-    ;; or other non-interactive paths that don't fire the hook or fire
-    ;; it with beg before prompt-start-marker.
+    ;; extraction (quoth--user-turn-text) can find it.  There is no
+    ;; after-change hook; tagging happens here, at send time, so yank,
+    ;; undo, and other non-interactive paths are all covered.
     (let ((inhibit-modification-hooks t))
       (put-text-property input-start (point-max)
                          'quoth-region-type 'user)

@@ -444,12 +444,14 @@ with markdown-mode's `C-c C-*' bindings."
           (should (eq (key-binding (kbd "C-c c s")) #'quoth-send-input))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/chat-mode-adds-after-change-hook ()
-  "`quoth-chat-mode' adds `quoth--after-change' to `after-change-functions'."
+(ert-deftest quoth-test/chat-mode-does-not-add-after-change-hook ()
+  "`quoth-chat-mode' does NOT add an after-change-functions hook.
+User input is tagged at send time, not live; the header-line is kept
+fresh by `post-command-hook' alone."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (memq #'quoth--after-change after-change-functions))))
+          (should-not (memq #'quoth--after-change after-change-functions))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/chat-mode-adds-post-command-hook ()
@@ -466,7 +468,6 @@ with markdown-mode's `C-c C-*' bindings."
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (quoth-chat-mode -1)
-          (should-not (memq #'quoth--after-change after-change-functions))
           (should-not (memq #'quoth--update-header-line post-command-hook))))
     (quoth-test--cleanup)))
 
