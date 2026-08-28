@@ -513,18 +513,17 @@ blank line.  At `bobp' no blank line is inserted above the divider.
 `quoth--prompt-start-marker' (insertion type t) anchors the divider's
 start so attachments and prior content can be inserted before it;
 `quoth--input-start-marker' marks where typed input begins."
-  (let ((inhibit-modification-hooks t))
-    (unless (bobp)
-      (insert "\n"))
-    (let ((start (point)))
-      (insert quoth--input-separator-text "\n\n")
-      (put-text-property start (point)
-                         'quoth-region-type 'separator)
-      (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id)
-      (setq-local quoth--prompt-start-marker (copy-marker start))
-      (set-marker-insertion-type quoth--prompt-start-marker t)
-      (setq-local quoth--input-start-marker (point-marker))
-      (set-marker-insertion-type quoth--input-start-marker nil))))
+  (unless (bobp)
+    (insert "\n"))
+  (let ((start (point)))
+    (insert quoth--input-separator-text "\n\n")
+    (put-text-property start (point)
+                       'quoth-region-type 'separator)
+    (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id)
+    (setq-local quoth--prompt-start-marker (copy-marker start))
+    (set-marker-insertion-type quoth--prompt-start-marker t)
+    (setq-local quoth--input-start-marker (point-marker))
+    (set-marker-insertion-type quoth--input-start-marker nil)))
 
 (defun quoth--insert-user-separator ()
   "Insert a horizontal divider marking the end of the user input.
@@ -540,13 +539,12 @@ itself as a horizontal rule.  Tagged `quoth-region-type'
 all skip it; it carries `quoth-prompt-id' but never `quoth-response-to',
 so it belongs to the turn yet never leaks into the assistant response
 region."
-  (let ((inhibit-modification-hooks t))
-    (unless (bobp)
-      (insert "\n"))
-    (let ((start (point)))
-      (insert quoth--input-separator-text "\n\n")
-      (put-text-property start (point) 'quoth-region-type 'user-separator)
-      (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id))))
+  (unless (bobp)
+    (insert "\n"))
+  (let ((start (point)))
+    (insert quoth--input-separator-text "\n\n")
+    (put-text-property start (point) 'quoth-region-type 'user-separator)
+    (put-text-property start (point) 'quoth-prompt-id quoth--prompt-id)))
 
 (defvar-local quoth--follow-p nil
   "Whether the quoth buffer's window is following the stream.
@@ -574,6 +572,11 @@ can keep reading while content streams in.
 Uses `window-point' (not buffer point) because the process filter and
 sentinel run in other buffers, where the quoth buffer's saved point is
 stale.  This mirrors comint's `comint-adjust-window-point' pattern.
+
+Modification hooks are suppressed so per-delta streaming does not
+schedule a font-lock refontify for every character; font-lock never
+clobbers the region tags (it only manages `face'), so the suppression
+is purely a performance measure for this hot path.
 
 When following, sets `quoth--follow-p' so the next call (which may run
 before redisplay updates `window-point') continues to follow.  When
@@ -975,9 +978,8 @@ buffer-local and never leaves via the network; only the hash is sent."
       ;; Named invisibility spec: collapsed reasoning is hidden from
       ;; display but visible to buffer-reading tools (export, preview).
       (add-to-invisibility-spec 'quoth-reasoning-fold)
-      (let ((inhibit-modification-hooks t))
-        (erase-buffer)
-        (quoth--insert-input-separator))
+      (erase-buffer)
+      (quoth--insert-input-separator)
       (setq-local buffer-undo-list nil)
       (quoth--input-ring-read)
       (setq-local default-directory
@@ -1152,8 +1154,7 @@ body overlay, or nil."
               (set-marker start-m nil)
               (set-marker end-m nil)
               nil)
-          (let ((inhibit-modification-hooks t)
-                (preview-end nil))
+          (let ((preview-end nil))
             (save-excursion
               (goto-char start-m)
               (forward-line (1- preview-lines))
@@ -1260,32 +1261,30 @@ overlay.  If collapsed, expands it (clear `invisible' and
 Clears `invisible' and `intangible' so the full reasoning text is
 visible.  Also hides the marker overlay's `after-string'.  No buffer
 text is inserted or deleted."
-  (let ((inhibit-modification-hooks t))
-    (overlay-put body-ov 'quoth-fold-state 'expanded)
-    (overlay-put body-ov 'invisible nil)
-    (overlay-put body-ov 'intangible nil)
-    ;; Hide the marker overlay's after-string.
-    (let ((marker-ov (quoth--reasoning-marker-overlay-for body-ov)))
-      (when marker-ov
-        (overlay-put marker-ov 'after-string nil)))
-    (message "Reasoning expanded")))
+  (overlay-put body-ov 'quoth-fold-state 'expanded)
+  (overlay-put body-ov 'invisible nil)
+  (overlay-put body-ov 'intangible nil)
+  ;; Hide the marker overlay's after-string.
+  (let ((marker-ov (quoth--reasoning-marker-overlay-for body-ov)))
+    (when marker-ov
+      (overlay-put marker-ov 'after-string nil)))
+  (message "Reasoning expanded"))
 
 (defun quoth--reasoning-collapse (body-ov)
   "Collapse the reasoning body overlay BODY-OV.
 Re-sets `invisible' and `intangible' so the body is hidden.  Also
 re-shows the marker overlay's `after-string'.  No buffer text is
 inserted or deleted."
-  (let ((inhibit-modification-hooks t))
-    (overlay-put body-ov 'quoth-fold-state 'collapsed)
-    (overlay-put body-ov 'invisible 'quoth-reasoning-fold)
-    (overlay-put body-ov 'intangible t)
-    ;; Re-show the marker overlay's after-string.
-    (let ((marker-ov (quoth--reasoning-marker-overlay-for body-ov)))
-      (when marker-ov
-        (overlay-put marker-ov 'after-string
-                     (quoth--reasoning-fold-marker
-                      (overlay-start body-ov) (overlay-end body-ov)))))
-    (message "Reasoning collapsed")))
+  (overlay-put body-ov 'quoth-fold-state 'collapsed)
+  (overlay-put body-ov 'invisible 'quoth-reasoning-fold)
+  (overlay-put body-ov 'intangible t)
+  ;; Re-show the marker overlay's after-string.
+  (let ((marker-ov (quoth--reasoning-marker-overlay-for body-ov)))
+    (when marker-ov
+      (overlay-put marker-ov 'after-string
+                   (quoth--reasoning-fold-marker
+                    (overlay-start body-ov) (overlay-end body-ov)))))
+  (message "Reasoning collapsed"))
 
 (defun quoth--reasoning-tab ()
   "Handle TAB in quoth chat buffers.
@@ -1364,87 +1363,85 @@ the response are tagged `tool' (and their nested raw-result span
 `tool-output') and carry the `quoth-tool-call' property for wire
 resume."
   (when (and response-start (> response-end response-start))
-    (let ((inhibit-modification-hooks t))
-      ;; Tag the response span, but never overwrite existing `tool',
-      ;; `tool-output', or `reasoning' regions: the tool loop tags its
-      ;; blocks (and their nested raw-result spans) before this runs,
-      ;; and the reasoning overlay retags its CoT span separately.
-      ;; Overwriting reasoning to `response' would make history replay
-      ;; send the CoT as plain assistant content and, worse, cause a
-      ;; bare `tool' message (tool_call_id unknown) to be emitted for
-      ;; the reasoning text.  User input inside the response range
-      ;; (typed text before the stream started) is overwritten to
-      ;; `response': the region spans from `quoth--response-start'
-      ;; onward, past the typed input.
-      (let ((pos response-start))
-        (while (< pos response-end)
-          (let ((type (get-text-property pos 'quoth-region-type))
-                (run-end (or (next-single-property-change pos 'quoth-region-type
-                                                          nil response-end)
-                             response-end)))
-            (if (memq type '(tool tool-output reasoning))
-                (setq pos run-end)
-              (put-text-property pos run-end
-                                 'quoth-prompt-id prompt-id)
-              (put-text-property pos run-end
-                                 'quoth-response-to prompt-id)
-              (put-text-property pos run-end
-                                 'quoth-region-type 'response)
-              (setq pos run-end)))))
-      (dolist (region (quoth--reasoning-regions))
-        (let ((rs (car region))
-              (re (cdr region)))
-          (when (and (>= rs response-start) (<= re response-end))
-            (put-text-property rs re
+    ;; Tag the response span, but never overwrite existing `tool',
+    ;; `tool-output', or `reasoning' regions: the tool loop tags its
+    ;; blocks (and their nested raw-result spans) before this runs,
+    ;; and the reasoning overlay retags its CoT span separately.
+    ;; Overwriting reasoning to `response' would make history replay
+    ;; send the CoT as plain assistant content and, worse, cause a
+    ;; bare `tool' message (tool_call_id unknown) to be emitted for
+    ;; the reasoning text.  User input inside the response range
+    ;; (typed text before the stream started) is overwritten to
+    ;; `response': the region spans from `quoth--response-start'
+    ;; onward, past the typed input.
+    (let ((pos response-start))
+      (while (< pos response-end)
+        (let ((type (get-text-property pos 'quoth-region-type))
+              (run-end (or (next-single-property-change pos 'quoth-region-type
+                                                        nil response-end)
+                           response-end)))
+          (if (memq type '(tool tool-output reasoning))
+              (setq pos run-end)
+            (put-text-property pos run-end
                                'quoth-prompt-id prompt-id)
-            (put-text-property rs re
+            (put-text-property pos run-end
                                'quoth-response-to prompt-id)
-            (put-text-property rs re
-                               'quoth-region-type 'reasoning)))))))
+            (put-text-property pos run-end
+                               'quoth-region-type 'response)
+            (setq pos run-end)))))
+    (dolist (region (quoth--reasoning-regions))
+      (let ((rs (car region))
+            (re (cdr region)))
+        (when (and (>= rs response-start) (<= re response-end))
+          (put-text-property rs re
+                             'quoth-prompt-id prompt-id)
+          (put-text-property rs re
+                             'quoth-response-to prompt-id)
+          (put-text-property rs re
+                             'quoth-region-type 'reasoning))))))
 
 (defun quoth-facade--close-response (response-start prompt-id)
   "Close the response started at RESPONSE-START with PROMPT-ID.
 Tags the response text (including any reasoning sub-span), auto-collapses
 the reasoning fold, resets reasoning state, and inserts a fresh prompt.
 Runs in the quoth buffer, which owns all response text."
-  (let ((inhibit-modification-hooks t))
-    (save-excursion
+  (save-excursion
+    (goto-char (point-max))
+    (newline)
+    ;; Remember where response ends (before new prompt)
+    (let ((response-end (point)))
+      ;; Tag the full response text with the prompt ID it answers and
+      ;; region type.  Deltas were inserted with modification hooks
+      ;; suppressed, so this is the only tagging the response gets.
+      (quoth--tag-response-region response-start response-end prompt-id)
+      ;; Auto-collapse every reasoning overlay in the response
+      ;; (there may be multiple across tool-call rounds).
+      ;; Use (point-min) instead of response-start because
+      ;; quoth--response-start is relocated after tool blocks
+      ;; in quoth-facade--tool-loop, so the first round's
+      ;; reasoning overlay would be outside the range.
+      (dolist (ov (overlays-in (point-min) response-end))
+        (when (and (overlay-get ov 'quoth-reasoning)
+                   (not (overlay-get ov 'quoth-fold-state)))
+          (quoth--reasoning-install-fold
+           (cons (overlay-start ov) (overlay-end ov)))))
+      (quoth--reasoning-reset))
+    ;; Generate new prompt ID BEFORE inserting marker
+    (setq-local quoth--prompt-id (quoth--generate-id))
+    (quoth--insert-input-separator))
+  ;; If the window was following the stream, advance cursor to the
+  ;; new input separator so the user lands at the editable prompt.
+  (when quoth--follow-p
+    (let ((win (get-buffer-window (current-buffer) 'visible)))
       (goto-char (point-max))
-      (newline)
-      ;; Remember where response ends (before new prompt)
-      (let ((response-end (point)))
-        ;; Tag the full response text with the prompt ID it answers and
-        ;; region type.  Deltas were inserted with modification hooks
-        ;; suppressed, so this is the only tagging the response gets.
-        (quoth--tag-response-region response-start response-end prompt-id)
-        ;; Auto-collapse every reasoning overlay in the response
-        ;; (there may be multiple across tool-call rounds).
-        ;; Use (point-min) instead of response-start because
-        ;; quoth--response-start is relocated after tool blocks
-        ;; in quoth-facade--tool-loop, so the first round's
-        ;; reasoning overlay would be outside the range.
-        (dolist (ov (overlays-in (point-min) response-end))
-          (when (and (overlay-get ov 'quoth-reasoning)
-                     (not (overlay-get ov 'quoth-fold-state)))
-            (quoth--reasoning-install-fold
-             (cons (overlay-start ov) (overlay-end ov)))))
-        (quoth--reasoning-reset))
-      ;; Generate new prompt ID BEFORE inserting marker
-      (setq-local quoth--prompt-id (quoth--generate-id))
-      (quoth--insert-input-separator))
-    ;; If the window was following the stream, advance cursor to the
-    ;; new input separator so the user lands at the editable prompt.
-    (when quoth--follow-p
-      (let ((win (get-buffer-window (current-buffer) 'visible)))
-        (goto-char (point-max))
-        (when win
-          (set-window-point win (point-max)))
-        (setq-local quoth--last-follow-point (point-max))))
-    (setq-local quoth--response-start nil)
-    (setq-local quoth--tool-loop-count 0)
-    (quoth--input-ring-write)
-    (quoth--update-header-line)
-    (setq-local buffer-undo-list nil)))
+      (when win
+        (set-window-point win (point-max)))
+      (setq-local quoth--last-follow-point (point-max))))
+  (setq-local quoth--response-start nil)
+  (setq-local quoth--tool-loop-count 0)
+  (quoth--input-ring-write)
+  (quoth--update-header-line)
+  (setq-local buffer-undo-list nil))
 
 (defun quoth-facade--finalize ()
   "Finalize the current response via the facade.
@@ -1495,9 +1492,8 @@ come back, finalize via `quoth-facade--close-response'."
       (setq-local quoth--tool-loop-count (1+ quoth--tool-loop-count))
       ;; Insert tool blocks before the response-start marker so they
       ;; appear as part of the current response.
-      (let ((inhibit-modification-hooks t))
-        (dolist (block blocks)
-          (quoth--tool-block-insert block prompt-id)))
+      (dolist (block blocks)
+        (quoth--tool-block-insert block prompt-id))
       ;; Tag the response so far (streamed content + the just-inserted
       ;; tool blocks), so `quoth--tool-rounds' can rebuild the wire
       ;; continuation from the buffer alone.
@@ -1860,8 +1856,7 @@ for wire resume.  Returns the end position of the inserted block."
          (block (concat prefix body))
          (start (point-max)))
     (quoth--insert-at-eof block)
-    (let* ((inhibit-modification-hooks t)
-           (end (point-max))
+    (let* ((end (point-max))
            ;; The raw tool result (wire `role: "tool"' content) sits
            ;; between the output fence's opening line and the closing
            ;; fence.  Its offset is prefix + output-offset + the
@@ -1919,11 +1914,10 @@ for wire resume.  Returns the end position of the inserted block."
     ;; extraction (quoth--user-turn-text) can find it.  There is no
     ;; after-change hook; tagging happens here, at send time, so yank,
     ;; undo, and other non-interactive paths are all covered.
-    (let ((inhibit-modification-hooks t))
-      (put-text-property input-start (point-max)
-                         'quoth-region-type 'user)
-      (put-text-property input-start (point-max)
-                         'quoth-prompt-id quoth--prompt-id))
+    (put-text-property input-start (point-max)
+                       'quoth-region-type 'user)
+    (put-text-property input-start (point-max)
+                       'quoth-prompt-id quoth--prompt-id)
     (goto-char (point-max))
     (newline)
     ;; Draw a horizontal divider after the user turn so the response is
@@ -1949,25 +1943,24 @@ input divider inserted, mirroring normal finalization."
     (if (not active)
         (message "No quoth process running")
       (quoth-provider-interrupt quoth-active-provider)
-      (let ((inhibit-modification-hooks t))
-        (save-excursion
-          (goto-char (point-max))
-          (newline)
-          ;; Tag the partial response (including any streamed reasoning)
-          ;; up to the interrupt point, and auto-collapse the reasoning.
-          (let ((response-start (when (markerp quoth--response-start)
-                                  (marker-position quoth--response-start))))
-            (quoth--tag-response-region response-start (point) quoth--prompt-id)
-            (dolist (ov (overlays-in (or response-start (point-min)) (point)))
-              (when (and (overlay-get ov 'quoth-reasoning)
-                         (not (overlay-get ov 'quoth-fold-state)))
-                (quoth--reasoning-install-fold
-                 (cons (overlay-start ov) (overlay-end ov)))))
-            (quoth--reasoning-reset))
-          ;; Generate a fresh pending ID before the new marker, exactly
-          ;; like `quoth-facade--close-response'.
-          (setq-local quoth--prompt-id (quoth--generate-id))
-          (quoth--insert-input-separator)))
+      (save-excursion
+        (goto-char (point-max))
+        (newline)
+        ;; Tag the partial response (including any streamed reasoning)
+        ;; up to the interrupt point, and auto-collapse the reasoning.
+        (let ((response-start (when (markerp quoth--response-start)
+                                (marker-position quoth--response-start))))
+          (quoth--tag-response-region response-start (point) quoth--prompt-id)
+          (dolist (ov (overlays-in (or response-start (point-min)) (point)))
+            (when (and (overlay-get ov 'quoth-reasoning)
+                       (not (overlay-get ov 'quoth-fold-state)))
+              (quoth--reasoning-install-fold
+               (cons (overlay-start ov) (overlay-end ov)))))
+          (quoth--reasoning-reset))
+        ;; Generate a fresh pending ID before the new marker, exactly
+        ;; like `quoth-facade--close-response'.
+        (setq-local quoth--prompt-id (quoth--generate-id))
+        (quoth--insert-input-separator))
       (when quoth--follow-p
         (let ((win (get-buffer-window (current-buffer) 'visible)))
           (goto-char (point-max))
@@ -2003,9 +1996,8 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
     (when (overlay-get ov 'quoth-overlay)
       (delete-overlay ov)))
   (quoth--reasoning-reset)
-  (let ((inhibit-modification-hooks t))
-    (erase-buffer)
-    (quoth--insert-input-separator))
+  (erase-buffer)
+  (quoth--insert-input-separator)
   (setq-local buffer-undo-list nil))
 
 (defun quoth-select-model ()
