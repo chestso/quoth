@@ -825,27 +825,12 @@ Returns the capture output."
                                  (< (float-time) deadline))
                        (accept-process-output nil 0.1)
                        (sit-for 0.02)))))
-               ;; Wait until the streamed text actually landed: the
-               ;; process loop can exit the instant :quoth-finished is
-               ;; set, before the finalize callback's insertion is
-               ;; flushed and visible.  Finalize auto-collapses the
-               ;; reasoning, so expand the fold to inspect the body.
-               (let ((deadline (+ (float-time) 6)))
-                 (while (and (< (float-time) deadline)
-                             (not (save-excursion
-                                    (goto-char (point-min))
-                                    (cl-some (lambda (o)
-                                               (overlay-get o 'quoth-fold-state))
-                                             (overlays-in (point-min) (point-max))))))
-                   (accept-process-output nil 0.1)
-                   (sit-for 0.02)))
-               (let ((ov (cl-some (lambda (o)
-                                    (overlay-get o 'quoth-fold-state))
-                                  (overlays-in (point-min) (point-max)))))
-                 (when (and (overlayp ov)
-                            (eq (overlay-get ov 'quoth-fold-state) 'collapsed))
-                   (goto-char (overlay-start ov))
-                   (quoth-reasoning-toggle)))
+               ;; Finalize ran synchronously inside the first loop's
+               ;; accept-process-output (the [DONE] filter calls the
+               ;; done-callback before returning), so the streamed text
+               ;; and region tags are already in the buffer.  The
+               ;; reasoning is a single line, so no fold is installed
+               ;; (quoth--reasoning-install-fold skips <= 10 lines).
                (goto-char (point-min))
                (should (search-forward "mock think harder" nil t))
                (search-backward "mock")
@@ -1348,15 +1333,12 @@ un-stopped, so its advancing end marker hides the next prompt under
                                  (< (float-time) deadline))
                        (accept-process-output nil 0.1)
                        (sit-for 0.02)))))
-               ;; Wait for the fold overlay to appear (finalize installs it).
-               (let ((deadline (+ (float-time) 6)))
-                 (while (and (< (float-time) deadline)
-                             (not (cl-some (lambda (o)
-                                             (overlay-get o 'quoth-fold-state))
-                                           (overlays-in (point-min) (point-max)))))
-                   (accept-process-output nil 0.1)
-                   (sit-for 0.02)))
-               ;; The reasoning text should be present (folded).
+               ;; Finalize ran synchronously inside the first loop's
+               ;; accept-process-output, so overlays are already
+               ;; installed.  The reasoning is a single line, so no
+               ;; fold is created (quoth--reasoning-install-fold skips
+               ;; <= 10 lines); the reasoning overlay stays as-is.
+               ;; The reasoning text should be present.
                (goto-char (point-min))
                (should (search-forward "think step hidden" nil t))
                ;; The new prompt must be visible (not invisible).
