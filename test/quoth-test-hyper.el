@@ -2092,7 +2092,7 @@ shows the stats."
             (let ((h (format "%s" header-line-format)))
               (should (string-match-p "tok: 8,991" h))
               (should (string-match-p "hc: 0.043" h))
-              (should (string-match-p "cache: 93%" h)))))
+              (should (string-match-p "cache: 93%%" h)))))
       (quoth-test--cleanup))))
 (provide 'quoth-test-hyper)
 ;;; quoth-test-hyper.el ends here

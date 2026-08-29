@@ -2453,7 +2453,7 @@ The facade sums :total-tokens, :cached-tokens, and :cost-value;
             (let ((h (format "%s" header-line-format)))
               (should (string-match-p "tok: 8,991" h))
               (should (string-match-p "hc: 0.043" h))
-              (should (string-match-p "cache: 93%" h)))))
+              (should (string-match-p "cache: 93%%" h)))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-dollars-when-currency-dollars ()
@@ -2471,7 +2471,7 @@ The facade sums :total-tokens, :cached-tokens, and :cost-value;
             (let ((h (format "%s" header-line-format)))
               (should (string-match-p "tok: 9,157" h))
               (should (string-match-p (regexp-quote "$: 0.0139") h))
-              (should (string-match-p "cache: 0%" h)))))
+              (should (string-match-p "cache: 0%%" h)))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/group-number-formats-thousands ()

@@ -1515,7 +1515,7 @@ Returns "0" for nil/non-numbers."
               parts))
       (when cached
         (let ((pct (if (> total 0) (round (* 100.0 (/ (float cached) (float total)))) 0)))
-          (push (format "cache: %d%%" pct) parts)))
+          (push (format "cache: %d%%%%" pct) parts)))
       (mapconcat #'identity (nreverse parts) "   "))))
 
 (defun quoth-facade--finalize ()
