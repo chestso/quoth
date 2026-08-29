@@ -126,7 +126,7 @@ It is byte-identical, with no `tools' or `tool_choice' key."
 
 (defun quoth-test--sse-state ()
   "Return a fresh, empty SSE parser state."
-  (list :pending "" :done nil :tool-calls nil))
+  (list :pending "" :done nil :tool-calls nil :usage nil))
 
 (ert-deftest quoth-test/sse-parser-single-delta ()
   "A single data event should yield its content delta."
@@ -1925,5 +1925,174 @@ A previous failed request must not leak into the next send."
         (should (eq (quoth-provider-transport-process provider) proc))
         (delete-process proc)))))
 
+
+;;; 92d. SSE parser: usage capture
+
+(ert-deftest quoth-test/sse-parser-captures-usage ()
+  "The final chunk's usage object is captured into :usage state.
+Hyper (and any OpenAI-compatible) emits a top-level `usage' in the
+final SSE chunk.  The parser must stash it so the provider can
+normalize it."
+  (let* ((payload (concat
+                   "{\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{},"
+                   "\"finish_reason\":\"stop\"}],"
+                   "\"usage\":{\"prompt_tokens\":8846,"
+                   "\"completion_tokens\":311,\"total_tokens\":9157,"
+                   "\"completion_tokens_details\":{\"reasoning_tokens\":257},"
+                   "\"cost\":{\"usd\":0.013926,\"hypercredits\":0.27852}}}"))
+         (result (quoth-openai-sse-feed
+                  (quoth-test--sse-state)
+                  (concat "data: " payload "\n\n"))))
+    (let ((usage (plist-get (cdr result) :usage)))
+      (should usage)
+      (should (= (quoth--openai-alist-get "total_tokens" usage) 9157))
+      (should (= (quoth--openai-alist-get "prompt_tokens" usage) 8846))
+      (should (= (quoth--openai-alist-get "completion_tokens" usage) 311)))))
+
+(ert-deftest quoth-test/sse-parser-no-usage-leaves-nil ()
+  "A chunk without a top-level usage leaves :usage nil."
+  (let* ((result (quoth-openai-sse-feed
+                  (quoth-test--sse-state)
+                  "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")))
+    (should-not (plist-get (cdr result) :usage))))
+
+(ert-deftest quoth-test/sse-parser-usage-with-cached-tokens ()
+  "A warm-cache final chunk has prompt_tokens_details.cached_tokens.
+The parser captures the whole usage object, including nested
+prompt_tokens_details."
+  (let* ((payload (concat
+                   "{\"choices\":[{\"index\":0,\"delta\":{},"
+                   "\"finish_reason\":\"stop\"}],"
+                   "\"usage\":{\"prompt_tokens\":8923,"
+                   "\"completion_tokens\":68,\"total_tokens\":8991,"
+                   "\"prompt_tokens_details\":{\"cached_tokens\":8320},"
+                   "\"cost\":{\"usd\":0.00216348,"
+                   "\"hypercredits\":0.0432696}}}"))
+         (result (quoth-openai-sse-feed
+                  (quoth-test--sse-state)
+                  (concat "data: " payload "\n\n"))))
+    (let* ((usage (plist-get (cdr result) :usage))
+           (ptd (and usage (quoth--openai-alist-get "prompt_tokens_details" usage))))
+      (should usage)
+      (should ptd)
+      (should (= (quoth--openai-alist-get "cached_tokens" ptd) 8320)))))
+
+;;; C7. Hyper provider: usage contract
+
+(ert-deftest quoth-test/hyper-usage-normalizes-cold-round ()
+  "A cold round (no prompt_tokens_details) normalizes :cached-tokens to 0.
+The provider returns :total-tokens, :cost-unit, :cost-value, and
+:accumulated nil (per-request; the facade sums)."
+  (let ((quoth-hyper-usage-currency 'credits)
+        (usage-alist (list (cons "prompt_tokens" 8846)
+                           (cons "completion_tokens" 311)
+                           (cons "total_tokens" 9157)
+                           (cons "cost" (list (cons "usd" 0.013926)
+                                              (cons "hypercredits" 0.27852)))))
+        (proc (make-pipe-process :name "fake" :noquery t))
+        (provider (quoth-make-hyper-provider
+                   :buffer (current-buffer)
+                   :base-url "http://x" :token "t")))
+    (process-put proc :quoth-sse (list :usage usage-alist))
+    (let ((result (quoth-provider--usage provider proc)))
+      (should result)
+      (should (= (plist-get result :total-tokens) 9157))
+      (should (= (plist-get result :cached-tokens) 0))
+      (should (string= (plist-get result :cost-unit) "hc"))
+      (should (= (plist-get result :cost-value) 0.27852))
+      (should-not (plist-get result :accumulated)))
+    (delete-process proc)))
+
+(ert-deftest quoth-test/hyper-usage-normalizes-warm-round ()
+  "A warm round with cached_tokens surfaces them."
+  (let ((quoth-hyper-usage-currency 'credits)
+        (usage-alist (list (cons "prompt_tokens" 8923)
+                           (cons "completion_tokens" 68)
+                           (cons "total_tokens" 8991)
+                           (cons "prompt_tokens_details"
+                                 (list (cons "cached_tokens" 8320)))
+                           (cons "cost" (list (cons "usd" 0.00216348)
+                                              (cons "hypercredits" 0.0432696)))))
+        (proc (make-pipe-process :name "fake" :noquery t))
+        (provider (quoth-make-hyper-provider
+                   :buffer (current-buffer)
+                   :base-url "http://x" :token "t")))
+    (process-put proc :quoth-sse (list :usage usage-alist))
+    (let ((result (quoth-provider--usage provider proc)))
+      (should result)
+      (should (= (plist-get result :total-tokens) 8991))
+      (should (= (plist-get result :cached-tokens) 8320))
+      (should (string= (plist-get result :cost-unit) "hc"))
+      (should (= (plist-get result :cost-value) 0.0432696)))
+    (delete-process proc)))
+
+(ert-deftest quoth-test/hyper-usage-currency-dollars ()
+  "With :dollars currency, :cost-unit is \"$\" and :cost-value is the USD."
+  (let ((quoth-hyper-usage-currency 'dollars)
+        (usage-alist (list (cons "total_tokens" 9157)
+                           (cons "cost" (list (cons "usd" 0.013926)
+                                              (cons "hypercredits" 0.27852)))))
+        (proc (make-pipe-process :name "fake" :noquery t))
+        (provider (quoth-make-hyper-provider
+                   :buffer (current-buffer)
+                   :base-url "http://x" :token "t")))
+    (process-put proc :quoth-sse (list :usage usage-alist))
+    (let ((result (quoth-provider--usage provider proc)))
+      (should (string= (plist-get result :cost-unit) "$"))
+      (should (= (plist-get result :cost-value) 0.013926)))
+    (delete-process proc)))
+
+(ert-deftest quoth-test/hyper-usage-nil-when-no-sse ()
+  "When the process has no SSE state, returns nil."
+  (let* ((proc (make-pipe-process :name "fake" :noquery t))
+         (provider (quoth-make-hyper-provider :buffer (current-buffer)
+                                              :base-url "http://x" :token "t"))
+         (result (quoth-provider--usage provider proc)))
+    (should-not result)
+    (delete-process proc)))
+
+;;; 93d. Hyper wire: usage in header after stream
+
+(ert-deftest quoth-test/hyper-wire-usage-in-header-after-stream ()
+  "A stream with a final usage chunk surfaces tok/hc/cache in the header.
+The ok-stream-usage mode streams content then a final chunk with
+finish_reason and usage; the facade accumulates and the header line
+shows the stats."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (let ((quoth-hyper-usage-currency 'credits))
+            (quoth-test--with-hyper-server
+             'ok-stream-usage
+             (lambda (base)
+               (save-excursion (goto-char (point-max)) (newline))
+               (setq-local quoth--response-start (point-marker))
+               (let ((buf (current-buffer)))
+                 (setf (quoth-hyper-provider-base-url quoth-active-provider) base)
+                 (setf (quoth-hyper-provider-token quoth-active-provider) "tok")
+                 (let ((proc (quoth-openai-request
+                              base "tok"
+                              (quoth-openai-compose-request "hi" "m")
+                              (quoth-test--hyper-on-delta buf)
+                              (quoth-test--hyper-completion buf))))
+                   (setf (quoth-provider-transport-process
+                          quoth-active-provider) proc)
+                   (let ((deadline (+ (float-time) 6)))
+                     (while (and (process-live-p proc)
+                                 (null (process-get proc :quoth-finished))
+                                 (< (float-time) deadline))
+                       (accept-process-output nil 0.1)
+                       (sit-for 0.02))))))))
+          ;; The usage was captured and accumulated; header shows stats.
+          (with-current-buffer (get-buffer (quoth-test--buffer-name))
+            (should (plist-get quoth--usage-acc :total-tokens))
+            (should (= (plist-get quoth--usage-acc :total-tokens) 8991))
+            (should (= (plist-get quoth--usage-acc :cached-tokens) 8320))
+            (quoth--update-header-line)
+            (let ((h (format "%s" header-line-format)))
+              (should (string-match-p "tok: 8,991" h))
+              (should (string-match-p "hc: 0.043" h))
+              (should (string-match-p "cache: 93%" h)))))
+      (quoth-test--cleanup))))
 (provide 'quoth-test-hyper)
 ;;; quoth-test-hyper.el ends here

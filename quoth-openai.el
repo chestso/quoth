@@ -540,7 +540,7 @@ Includes `exec_command', `write_stdin', and `web_search' (when
 
 (defun quoth-openai-sse-new-state ()
   "Return a fresh SSE parser state plist."
-  (list :pending "" :done nil :error nil :tool-calls nil :content-started nil))
+  (list :pending "" :done nil :error nil :tool-calls nil :content-started nil :usage nil))
 
 (defun quoth--openai-blank-content-p (text)
   "Return non-nil when TEXT is a newline-only, non-empty content string."
@@ -612,11 +612,15 @@ of each COMPLETE `data:' event (before it is dispatched), including
                             (setq content-started t))
                           (setq deltas (nconc deltas (list delta)))))
                       (when obj
+                        (let ((u (quoth--openai-alist-get "usage" obj)))
+                          (when u
+                            (plist-put state :usage u)))
                         (quoth--openai-sse-merge-tool-calls state obj)))))))))))
       (cons deltas
             (list :pending pending :done done :error error
                   :tool-calls (plist-get state :tool-calls)
-                  :content-started content-started)))))
+                  :content-started content-started
+                  :usage (plist-get state :usage))))))
 
 (defun quoth--openai-alist-get (key alist)
   "Return the value for KEY in ALIST, handling symbol or string keys."

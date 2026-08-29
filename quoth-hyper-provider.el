@@ -218,6 +218,15 @@ package."
                  function)
   :group 'quoth-hyper)
 
+(defcustom quoth-hyper-usage-currency 'credits
+  "Currency unit shown for usage cost in the header line.
+Hyper reports both USD and hypercredits per request; this selects
+which the provider surfaces to the facade.  `credits' (default) emits
+hypercredits with unit \"hc\"; `dollars' emits USD with unit \"$\"."
+  :type '(choice (const :tag "Hypercredits" credits)
+                 (const :tag "US dollars"  dollars))
+  :group 'quoth-hyper)
+
 (defun quoth-hyper--x-crush-id ()
   "Return the resolved x-crush-id value, or nil to omit."
   (let ((id (cond
@@ -386,6 +395,36 @@ Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
                 (cons 'tool_calls (vconcat (nreverse tcs-list))))
           (nreverse tool-msgs)
           (nreverse blocks))))
+
+(cl-defmethod quoth-provider--usage ((_provider quoth-hyper-provider) process)
+  "Return one round's usage as a normalized plist, or nil.
+Reads the `usage' object the SSE parser stashed on PROCESS and
+normalizes it into the contract shape
+\(:total-tokens :cached-tokens :cost-unit :cost-value :accumulated).
+Hyper reports usage per HTTP request only (no server-side session
+total), so :accumulated is nil and the facade sums across rounds."
+  (when (processp process)
+    (let ((sse (process-get process :quoth-sse)))
+      (when sse
+        (let* ((u    (plist-get sse :usage))
+               (aget (lambda (k) (and u (quoth--openai-alist-get k u))))
+               (ptd  (funcall aget "prompt_tokens_details"))
+               (cost (funcall aget "cost"))
+               (cur  quoth-hyper-usage-currency))
+          (when u
+            (list :total-tokens  (or (funcall aget "total_tokens") 0)
+                  :cached-tokens (or (and ptd
+                                          (quoth--openai-alist-get "cached_tokens" ptd))
+                                     0)
+                  :cost-unit      (if (eq cur 'dollars) "$" "hc")
+                  :cost-value     (if (eq cur 'dollars)
+                                      (or (and cost
+                                               (quoth--openai-alist-get "usd" cost))
+                                          0)
+                                    (or (and cost
+                                             (quoth--openai-alist-get "hypercredits" cost))
+                                        0))
+                  :accumulated     nil)))))))
 
 (cl-defmethod quoth-provider--tool-calls ((_provider quoth-hyper-provider) process)
   "Return the tool-calls vector from the SSE state on PROCESS, or nil.

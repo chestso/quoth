@@ -10,6 +10,7 @@ Usage:
 
 Modes (mirrors of the original elisp server):
   ok-stream   stream content deltas then [DONE]
+  ok-stream-usage   same, plus a final chunk with usage stats
   slow        same, with a 50ms gap between frames
   error-http  respond 401 with a JSON error body
   error-event stream an SSE error event then [DONE]
@@ -385,6 +386,26 @@ def main():
                     }
                 )
                 conn.sendall(sse(tc_frame).encode())
+                conn.sendall(sse("[DONE]").encode())
+            elif mode == "ok-stream-usage":
+                # Stream content then a final chunk with usage stats,
+                # then [DONE].  Exercises usage capture + header display.
+                conn.sendall(sse_ok.encode())
+                for d in deltas:
+                    conn.sendall(content_frame(d).encode())
+                final = json.dumps(
+                    {
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "usage": {
+                            "prompt_tokens": 8923,
+                            "completion_tokens": 68,
+                            "total_tokens": 8991,
+                            "prompt_tokens_details": {"cached_tokens": 8320},
+                            "cost": {"usd": 0.00216348, "hypercredits": 0.0432696},
+                        },
+                    }
+                )
+                conn.sendall(sse(final).encode())
                 conn.sendall(sse("[DONE]").encode())
             else:  # ok-stream, slow
                 conn.sendall(sse_ok.encode())

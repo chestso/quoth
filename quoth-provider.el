@@ -108,5 +108,36 @@ providers return nil."
   (ignore provider process)
   nil)
 
+(cl-defgeneric quoth-provider--usage (provider process)
+  "Return one round's usage as a normalized plist, or nil.
+PROCESS is the transport process returned by `quoth-provider-send-prompt'
+for the round that just finished.  Returns nil when the provider has no
+usage to surface (before any response, or a provider that does not
+report usage).
+
+The plist may carry any subset of these keys; the facade renders only
+those that are present:
+
+  :total-tokens    integer   total tokens for this round (prompt+completion)
+  :cached-tokens   integer   cache-hit input tokens (0 when the provider
+                             has no caching, or this round was a cold miss)
+  :cost-unit       string    display unit, e.g. \"hc\" or \"$\"; nil to omit
+  :cost-value      number    cost in :cost-unit for this round
+  :accumulated     boolean   non-nil means :total-tokens and :cost-value
+                             are ALREADY summed across the session (or
+                             prompt) by the provider; the facade renders
+                             them verbatim and skips its own summation.
+                             nil (the default) means the values describe
+                             ONLY the last request, and the facade sums
+                             them across tool-loop rounds itself.
+
+When :accumulated is nil the values describe exactly the last request,
+NOT an accumulated total — the facade sums them.  When :accumulated is
+non-nil the values are already a running total — the facade must not
+re-sum (it would double-count); it still manages the buffer-local reset
+on new prompt / clear."
+  (ignore provider process)
+  nil)
+
 (provide 'quoth-provider)
 ;;; quoth-provider.el ends here

@@ -450,13 +450,15 @@ type, so untagged space is never mistaken for `user'."
       (symbol-name type))))
 
 (defun quoth--update-header-line ()
-  "Update header line with the current model and region type at point."
+  "Update header line with the current model, region type, and usage."
   (let* ((model (quoth--header-model))
          (region (quoth--region-label-at-point))
          (model-str (if model (format "model: %s" model) "model: -"))
-         (region-str (if region (format "region: %s" region) "region: -")))
+         (region-str (if region (format "region: %s" region) "region: -"))
+         (base (format "%s   %s" model-str region-str))
+         (usage (quoth--usage-header-segment)))
     (setq header-line-format
-          (list (propertize (format "%s   %s" model-str region-str)
+          (list (propertize (concat base (and usage "   ") (or usage ""))
                             'face 'bold)))))
 
 (defun quoth--lang-from-extension (filename)
@@ -1443,12 +1445,86 @@ Runs in the quoth buffer, which owns all response text."
   (quoth--update-header-line)
   (setq-local buffer-undo-list nil))
 
+(defvar-local quoth--usage-acc nil
+  "Accumulated usage plist for the current prompt, or nil.
+Shape: (:total-tokens :cached-tokens :cost-unit :cost-value), each
+summed across tool-loop rounds when the provider is per-request.
+Reset on new prompt / clear.")
+
+(defun quoth--merge-usage (acc usage)
+  "Merge one round's USAGE plist into ACC, summing numeric fields.
+Preserves the :cost-unit from the first round (providers don't switch
+currency mid-prompt)."
+  (let ((or0 (lambda (v) (if (numberp v) v 0))))
+    (list :total-tokens  (+ (funcall or0 (plist-get usage :total-tokens))
+                            (or (plist-get acc :total-tokens) 0))
+          :cached-tokens (+ (funcall or0 (plist-get usage :cached-tokens))
+                            (or (plist-get acc :cached-tokens) 0))
+          :cost-unit      (or (plist-get acc :cost-unit)
+                              (plist-get usage :cost-unit))
+          :cost-value     (+ (funcall or0 (plist-get usage :cost-value))
+                             (or (plist-get acc :cost-value) 0)))))
+
+(defun quoth--accumulate-usage ()
+  "Read one round's usage from the active transport and merge into accumulator.
+When the provider's :accumulated is non-nil (it returns a running total),
+take the values verbatim; otherwise sum into the accumulator."
+  (when (and quoth-active-provider (quoth-provider-p quoth-active-provider))
+    (let ((u (quoth-provider--usage
+              quoth-active-provider
+              (quoth-provider-transport-process quoth-active-provider))))
+      (when u
+        (if (plist-get u :accumulated)
+            (setq-local quoth--usage-acc
+                        (list :total-tokens  (plist-get u :total-tokens)
+                              :cached-tokens (plist-get u :cached-tokens)
+                              :cost-unit      (plist-get u :cost-unit)
+                              :cost-value     (plist-get u :cost-value)))
+          (setq-local quoth--usage-acc
+                      (quoth--merge-usage quoth--usage-acc u)))))))
+
+(defun quoth--group-number (n)
+  "Format integer N with comma thousands separators.
+Returns "0" for nil/non-numbers."
+  (if (and (numberp n) (> n 0))
+      (let ((s (number-to-string n))
+            (result nil)
+            (count 0))
+        (dolist (c (nreverse (string-to-list s)))
+          (when (and (> count 0) (= (% count 3) 0))
+            (push ?\, result))
+          (push c result)
+          (setq count (1+ count)))
+        (apply #'concat (mapcar #'char-to-string result)))
+    "0"))
+
+(defun quoth--usage-header-segment ()
+  "Return the usage string for the header, or nil when no usage yet."
+  (when quoth--usage-acc
+    (let* ((total  (or (plist-get quoth--usage-acc :total-tokens) 0))
+           (cached (plist-get quoth--usage-acc :cached-tokens))
+           (unit   (plist-get quoth--usage-acc :cost-unit))
+           (value  (or (plist-get quoth--usage-acc :cost-value) 0))
+           (parts nil))
+      (push (format "tok: %s" (quoth--group-number total)) parts)
+      (when unit
+        (push (format "%s: %s" unit
+                      (if (string= unit "$")
+                          (format "%.4f" value)
+                        (format "%.3f" value)))
+              parts))
+      (when cached
+        (let ((pct (if (> total 0) (round (* 100.0 (/ (float cached) (float total)))) 0)))
+          (push (format "cache: %d%%" pct) parts)))
+      (mapconcat #'identity (nreverse parts) "   "))))
+
 (defun quoth-facade--finalize ()
   "Finalize the current response via the facade.
 Check for pending tool invocation from the SSE stream; when present,
 drive the tool loop (execute, insert blocks, send follow-up).
 Otherwise close the response and insert a fresh prompt.  The
 provider's completion action invokes this."
+  (quoth--accumulate-usage)
   (if (and quoth-tools-enabled
            quoth-active-provider
            (let ((tcs (quoth-provider--tool-calls
@@ -1572,6 +1648,7 @@ closure enters it)."
 Injects the facade's continuation as the provider's completion action so
 providers signal stream completion without touching buffers.  Runs in the
 quoth buffer, which owns all streamed output."
+  (setq-local quoth--usage-acc nil)
   (let ((buf (current-buffer)))
     (quoth-facade--stream-transition 'active 2)
     (let ((real-proc (quoth-provider-send-prompt
@@ -1996,6 +2073,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
     (when (overlay-get ov 'quoth-overlay)
       (delete-overlay ov)))
   (quoth--reasoning-reset)
+  (setq-local quoth--usage-acc nil)
   (erase-buffer)
   (quoth--insert-input-separator)
   (setq-local buffer-undo-list nil))

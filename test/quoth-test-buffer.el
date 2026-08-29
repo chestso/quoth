@@ -2338,5 +2338,148 @@ description was silently lost from history because it kept a stale
                                 (quoth--user-turn-text second-id)))))
     (quoth-test--cleanup)))
 
+
+;;; 20b. Facade usage accumulation
+
+(ert-deftest quoth-test/merge-usage-sums-two-rounds ()
+  "Two per-request usage plists accumulate into one.
+The facade sums :total-tokens, :cached-tokens, and :cost-value;
+:cost-unit is taken from the first round and preserved."
+  (let* ((round1 (list :total-tokens 9157
+                       :cached-tokens 0
+                       :cost-unit "hc"
+                       :cost-value 0.27852))
+         (round2 (list :total-tokens 8991
+                       :cached-tokens 8320
+                       :cost-unit "hc"
+                       :cost-value 0.0432696))
+         (acc (quoth--merge-usage nil round1))
+         (acc2 (quoth--merge-usage acc round2)))
+    (should (= (plist-get acc :total-tokens) 9157))
+    (should (= (plist-get acc :cost-value) 0.27852))
+    (should (= (plist-get acc2 :total-tokens) 18148))
+    (should (= (plist-get acc2 :cached-tokens) 8320))
+    (should (string= (plist-get acc2 :cost-unit) "hc"))
+    (should (= (plist-get acc2 :cost-value) (+ 0.27852 0.0432696)))))
+
+(ert-deftest quoth-test/merge-usage-preserves-first-cost-unit ()
+  "The :cost-unit from the first round is preserved across merges."
+  (let* ((round1 (list :total-tokens 100 :cost-unit "hc" :cost-value 0.1))
+         (round2 (list :total-tokens 200 :cost-unit "X" :cost-value 0.2))
+         (acc (quoth--merge-usage (quoth--merge-usage nil round1) round2)))
+    (should (string= (plist-get acc :cost-unit) "hc"))
+    (should (= (plist-get acc :total-tokens) 300))))
+
+(ert-deftest quoth-test/accumulate-usage-sums-per-request ()
+  "quoth--accumulate-usage reads from the provider and sums."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (let* ((usage-alist (list (cons "total_tokens" 100)
+                                    (cons "cost" (list (cons "hypercredits" 0.5)))))
+                 (proc (make-pipe-process :name "fake" :noquery t))
+                 (provider quoth-active-provider))
+            (process-put proc :quoth-sse (list :usage usage-alist))
+            (setf (quoth-provider-transport-process provider) proc)
+            (setq-local quoth--usage-acc nil)
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-acc :total-tokens) 100))
+            (should (= (plist-get quoth--usage-acc :cost-value) 0.5))
+            (process-put proc :quoth-sse
+                         (list :usage
+                               (list (cons "total_tokens" 200)
+                                     (cons "cost"
+                                           (list (cons "hypercredits" 0.3))))))
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-acc :total-tokens) 300))
+            (should (= (plist-get quoth--usage-acc :cost-value) 0.8))
+            (delete-process proc)))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/accumulate-usage-takes-accumulated-verbatim ()
+  "When :accumulated is t, the facade takes values verbatim (no sum)."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (let* ((provider quoth-active-provider)
+                 (proc (make-pipe-process :name "fake2" :noquery t))
+                 (orig-fn (symbol-function 'quoth-provider--usage)))
+            (setf (quoth-provider-transport-process provider) proc)
+            (fset 'quoth-provider--usage
+                  (lambda (_p _proc)
+                    (list :total-tokens 999
+                          :cost-unit "X"
+                          :cost-value 1.5
+                          :accumulated t)))
+            (setq-local quoth--usage-acc nil)
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-acc :total-tokens) 999))
+            (should (= (plist-get quoth--usage-acc :cost-value) 1.5))
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-acc :total-tokens) 999))
+            (should (= (plist-get quoth--usage-acc :cost-value) 1.5))
+            (fset 'quoth-provider--usage orig-fn)
+            (delete-process proc)))
+      (quoth-test--cleanup))))
+
+;;; 18b. Header line: usage segment
+
+(ert-deftest quoth-test/header-line-shows-no-usage-before-response ()
+  "Before any response, the header has no usage segment."
+  (let ((quoth-model "my-model"))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setq-local quoth--usage-acc nil)
+            (quoth--update-header-line)
+            (let ((h (format "%s" header-line-format)))
+              (should (string-match-p "my-model" h))
+              (should-not (string-match-p "tok:" h))
+              (should-not (string-match-p "cache:" h)))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/header-line-shows-usage-after-accumulation ()
+  "After usage is accumulated, the header shows tok, hc, and cache."
+  (let ((quoth-model "my-model"))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setq-local quoth--usage-acc
+                        (list :total-tokens 8991
+                              :cached-tokens 8320
+                              :cost-unit "hc"
+                              :cost-value 0.0432696))
+            (quoth--update-header-line)
+            (let ((h (format "%s" header-line-format)))
+              (should (string-match-p "tok: 8,991" h))
+              (should (string-match-p "hc: 0.043" h))
+              (should (string-match-p "cache: 93%" h)))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/header-line-shows-dollars-when-currency-dollars ()
+  "With dollars currency, the header shows $ instead of hc."
+  (let ((quoth-model "my-model"))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setq-local quoth--usage-acc
+                        (list :total-tokens 9157
+                              :cached-tokens 0
+                              :cost-unit "$"
+                              :cost-value 0.013926))
+            (quoth--update-header-line)
+            (let ((h (format "%s" header-line-format)))
+              (should (string-match-p "tok: 9,157" h))
+              (should (string-match-p (regexp-quote "$: 0.0139") h))
+              (should (string-match-p "cache: 0%" h)))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/group-number-formats-thousands ()
+  "quoth--group-number formats with comma separators."
+  (should (string= (quoth--group-number 0) "0"))
+  (should (string= (quoth--group-number 999) "999"))
+  (should (string= (quoth--group-number 1000) "1,000"))
+  (should (string= (quoth--group-number 8991) "8,991"))
+  (should (string= (quoth--group-number 1000000) "1,000,000")))
 (provide 'quoth-test-buffer)
 ;;; quoth-test-buffer.el ends here
