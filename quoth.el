@@ -449,16 +449,32 @@ type, so untagged space is never mistaken for `user'."
     (when (and type (symbolp type))
       (symbol-name type))))
 
+(defun quoth--header-model-segment ()
+  "Return the model cluster for the header line, or nil.
+The model name only; the model's cost definition joins here later."
+  (let ((model (quoth--header-model)))
+    (or model "-")))
+
+(defun quoth--header-usage-segment ()
+  "Return the usage cluster for the header line, or nil.
+Session usage (tokens, cost, cache%); nil until the first response."
+  (quoth--usage-header-segment))
+
+(defun quoth--header-buffer-segment ()
+  "Return the buffer cluster for the header line, or nil.
+The region type at point; the right-most cluster."
+  (or (quoth--region-label-at-point) "-"))
+
 (defun quoth--update-header-line ()
-  "Update header line with the current model, region type, and usage."
-  (let* ((model (quoth--header-model))
-         (region (quoth--region-label-at-point))
-         (model-str (if model (format "model: %s" model) "model: -"))
-         (region-str (if region (format "region: %s" region) "region: -"))
-         (base (format "%s   %s" model-str region-str))
-         (usage (quoth--usage-header-segment)))
+  "Update the header line from its model, usage, and buffer clusters.
+Each cluster is built by a dedicated segment function; non-nil segments
+are joined by ` | ' so related info stays adjacent."
+  (let ((segments (delq nil
+                        (list (quoth--header-model-segment)
+                              (quoth--header-usage-segment)
+                              (quoth--header-buffer-segment)))))
     (setq header-line-format
-          (list (propertize (concat base (and usage "   ") (or usage ""))
+          (list (propertize (mapconcat #'identity segments " | ")
                             'face 'bold)))))
 
 (defun quoth--lang-from-extension (filename)
@@ -1485,40 +1501,39 @@ verbatim; otherwise sum into the accumulator."
           (setq-local quoth--usage-acc
                       (quoth--merge-usage quoth--usage-acc u)))))))
 
-(defun quoth--group-number (n)
-  "Format integer N with comma thousands separators.
-Returns `0' for nil/non-numbers."
+(defun quoth--group-number-compact (n)
+  "Format integer N compactly with a k/M suffix and one decimal.
+Returns `0' for nil/non-numbers.  Values below 1000 render verbatim;
+1000-999999 as e.g. `9.0k'; 1000000+ as e.g. `1.0M'."
   (if (and (numberp n) (> n 0))
-      (let ((s (number-to-string n))
-            (result nil)
-            (count 0))
-        (dolist (c (nreverse (string-to-list s)))
-          (when (and (> count 0) (= (% count 3) 0))
-            (push ?\, result))
-          (push c result)
-          (setq count (1+ count)))
-        (apply #'concat (mapcar #'char-to-string result)))
+      (cond ((>= n 1000000) (format "%.1fM" (/ (float n) 1000000.0)))
+            ((>= n 1000)    (format "%.1fk" (/ (float n) 1000.0)))
+            (t              (number-to-string n)))
     "0"))
 
 (defun quoth--usage-header-segment ()
-  "Return the usage string for the header, or nil when no usage yet."
+  "Return the compact session usage string for the header, or nil.
+The segment is label-free: tokens (k/M), accumulated cost (unit
+prefixed), and cache percentage, joined by single spaces.  Usage is
+session-scoped (accumulated in `quoth--usage-acc'), so it belongs to
+the buffer cluster, not the model."
   (when quoth--usage-acc
     (let* ((total  (or (plist-get quoth--usage-acc :total-tokens) 0))
            (cached (plist-get quoth--usage-acc :cached-tokens))
            (unit   (plist-get quoth--usage-acc :cost-unit))
            (value  (or (plist-get quoth--usage-acc :cost-value) 0))
            (parts nil))
-      (push (format "tok: %s" (quoth--group-number total)) parts)
+      (push (quoth--group-number-compact total) parts)
       (when unit
-        (push (format "%s: %s" unit
+        (push (format "%s%s" unit
                       (if (string= unit "$")
                           (format "%.4f" value)
                         (format "%.3f" value)))
               parts))
       (when cached
         (let ((pct (if (> total 0) (round (* 100.0 (/ (float cached) (float total)))) 0)))
-          (push (format "cache: %d%%%%" pct) parts)))
-      (mapconcat #'identity (nreverse parts) "   "))))
+          (push (format "%d%%%%" pct) parts)))
+      (mapconcat #'identity (nreverse parts) " "))))
 
 (defun quoth-facade--finalize ()
   "Finalize the current response via the facade.

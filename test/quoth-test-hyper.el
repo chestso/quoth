@@ -1599,14 +1599,14 @@ response' on the final content."
           (when tool-pos
             (goto-char tool-pos)
             (quoth--update-header-line)
-            (should (string-match-p "region: tool" (format "%s" header-line-format)))))
+            (should (string-match-p "tool)" (format "%s" header-line-format)))))
         (let ((resp-pos (text-property-any (point-min) (point-max)
                                            'quoth-region-type 'response)))
           (should resp-pos)
           (when resp-pos
             (goto-char resp-pos)
             (quoth--update-header-line)
-            (should (string-match-p "region: response"
+            (should (string-match-p "response)"
                                     (format "%s" header-line-format))))))
       (quoth-test--cleanup))))
 
@@ -2090,9 +2090,9 @@ shows the stats."
             (should (= (plist-get quoth--usage-acc :cached-tokens) 8320))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string-match-p "tok: 8,991" h))
-              (should (string-match-p "hc: 0.043" h))
-              (should (string-match-p "cache: 93%%" h)))))
+              (should (string-match-p "9.0k" h))
+              (should (string-match-p "hc0.043" h))
+              (should (string-match-p "93%%" h)))))
       (quoth-test--cleanup))))
 (provide 'quoth-test-hyper)
 ;;; quoth-test-hyper.el ends here

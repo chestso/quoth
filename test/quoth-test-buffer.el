@@ -623,8 +623,7 @@ Both the current model and the region type at point appear."
             (goto-char (1- (point)))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string-match-p "my-model" h))
-              (should (string-match-p "region: user" h)))))
+              (should (string= h "(my-model | user)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-dash-for-nil-region ()
@@ -636,7 +635,7 @@ Both the current model and the region type at point appear."
             (goto-char (point-max))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string-match-p "region: -" h)))))
+              (should (string= h "(my-model | -)")))))
       (quoth-test--cleanup))))
 
 ;;; 19. Input separator has prompt-id property
@@ -2486,9 +2485,7 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
             (setq-local quoth--usage-acc nil)
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string-match-p "my-model" h))
-              (should-not (string-match-p "tok:" h))
-              (should-not (string-match-p "cache:" h)))))
+              (should (string= h "(my-model | -)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-usage-after-accumulation ()
@@ -2504,9 +2501,9 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
                               :cost-value 0.0432696))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string-match-p "tok: 8,991" h))
-              (should (string-match-p "hc: 0.043" h))
-              (should (string-match-p "cache: 93%%" h)))))
+              ;; `%%' is the mode-line escape for a literal `%' (the raw
+              ;; header-line-format string stores the escaped form).
+              (should (string= h "(my-model | 9.0k hc0.043 93%% | -)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-dollars-when-currency-dollars ()
@@ -2522,17 +2519,15 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
                               :cost-value 0.013926))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string-match-p "tok: 9,157" h))
-              (should (string-match-p (regexp-quote "$: 0.0139") h))
-              (should (string-match-p "cache: 0%%" h)))))
+              (should (string= h "(my-model | 9.2k $0.0139 0%% | -)")))))
       (quoth-test--cleanup))))
 
-(ert-deftest quoth-test/group-number-formats-thousands ()
-  "quoth--group-number formats with comma separators."
-  (should (string= (quoth--group-number 0) "0"))
-  (should (string= (quoth--group-number 999) "999"))
-  (should (string= (quoth--group-number 1000) "1,000"))
-  (should (string= (quoth--group-number 8991) "8,991"))
-  (should (string= (quoth--group-number 1000000) "1,000,000")))
+(ert-deftest quoth-test/group-number-compact-formats ()
+  "quoth--group-number-compact formats with k/M suffixes."
+  (should (string= (quoth--group-number-compact 0) "0"))
+  (should (string= (quoth--group-number-compact 999) "999"))
+  (should (string= (quoth--group-number-compact 1000) "1.0k"))
+  (should (string= (quoth--group-number-compact 8991) "9.0k"))
+  (should (string= (quoth--group-number-compact 1000000) "1.0M")))
 (provide 'quoth-test-buffer)
 ;;; quoth-test-buffer.el ends here
