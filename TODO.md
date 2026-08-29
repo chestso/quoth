@@ -90,15 +90,15 @@ Attachments are rendered as markdown (fenced blocks with a header line, or links
 
 Chat commands are all reachable via keys that markdown-mode does not bind.
 
-- [x] Moved chat commands under the free `C-c c` prefix (`quoth-chat-command-map`): `s` send, `i` interrupt, `k` clear, `a` insert selection
-- [x] `RET` still sends; `M-p`/`M-n` still navigate history; `quoth-minor-mode` source-buffer keys unchanged
+- [x] Chat commands live under the free `C-c c` prefix (`quoth-chat-command-map`): `s` send, `i` interrupt, `k` clear, `r` toggle reasoning, `m` select model
+- [x] `RET`/`C-j` fall through to the parent mode's newline editing; `C-return` sends in graphical/kitty terminals, and `M-p`/`M-n` navigate input history; `quoth-minor-mode` source-buffer keys unchanged
 
 ### Phase 1f: Hyper provider phase 1 — primary path (complete)
 
 Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is Quoth's primary mode of operation.
 
 - [x] `quoth-hyper-provider` struct + default provider
-- [x] Request composition (`quoth-openai-compose-request`): messages array, model, `stream: t`, max tokens, temperature, thinking/reasoning-effort options, no tools yet
+- [x] Request composition (`quoth-openai-compose-request`): messages array, model, `stream: t`, max tokens, temperature, thinking/reasoning-effort options (tools now live in the reusable schema regardless of provider)
 - [x] SSE streaming via curl subprocess (gptel/plz pattern): config + body over stdin, `data-binary = @-`, deltas parsed in the process filter
 - [x] Response finalization via the facade (`quoth-facade--finalize`): tag region, fresh prompt, state reset (buffer-unaware backend emits deltas/errors through callbacks)
 - [x] Reasoning display: `reasoning_content` deltas streamed into a styled, collapsible region (overlay + fold marker)
@@ -108,6 +108,7 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 ### Phase 2: Provider features (primary roadmap)
 
 - [x] Token storage via `auth-source` (`machine hyper.charm.land login apikey password sk-hyper-...`), gptel-style; `quoth-hyper-token` accepts string/function/nil
+- [x] Header-line usage: tokens, cost (currency via `quoth-hyper-usage-currency`), and cache-hit percentage (session-wide via `quoth--usage-acc`)
 - [x] In-buffer history round trip (default on): prior `[user, assistant (and tool)]` turns are read from the buffer's tagged regions and re-sent with each request (tool calls replay as the OpenAI-conformant assistant `tool_calls` + tool result pair with the real `tool_call_id`) (`quoth-hyper-history-limit` caps the tail; 0 disables; `quoth-hyper-history-include-reasoning` opts the CoT back in as `reasoning_content`)
 - [x] `x-session-id` / `x-session-affinity` headers for server-side prefix/token caching ([HYPER-API.md §3.1](HYPER-API.md)), via a dedicated pure-Elisp XXH3-64 (`quoth-xxh3.el`, seed 0, big-endian, 16-hex); per-buffer UUID (`quoth--session-uuid`), rotated by `quoth-clear-buffer`, gate `quoth-hyper-session-cache-p`
 - [x] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages. Two tools: `exec_command` and `write_stdin`
@@ -119,9 +120,9 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
   - [x] Stateful sessions for tool calls via `quoth-process.el`: `exec_command` starts a PTY session and `write_stdin` feeds it, preserving cwd and environment within the session
   - [ ] Long-running command lifecycle: explicit session close/kill and idle-session reaping beyond `write_stdin`
 - [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (tokens currently come from `auth-source` via `quoth-hyper-token`)
-- [ ] Model catalog from `GET /v1/models` (public, no auth): model picker, reasoning-effort selection
+- [ ] Model catalog from `GET /v1/models` (public, no auth): confirm which Hyper endpoint serves the OpenAI-compatible public list; currently `quoth-select-model` fetches the authenticated `GET /v1/provider` catalog instead. Add reasoning-effort selection by model
 - [ ] Error handling and retry
-- [ ] Hypercredit display from `usage.remaining.hypercredits`, with `GET /v1/credits` fallback ([HYPER-API.md §4](HYPER-API.md))
+- [ ] Hypercredit display from `usage.remaining.hypercredits`, with `GET /v1/credits` fallback ([HYPER-API.md §4](HYPER-API.md)). The per-request `cost.hypercredits` is already surfaced in the header line as `hc` (see `quoth-hyper-usage-currency`); this item is only about adding the _remaining_ balance from the credits endpoint
 - [x] Interrupt support for in-flight hyper requests (`quoth-interrupt` aborts the provider transport; `quoth-send-input` blocks while the provider is active)
 - [x] Tool call visibility in responses
 - [ ] Conversation persistence to plain-text files (gptel-style, deferred): save `quoth-region-type`/`quoth-response-to`/attachment bounds plus `quoth--session-uuid` as file-locals, recreate properties and recompute `quoth--session-id` on open. Only the 16-hex XXH3 hash ever goes over the wire (to Hyper).
@@ -132,7 +133,7 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 - [ ] MELPA submission
 - [x] Project.el integration (auto-detect project root via `project-current`)
 - [ ] Multiple concurrent quoth sessions
-- [ ] Keybindings for common operations (switch model, permission handling, etc.)
+- [ ] Keybindings for common operations beyond `C-c c` (permission handling for a future `ask`/`allowlist`, interrupt is already `C-c c i`; model selection via `C-c c m`)
 
 ### Phase 4: Advanced
 
