@@ -2422,10 +2422,10 @@ The facade sums :total-tokens, :cached-tokens, and :cost-value;
             (delete-process proc)))
       (quoth-test--cleanup))))
 
-(ert-deftest quoth-test/accumulate-usage-resets-on-new-prompt ()
-  "quoth--accumulate-usage resets the accumulator when the prompt ID changes.
-The previous prompt's total is kept until the new prompt's first usage
-arrives, then the accumulator restarts from that round."
+(ert-deftest quoth-test/accumulate-usage-persists-across-prompts ()
+  "quoth--accumulate-usage is session-cumulative: a new prompt's usage
+is ADDED to the prior prompt's total, not reset.  The only reset is
+`quoth-clear-buffer'."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -2439,7 +2439,7 @@ arrives, then the accumulator restarts from that round."
             (setq-local quoth--prompt-id "p1")
             (quoth--accumulate-usage)
             (should (= (plist-get quoth--usage-acc :total-tokens) 100))
-            ;; A new prompt's first usage resets, then accumulates.
+            ;; A new prompt's usage is ADDED to the running session total.
             (setq-local quoth--prompt-id "p2")
             (process-put proc :quoth-sse
                          (list :usage
@@ -2447,8 +2447,8 @@ arrives, then the accumulator restarts from that round."
                                      (cons "cost"
                                            (list (cons "hypercredits" 0.3))))))
             (quoth--accumulate-usage)
-            (should (= (plist-get quoth--usage-acc :total-tokens) 200))
-            (should (= (plist-get quoth--usage-acc :cost-value) 0.3))
+            (should (= (plist-get quoth--usage-acc :total-tokens) 300))
+            (should (= (plist-get quoth--usage-acc :cost-value) 0.8))
             (delete-process proc)))
       (quoth-test--cleanup))))
 

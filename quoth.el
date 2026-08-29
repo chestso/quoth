@@ -1446,16 +1446,10 @@ Runs in the quoth buffer, which owns all response text."
   (setq-local buffer-undo-list nil))
 
 (defvar-local quoth--usage-acc nil
-  "Accumulated usage plist for the current prompt, or nil.
+  "Accumulated usage plist for the current session, or nil.
 Shape: (:total-tokens :cached-tokens :cost-unit :cost-value), each
-summed across tool-loop rounds when the provider is per-request.
-Reset on the first usage of a new prompt / clear.")
-
-(defvar-local quoth--usage-prompt-id nil
-  "Prompt ID the current `quoth--usage-acc' belongs to, or nil.
-Used to detect a new prompt so the accumulator resets lazily on the
-first usage of that prompt, keeping the previous prompt's total visible
-in the header while the next request is in flight.")
+summed across all prompts and tool-loop rounds when the provider is
+per-request.  Reset only on `quoth-clear-buffer'.")
 
 (defun quoth--merge-usage (acc usage)
   "Merge one round's USAGE plist into ACC, summing numeric fields.
@@ -1473,19 +1467,15 @@ currency mid-prompt)."
 
 (defun quoth--accumulate-usage ()
   "Read one round's usage from the active transport and merge into accumulator.
-When the provider's :accumulated is non-nil (it returns a running total),
-take the values verbatim; otherwise sum into the accumulator."
+Accumulation is session-wide: totals sum across all prompts and tool-loop
+rounds, resetting only on `quoth-clear-buffer'.  When the provider's
+:accumulated is non-nil (it returns a running total), take the values
+verbatim; otherwise sum into the accumulator."
   (when (and quoth-active-provider (quoth-provider-p quoth-active-provider))
     (let ((u (quoth-provider--usage
               quoth-active-provider
               (quoth-provider-transport-process quoth-active-provider))))
       (when u
-        ;; Reset the accumulator when this usage belongs to a new prompt,
-        ;; so the previous prompt's total stays visible in the header
-        ;; until the new prompt's first usage arrives.
-        (unless (equal quoth--usage-prompt-id quoth--prompt-id)
-          (setq-local quoth--usage-acc nil)
-          (setq-local quoth--usage-prompt-id quoth--prompt-id))
         (if (plist-get u :accumulated)
             (setq-local quoth--usage-acc
                         (list :total-tokens  (plist-get u :total-tokens)
@@ -1497,7 +1487,7 @@ take the values verbatim; otherwise sum into the accumulator."
 
 (defun quoth--group-number (n)
   "Format integer N with comma thousands separators.
-Returns "0" for nil/non-numbers."
+Returns `0' for nil/non-numbers."
   (if (and (numberp n) (> n 0))
       (let ((s (number-to-string n))
             (result nil)
@@ -2085,7 +2075,6 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
       (delete-overlay ov)))
   (quoth--reasoning-reset)
   (setq-local quoth--usage-acc nil)
-  (setq-local quoth--usage-prompt-id nil)
   (erase-buffer)
   (quoth--insert-input-separator)
   (setq-local buffer-undo-list nil))
