@@ -24,8 +24,8 @@ Tool calls run without confirmation: the provider executes the `exec_command` to
 
 Not yet on MELPA. For now, install from one of the repositories:
 
-- **GitHub**: `https://github.com/thomasc1971/quoth.git`
-- **Codeberg**: `https://codeberg.org/thomasc/quoth.git`
+- **GitHub**: `https://github.com/chestso/quoth.git`
+- **Codeberg**: `https://codeberg.org/chestso/quoth.git`
 
 Both carry version tags (`v0.1.0`). A plain clone gets the latest commit, or pin to a tag for a stable release (see below).
 
@@ -33,7 +33,7 @@ Both carry version tags (`v0.1.0`). A plain clone gets the latest commit, or pin
 
 ```elisp
 (package-vc-install
- '(quoth :url "https://github.com/thomasc1971/quoth.git"
+ '(quoth :url "https://github.com/chestso/quoth.git"
          :branch "v0.1.0"))         ; omit :branch for latest
 ```
 
@@ -41,7 +41,7 @@ Both carry version tags (`v0.1.0`). A plain clone gets the latest commit, or pin
 
 ```elisp
 (straight-use-package
- '(quoth :type git :host github :repo "thomasc1971/quoth"
+ '(quoth :type git :host github :repo "chestso/quoth"
          :branch "v0.1.0"))         ; omit :branch for latest
 ```
 
@@ -49,7 +49,7 @@ Or with `use-package`:
 
 ```elisp
 (use-package quoth
-  :straight (quoth :type git :host github :repo "thomasc1971/quoth"
+  :straight (quoth :type git :host github :repo "chestso/quoth"
                    :branch "v0.1.0")   ; omit :branch for latest
   :bind ("C-c c" . quoth)
   :hook (prog-mode . quoth-minor-mode))
@@ -58,7 +58,7 @@ Or with `use-package`:
 ### Manual clone
 
 ```sh
-git clone --branch v0.1.0 https://github.com/thomasc1971/quoth.git
+git clone --branch v0.1.0 https://github.com/chestso/quoth.git
 ```
 
 Then load with `load-path`:

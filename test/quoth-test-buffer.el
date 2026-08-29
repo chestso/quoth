@@ -2,7 +2,7 @@
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/quoth
+;;; URL: https://github.com/chestso/quoth
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
 
@@ -2055,7 +2055,7 @@ as a bogus tool result."
                      "You have two remotes: `github` and `origin`."
                      (list (list :name "exec_command" :id "call_1"
                                  :args-json "{\"cmd\":\"git remote -v\"}"
-                                 :result "github\tgit@github.com:thomasc1971/quoth.git"
+                                 :result "github\tgit@github.com:chestso/quoth.git"
                                  :exit 0))
                      "GitHub pushed successfully."
                      "GitHub pushed. Now to Codeberg")))

@@ -2,7 +2,7 @@
 ;;; Copyright (C) 2026 Thomas Christensen
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
-;;; URL: https://github.com/thomasc1971/quoth
+;;; URL: https://github.com/chestso/quoth
 ;;; Version: 0.2.1
 ;;; Package-Requires: ((emacs "28.1"))
 ;;; Keywords: tools, ai, convenience
