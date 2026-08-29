@@ -1449,7 +1449,13 @@ Runs in the quoth buffer, which owns all response text."
   "Accumulated usage plist for the current prompt, or nil.
 Shape: (:total-tokens :cached-tokens :cost-unit :cost-value), each
 summed across tool-loop rounds when the provider is per-request.
-Reset on new prompt / clear.")
+Reset on the first usage of a new prompt / clear.")
+
+(defvar-local quoth--usage-prompt-id nil
+  "Prompt ID the current `quoth--usage-acc' belongs to, or nil.
+Used to detect a new prompt so the accumulator resets lazily on the
+first usage of that prompt, keeping the previous prompt's total visible
+in the header while the next request is in flight.")
 
 (defun quoth--merge-usage (acc usage)
   "Merge one round's USAGE plist into ACC, summing numeric fields.
@@ -1474,6 +1480,12 @@ take the values verbatim; otherwise sum into the accumulator."
               quoth-active-provider
               (quoth-provider-transport-process quoth-active-provider))))
       (when u
+        ;; Reset the accumulator when this usage belongs to a new prompt,
+        ;; so the previous prompt's total stays visible in the header
+        ;; until the new prompt's first usage arrives.
+        (unless (equal quoth--usage-prompt-id quoth--prompt-id)
+          (setq-local quoth--usage-acc nil)
+          (setq-local quoth--usage-prompt-id quoth--prompt-id))
         (if (plist-get u :accumulated)
             (setq-local quoth--usage-acc
                         (list :total-tokens  (plist-get u :total-tokens)
@@ -1648,7 +1660,6 @@ closure enters it)."
 Injects the facade's continuation as the provider's completion action so
 providers signal stream completion without touching buffers.  Runs in the
 quoth buffer, which owns all streamed output."
-  (setq-local quoth--usage-acc nil)
   (let ((buf (current-buffer)))
     (quoth-facade--stream-transition 'active 2)
     (let ((real-proc (quoth-provider-send-prompt
@@ -2074,6 +2085,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
       (delete-overlay ov)))
   (quoth--reasoning-reset)
   (setq-local quoth--usage-acc nil)
+  (setq-local quoth--usage-prompt-id nil)
   (erase-buffer)
   (quoth--insert-input-separator)
   (setq-local buffer-undo-list nil))

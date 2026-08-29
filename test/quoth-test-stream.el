@@ -200,6 +200,35 @@ to done."
          (should (search-backward "---" nil t))))
     (quoth-test--cleanup)))
 
+(ert-deftest quoth-test/facade-send-keeps-usage-acc ()
+  "Sending a new prompt does not clear the accumulated usage.
+The previous prompt's total stays visible in the header while the next
+request is in flight; it is reset lazily on the new prompt's first usage."
+  (unwind-protect
+      (quoth-test--with-facade
+       (lambda (_fake _completion)
+         ;; Seed an accumulated total for the previous prompt.
+         (setq-local quoth--usage-acc
+                     (list :total-tokens 8991
+                           :cached-tokens 8320
+                           :cost-unit "hc"
+                           :cost-value 0.0432696))
+         (setq-local quoth--usage-prompt-id "prev")
+         ;; A fresh send (new prompt) must not blank the accumulator.
+         ;; Use a fresh fake process (the harness's is consumed by the
+         ;; initial send).
+         (let ((fake2 (quoth-test--fake-pipe-proc)))
+           (set-process-buffer fake2 (current-buffer))
+           (unwind-protect
+               (cl-letf (((symbol-function 'make-process)
+                          (lambda (&rest _args) fake2)))
+                 (quoth-facade--send "another")
+                 (should (= (plist-get quoth--usage-acc :total-tokens) 8991))
+                 (should (= (plist-get quoth--usage-acc :cached-tokens) 8320)))
+             (when (process-live-p fake2)
+               (delete-process fake2))))))
+    (quoth-test--cleanup)))
+
 (ert-deftest quoth-test/facade-harness-moves-process-mark ()
   "Test that the facade sets the process mark at point-max after send.
 Streamed deltas append at point-max (not via the mark)."

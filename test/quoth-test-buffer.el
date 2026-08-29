@@ -2422,6 +2422,59 @@ The facade sums :total-tokens, :cached-tokens, and :cost-value;
             (delete-process proc)))
       (quoth-test--cleanup))))
 
+(ert-deftest quoth-test/accumulate-usage-resets-on-new-prompt ()
+  "quoth--accumulate-usage resets the accumulator when the prompt ID changes.
+The previous prompt's total is kept until the new prompt's first usage
+arrives, then the accumulator restarts from that round."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (let* ((usage-alist (list (cons "total_tokens" 100)
+                                    (cons "cost" (list (cons "hypercredits" 0.5)))))
+                 (proc (make-pipe-process :name "fake" :noquery t))
+                 (provider quoth-active-provider))
+            (process-put proc :quoth-sse (list :usage usage-alist))
+            (setf (quoth-provider-transport-process provider) proc)
+            ;; First prompt accumulates.
+            (setq-local quoth--prompt-id "p1")
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-acc :total-tokens) 100))
+            ;; A new prompt's first usage resets, then accumulates.
+            (setq-local quoth--prompt-id "p2")
+            (process-put proc :quoth-sse
+                         (list :usage
+                               (list (cons "total_tokens" 200)
+                                     (cons "cost"
+                                           (list (cons "hypercredits" 0.3))))))
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-acc :total-tokens) 200))
+            (should (= (plist-get quoth--usage-acc :cost-value) 0.3))
+            (delete-process proc)))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/accumulate-usage-keeps-same-prompt ()
+  "Same prompt ID accumulates across rounds without resetting."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (let* ((usage-alist (list (cons "total_tokens" 100)
+                                    (cons "cost" (list (cons "hypercredits" 0.5)))))
+                 (proc (make-pipe-process :name "fake" :noquery t))
+                 (provider quoth-active-provider))
+            (process-put proc :quoth-sse (list :usage usage-alist))
+            (setf (quoth-provider-transport-process provider) proc)
+            (setq-local quoth--prompt-id "p1")
+            (quoth--accumulate-usage)
+            (process-put proc :quoth-sse
+                         (list :usage
+                               (list (cons "total_tokens" 200)
+                                     (cons "cost"
+                                           (list (cons "hypercredits" 0.3))))))
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-acc :total-tokens) 300))
+            (delete-process proc)))
+      (quoth-test--cleanup))))
+
 ;;; 18b. Header line: usage segment
 
 (ert-deftest quoth-test/header-line-shows-no-usage-before-response ()
