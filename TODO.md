@@ -108,7 +108,7 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 ### Phase 2: Provider features (primary roadmap)
 
 - [x] Token storage via `auth-source` (`machine hyper.charm.land login apikey password sk-hyper-...`), gptel-style; `quoth-hyper-token` accepts string/function/nil
-- [x] Header-line usage: tokens, cost (currency via `quoth-hyper-usage-currency`), and cache-hit percentage (session-wide via `quoth--usage-acc`)
+- [x] Header-line usage: input (`↑`) and output (`↓`) tokens shown separately, cost (currency via `quoth-hyper-usage-currency`), and cache-hit percentage (cached ÷ input tokens; session-wide via `quoth--usage-acc`)
 - [x] In-buffer history round trip (default on): prior `[user, assistant (and tool)]` turns are read from the buffer's tagged regions and re-sent with each request (tool calls replay as the OpenAI-conformant assistant `tool_calls` + tool result pair with the real `tool_call_id`) (`quoth-hyper-history-limit` caps the tail; 0 disables; `quoth-hyper-history-include-reasoning` opts the CoT back in as `reasoning_content`)
 - [x] `x-session-id` / `x-session-affinity` headers for server-side prefix/token caching ([HYPER-API.md §3.1](HYPER-API.md)), via a dedicated pure-Elisp XXH3-64 (`quoth-xxh3.el`, seed 0, big-endian, 16-hex); per-buffer UUID (`quoth--session-uuid`), rotated by `quoth-clear-buffer`, gate `quoth-hyper-session-cache-p`
 - [x] Tool-call round trip ([HYPER-API.md §3.3](HYPER-API.md)): announce a tool set, execute calls, feed results back as `role: "tool"` messages. Two tools: `exec_command` and `write_stdin`

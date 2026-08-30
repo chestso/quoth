@@ -400,9 +400,10 @@ Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
   "Return one round's usage as a normalized plist, or nil.
 Reads the `usage' object the SSE parser stashed on PROCESS and
 normalizes it into the contract shape
-\(:total-tokens :cached-tokens :cost-unit :cost-value :accumulated).
-Hyper reports usage per HTTP request only (no server-side session
-total), so :accumulated is nil and the facade sums across rounds."
+\(:input-tokens :output-tokens :cached-tokens :cost-unit :cost-value
+:accumulated).  Hyper reports usage per HTTP request only (no
+server-side session total), so :accumulated is nil and the facade
+sums across rounds."
   (when (processp process)
     (let ((sse (process-get process :quoth-sse)))
       (when sse
@@ -412,7 +413,8 @@ total), so :accumulated is nil and the facade sums across rounds."
                (cost (funcall aget "cost"))
                (cur  quoth-hyper-usage-currency))
           (when u
-            (list :total-tokens  (or (funcall aget "total_tokens") 0)
+            (list :input-tokens  (or (funcall aget "prompt_tokens") 0)
+                  :output-tokens (or (funcall aget "completion_tokens") 0)
                   :cached-tokens (or (and ptd
                                           (quoth--openai-alist-get "cached_tokens" ptd))
                                      0)

@@ -2342,39 +2342,47 @@ description was silently lost from history because it kept a stale
 
 (ert-deftest quoth-test/merge-usage-sums-two-rounds ()
   "Two per-request usage plists accumulate into one.
-The facade sums :total-tokens, :cached-tokens, and :cost-value;
-:cost-unit is taken from the first round and preserved."
-  (let* ((round1 (list :total-tokens 9157
+The facade sums :input-tokens, :output-tokens, :cached-tokens, and
+:cost-value; :cost-unit is taken from the first round and preserved."
+  (let* ((round1 (list :input-tokens 8846
+                       :output-tokens 311
                        :cached-tokens 0
                        :cost-unit "hc"
                        :cost-value 0.27852))
-         (round2 (list :total-tokens 8991
+         (round2 (list :input-tokens 8923
+                       :output-tokens 68
                        :cached-tokens 8320
                        :cost-unit "hc"
                        :cost-value 0.0432696))
          (acc (quoth--merge-usage nil round1))
          (acc2 (quoth--merge-usage acc round2)))
-    (should (= (plist-get acc :total-tokens) 9157))
+    (should (= (plist-get acc :input-tokens) 8846))
+    (should (= (plist-get acc :output-tokens) 311))
     (should (= (plist-get acc :cost-value) 0.27852))
-    (should (= (plist-get acc2 :total-tokens) 18148))
+    (should (= (plist-get acc2 :input-tokens) 17769))
+    (should (= (plist-get acc2 :output-tokens) 379))
     (should (= (plist-get acc2 :cached-tokens) 8320))
     (should (string= (plist-get acc2 :cost-unit) "hc"))
     (should (= (plist-get acc2 :cost-value) (+ 0.27852 0.0432696)))))
 
 (ert-deftest quoth-test/merge-usage-preserves-first-cost-unit ()
   "The :cost-unit from the first round is preserved across merges."
-  (let* ((round1 (list :total-tokens 100 :cost-unit "hc" :cost-value 0.1))
-         (round2 (list :total-tokens 200 :cost-unit "X" :cost-value 0.2))
+  (let* ((round1 (list :input-tokens 60 :output-tokens 40
+                       :cost-unit "hc" :cost-value 0.1))
+         (round2 (list :input-tokens 90 :output-tokens 110
+                       :cost-unit "X" :cost-value 0.2))
          (acc (quoth--merge-usage (quoth--merge-usage nil round1) round2)))
     (should (string= (plist-get acc :cost-unit) "hc"))
-    (should (= (plist-get acc :total-tokens) 300))))
+    (should (= (plist-get acc :input-tokens) 150))
+    (should (= (plist-get acc :output-tokens) 150))))
 
 (ert-deftest quoth-test/accumulate-usage-sums-per-request ()
   "quoth--accumulate-usage reads from the provider and sums."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (let* ((usage-alist (list (cons "total_tokens" 100)
+          (let* ((usage-alist (list (cons "prompt_tokens" 60)
+                                    (cons "completion_tokens" 40)
                                     (cons "cost" (list (cons "hypercredits" 0.5)))))
                  (proc (make-pipe-process :name "fake" :noquery t))
                  (provider quoth-active-provider))
@@ -2382,15 +2390,18 @@ The facade sums :total-tokens, :cached-tokens, and :cost-value;
             (setf (quoth-provider-transport-process provider) proc)
             (setq-local quoth--usage-acc nil)
             (quoth--accumulate-usage)
-            (should (= (plist-get quoth--usage-acc :total-tokens) 100))
+            (should (= (plist-get quoth--usage-acc :input-tokens) 60))
+            (should (= (plist-get quoth--usage-acc :output-tokens) 40))
             (should (= (plist-get quoth--usage-acc :cost-value) 0.5))
             (process-put proc :quoth-sse
                          (list :usage
-                               (list (cons "total_tokens" 200)
+                               (list (cons "prompt_tokens" 150)
+                                     (cons "completion_tokens" 110)
                                      (cons "cost"
                                            (list (cons "hypercredits" 0.3))))))
             (quoth--accumulate-usage)
-            (should (= (plist-get quoth--usage-acc :total-tokens) 300))
+            (should (= (plist-get quoth--usage-acc :input-tokens) 210))
+            (should (= (plist-get quoth--usage-acc :output-tokens) 150))
             (should (= (plist-get quoth--usage-acc :cost-value) 0.8))
             (delete-process proc)))
       (quoth-test--cleanup))))
@@ -2406,16 +2417,19 @@ The facade sums :total-tokens, :cached-tokens, and :cost-value;
             (setf (quoth-provider-transport-process provider) proc)
             (fset 'quoth-provider--usage
                   (lambda (_p _proc)
-                    (list :total-tokens 999
+                    (list :input-tokens 999
+                          :output-tokens 111
                           :cost-unit "X"
                           :cost-value 1.5
                           :accumulated t)))
             (setq-local quoth--usage-acc nil)
             (quoth--accumulate-usage)
-            (should (= (plist-get quoth--usage-acc :total-tokens) 999))
+            (should (= (plist-get quoth--usage-acc :input-tokens) 999))
+            (should (= (plist-get quoth--usage-acc :output-tokens) 111))
             (should (= (plist-get quoth--usage-acc :cost-value) 1.5))
             (quoth--accumulate-usage)
-            (should (= (plist-get quoth--usage-acc :total-tokens) 999))
+            (should (= (plist-get quoth--usage-acc :input-tokens) 999))
+            (should (= (plist-get quoth--usage-acc :output-tokens) 111))
             (should (= (plist-get quoth--usage-acc :cost-value) 1.5))
             (fset 'quoth-provider--usage orig-fn)
             (delete-process proc)))
@@ -2428,7 +2442,8 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (let* ((usage-alist (list (cons "total_tokens" 100)
+          (let* ((usage-alist (list (cons "prompt_tokens" 60)
+                                    (cons "completion_tokens" 40)
                                     (cons "cost" (list (cons "hypercredits" 0.5)))))
                  (proc (make-pipe-process :name "fake" :noquery t))
                  (provider quoth-active-provider))
@@ -2437,16 +2452,18 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
             ;; First prompt accumulates.
             (setq-local quoth--prompt-id "p1")
             (quoth--accumulate-usage)
-            (should (= (plist-get quoth--usage-acc :total-tokens) 100))
+            (should (= (plist-get quoth--usage-acc :input-tokens) 60))
             ;; A new prompt's usage is ADDED to the running session total.
             (setq-local quoth--prompt-id "p2")
             (process-put proc :quoth-sse
                          (list :usage
-                               (list (cons "total_tokens" 200)
+                               (list (cons "prompt_tokens" 150)
+                                     (cons "completion_tokens" 110)
                                      (cons "cost"
                                            (list (cons "hypercredits" 0.3))))))
             (quoth--accumulate-usage)
-            (should (= (plist-get quoth--usage-acc :total-tokens) 300))
+            (should (= (plist-get quoth--usage-acc :input-tokens) 210))
+            (should (= (plist-get quoth--usage-acc :output-tokens) 150))
             (should (= (plist-get quoth--usage-acc :cost-value) 0.8))
             (delete-process proc)))
       (quoth-test--cleanup))))
@@ -2456,7 +2473,8 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (let* ((usage-alist (list (cons "total_tokens" 100)
+          (let* ((usage-alist (list (cons "prompt_tokens" 60)
+                                    (cons "completion_tokens" 40)
                                     (cons "cost" (list (cons "hypercredits" 0.5)))))
                  (proc (make-pipe-process :name "fake" :noquery t))
                  (provider quoth-active-provider))
@@ -2466,11 +2484,13 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
             (quoth--accumulate-usage)
             (process-put proc :quoth-sse
                          (list :usage
-                               (list (cons "total_tokens" 200)
+                               (list (cons "prompt_tokens" 150)
+                                     (cons "completion_tokens" 110)
                                      (cons "cost"
                                            (list (cons "hypercredits" 0.3))))))
             (quoth--accumulate-usage)
-            (should (= (plist-get quoth--usage-acc :total-tokens) 300))
+            (should (= (plist-get quoth--usage-acc :input-tokens) 210))
+            (should (= (plist-get quoth--usage-acc :output-tokens) 150))
             (delete-process proc)))
       (quoth-test--cleanup))))
 
@@ -2489,13 +2509,17 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-usage-after-accumulation ()
-  "After usage is accumulated, the header shows tok, hc, and cache."
+  "After usage is accumulated, the header shows in/out tokens, cost,
+and cache percentage.  Input and output tokens are shown separately
+(\='^\=' prefixed arrows), and the cache percentage divides cached by
+INPUT tokens only."
   (let ((quoth-model "my-model"))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (setq-local quoth--usage-acc
-                        (list :total-tokens 8991
+                        (list :input-tokens 8923
+                              :output-tokens 68
                               :cached-tokens 8320
                               :cost-unit "hc"
                               :cost-value 0.0432696))
@@ -2503,7 +2527,8 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
             (let ((h (format "%s" header-line-format)))
               ;; `%%' is the mode-line escape for a literal `%' (the raw
               ;; header-line-format string stores the escaped form).
-              (should (string= h "(my-model | 9.0k hc0.043 93%% | -)")))))
+              (should (string= h
+                               "(my-model | \u21918.9k \u219368 hc0.043 93%% | -)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-dollars-when-currency-dollars ()
@@ -2513,13 +2538,52 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (setq-local quoth--usage-acc
-                        (list :total-tokens 9157
+                        (list :input-tokens 8846
+                              :output-tokens 311
                               :cached-tokens 0
                               :cost-unit "$"
                               :cost-value 0.013926))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string= h "(my-model | 9.2k $0.0139 0%% | -)")))))
+              (should (string= h
+                               "(my-model | \u21918.8k \u2193311 $0.0139 0%% | -)")))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/header-line-cache-percent-divides-input-only ()
+  "Cache percentage is cached/input, not cached/(input+output).
+With a large output the old lumped denominator would report ~8%;
+the correct input-based percentage is 50%."
+  (let ((quoth-model "my-model"))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setq-local quoth--usage-acc
+                        (list :input-tokens 1000
+                              :output-tokens 5000
+                              :cached-tokens 500
+                              :cost-unit "hc"
+                              :cost-value 0.01))
+            (quoth--update-header-line)
+            (let ((h (format "%s" header-line-format)))
+              (should (string-match-p "50%%" h))
+              (should-not (string-match-p "8%%" h)))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/header-line-no-cache-key-omits-cache-segment ()
+  "A usage plist without :cached-tokens omits the cache percentage."
+  (let ((quoth-model "my-model"))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setq-local quoth--usage-acc
+                        (list :input-tokens 100
+                              :output-tokens 20
+                              :cost-unit "hc"
+                              :cost-value 0.01))
+            (quoth--update-header-line)
+            (let ((h (format "%s" header-line-format)))
+              (should (string= h
+                               "(my-model | \u2191100 \u219320 hc0.010 | -)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/group-number-compact-formats ()

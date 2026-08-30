@@ -1463,17 +1463,22 @@ Runs in the quoth buffer, which owns all response text."
 
 (defvar-local quoth--usage-acc nil
   "Accumulated usage plist for the current session, or nil.
-Shape: (:total-tokens :cached-tokens :cost-unit :cost-value), each
-summed across all prompts and tool-loop rounds when the provider is
-per-request.  Reset only on `quoth-clear-buffer'.")
+Shape: (:input-tokens :output-tokens :cached-tokens :cost-unit
+:cost-value), each summed across all prompts and tool-loop rounds
+when the provider is per-request.  Caching applies to input tokens
+only, so :cached-tokens never exceeds :input-tokens.  Reset only on
+`quoth-clear-buffer'.")
 
 (defun quoth--merge-usage (acc usage)
   "Merge one round's USAGE plist into ACC, summing numeric fields.
+Sums :input-tokens, :output-tokens, :cached-tokens, and :cost-value.
 Preserves the :cost-unit from the first round (providers don't switch
 currency mid-prompt)."
   (let ((or0 (lambda (v) (if (numberp v) v 0))))
-    (list :total-tokens  (+ (funcall or0 (plist-get usage :total-tokens))
-                            (or (plist-get acc :total-tokens) 0))
+    (list :input-tokens  (+ (funcall or0 (plist-get usage :input-tokens))
+                            (or (plist-get acc :input-tokens) 0))
+          :output-tokens (+ (funcall or0 (plist-get usage :output-tokens))
+                            (or (plist-get acc :output-tokens) 0))
           :cached-tokens (+ (funcall or0 (plist-get usage :cached-tokens))
                             (or (plist-get acc :cached-tokens) 0))
           :cost-unit      (or (plist-get acc :cost-unit)
@@ -1494,7 +1499,8 @@ verbatim; otherwise sum into the accumulator."
       (when u
         (if (plist-get u :accumulated)
             (setq-local quoth--usage-acc
-                        (list :total-tokens  (plist-get u :total-tokens)
+                        (list :input-tokens  (plist-get u :input-tokens)
+                              :output-tokens (plist-get u :output-tokens)
                               :cached-tokens (plist-get u :cached-tokens)
                               :cost-unit      (plist-get u :cost-unit)
                               :cost-value     (plist-get u :cost-value)))
@@ -1513,17 +1519,22 @@ Returns `0' for nil/non-numbers.  Values below 1000 render verbatim;
 
 (defun quoth--usage-header-segment ()
   "Return the compact session usage string for the header, or nil.
-The segment is label-free: tokens (k/M), accumulated cost (unit
-prefixed), and cache percentage, joined by single spaces.  Usage is
-session-scoped (accumulated in `quoth--usage-acc'), so it belongs to
-the buffer cluster, not the model."
+The segment is label-free: input and output tokens (k/M, prefixed
+with \u2191 and \u2193 arrows), accumulated cost (unit prefixed), and
+cache percentage, joined by single spaces.  The cache percentage
+divides cached by INPUT tokens only -- caching applies to the prompt
+side, never to completions.  Usage is session-scoped (accumulated in
+`quoth--usage-acc'), so it belongs to the buffer cluster, not the
+model."
   (when quoth--usage-acc
-    (let* ((total  (or (plist-get quoth--usage-acc :total-tokens) 0))
+    (let* ((input  (or (plist-get quoth--usage-acc :input-tokens) 0))
+           (output (or (plist-get quoth--usage-acc :output-tokens) 0))
            (cached (plist-get quoth--usage-acc :cached-tokens))
            (unit   (plist-get quoth--usage-acc :cost-unit))
            (value  (or (plist-get quoth--usage-acc :cost-value) 0))
            (parts nil))
-      (push (quoth--group-number-compact total) parts)
+      (push (format "\u2191%s" (quoth--group-number-compact input)) parts)
+      (push (format "\u2193%s" (quoth--group-number-compact output)) parts)
       (when unit
         (push (format "%s%s" unit
                       (if (string= unit "$")
@@ -1531,7 +1542,7 @@ the buffer cluster, not the model."
                         (format "%.3f" value)))
               parts))
       (when cached
-        (let ((pct (if (> total 0) (round (* 100.0 (/ (float cached) (float total)))) 0)))
+        (let ((pct (if (> input 0) (round (* 100.0 (/ (float cached) (float input)))) 0)))
           (push (format "%d%%%%" pct) parts)))
       (mapconcat #'identity (nreverse parts) " "))))
 

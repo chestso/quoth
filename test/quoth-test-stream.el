@@ -209,7 +209,8 @@ request is in flight; it is reset lazily on the new prompt's first usage."
        (lambda (_fake _completion)
          ;; Seed an accumulated total for the previous prompt.
          (setq-local quoth--usage-acc
-                     (list :total-tokens 8991
+                     (list :input-tokens 8923
+                           :output-tokens 68
                            :cached-tokens 8320
                            :cost-unit "hc"
                            :cost-value 0.0432696))
@@ -223,7 +224,8 @@ request is in flight; it is reset lazily on the new prompt's first usage."
                (cl-letf (((symbol-function 'make-process)
                           (lambda (&rest _args) fake2)))
                  (quoth-facade--send "another")
-                 (should (= (plist-get quoth--usage-acc :total-tokens) 8991))
+                 (should (= (plist-get quoth--usage-acc :input-tokens) 8923))
+                 (should (= (plist-get quoth--usage-acc :output-tokens) 68))
                  (should (= (plist-get quoth--usage-acc :cached-tokens) 8320)))
              (when (process-live-p fake2)
                (delete-process fake2))))))

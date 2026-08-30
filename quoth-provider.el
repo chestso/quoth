@@ -118,18 +118,21 @@ report usage).
 The plist may carry any subset of these keys; the facade renders only
 those that are present:
 
-  :total-tokens    integer   total tokens for this round (prompt+completion)
+  :input-tokens    integer   prompt/context tokens for this round
+  :output-tokens   integer   completion tokens for this round
   :cached-tokens   integer   cache-hit input tokens (0 when the provider
-                             has no caching, or this round was a cold miss)
+                             has no caching, or this round was a cold miss);
+                             caching applies to input tokens only, so this
+                             never exceeds :input-tokens
   :cost-unit       string    display unit, e.g. \"hc\" or \"$\"; nil to omit
   :cost-value      number    cost in :cost-unit for this round
-  :accumulated     boolean   non-nil means :total-tokens and :cost-value
-                             are ALREADY summed across the session (or
-                             prompt) by the provider; the facade renders
-                             them verbatim and skips its own summation.
-                             nil (the default) means the values describe
-                             ONLY the last request, and the facade sums
-                             them across tool-loop rounds itself.
+  :accumulated     boolean   non-nil means :input-tokens, :output-tokens,
+                             and :cost-value are ALREADY summed across the
+                             session (or prompt) by the provider; the facade
+                             renders them verbatim and skips its own
+                             summation.  nil (the default) means the values
+                             describe ONLY the last request, and the facade
+                             sums them across tool-loop rounds itself.
 
 When :accumulated is nil the values describe exactly the last request,
 NOT an accumulated total — the facade sums them.  When :accumulated is

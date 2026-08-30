@@ -1981,8 +1981,8 @@ prompt_tokens_details."
 
 (ert-deftest quoth-test/hyper-usage-normalizes-cold-round ()
   "A cold round (no prompt_tokens_details) normalizes :cached-tokens to 0.
-The provider returns :total-tokens, :cost-unit, :cost-value, and
-:accumulated nil (per-request; the facade sums)."
+The provider returns :input-tokens, :output-tokens, :cost-unit,
+:cost-value, and :accumulated nil (per-request; the facade sums)."
   (let ((quoth-hyper-usage-currency 'credits)
         (usage-alist (list (cons "prompt_tokens" 8846)
                            (cons "completion_tokens" 311)
@@ -1996,7 +1996,8 @@ The provider returns :total-tokens, :cost-unit, :cost-value, and
     (process-put proc :quoth-sse (list :usage usage-alist))
     (let ((result (quoth-provider--usage provider proc)))
       (should result)
-      (should (= (plist-get result :total-tokens) 9157))
+      (should (= (plist-get result :input-tokens) 8846))
+      (should (= (plist-get result :output-tokens) 311))
       (should (= (plist-get result :cached-tokens) 0))
       (should (string= (plist-get result :cost-unit) "hc"))
       (should (= (plist-get result :cost-value) 0.27852))
@@ -2020,7 +2021,8 @@ The provider returns :total-tokens, :cost-unit, :cost-value, and
     (process-put proc :quoth-sse (list :usage usage-alist))
     (let ((result (quoth-provider--usage provider proc)))
       (should result)
-      (should (= (plist-get result :total-tokens) 8991))
+      (should (= (plist-get result :input-tokens) 8923))
+      (should (= (plist-get result :output-tokens) 68))
       (should (= (plist-get result :cached-tokens) 8320))
       (should (string= (plist-get result :cost-unit) "hc"))
       (should (= (plist-get result :cost-value) 0.0432696)))
@@ -2029,7 +2031,9 @@ The provider returns :total-tokens, :cost-unit, :cost-value, and
 (ert-deftest quoth-test/hyper-usage-currency-dollars ()
   "With :dollars currency, :cost-unit is \"$\" and :cost-value is the USD."
   (let ((quoth-hyper-usage-currency 'dollars)
-        (usage-alist (list (cons "total_tokens" 9157)
+        (usage-alist (list (cons "prompt_tokens" 8846)
+                           (cons "completion_tokens" 311)
+                           (cons "total_tokens" 9157)
                            (cons "cost" (list (cons "usd" 0.013926)
                                               (cons "hypercredits" 0.27852)))))
         (proc (make-pipe-process :name "fake" :noquery t))
@@ -2085,12 +2089,14 @@ shows the stats."
                        (sit-for 0.02))))))))
           ;; The usage was captured and accumulated; header shows stats.
           (with-current-buffer (get-buffer (quoth-test--buffer-name))
-            (should (plist-get quoth--usage-acc :total-tokens))
-            (should (= (plist-get quoth--usage-acc :total-tokens) 8991))
+            (should (plist-get quoth--usage-acc :input-tokens))
+            (should (= (plist-get quoth--usage-acc :input-tokens) 8923))
+            (should (= (plist-get quoth--usage-acc :output-tokens) 68))
             (should (= (plist-get quoth--usage-acc :cached-tokens) 8320))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string-match-p "9.0k" h))
+              (should (string-match-p "\u21918.9k" h))
+              (should (string-match-p "\u219368" h))
               (should (string-match-p "hc0.043" h))
               (should (string-match-p "93%%" h)))))
       (quoth-test--cleanup))))
