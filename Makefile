@@ -15,7 +15,7 @@ help:
 	@echo "  make version                  print the ;;; Version: header"
 	@echo "  make check-version            verify header matches the current git tag"
 	@echo "  make dist                     build the package tarball from the current tag"
-	@echo "  make release VERSION=x.y.z    bump header, commit, tag (push manual)"
+	@echo "  make release VERSION=x.y.z    tag release (bumps header if behind; push manual)"
 	@echo "  make clean                    remove byte-compiled and cache artifacts"
 
 test:

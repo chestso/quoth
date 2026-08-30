@@ -27,19 +27,28 @@ ver_le() {
 	[ "$1" = "$2" ] || printf '%s\n%s\n' "$1" "$2" | sort -V -C
 }
 
+if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+	echo "release: tag v$VERSION already exists" >&2
+	exit 1
+fi
+
 if [ -z "$(git tag -l)" ]; then
 	# First release: allow equality with the current header.
 	if ! ver_le "$cur" "$new"; then
 		echo "release: first release must be >= current header: $cur -> $new" >&2
 		exit 1
 	fi
-elif ! ver_lt "$cur" "$new"; then
-	echo "release: version must increase: $cur -> $new" >&2
+elif ver_lt "$new" "$cur"; then
+	# Strictly decreasing is always wrong.  EQUALITY is allowed: the version
+	# refs may already have been bumped in their own commit before release was
+	# run, in which case the branch below just tags that HEAD, keeping HEAD
+	# exactly on the tag so dist can archive it.
+	echo "release: version must not decrease: $cur -> $new" >&2
 	exit 1
 fi
 
 if [ "$cur" = "$new" ]; then
-	# Header already at the release version: tag the existing HEAD.
+	# Header already at the release version (bumped pre-commit): tag HEAD as-is.
 	git tag "v$VERSION" -m "Release v$VERSION"
 else
 	sed -i "s/^;;; Version: .*/;;; Version: $VERSION/" quoth.el
