@@ -301,6 +301,23 @@ The block carries an Attachment header line."
               (should (string-match-p "```" formatted)))))
       (quoth-test--cleanup))))
 
+(ert-deftest quoth-test/format-selection-fence-grows-for-nested-backticks ()
+  "`quoth--format-selection' widens the fence when the selection
+contains backtick runs, so nested fences never close the block early."
+  (let ((buf (quoth-test--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (with-temp-buffer
+            (insert "here is a ``` fenced snippet
+and a ````` longer run
+")
+            (let ((formatted (quoth--format-selection "src/file.md" "src/file.md"
+                                                      (point-min) (1- (point-max)))))
+              ;; The opening fence must be longer than the longest inner run.
+              (should (string-match-p "\n``````markdown\n" formatted))
+              (should (string-match-p "``````$" formatted)))))
+      (quoth-test--cleanup))))
+
 (ert-deftest quoth-test/format-selection-uses-relative-path ()
   "Attachment paths use the pre-resolved relative path as-is."
   (let ((buf (quoth-test--fresh-buffer)))

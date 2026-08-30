@@ -1060,9 +1060,10 @@ path (or nil to re-resolve), START and END are the position bounds."
                      (line-number-at-pos)))
          (selected-text (buffer-substring-no-properties start end))
          (relative-file (or relative-file (quoth--relative-file file) "(no file)"))
-         (lang (quoth--lang-from-extension (file-name-nondirectory relative-file))))
-    (format "**Attachment: %s (lines %d-%d)**\n\n```%s\n%s\n```"
-            relative-file start-line end-line lang selected-text)))
+         (lang (quoth--lang-from-extension (file-name-nondirectory relative-file)))
+         (fence (quoth--fence-str selected-text)))
+    (format "**Attachment: %s (lines %d-%d)**\n\n%s%s\n%s\n%s"
+            relative-file start-line end-line fence lang selected-text fence)))
 
 (defun quoth--reasoning-start-region ()
   "Start a reasoning region at point-max if none is active.
