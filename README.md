@@ -18,7 +18,7 @@ See [TODO.md](TODO.md) for the full project goal and roadmap.
 
 ## Important: Permission Behavior
 
-Tool calls run without confirmation: the provider executes the `exec_command` tool immediately when the model calls it. Interactive permission prompts for tool execution are on the roadmap. See the [TODO.md](TODO.md) roadmap for details.
+Tool calls run without confirmation: the provider executes the `exec_command` tool immediately when the model calls it. Interactive permission prompts for tool execution are on the roadmap.
 
 ## Installing
 
@@ -29,23 +29,17 @@ Not yet on MELPA. For now, install from one of the repositories:
 
 Both carry version tags (`v0.3.0`). A plain clone gets the latest commit, or pin to a tag for a stable release (see below).
 
-### package.el (Emacs 29+)
+### package-vc (Emacs 29+)
 
 ```elisp
-(package-vc-install
- '(quoth :url "https://github.com/chestso/quoth.git"
-         :branch "v0.3.0"))         ; omit :branch for latest
+(use-package quoth
+  :vc (:url "https://github.com/chestso/quoth.git"
+        :branch "v0.3.0")            ; omit :branch for latest
+  :bind ("C-c c" . quoth)
+  :hook (prog-mode . quoth-minor-mode))
 ```
 
 ### straight.el
-
-```elisp
-(straight-use-package
- '(quoth :type git :host github :repo "chestso/quoth"
-         :branch "v0.3.0"))         ; omit :branch for latest
-```
-
-Or with `use-package`:
 
 ```elisp
 (use-package quoth
@@ -184,20 +178,7 @@ Keybindings (active when `quoth-minor-mode` is enabled):
 - `C-c C-b` — insert the entire buffer as a markdown fenced code block
 - `C-c C-p` — insert the buffer's file path as context
 
-## Prompt IDs and Context
-
-Each prompt is assigned a unique ID when the input divider is
-inserted, before you type anything. This ID tracks the user input
-(typed text and inserted context) that belongs to that prompt, and all
-metadata is stored as text properties on the buffer content.
-
-The chat buffer shows a markdown horizontal divider (`---`, framed by
-blank lines) above the input area; everything below it is the user's
-turn, tagged `quoth-region-type 'user`. A second divider closes the
-user turn before the response starts. Dividers are tagged `separator` /
-`user-separator` and never reach the model.
-
-### Inserting context
+## Inserting Context
 
 Insert context from a source buffer with:
 
@@ -208,25 +189,28 @@ Insert context from a source buffer with:
 Inserted content is formatted as a markdown fenced code block with a
 `**Attachment: <relpath> (lines N-M)**` header (paths relative to the
 project root); `quoth-insert-filepath` inserts a `[relpath](relpath)`
-link instead. It is appended as plain user input (tagged
-`quoth-region-type 'user` with the current `quoth-prompt-id`), so it is
-sent as part of the prompt — there is no separate attachment tracking.
-The API for retrieving prompts programmatically is documented in
+link instead. It is appended as plain user input, so it is sent as part
+of the prompt — there is no separate attachment tracking.
+
+Prompt/response tagging and metadata are documented in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Header Line Display
 
-The header line shows the current model and the region type at point:
+The header line shows three clusters joined by `|`: the model name,
+session usage, and the region type at point.
 
 ```
-model: deepseek-v4-flash   region: response
+deepseek-v4-flash | ↑9.0k ↓1.2k $0.0123 42% | response
 ```
 
-The region type updates as the cursor moves: `user` on the input line,
-`separator` on a divider, `reasoning` on chain-of-thought text, `tool`
-and `tool-output` on tool blocks, and `response` on the final answer.
 The model is the effective provider model (`quoth-model` if set, else
-the provider default).
+the provider default). Usage — input (`↑`) and output (`↓`) tokens,
+accumulated cost, and cache percentage — appears only after the first
+response. The region type updates as the cursor moves: `user` on the
+input line, `separator` on a divider, `reasoning` on chain-of-thought
+text, `tool` and `tool-output` on tool blocks, and `response` on the
+final answer.
 
 ## Rendering
 
