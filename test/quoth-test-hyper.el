@@ -693,36 +693,69 @@ on stream completion instead of finalizing or touching buffers itself."
   (expand-file-name "hyper-server.py"
                     (file-name-directory (locate-library "quoth-test"))))
 
+(defvar quoth-test--hyper-servers nil
+  "Alist of (MODE . (PROC CAP-FILE BASE-URL)) for shared dummy servers.
+The server for a mode is started once and reused across tests; the
+capture file is truncated before each test's body so every test sees a
+clean capture.  Torn down from `kill-emacs-hook'.")
+
+(defun quoth-test--hyper-stop-servers ()
+  "Stop every shared dummy hyper server and delete its capture file."
+  (dolist (entry quoth-test--hyper-servers)
+    (let* ((rest (cdr entry))
+           (proc (car rest))
+           (cap (cadr rest)))
+      (when (processp proc) (delete-process proc))
+      (when (and cap (file-exists-p cap)) (delete-file cap))))
+  (setq quoth-test--hyper-servers nil))
+
+(defun quoth-test--hyper-wait-for-base (cap deadline)
+  "Poll up to DEADLINE for the server to write its base URL to CAP.
+Return the base URL string, or nil on timeout."
+  (let (base)
+    (while (and (null base) (< (float-time) deadline))
+      (accept-process-output nil 0.1)
+      (when (file-exists-p cap)
+        (with-temp-buffer
+          (insert-file-contents cap)
+          (goto-char (point-min))
+          (let ((l (buffer-substring-no-properties
+                    (point) (line-end-position))))
+            (when (string-prefix-p "http" l)
+              (setq base l))))))
+    base))
+
 (defun quoth-test--with-hyper-server (mode body-fn)
-  "Start a dummy hyper server in MODE, call BODY-FN with its BASE-URL.
-Returns the capture output."
-  (let* ((cap (quoth-test--hyper-cap-file))
-         (proc (make-process
-                :name "quoth-hyper-test"
-                :command (list (quoth-test--hyper-server-program)
-                               cap (symbol-name mode))
-                :noquery t))
-         (base nil)
-         (deadline (+ (float-time) 5)))
-    (unwind-protect
-        (progn
-          ;; Wait for the server to write its base URL.
-          (while (and (null base) (< (float-time) deadline))
-            (accept-process-output nil 0.1)
-            (when (file-exists-p cap)
-              (with-temp-buffer
-                (insert-file-contents cap)
-                (goto-char (point-min))
-                (let ((l (buffer-substring-no-properties
-                          (point) (line-end-position))))
-                  (when (string-prefix-p "http" l)
-                    (setq base l))))))
-          (unless base
-            (error "Hyper dummy server failed to start"))
-          (funcall body-fn base)
-          (quoth-test--read-hyper-capture cap))
-      (when proc (delete-process proc))
-      (when (file-exists-p cap) (delete-file cap)))))
+  "Start (or reuse) a dummy hyper server in MODE; call BODY-FN with BASE-URL.
+The server for MODE is started once and reused across tests; the capture
+file is truncated to the base URL line before each test's body, so every
+test sees a clean capture (the server appends per-request).  Returns
+\(BASE-URL . REQUESTS) parsed from the capture file."
+  (let* ((cached (assq mode quoth-test--hyper-servers))
+         (proc (and cached (car (cdr cached))))
+         (cap (and cached (cadr (cdr cached))))
+         (base (and cached (caddr (cdr cached)))))
+    (unless cached
+      (setq cap (quoth-test--hyper-cap-file))
+      (setq proc (make-process
+                  :name "quoth-hyper-test"
+                  :command (list (quoth-test--hyper-server-program)
+                                 cap (symbol-name mode))
+                  :noquery t))
+      (setq base (quoth-test--hyper-wait-for-base cap (+ (float-time) 5)))
+      (unless base
+        (when (processp proc) (delete-process proc))
+        (when (file-exists-p cap) (delete-file cap))
+        (error "Hyper dummy server failed to start"))
+      (push (list mode proc cap base) quoth-test--hyper-servers))
+    ;; Truncate the capture to the base URL line: the server re-opens it
+    ;; in append mode per request, so a fresh per-test capture follows.
+    (with-temp-file cap
+      (insert base "\n"))
+    (funcall body-fn base)
+    (quoth-test--read-hyper-capture cap)))
+
+(add-hook 'kill-emacs-hook #'quoth-test--hyper-stop-servers)
 
 (ert-deftest quoth-test/hyper-wire-captures-request-body ()
   "The dummy server should capture the composed JSON request body."

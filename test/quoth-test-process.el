@@ -155,20 +155,23 @@
       (quoth-test-process--cleanup-owner owner))))
 
 (ert-deftest quoth-test-process/collect-advances-last-report ()
-  "Yield only reports output produced since the previous yield."
+  "Yield only reports output produced since the previous yield.
+The first yield (deadline < gap) returns only the pre-gap output; the
+second (deadline > gap) catches the post-gap echo.  The gap is kept
+short to avoid sleeping through a full second."
   (let ((owner (quoth-test-process--owner))
         (session nil))
     (unwind-protect
         (progn
           (setq session (quoth-process--start
-                         "echo one; sleep 1; echo two"
+                         "echo one; sleep 0.1; echo two"
                          nil owner))
-          (let ((first (quoth-process--yield session 300)))
+          (let ((first (quoth-process--yield session 20)))
             (should (consp first))
             (should (null (cdr first)))
             (should (string-match-p "one" (car first)))
             (should-not (string-match-p "two" (car first)))
-            (let ((second (quoth-process--yield session 1500)))
+            (let ((second (quoth-process--yield session 200)))
               (should (consp second))
               (should (= (cdr second) 0))
               (should-not (string-match-p "one" (car second)))
