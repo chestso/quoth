@@ -57,7 +57,7 @@
 (declare-function quoth-test--buffer-name "quoth-test")
 (defvar quoth-test--root)
 
-;;; Facade simulation helper: lets tests drive the response cycle
+;;; Simulation helper: lets tests drive the response cycle
 ;;; without any transport process, filter, or sentinel.
 
 (defun quoth-test--live-pipe-proc ()
@@ -72,13 +72,13 @@ then EOF; a pipe process stays alive to accept that without erroring
                                  :sentinel #'ignore)))
     proc))
 
-(defun quoth-test--simulate-facade-response (content &optional reasoning)
+(defun quoth-test--simulate-response (content &optional reasoning)
   "Append CONTENT as streamed deltas and finalize the response.
 Mimics the post-`quoth-send-input' state: `quoth--response-start'
 must already be set (a marker at the response start).  Streams
 REASONING (when non-nil) then CONTENT through
-`quoth-facade--append-delta' and closes the response with
-`quoth-facade--finalize'.  With no reasoning, CONTENT is streamed as
+`quoth--append-delta' and closes the response with
+`quoth--finalize-response'.  With no reasoning, CONTENT is streamed as
 a single `content' delta.  Runs in the quoth buffer."
   (when (and reasoning (> (length reasoning) 0))
     (let ((i 0))
@@ -86,12 +86,12 @@ a single `content' delta.  Runs in the quoth buffer."
         (let ((next (or (and (string-match "\n" reasoning i)
                              (match-end 0))
                         (length reasoning))))
-          (quoth-facade--append-delta
+          (quoth--append-delta
            (substring reasoning i next) 'reasoning)
           (setq i next))))
-    (quoth-facade--append-delta "" 'content))
-  (quoth-facade--append-delta content 'content)
-  (quoth-facade--finalize))
+    (quoth--append-delta "" 'content))
+  (quoth--append-delta content 'content)
+  (quoth--finalize-response))
 
 ;;; 1. No duplicate defvar quoth--continue
 
@@ -212,7 +212,7 @@ A blank line below it, and a blank line above it when it follows a response."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response text")
+          (quoth-test--simulate-response "response text")
           (goto-char (point-max))
           (search-backward "---")
           (should (string-match-p "\n\n---\n\n" (buffer-substring-no-properties
@@ -230,15 +230,15 @@ A blank line below it, and a blank line above it when it follows a response."
           (should (= (marker-position quoth--prompt-start-marker) (point-min)))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-finalize-resets-prompt-start ()
-  "After the facade finalizes a response, quoth--prompt-start-marker is reset."
+(ert-deftest quoth-test/finalize-resets-prompt-start ()
+  "After the send loop finalizes a response, quoth--prompt-start-marker is reset."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response text")
+          (quoth-test--simulate-response "response text")
           (should quoth--prompt-start-marker)
           (should (markerp quoth--prompt-start-marker))
           (should (= (marker-position quoth--prompt-start-marker)
@@ -451,7 +451,7 @@ prompt: the user separator lands at point-max."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/prompt-id-regenerated-after-response ()
-  "After facade finalize, `quoth--prompt-id' should be a new unique ID."
+  "After the finalize, `quoth--prompt-id' should be a new unique ID."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -459,8 +459,8 @@ prompt: the user separator lands at point-max."
             (goto-char (point-max))
             (newline)
             (setq-local quoth--response-start (point-marker))
-            ;; Simulate stream completion via the facade.
-            (quoth-test--simulate-facade-response "response text")
+            ;; Simulate stream completion via.
+            (quoth-test--simulate-response "response text")
             ;; New ID should be different
             (should (stringp quoth--prompt-id))
             (should (not (string= old-id quoth--prompt-id))))))
@@ -718,7 +718,7 @@ Both the current model and the region type at point appear."
               (cl-letf (((symbol-function #'make-process)
                          (lambda (&rest _) fake-proc)))
                 (quoth-send-input))
-              ;; Simulate stream completion: invoke the facade finalize
+              ;; Simulate stream completion: invoke the the finalize
               ;; continuation directly (no process, filter, or sentinel).
               (let ((completion (quoth-provider-completion-action
                                  quoth-active-provider)))
@@ -735,7 +735,7 @@ Both the current model and the region type at point appear."
     (quoth-test--cleanup)))
 
 ;;; The previous body used `quoth--process-sentinel' to complete the
-;;; response; the facade's completion-action indirection replaces it.
+;;; response; the completion-action indirection replaces it.
 
 ;;; 30. Region type tagging: prompt (removed - comint handles via fields)
 
@@ -748,13 +748,13 @@ Both the current model and the region type at point appear."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          ;; Simulate a response cycle via the facade (no process).
+          ;; Simulate a response cycle via (no process).
           (goto-char (point-max))
           (insert "test")
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response text")
+          (quoth-test--simulate-response "response text")
           ;; Check that response text has quoth-region-type 'response
           (goto-char (point-min))
           (should (search-forward "response text" nil t))
@@ -792,8 +792,8 @@ Both the current model and the region type at point appear."
                                (overlays-in (point-min) (point-max))))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-finalize-tags-and-reprompts ()
-  "The facade continuation finalizes the response.
+(ert-deftest quoth-test/finalize-tags-and-reprompts ()
+  "The the core continuation finalizes the response.
 It tags the response, inserts a fresh prompt, and regenerates the ID."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
@@ -803,13 +803,13 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
         (insert "mock response")
         (let ((old-id quoth--prompt-id)
               (response-start (point-marker)))
-          ;; The facade continuation is exactly what quoth-send-input
+          ;; The the core continuation is exactly what quoth-send-input
           ;; injects into the provider.
           (let ((buf (current-buffer)))
             (funcall (lambda ()
                        (when (buffer-live-p buf)
                          (with-current-buffer buf
-                           (quoth-facade--finalize))))))
+                           (quoth--finalize-response))))))
           ;; Fresh prompt inserted after the response, with a new ID.
           (goto-char (point-min))
           (search-forward "mock response")
@@ -836,7 +836,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response text")
+          (quoth-test--simulate-response "response text")
           (goto-char (point-min))
           (should (search-forward "response text" nil t))
           (should (eq (get-text-property (- (point) 5) 'quoth-region-type) 'response))))
@@ -889,12 +889,12 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
 
 ;;; 60. Debug logging - command logged in input-sender
 
-;;; 62. Debug logging - streamed output logged via the facade
+;;; 62. Debug logging - streamed output logged via
 
 (ert-deftest quoth-test/debug-logs-output ()
-  "Streamed content via the facade inserts into the buffer and finalizes.
+  "Streamed content via inserts into the buffer and finalizes.
 The debug *quoth-debug* logging is the transport's job (quoth-provider);
-the facade owns insertion.  This replaces the deleted
+the send loop owns insertion.  This replaces the deleted
 `quoth--output-filter' test that asserted filter-level logging."
   (unwind-protect
       (let ((quoth-debug-mode t)
@@ -903,19 +903,19 @@ the facade owns insertion.  This replaces the deleted
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "some output text" 'content)
+          (quoth--append-delta "some output text" 'content)
           (goto-char (point-min))
           (should (search-forward "some output text" nil t)))
         (with-current-buffer buf
-          (quoth-facade--finalize)))
+          (quoth--finalize-response)))
     (quoth-test--cleanup)))
 
-;;; 63. Debug logging - finalize path logs via the facade continuation
+;;; 63. Debug logging - finalize path logs via continuation
 
 (ert-deftest quoth-test/debug-logs-finalize ()
-  "The facade finalize path closes the response and inserts a prompt.
+  "The the finalize path closes the response and inserts a prompt.
 The run provider's process sentinel (deleted) used to log the sentinel
-event; the facade continuation now owns completion."
+event; the send loop continuation now owns completion."
   (unwind-protect
       (let ((quoth-debug-mode t)
             (buf (quoth-test--fresh-buffer)))
@@ -923,7 +923,7 @@ event; the facade continuation now owns completion."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response"))
+          (quoth-test--simulate-response "response"))
         (with-current-buffer buf
           (goto-char (point-min))
           (should (search-forward "---" nil t))))
@@ -1004,9 +1004,9 @@ There is no after-change hook; tagging happens in `quoth-send-input'."
           (should (marker-insertion-type quoth--prompt-start-marker))))
     (quoth-test--cleanup)))
 
-;;; Facade delta streaming
+;;; Delta streaming
 
-(ert-deftest quoth-test/facade-delta-inserts-at-end ()
+(ert-deftest quoth-test/delta-inserts-at-end ()
   "A streamed content delta is appended at point-max (the response area)."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
@@ -1016,7 +1016,7 @@ There is no after-change hook; tagging happens in `quoth-send-input'."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "hello world" 'content)
+          (quoth--append-delta "hello world" 'content)
           (goto-char (point-min))
           (should (search-forward "hello world" nil t))
           ;; The delta went to point-max (the response area), so the
@@ -1024,7 +1024,7 @@ There is no after-change hook; tagging happens in `quoth-send-input'."
           (should (< (marker-position quoth--response-start) (point-max)))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-delta-accumulates ()
+(ert-deftest quoth-test/delta-accumulates ()
   "Multiple deltas accumulate in stream order at the response area."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
@@ -1032,16 +1032,16 @@ There is no after-change hook; tagging happens in `quoth-send-input'."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "abc" 'content)
-          (quoth-facade--append-delta "xyz" 'content)
+          (quoth--append-delta "abc" 'content)
+          (quoth--append-delta "xyz" 'content)
           (goto-char (point-min))
           (should (search-forward "abcxyz" nil t))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-delta-logged-to-debug ()
+(ert-deftest quoth-test/delta-logged-to-debug ()
   "Streamed deltas insert into the buffer when debug mode is on.
 The *quoth-debug* logging is the transport's job (providers), not the
-facade; this asserts the facade's contract — insertion completes."
+the core; this asserts the contract — insertion completes."
   (unwind-protect
       (let ((quoth-debug-mode t)
             (buf (quoth-test--fresh-buffer)))
@@ -1049,44 +1049,44 @@ facade; this asserts the facade's contract — insertion completes."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "test output" 'content)
+          (quoth--append-delta "test output" 'content)
           (goto-char (point-min))
           (should (search-forward "test output" nil t)))
         (with-current-buffer buf
-          (quoth-facade--finalize)))
+          (quoth--finalize-response)))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-delta-no-field-property ()
+(ert-deftest quoth-test/delta-no-field-property ()
   "Streamed deltas should NOT set field on inserted text."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "response text" 'content)
+          (quoth--append-delta "response text" 'content)
           (should-not (get-text-property (1- (point-max)) 'field))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-delta-dead-buffer-safe ()
-  "The facade's on-delta closure guards a killed quoth buffer."
+(ert-deftest quoth-test/delta-dead-buffer-safe ()
+  "The the core's on-delta closure guards a killed quoth buffer."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (kill-buffer buf)
-        ;; The closure the facade injects into the provider wraps the
+        ;; The closure the send loop injects into the provider wraps the
         ;; append in `buffer-live-p', so it must not error after the
         ;; buffer died.
         (should-not (funcall (lambda ()
                                (when (buffer-live-p buf)
                                  (with-current-buffer buf
-                                   (quoth-facade--append-delta "x" 'content))))))
+                                   (quoth--append-delta "x" 'content))))))
         ;; The raw function itself operates on the current buffer; a
         ;; live current buffer must still work.
         (with-temp-buffer
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "works" 'content)))
+          (quoth--append-delta "works" 'content)))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-delta-cursor-stays-when-scrolled-back ()
+(ert-deftest quoth-test/delta-cursor-stays-when-scrolled-back ()
   "When cursor is not at point-max, streaming should not move it.
 This allows users to scroll back and read earlier content while
 the response streams in."
@@ -1102,7 +1102,7 @@ the response streams in."
           (search-forward "existing")
           (let ((saved-point (point)))
             ;; Stream in new content
-            (quoth-facade--append-delta "streamed text" 'content)
+            (quoth--append-delta "streamed text" 'content)
             ;; Cursor should stay where it was
             (should (= (point) saved-point))
             ;; New content should be at the end
@@ -1110,7 +1110,7 @@ the response streams in."
             (should (search-backward "streamed text" nil t)))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-delta-cursor-follows-when-at-end ()
+(ert-deftest quoth-test/delta-cursor-follows-when-at-end ()
   "When cursor is at point-max, streaming should advance it.
 This gives a terminal-like reading experience for users watching
 the live stream."
@@ -1122,7 +1122,7 @@ the live stream."
           ;; Cursor is at point-max
           (should (= (point) (point-max)))
           ;; Stream in content
-          (quoth-facade--append-delta "streaming text" 'content)
+          (quoth--append-delta "streaming text" 'content)
           ;; Cursor should have moved to the new point-max
           (should (= (point) (point-max)))
           ;; Content should be visible at point
@@ -1425,7 +1425,7 @@ There is no separate `quoth-mode' major mode."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-test--simulate-facade-response "response")
+          (quoth-test--simulate-response "response")
           (goto-char (point-max))
           (insert-and-inherit "new input")
           (goto-char (point-min))
@@ -1541,7 +1541,7 @@ There is no separate `quoth-mode' major mode."
 
 ;;; 33. Conversation history extraction: tagged regions -> turns
 
-;;; These tests pin the contract of the facade's history extraction:
+;;; These tests pin the contract of the history extraction:
 ;;; `quoth--history-turns' reads the buffer's tagged regions (prompt
 ;;; markers, user input, responses, reasoning) and produces a list of
 ;;; message alists (not (ROLE . TEXT) conses) that the hyper provider
@@ -1616,9 +1616,9 @@ prompt's ID."
       (process-put proc :quoth-target (current-buffer))
       (unwind-protect
           (progn
-            (quoth-facade--append-delta reasoning-text 'reasoning)
-            (quoth-facade--append-delta answer-text 'content)
-            (quoth-facade--finalize))
+            (quoth--append-delta reasoning-text 'reasoning)
+            (quoth--append-delta answer-text 'content)
+            (quoth--finalize-response))
         (delete-process proc)))
     (goto-char (point-max))
     (when (eq (char-before (point)) ?\n)
@@ -2015,8 +2015,8 @@ R2-CONTENT.  Returns the completed prompt's ID."
     (let ((response-start (point)))
       ;; Round 1: reasoning, content, then the tool block.
       (setq-local quoth--response-start (point-marker))
-      (quoth-facade--append-delta r1-reasoning 'reasoning)
-      (quoth-facade--append-delta r1-content 'content)
+      (quoth--append-delta r1-reasoning 'reasoning)
+      (quoth--append-delta r1-content 'content)
       (dolist (tc tool-calls)
         (quoth--tool-block-insert tc prompt-id))
       (quoth--tag-response-region (marker-position quoth--response-start)
@@ -2024,8 +2024,8 @@ R2-CONTENT.  Returns the completed prompt's ID."
       (quoth--reasoning-reset)
       ;; Round 2: final reasoning and content, no more tools.
       (setq-local quoth--response-start (point-marker))
-      (quoth-facade--append-delta r2-reasoning 'reasoning)
-      (quoth-facade--append-delta r2-content 'content)
+      (quoth--append-delta r2-reasoning 'reasoning)
+      (quoth--append-delta r2-content 'content)
       (quoth--tag-response-region (marker-position quoth--response-start)
                                   (point-max) prompt-id)
       (quoth--reasoning-reset))
@@ -2136,7 +2136,7 @@ response."
             (let ((proc (make-pipe-process :name "quoth-fold-replay"
                                            :noquery t :coding 'binary)))
               (process-put proc :quoth-target (current-buffer))
-              (quoth-facade--append-delta "Let me check the file." 'reasoning)
+              (quoth--append-delta "Let me check the file." 'reasoning)
               (quoth--tool-block-insert
                (list :name "exec_command" :id "call_1"
                      :args-json "{\"cmd\":\"head -100 quoth.el\"}"
@@ -2147,11 +2147,11 @@ response."
                                           (point-max) pid)
               (quoth--reasoning-reset)
               (setq-local quoth--response-start (point-marker))
-              (quoth-facade--append-delta
+              (quoth--append-delta
                (mapconcat #'identity (make-list 11 "think hard.") "\n")
                'reasoning)
-              (quoth-facade--append-delta "FINAL SUMMARY" 'content)
-              (quoth-facade--finalize)
+              (quoth--append-delta "FINAL SUMMARY" 'content)
+              (quoth--finalize-response)
               (delete-process proc))
             (let* ((msgs (quoth--tool-rounds pid))
                    (last-msg (car (last msgs)))
@@ -2260,7 +2260,7 @@ text."
           ;; Clear undo entries from the setup typing so we can test
           ;; that the response cycle alone records nothing.
           (setq buffer-undo-list nil)
-          (quoth-test--simulate-facade-response "response text")
+          (quoth-test--simulate-response "response text")
           ;; Programmatic changes should not have recorded undo.
           (should (null buffer-undo-list))))
     (quoth-test--cleanup)))
@@ -2276,7 +2276,7 @@ text."
           (newline)
           (setq-local quoth--response-start (point-marker))
           (setq buffer-undo-list nil)
-          (quoth-test--simulate-facade-response "response text")
+          (quoth-test--simulate-response "response text")
           (should (null buffer-undo-list))
           (goto-char (point-max))
           (insert "new input")
@@ -2338,11 +2338,11 @@ description was silently lost from history because it kept a stale
     (quoth-test--cleanup)))
 
 
-;;; 20b. Facade usage accumulation
+;;; 20b. Usage accumulation
 
 (ert-deftest quoth-test/merge-usage-sums-two-rounds ()
   "Two per-request usage plists accumulate into one.
-The facade sums :input-tokens, :output-tokens, :cached-tokens, and
+The the core sums :input-tokens, :output-tokens, :cached-tokens, and
 :cost-value; :cost-unit is taken from the first round and preserved."
   (let* ((round1 (list :input-tokens 8846
                        :output-tokens 311
@@ -2407,7 +2407,7 @@ The facade sums :input-tokens, :output-tokens, :cached-tokens, and
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/accumulate-usage-takes-accumulated-verbatim ()
-  "When :accumulated is t, the facade takes values verbatim (no sum)."
+  "When :accumulated is t, the send loop takes values verbatim (no sum)."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)

@@ -384,11 +384,11 @@ It sets quoth-region-type 'user."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          ;; Stream content through the facade, then finalize.
+          ;; Stream content, then finalize.
           (goto-char (point-max))
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "**bold** text" 'content)
-          (quoth-facade--finalize)
+          (quoth--append-delta "**bold** text" 'content)
+          (quoth--finalize-response)
           (goto-char (point-min))
           (should (search-forward "bold" nil t))
           ;; Finalize must create no quoth overlays.

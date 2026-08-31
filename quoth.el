@@ -60,11 +60,6 @@
   :group 'tools
   :prefix "quoth-")
 
-(defgroup quoth-facade nil
-  "Buffer, streaming, input, and debugging behavior."
-  :group 'quoth
-  :prefix "quoth-")
-
 (defgroup quoth-openai nil
   "Reusable OpenAI-compatible client."
   :group 'quoth
@@ -88,10 +83,9 @@ window width on every line the reasoning covers."
 ;;; Buffer-local state
 
 ;;; `quoth--continue', `quoth--session-uuid', `quoth--session-id', and
-;;; `quoth--response-start' are the shared buffer-local state owned by
-;;; the facade (defined below); providers must not touch them.  The
-;;; provider owns its transport process in
-;;; `quoth-provider-transport-process' — the facade never touches a
+;;; `quoth--response-start' are the shared buffer-local state; providers
+;;; must not touch them.  The provider owns its transport process in
+;;; `quoth-provider-transport-process' — the buffer side never touches a
 ;;; process directly.
 
 (defcustom quoth-reasoning-preview-lines 10
@@ -101,7 +95,7 @@ N lines are shown as a preview and the rest are hidden behind a fold
 marker.  Set to 0 to always collapse with no preview.
 Must be a non-negative integer."
   :type 'integer
-  :group 'quoth-facade)
+  :group 'quoth)
 
 (defvar-local quoth--continue nil
   "Whether the next prompt continues the conversation session.
@@ -114,17 +108,17 @@ session.")
 When nil, uses the project root if `project-current' is non-nil,
 otherwise `default-directory'."
   :type '(choice (const nil) directory)
-  :group 'quoth-facade)
+  :group 'quoth)
 
 (defcustom quoth-input-ring-size 32
   "Maximum number of prompts stored in the input ring."
   :type 'integer
-  :group 'quoth-facade)
+  :group 'quoth)
 
 (defcustom quoth-debug-mode t
   "When non-nil, log commands, input, and output to a *quoth-debug* buffer."
   :type 'boolean
-  :group 'quoth-facade)
+  :group 'quoth)
 
 (defvar-local quoth--session nil
   "Session ID to pass to the provider.
@@ -149,8 +143,80 @@ log.  Buffer-local.")
   "Marker for where response text starts.
 Set when prompt is sent, used by sentinel to tag response text.")
 
-;;; The facade stream protocol (state, progress, error pane) lives in
-;;; `quoth-stream.el'; quoth.el requires and transitions it.
+;;; Stream state (idle/active/done/error), progress, and the error pane.
+;;; Buffer-local; these track the lifecycle of one prompt-response cycle.
+
+(defvar-local quoth--stream-state nil
+  "Stream state plist: (:status STATUS :error ERR :count N).
+STATUS is `idle', `active', `done', or `error'.  ERR is the error
+message when STATUS is `error', and COUNT is the application count,
+meaning the runnable pipeline, inflight, and blocked applications.
+Buffer-local.")
+
+(defun quoth--stream-transition (status &optional count error)
+  "Move the stream state to STATUS with optional COUNT and ERROR.
+Records the transition in `quoth--stream-state'."
+  (setq-local quoth--stream-state
+              (list :status status
+                    :error error
+                    :count (or count
+                               (plist-get quoth--stream-state :count)
+                               1))))
+
+(defun quoth--stream-progress ()
+  "Return the stream state plist (status, error, applications).
+Reads `quoth--stream-state', defaulting to a fresh `idle' state with one
+application when the buffer never sent anything.  Exposes `:applications'
+as the runnable-pipeline/inflight/blocked count for UI consumers."
+  (let* ((state (or quoth--stream-state
+                    (list :status 'idle :error nil :count 1)))
+         (count (or (plist-get state :count)
+                    (when (and quoth-active-provider
+                               (quoth-provider-p quoth-active-provider))
+                      (quoth-provider-application-count quoth-active-provider))
+                    1)))
+    (plist-put (copy-sequence state) :applications count)))
+
+(defun quoth--stream-clear ()
+  "Reset the stream state to a fresh `idle' state."
+  (setq-local quoth--stream-state
+              (list :status 'idle :error nil :count 1)))
+
+(defun quoth--record-error (message)
+  "Record an error MESSAGE on the stream and render the error pane.
+Marks the stream `error' and inserts a clickable error pane overlay at
+point-max carrying `quoth-error-action' (so `quoth-clear-buffer' sweeps
+it)."
+  (quoth--stream-transition 'error nil message)
+  (let ((pos (point-max)))
+    (save-excursion
+      (goto-char pos)
+      (newline)
+      (let ((start (point)))
+        (insert (format "[quoth error: %s]" message))
+        (let ((ov (make-overlay start (point) (current-buffer) t nil)))
+          (overlay-put ov 'face 'error)
+          (overlay-put ov 'quoth-overlay t)
+          (overlay-put ov 'quoth-error-action #'quoth--dismiss-error-pane)
+          (overlay-put ov 'keymap (let ((map (make-sparse-keymap)))
+                                    (define-key map (kbd "RET")
+                                                #'quoth--dismiss-error-pane)
+                                    map)))))))
+
+(defun quoth--dismiss-error-pane ()
+  "Dismiss the error pane overlay at point (or the most recent one)."
+  (interactive)
+  (let ((ov (or (cl-find-if
+                 (lambda (o) (overlay-get o 'quoth-error-action))
+                 (overlays-at (point)))
+                (cl-find-if
+                 (lambda (o) (overlay-get o 'quoth-error-action))
+                 (overlays-in (point-min) (point-max))))))
+    (when (overlayp ov)
+      (delete-region (overlay-start ov) (1+ (overlay-end ov)))
+      (delete-overlay ov)
+      (quoth--stream-clear)
+      (message "Error dismissed"))))
 
 (defvar quoth--prompt-id nil
   "Unique ID for the current pending prompt.
@@ -217,7 +283,7 @@ Buffer-local.")
 ;;; first, then fall back to loading from this file's own directory so
 ;;; both setups work.
 (eval-and-compile
-  (dolist (dep '("quoth-provider" "quoth-openai" "quoth-xxh3" "quoth-stream"
+  (dolist (dep '("quoth-provider" "quoth-openai" "quoth-xxh3"
                  "quoth-process" "quoth-hyper-provider" "quoth-tools"
                  "quoth-searxng"))
     (unless (require (intern dep) nil t)
@@ -231,9 +297,9 @@ Buffer-local.")
             nil t))))
 
 (defvar quoth-active-provider nil
-  "The active quoth provider for this buffer (facade-owned).
-Set during buffer initialization; the facade's `quoth-facade--send'
-and `quoth-interrupt' dispatch through it.  Buffer-local.")
+  "The active quoth provider for this buffer.
+Set during buffer initialization; `quoth--send-prompt' and
+`quoth-interrupt' dispatch through it.  Buffer-local.")
 (declare-function markdown-mode "markdown-mode" ())
 (declare-function quoth-xxh3-hash64 "quoth-xxh3" (input))
 (declare-function quoth-provider--tool-calls "quoth-provider" (provider process))
@@ -1377,7 +1443,7 @@ it.  Markers are invalidated."
 PROMPT-ID is applied to both regions.  Applies `quoth-prompt-id',
 `quoth-response-to' and `quoth-region-type' (`response', with the
 reasoning sub-span retagged `reasoning').  Shared by
-`quoth-facade--finalize' and `quoth-interrupt'.  Tool regions within
+`quoth--finalize-response' and `quoth-interrupt'.  Tool regions within
 the response are tagged `tool' (and their nested raw-result span
 `tool-output') and carry the `quoth-tool-call' property for wire
 resume."
@@ -1419,7 +1485,7 @@ resume."
           (put-text-property rs re
                              'quoth-region-type 'reasoning))))))
 
-(defun quoth-facade--close-response (response-start prompt-id)
+(defun quoth--close-response (response-start prompt-id)
   "Close the response started at RESPONSE-START with PROMPT-ID.
 Tags the response text (including any reasoning sub-span), auto-collapses
 the reasoning fold, resets reasoning state, and inserts a fresh prompt.
@@ -1437,7 +1503,7 @@ Runs in the quoth buffer, which owns all response text."
       ;; (there may be multiple across tool-call rounds).
       ;; Use (point-min) instead of response-start because
       ;; quoth--response-start is relocated after tool blocks
-      ;; in quoth-facade--tool-loop, so the first round's
+      ;; in quoth--tool-loop, so the first round's
       ;; reasoning overlay would be outside the range.
       (dolist (ov (overlays-in (point-min) response-end))
         (when (and (overlay-get ov 'quoth-reasoning)
@@ -1547,8 +1613,8 @@ model."
           (push (format "%d%%%%" pct) parts)))
       (mapconcat #'identity (nreverse parts) " "))))
 
-(defun quoth-facade--finalize ()
-  "Finalize the current response via the facade.
+(defun quoth--finalize-response ()
+  "Finalize the current response.
 Check for pending tool invocation from the SSE stream; when present,
 drive the tool loop (execute, insert blocks, send follow-up).
 Otherwise close the response and insert a fresh prompt.  The
@@ -1560,32 +1626,32 @@ provider's completion action invokes this."
                        quoth-active-provider
                        (quoth-provider-transport-process quoth-active-provider))))
              (and (vectorp tcs) (> (length tcs) 0))))
-      (quoth-facade--tool-loop)
-    (quoth-facade--stream-transition 'done 1)
+      (quoth--tool-loop)
+    (quoth--stream-transition 'done 1)
     (let ((response-start (when (markerp quoth--response-start)
                             (marker-position quoth--response-start)))
           (prompt-id quoth--prompt-id))
-      (quoth-facade--close-response response-start prompt-id))))
+      (quoth--close-response response-start prompt-id))))
 
 (defvar-local quoth--tool-loop-count 0
   "Number of tool-loop rounds executed for the current prompt.")
 
-(defun quoth-facade--tool-loop ()
+(defun quoth--tool-loop ()
   "Execute pending tool invocations and send a follow-up request.
 Extracts tool invocations from the transport's SSE state, executes them
 via `quoth-provider--tool-results', inserts tool blocks into the
 buffer, then reconstructs the follow-up continuation from the buffer's
 tagged regions via `quoth--tool-rounds' (no in-memory cache).  Loop up
 to `quoth-tool-loop-max' rounds; when the cap is hit or no invocation
-come back, finalize via `quoth-facade--close-response'."
+come back, finalize via `quoth--close-response'."
   (if (>= quoth--tool-loop-count quoth-tool-loop-max)
       (progn
         (setq-local quoth--tool-loop-count 0)
-        (quoth-facade--stream-transition 'done 1)
+        (quoth--stream-transition 'done 1)
         (let ((response-start (when (markerp quoth--response-start)
                                 (marker-position quoth--response-start)))
               (prompt-id quoth--prompt-id))
-          (quoth-facade--close-response response-start prompt-id)))
+          (quoth--close-response response-start prompt-id)))
     (let* ((tool-calls (quoth-provider--tool-calls
                         quoth-active-provider
                         (quoth-provider-transport-process quoth-active-provider)))
@@ -1620,7 +1686,7 @@ come back, finalize via `quoth-facade--close-response'."
         ;; Clear the old transport and set up for the follow-up.
         (setf (quoth-provider-transport-process quoth-active-provider) nil)
         (setq-local quoth--response-start (point-marker))
-        (quoth-facade--stream-transition 'active 2)
+        (quoth--stream-transition 'active 2)
         (let ((real-proc (quoth-provider-send-prompt
                           quoth-active-provider ""
                           :session-id quoth--session
@@ -1629,15 +1695,15 @@ come back, finalize via `quoth-facade--close-response'."
                           :completion (lambda ()
                                         (when (buffer-live-p buf)
                                           (with-current-buffer buf
-                                            (quoth-facade--finalize))))
+                                            (quoth--finalize-response))))
                           :on-delta (lambda (delta kind)
                                       (when (buffer-live-p buf)
                                         (with-current-buffer buf
-                                          (quoth-facade--append-delta delta kind))))
+                                          (quoth--append-delta delta kind))))
                           :on-error (lambda (message)
                                       (when (buffer-live-p buf)
                                         (with-current-buffer buf
-                                          (quoth-facade--record-error message))))
+                                          (quoth--record-error message))))
                           :buffer buf
                           :stderr (get-buffer-create "*quoth-errors*")
                           :continuation continuation)))
@@ -1646,9 +1712,9 @@ come back, finalize via `quoth-facade--close-response'."
 
 ;;; Major mode commands
 
-(defun quoth-facade--append-delta (delta kind)
+(defun quoth--append-delta (delta kind)
   "Append streamed DELTA of KIND (`content' or `reasoning') to the buffer.
-The facade's buffer-aware consumer for streaming providers inserts at
+Insert streamed deltas at
 point-max, the growing response area, and drives the reasoning overlay:
 the first reasoning delta opens the region, later ones extend it, the
 first content delta stops it.  `quoth--response-start' is never touched;
@@ -1656,7 +1722,7 @@ it stays at the response start for finalization.
 
 Uses `quoth--insert-at-eof' for insertion, which only advances the cursor
 if it was already at point-max, allowing users to scroll back while the
-response streams in.  Runs in the quoth buffer (the facade's `:on-delta'
+response streams in.  Runs in the quoth buffer (the `:on-delta'
 closure enters it)."
   (save-excursion
     (goto-char (point-max))
@@ -1672,13 +1738,13 @@ closure enters it)."
       (goto-char (point-max))
       (quoth--reasoning-extend-overlay))))
 
-(defun quoth-facade--send (prompt)
+(defun quoth--send-prompt (prompt)
   "Send PROMPT via the active provider.
-Injects the facade's continuation as the provider's completion action so
-providers signal stream completion without touching buffers.  Runs in the
-quoth buffer, which owns all streamed output."
+Injects completion/delta/error callbacks as the provider's completion
+action so providers signal stream events without touching buffers.  Runs in
+the quoth buffer, which owns all streamed output."
   (let ((buf (current-buffer)))
-    (quoth-facade--stream-transition 'active 2)
+    (quoth--stream-transition 'active 2)
     (let ((real-proc (quoth-provider-send-prompt
                       quoth-active-provider prompt
                       :session-id quoth--session
@@ -1687,15 +1753,15 @@ quoth buffer, which owns all streamed output."
                       :completion (lambda ()
                                     (when (buffer-live-p buf)
                                       (with-current-buffer buf
-                                        (quoth-facade--finalize))))
+                                        (quoth--finalize-response))))
                       :on-delta (lambda (delta kind)
                                   (when (buffer-live-p buf)
                                     (with-current-buffer buf
-                                      (quoth-facade--append-delta delta kind))))
+                                      (quoth--append-delta delta kind))))
                       :on-error (lambda (message)
                                   (when (buffer-live-p buf)
                                     (with-current-buffer buf
-                                      (quoth-facade--record-error message))))
+                                      (quoth--record-error message))))
                       :buffer buf
                       :stderr (get-buffer-create "*quoth-errors*"))))
       (when (and real-proc (processp real-proc))
@@ -2034,7 +2100,7 @@ for wire resume.  Returns the end position of the inserted block."
     (setq-local quoth--tool-loop-count 0)
     (setq-local quoth--follow-p t)
     (setq-local quoth--last-follow-point (point-max))
-    (quoth-facade--send prompt)))
+    (quoth--send-prompt prompt)))
 
 (defun quoth-interrupt ()
   "Interrupt the active provider's in-flight request.
@@ -2063,7 +2129,7 @@ input divider inserted, mirroring normal finalization."
                (cons (overlay-start ov) (overlay-end ov)))))
           (quoth--reasoning-reset))
         ;; Generate a fresh pending ID before the new marker, exactly
-        ;; like `quoth-facade--close-response'.
+        ;; like `quoth--close-response'.
         (setq-local quoth--prompt-id (quoth--generate-id))
         (quoth--insert-input-separator))
       (when quoth--follow-p
@@ -2074,7 +2140,7 @@ input divider inserted, mirroring normal finalization."
           (setq-local quoth--last-follow-point (point-max))))
       (setq-local quoth--response-start nil)
       (setq-local quoth--tool-loop-count 0)
-      (quoth-facade--stream-transition 'done 1)
+      (quoth--stream-transition 'done 1)
       (setq-local buffer-undo-list nil)
       (message "Quoth process interrupted"))))
 
@@ -2089,7 +2155,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (setq-local quoth-openai--cached-system-prompt nil)
   (setq-local quoth-openai--cache-key nil)
   (quoth--init-session-uuid)
-  (quoth-facade--stream-clear)
+  (quoth--stream-clear)
   ;; Kill any in-flight provider transport before clearing.
   (when (and quoth-active-provider
              (quoth-provider-p quoth-active-provider))

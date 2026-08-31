@@ -221,7 +221,7 @@ package."
 (defcustom quoth-hyper-usage-currency 'credits
   "Currency unit shown for usage cost in the header line.
 Hyper reports both USD and hypercredits per request; this selects
-which the provider surfaces to the facade.  `credits' (default) emits
+which the provider surfaces to the core.  `credits' (default) emits
 hypercredits with unit \"hc\"; `dollars' emits USD with unit \"$\"."
   :type '(choice (const :tag "Hypercredits" credits)
                  (const :tag "US dollars"  dollars))
@@ -291,15 +291,15 @@ name, context window, input cost, and reasoning support, e.g.
 (cl-defmethod quoth-provider-send-prompt
   ((provider quoth-hyper-provider) prompt &key session-id session-uuid continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to PROVIDER via a direct HTTP+SSE request to Hyper.
-COMPLETION is the facade's continuation invoked when the stream
+COMPLETION is the core's continuation invoked when the stream
 finishes; ON-DELTA consumes streamed deltas; ON-ERROR receives stream
 errors.  SESSION-UUID is the buffer's opaque session identifier; when
 `quoth-hyper-session-cache-p' is non-nil it is hashed (XXH3-64) and
 sent as the x-session-id / x-session-affinity cache-affinity headers.
-The prior conversation is read from BUFFER via the facade's
+The prior conversation is read from BUFFER via the core's
 `quoth--history-for', which enters the buffer itself, and re-sent as
 message alists; `quoth-hyper-history-include-reasoning' controls whether
-reasoning is replayed, and the facade's `quoth-hyper-history-limit'
+reasoning is replayed, and the core's `quoth-hyper-history-limit'
 decides whether history exists.  CONTINUATION, when non-nil, is a list
 of message alists (user, assistant with `tool_calls', `role: \"tool\"')
 that replace the user message — used by the tool loop to send follow-up
@@ -402,7 +402,7 @@ Reads the `usage' object the SSE parser stashed on PROCESS and
 normalizes it into the contract shape
 \(:input-tokens :output-tokens :cached-tokens :cost-unit :cost-value
 :accumulated).  Hyper reports usage per HTTP request only (no
-server-side session total), so :accumulated is nil and the facade
+server-side session total), so :accumulated is nil and the core
 sums across rounds."
   (when (processp process)
     (let ((sse (process-get process :quoth-sse)))

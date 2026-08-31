@@ -36,11 +36,10 @@ them, and new code must too.
 
 4. **Protocols live in their own files.** The provider protocol
    (`quoth-provider.el`), the OpenAI chat-completions + tool protocol
-   (`quoth-openai.el`), the facade stream protocol (`quoth-stream.el`),
-   and the process-handler session protocol (`quoth-process.el`) are
-   each a dedicated, self-contained file with a single dependency
-   direction. `quoth.el` only orchestrates the buffer and calls into
-   them.
+   (`quoth-openai.el`), and the process-handler session protocol
+   (`quoth-process.el`) are each a dedicated, self-contained file with a
+   single dependency direction. `quoth.el` only orchestrates the buffer
+   and calls into them.
 
 5. **Providers are abstracted and reuse the protocols.** Every provider
    is a self-contained file implementing the `quoth-provider-*`
@@ -49,13 +48,12 @@ them, and new code must too.
    `quoth-openai.el`; the concrete hyper provider is a thin shim that
    maps its configuration onto that client.
 
-6. **Buffer-unaware, presentation-agnostic layers.** The facade stream
-   protocol (`quoth-stream.el`) and the process handler
-   (`quoth-process.el`) never read or write the quoth buffer. They
-   treat the caller as opaque: the main loop in `quoth.el` is the only
-   place with buffer access, and it threads progress, deltas, and
-   errors through callbacks into those layers. Keeping the protocols
-   and providers buffer-unaware is a deliberate separation of
+6. **Buffer-unaware, presentation-agnostic layers.** The process
+   handler (`quoth-process.el`) and all providers never read or write
+   the quoth buffer. They treat the caller as opaque: the send loop in
+   `quoth.el` is the only place with buffer access, and it threads
+   progress, deltas, and errors through callbacks into those layers.
+   Keeping the providers buffer-unaware is a deliberate separation of
    concerns, not an implementation detail.
 
 7. **Everything inserted must be valid markdown.** The chat buffer's
@@ -76,7 +74,6 @@ quoth/                  # Package root
   quoth.el              # Core: config, buffer orchestration, chat mode, helpers, commands
   quoth-provider.el     # Provider protocol: base struct + quoth-provider-* generics
   quoth-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
-  quoth-stream.el       # Facade stream protocol: stream state, progress, error pane
   quoth-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over quoth-openai)
   quoth-process.el      # Process handler: PTY sessions, output buffering, yield, stdin, cleanup
   quoth-tools.el        # Local tool implementations: exec_command + write_stdin (over quoth-process)
@@ -86,16 +83,16 @@ quoth/                  # Package root
 ```
 
 Dependency direction: `quoth-provider.el` has no dependencies;
-`quoth-openai.el` requires no sibling package;
-`quoth-stream.el` requires `quoth-provider`; `quoth-xxh3.el` has no
+`quoth-openai.el` requires no sibling package; `quoth-xxh3.el` has no
 dependencies (pure math); `quoth-process.el` requires only `cl-lib`
 and `subr-x`; `quoth-hyper-provider.el` requires `quoth-provider` +
 `quoth-openai` + `quoth-xxh3`; `quoth-tools.el` requires
 `quoth-openai` + `quoth-process` and registers its tools at load;
-`quoth.el` requires all seven. Shared runtime plumbing
-(`quoth-facade--append-delta`, `quoth-facade--record-error`,
-`quoth--debug-log`) stays in `quoth.el` — the providers call it through
-buffer-local process references and `declare-function` stubs.
+`quoth.el` requires all of them. Stream state, buffer rendering,
+and error handling (`quoth--append-delta`, `quoth--record-error`,
+`quoth--stream-transition`, `quoth--debug-log`) all live in
+`quoth.el` — the providers call them through buffer-local process
+references and `declare-function` stubs.
 
 ## Provider Abstraction
 
@@ -122,32 +119,30 @@ Process control is a provider responsibility, routed through the
 protocol: `quoth-send-input` consults `quoth-provider-active-p` for its
 "still running" guard, `quoth-interrupt` calls
 `quoth-provider-interrupt`, and `quoth-clear-buffer` calls
-`quoth-provider-cleanup`. The facade never reads or kills a transport
+`quoth-provider-cleanup`. The core never reads or kills a transport
 process directly.
 
-## The Facade
+## The send loop
 
-The **facade** is the buffer-facing orchestration layer that sits
-between the provider (wire work) and the chat buffer (source of
-truth). It is the set of `quoth-facade--*` functions in `quoth.el`
-plus the stream state/protocol in `quoth-stream.el`, and it is the
-**single place that owns the buffer** and drives the lifecycle of one
-prompt → response cycle.
+The send loop in `quoth.el` is the buffer-facing orchestration layer
+that sits between the provider (wire work) and the chat buffer (source
+of truth). It is the **single place that owns the buffer** and drives
+the lifecycle of one prompt → response cycle.
 
-| Facade piece                                               | Role                                                                                         |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `quoth-facade--send`                                       | Start a request, inject the callbacks, transition to `active`                                |
-| `quoth-facade--append-delta`                               | Consume streamed `(delta kind)` chunks and insert them at point-max (the only buffer writer) |
-| `quoth-facade--finalize`                                   | On completion: accumulate usage, then drive the tool loop or close the response              |
-| `quoth-facade--tool-loop`                                  | Execute tool calls, insert tool blocks, rebuild the continuation from the buffer, re-send    |
-| `quoth-facade--close-response`                             | Tag the response region, insert a fresh `---` divider                                        |
-| `quoth-facade--record-error`                               | Render the clickable error pane                                                              |
-| `quoth-facade--stream-transition` / `-progress` / `-clear` | Own the `idle`/`active`/`done`/`error` state machine (in `quoth-stream.el`)                  |
+| Function                                            | Role                                                                                         |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `quoth--send-prompt`                                | Start a request, inject the callbacks, transition to `active`                                |
+| `quoth--append-delta`                               | Consume streamed `(delta kind)` chunks and insert them at point-max (the only buffer writer) |
+| `quoth--finalize-response`                          | On completion: accumulate usage, then drive the tool loop or close the response              |
+| `quoth--tool-loop`                                  | Execute tool calls, insert tool blocks, rebuild the continuation from the buffer, re-send    |
+| `quoth--close-response`                             | Tag the response region, insert a fresh `---` divider                                        |
+| `quoth--record-error`                               | Render the clickable error pane                                                              |
+| `quoth--stream-transition` / `-progress` / `-clear` | Own the `idle`/`active`/`done`/`error` state machine (buffer-local in `quoth.el`)            |
 
-### Why the interface exists
+### Why the boundary exists
 
-The facade is a **separation-of-concerns boundary** (design principle
-#6). Three motivations:
+The send loop is a **separation-of-concerns boundary** (design
+principle #6). Three motivations:
 
 1. **The provider must never touch the buffer.** The provider (and the
    OpenAI client, SSE parser, and curl transport beneath it) only
@@ -157,12 +152,12 @@ The facade is a **separation-of-concerns boundary** (design principle
    from text properties at send time. If the provider wrote directly
    to the buffer, wire logic would entangle with buffer layout and
    break that invariant.
-3. **One choke point for "stream event → buffer edit".** The facade is
-   the only place with buffer access, so the streaming hot path
+3. **One choke point for "stream event → buffer edit".** The send loop
+   is the only place with buffer access, so the streaming hot path
    (`quoth--insert-at-eof` with `inhibit-modification-hooks`) and the
    reasoning-overlay logic live in exactly one place.
 
-The mechanism is **dependency inversion via callbacks**: the facade
+The mechanism is **dependency inversion via callbacks**: the send loop
 passes `:completion`, `:on-delta`, and `:on-error` closures _into_ the
 provider. The provider invokes them blindly; each closure captures the
 buffer and re-enters it. The provider therefore "signals" stream
@@ -170,29 +165,29 @@ completion without knowing what a buffer is.
 
 ### Presentation-agnostic by design
 
-The facade is deliberately **presentation-agnostic**, so the same
-buffer-unaware provider protocol can back different facades. The
-current `quoth.el` facade is just _one_ consumer of that protocol;
-alternatives are a matter of writing a new facade, not touching the
+The provider protocol is deliberately **presentation-agnostic**: the
+same buffer-unaware provider can back different consumers. The current
+`quoth.el` send loop is just _one_ consumer of that protocol;
+alternatives are a matter of writing a new consumer, not touching the
 wire layer:
 
 - **A transient/posframe or minibuffer UI** — deltas rendered into a
   transient popup instead of a markdown chat buffer; only the
   `:on-delta` consumer changes.
-- **A batch/scripting facade** — deltas accumulated into a plain
+- **A batch/scripting consumer** — deltas accumulated into a plain
   string and returned to a caller (a synchronous-ish `quoth-ask`),
   with no buffer, markers, or reasoning overlay.
-- **A log/timeline facade** — append-only transcript to a
+- **A log/timeline consumer** — append-only transcript to a
   `*quoth-log*` buffer or file, no input area or dividers.
-- **A completion/at-point facade** — stream the answer inline into a
+- **A completion/at-point consumer** — stream the answer inline into a
   _different_ buffer than the one holding the prompt (region-replace
   style), rather than a dedicated chat buffer.
-- **An Org-mode facade** — metadata in `:PROPERTIES:` drawers and tool
-  output in Org source blocks instead of text properties and markdown
-  fences.
+- **An Org-mode consumer** — metadata in `:PROPERTIES:` drawers and
+  tool output in Org source blocks instead of text properties and
+  markdown fences.
 
 In every case the provider protocol, SSE parsing, curl transport, and
-tool dispatch are reused unchanged; only the buffer-aware facade
+tool dispatch are reused unchanged; only the buffer-aware consumer
 differs.
 
 ## Hyper provider (primary)
@@ -219,11 +214,11 @@ x-crush-id) and mapping the provider protocol onto the client's
    **last** config line so curl reads the rest of stdin as the body.
 2. SSE frames are parsed incrementally in the process filter
    (`quoth--hyper-curl-filter` → `quoth-openai-sse-feed`); content
-   deltas are emitted to the facade's `:on-delta` callback
-   (`quoth-facade--append-delta`), which appends them in order and
+   deltas are emitted to the `:on-delta` callback
+   (`quoth--append-delta`), which appends them in order and
    drives the reasoning overlay.
 3. A final `[DONE]` event, or the process exiting, runs the injected
-   completion (`quoth-facade--finalize`), which tags the response and
+   completion (`quoth--finalize-response`), which tags the response and
    inserts a fresh input divider (`---`, framed by blank lines). Stream
    errors
    surface through `:on-error` into a clickable error pane.

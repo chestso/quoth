@@ -105,7 +105,7 @@ Read at request-build time; edits apply on the next cache miss
 (defcustom quoth-model nil
   "Model to use for Quoth requests.
 When nil, the provider falls back to `quoth-openai-default-model'.  The
-facade passes this into the provider's model slot at buffer
+core passes this into the provider's model slot at buffer
 initialization.  Should be a model name like
 `claude-sonnet-4-20250514' or `gpt-4o'."
   :type '(choice (const nil) string)
@@ -438,7 +438,7 @@ alists (already reconstructed from the buffer by `quoth--history-for');
 they ride between the system prompt and the new user message.  With no
 history the body carries exactly system + user (`stream: t', no tools).
 History is disabled by the caller passing nil
-\(`quoth-hyper-history-limit 0 means the facade extracts none).
+\(`quoth-hyper-history-limit 0 means the core extracts none).
 CONTINUATION, when non-nil, is a list of message alists (user,
 assistant with `tool_calls', `role: \"tool\"') that replace the user
 message; used by the tool loop to send follow-up requests with tool
@@ -721,7 +721,7 @@ Arguments accumulate across chunks by index."
 (defun quoth--openai-emit-delta (proc delta kind)
   "Emit DELTA text of KIND (`content' or `reasoning') for PROC.
 Store the delta as a pending `:quoth-emitted' event on PROC and
-invoke the facade's `:quoth-on-delta' callback, which is a closure
+invoke the core's `:quoth-on-delta' callback, which is a closure
 taking (DELTA KIND), that owns buffer insertion, the reasoning
 overlay, and the cursor.  The transport never touches buffers."
   (process-put proc :quoth-emitted t)
@@ -746,7 +746,7 @@ process."
 
 (defun quoth--openai-http-finish (proc error)
   "Finalize the curl request on PROC with optional ERROR.
-Emits ERROR through the facade's `:quoth-on-error' callback when
+Emits ERROR through the core's `:quoth-on-error' callback when
 non-nil, then runs the finalize callback exactly once."
   (unless (process-get proc :quoth-finished)
     ;; Mark finished first so a sentinel racing the [DONE] filter path
@@ -764,7 +764,7 @@ non-nil, then runs the finalize callback exactly once."
 (defun quoth--openai-curl-filter (proc string)
   "Filter for the curl process PROC receiving SSE chunk STRING.
 Feed the chunk to the SSE parser and emit any content deltas through
-the facade's on-delta callback.  The HTTP response head (headers) is
+the core's on-delta callback.  The HTTP response head (headers) is
 not valid SSE and is ignored by the parser; the status line is parsed
 for diagnostics, and errors are surfaced by the sentinel when curl
 exits non-zero."
@@ -877,7 +877,7 @@ compact to bound the debug log during long streams."
 (defun quoth-openai-request (base-url token body on-delta callback &optional on-error session-id x-crush-id)
   "Send HTTP POST to BASE-URL with TOKEN and JSON BODY via curl.
 ON-DELTA is a callback (DELTA KIND) consuming streamed deltas (the
-facade's append-delta); CALLBACK runs with no args when the stream
+core's append-delta); CALLBACK runs with no args when the stream
 finishes; ON-ERROR (optional) receives a stream error message;
 SESSION-ID, when non-nil, is the XXH3-64 of the buffer's session UUID,
 sent as x-session-id / x-session-affinity for prefix caching.

@@ -12,7 +12,7 @@ if [ -n "$MD_DIR" ]; then
 fi
 
 echo "=== Byte-compile ==="
-for f in quoth.el quoth-provider.el quoth-openai.el quoth-stream.el quoth-hyper-provider.el quoth-tools.el quoth-xxh3.el quoth-process.el quoth-searxng.el; do
+for f in quoth.el quoth-provider.el quoth-openai.el quoth-hyper-provider.el quoth-tools.el quoth-xxh3.el quoth-process.el quoth-searxng.el; do
 	emacs --batch -L . -f batch-byte-compile "$f" 2>&1 | grep -v "site-start" || true
 done
 

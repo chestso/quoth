@@ -64,7 +64,7 @@ Then load with `load-path`:
   :hook (prog-mode . quoth-minor-mode))
 ```
 
-Requires Emacs 28.1+. The package spans several files (`quoth.el` plus `quoth-provider.el`, `quoth-openai.el`, `quoth-stream.el`, `quoth-hyper-provider.el`, `quoth-tools.el`), so point `load-path` at the package directory. For manual `require`s, load `quoth` last to get the full file set loaded. The provider requires only `curl`.
+Requires Emacs 28.1+. The package spans several files (`quoth.el` plus `quoth-provider.el`, `quoth-openai.el`, `quoth-hyper-provider.el` + `quoth-tools.el`), so point `load-path` at the package directory. For manual `require`s, load `quoth` last to get the full file set loaded. The provider requires only `curl`.
 
 ## Configuration
 

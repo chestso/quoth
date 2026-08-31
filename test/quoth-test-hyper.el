@@ -83,7 +83,7 @@
         (quoth-openai-temperature 0.5)
         (quoth-openai-thinking t)
         (quoth-openai-reasoning-effort "high"))
-    ;; The model is resolved by the caller (the facade passes the provider
+    ;; The model is resolved by the caller (the core passes the provider
     ;; model slot derived from `quoth-model'); compose uses it directly.
     (let ((req (quoth-openai-compose-request "P" quoth-model)))
       (should (string= (alist-get 'model req) "my-model"))
@@ -540,25 +540,25 @@ The hash is of the session UUID as the cache-affinity session id."
 ;;; 92b. Hyper provider: token resolution
 
 (defun quoth-test--hyper-on-delta (buf)
-  "Return the facade append-delta closure for BUF (buffer-aware)."
+  "Return the append-delta closure for BUF (buffer-aware)."
   (lambda (delta kind)
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (quoth-facade--append-delta delta kind)))))
+        (quoth--append-delta delta kind)))))
 
 (defun quoth-test--hyper-completion (buf)
-  "Return the facade finalize closure for BUF (buffer-aware)."
+  "Return the finalize closure for BUF (buffer-aware)."
   (lambda ()
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (quoth-facade--finalize)))))
+        (quoth--finalize-response)))))
 
 (defun quoth-test--hyper-on-error (buf)
-  "Return the facade record-error closure for BUF (buffer-aware)."
+  "Return the record-error closure for BUF (buffer-aware)."
   (lambda (message)
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (quoth-facade--record-error message)))))
+        (quoth--record-error message)))))
 
 ;;; `quoth-hyper--resolve-token' supports string, function, and nil
 ;;; tokens; the default `quoth-hyper-token' function reads from
@@ -625,7 +625,7 @@ The hash is of the session UUID as the cache-affinity session id."
 
 (ert-deftest quoth-test/hyper-send-injects-completion ()
   "Quoth-provider-send-prompt for hyper should use the injected completion.
-The completion is the facade's continuation; the provider must invoke it
+The completion is the completion; the provider must invoke it
 on stream completion instead of finalizing or touching buffers itself."
   (let ((quoth-test--captured-completion nil)
         (injected (lambda () (setq quoth-test--captured-completion 'called)))
@@ -1982,7 +1982,7 @@ prompt_tokens_details."
 (ert-deftest quoth-test/hyper-usage-normalizes-cold-round ()
   "A cold round (no prompt_tokens_details) normalizes :cached-tokens to 0.
 The provider returns :input-tokens, :output-tokens, :cost-unit,
-:cost-value, and :accumulated nil (per-request; the facade sums)."
+:cost-value, and :accumulated nil (per-request; the core sums)."
   (let ((quoth-hyper-usage-currency 'credits)
         (usage-alist (list (cons "prompt_tokens" 8846)
                            (cons "completion_tokens" 311)
@@ -2060,7 +2060,7 @@ The provider returns :input-tokens, :output-tokens, :cost-unit,
 (ert-deftest quoth-test/hyper-wire-usage-in-header-after-stream ()
   "A stream with a final usage chunk surfaces tok/hc/cache in the header.
 The ok-stream-usage mode streams content then a final chunk with
-finish_reason and usage; the facade accumulates and the header line
+finish_reason and usage; the core accumulates and the header line
 shows the stats."
   (let ((default-directory quoth-test--root))
     (unwind-protect

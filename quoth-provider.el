@@ -45,19 +45,19 @@
   completion-action
   working-directory
   ;; The live transport process (e.g. curl) returned by the provider's
-  ;; `quoth-provider-send-prompt'.  Owned by the provider; the facade
+  ;; `quoth-provider-send-prompt'.  Owned by the provider; the core
   ;; reads activity through `quoth-provider-active-p' and kills it via
   ;; `quoth-provider-interrupt'/`quoth-provider-cleanup'.
   (transport-process nil)
   ;; Application count: the number of pipeline applications (runnable,
-  ;; inflight, blocked) this provider accounts for.  The facade reads it
+  ;; inflight, blocked) this provider accounts for.  The core reads it
   ;; via stream progress; a value of 0 means the provider is idle.
   (application-count 1)
   (type nil))
 
 (cl-defgeneric quoth-provider-send-prompt (provider prompt &key session-id continue-p completion buffer stderr on-delta on-error continuation)
   "Send PROMPT to PROVIDER with optional CONTEXT, SESSION-ID, and CONTINUE-P.
-COMPLETION is a zero-argument closure (the facade's continuation) that
+COMPLETION is a zero-argument closure (the core's continuation) that
 the provider must invoke exactly once when the response stream finishes.
 BUFFER is the quoth buffer the provider may associate its transport
 process with, and STDERR is the stderr buffer; both are passed purely
@@ -71,7 +71,7 @@ tool loop to send follow-up requests with tool results.")
 
 (cl-defgeneric quoth-provider-interrupt (provider)
   "Interrupt the currently running operation on PROVIDER.
-Providers own their transport processes; the facade dispatches through
+Providers own their transport processes; the core dispatches through
 this method rather than checking or interrupting a buffer-local process.")
 
 (cl-defgeneric quoth-provider-active-p (provider)
@@ -115,7 +115,7 @@ for the round that just finished.  Returns nil when the provider has no
 usage to surface (before any response, or a provider that does not
 report usage).
 
-The plist may carry any subset of these keys; the facade renders only
+The plist may carry any subset of these keys; the core renders only
 those that are present:
 
   :input-tokens    integer   prompt/context tokens for this round
@@ -128,15 +128,15 @@ those that are present:
   :cost-value      number    cost in :cost-unit for this round
   :accumulated     boolean   non-nil means :input-tokens, :output-tokens,
                              and :cost-value are ALREADY summed across the
-                             session (or prompt) by the provider; the facade
+                             session (or prompt) by the provider; the core
                              renders them verbatim and skips its own
                              summation.  nil (the default) means the values
-                             describe ONLY the last request, and the facade
+                             describe ONLY the last request, and the core
                              sums them across tool-loop rounds itself.
 
 When :accumulated is nil the values describe exactly the last request,
-NOT an accumulated total — the facade sums them.  When :accumulated is
-non-nil the values are already a running total — the facade must not
+NOT an accumulated total — the core sums them.  When :accumulated is
+non-nil the values are already a running total — the core must not
 re-sum (it would double-count); it still manages the buffer-local reset
 on new prompt / clear."
   (ignore provider process)

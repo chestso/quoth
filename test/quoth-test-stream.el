@@ -27,7 +27,7 @@
 ;;; SOFTWARE.
 
 ;;; Commentary:
-;;; Facade stream state (idle/active/done/error), application count, and
+;;; Stream state (idle/active/done/error), application count, and
 ;;; the clickable error pane.
 
 ;;; Code:
@@ -59,7 +59,7 @@
 
 (defun quoth-test--send-capturing-completion ()
   "Send a prompt in a fresh buffer with `quoth-provider-send-prompt' mocked.
-Returns the completion action the facade injected."
+Returns the completion action the send loop injected."
   (let ((captured-completion nil))
     (cl-letf (((symbol-function 'quoth-provider-send-prompt)
                (lambda (_provider _prompt &rest args)
@@ -74,7 +74,7 @@ Returns the completion action the facade injected."
   "Stream state is idle before any prompt is sent, with one application."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
-        (let ((state (quoth-facade--stream-progress)))
+        (let ((state (quoth--stream-progress)))
           (should (eq (plist-get state :status) 'idle))
           (should (= (plist-get state :applications) 1))))
     (quoth-test--cleanup)))
@@ -86,7 +86,7 @@ Returns the completion action the facade injected."
         (should (functionp completion))
         (let ((buf (quoth-test--buffer-name)))
           (with-current-buffer buf
-            (let ((state (quoth-facade--stream-progress)))
+            (let ((state (quoth--stream-progress)))
               (should (eq (plist-get state :status) 'active))
               (should (= (plist-get state :applications) 2))))))
     (quoth-test--cleanup)))
@@ -98,7 +98,7 @@ Returns the completion action the facade injected."
         (let ((buf (quoth-test--buffer-name)))
           (with-current-buffer buf
             (funcall completion)
-            (let ((state (quoth-facade--stream-progress)))
+            (let ((state (quoth--stream-progress)))
               (should (eq (plist-get state :status) 'done))
               (should (= (plist-get state :applications) 1))))))
     (quoth-test--cleanup)))
@@ -107,8 +107,8 @@ Returns the completion action the facade injected."
   "Recording an error marks the stream errored and renders a clickable pane."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
-        (quoth-facade--record-error "Boom")
-        (let ((state (quoth-facade--stream-progress)))
+        (quoth--record-error "Boom")
+        (let ((state (quoth--stream-progress)))
           (should (eq (plist-get state :status) 'error))
           (should (string= (plist-get state :error) "Boom")))
         (let ((ov (cl-find-if
@@ -127,7 +127,7 @@ Returns the completion action the facade injected."
   "Quoth-clear-buffer should remove the error pane overlay."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
-        (quoth-facade--record-error "Boom")
+        (quoth--record-error "Boom")
         (should (cl-some (lambda (o) (overlay-get o 'quoth-error-action))
                          (overlays-in (point-min) (point-max))))
         (quoth-clear-buffer)
@@ -135,9 +135,9 @@ Returns the completion action the facade injected."
                              (overlays-in (point-min) (point-max)))))
     (quoth-test--cleanup)))
 
-;;; Physics-free facade harness
+;;; Test harness
 
-;;; A fake process that never actually runs a subprocess: `quoth-facade--send'
+;;; A fake process that never actually runs a subprocess: `quoth--send-prompt'
 ;;; calls the real provider transport against a dummy pipe process, so all the
 ;;; buffer plumbing (process mark, response-start marker, stream state) runs
 ;;; without spawning anything.
@@ -146,14 +146,14 @@ Returns the completion action the facade injected."
   "Return a disconnected pipe process usable as a fake transport process.
 Uses inert filter/sentinel so ending the response never triggers
 transport callbacks."
-  (let ((proc (make-pipe-process :name "quoth-test-facade-fake"
+  (let ((proc (make-pipe-process :name "quoth-test-fake"
                                  :noquery t
                                  :coding 'binary
                                  :filter #'ignore
                                  :sentinel #'ignore)))
     proc))
 
-(defun quoth-test--with-facade (thunk)
+(defun quoth-test--with-stream (thunk)
   "Run THUNK with the provider transport mocked to a fake process.
 THUNK receives (PROC COMPLETION) in the fresh quoth buffer, where PROC
 is the fake transport process and COMPLETION the injected continuation.
@@ -172,7 +172,7 @@ fake instead of spawning curl."
               (insert "test")
               (call-interactively #'quoth-send-input)
               ;; Capture the injected completion from the provider slot
-              ;; (the facade stores it there on send).
+              ;; (the provider stores it there on send).
               (setq completion (quoth-provider-completion-action
                                 quoth-active-provider))
               (funcall thunk fake completion))))
@@ -180,19 +180,19 @@ fake instead of spawning curl."
         (delete-process fake))
       (quoth-test--cleanup))))
 
-(ert-deftest quoth-test/facade-harness-active-then-complete ()
-  "The facade harness should expose a live process that completes.
+(ert-deftest quoth-test/stream-harness-active-then-complete ()
+  "Test harness should expose a live process that completes.
 After send, the session is live (the fake process); running the
 injected completion finalizes the response and the stream transitions
 to done."
   (unwind-protect
-      (quoth-test--with-facade
+      (quoth-test--with-stream
        (lambda (_fake completion)
-         ;; The completion is the facade's injected continuation.
+         ;; The completion is the injected continuation.
          (should (functionp completion))
          ;; Complete the stream through the injected continuation.
          (funcall completion)
-         (let ((state (quoth-facade--stream-progress)))
+         (let ((state (quoth--stream-progress)))
            (should (eq (plist-get state :status) 'done))
            (should (= (plist-get state :applications) 1)))
          ;; A fresh prompt was inserted.
@@ -200,12 +200,12 @@ to done."
          (should (search-backward "---" nil t))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-send-keeps-usage-acc ()
+(ert-deftest quoth-test/stream-send-keeps-usage-acc ()
   "Sending a new prompt does not clear the accumulated usage.
 The previous prompt's total stays visible in the header while the next
 request is in flight; it is reset lazily on the new prompt's first usage."
   (unwind-protect
-      (quoth-test--with-facade
+      (quoth-test--with-stream
        (lambda (_fake _completion)
          ;; Seed an accumulated total for the previous prompt.
          (setq-local quoth--usage-acc
@@ -223,7 +223,7 @@ request is in flight; it is reset lazily on the new prompt's first usage."
            (unwind-protect
                (cl-letf (((symbol-function 'make-process)
                           (lambda (&rest _args) fake2)))
-                 (quoth-facade--send "another")
+                 (quoth--send-prompt "another")
                  (should (= (plist-get quoth--usage-acc :input-tokens) 8923))
                  (should (= (plist-get quoth--usage-acc :output-tokens) 68))
                  (should (= (plist-get quoth--usage-acc :cached-tokens) 8320)))
@@ -231,46 +231,22 @@ request is in flight; it is reset lazily on the new prompt's first usage."
                (delete-process fake2))))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/facade-harness-moves-process-mark ()
-  "Test that the facade sets the process mark at point-max after send.
+(ert-deftest quoth-test/stream-harness-moves-process-mark ()
+  "Test that the send loop sets the process mark at point-max after send.
 Streamed deltas append at point-max (not via the mark)."
   (unwind-protect
-      (quoth-test--with-facade
+      (quoth-test--with-stream
        (lambda (fake _completion)
          (should (= (marker-position (process-mark fake)) (point-max)))
-         ;; Deltas streamed through the facade land at point-max.
-         (quoth-facade--append-delta "chunk" 'content)
+         ;; Deltas streamed land at point-max.
+         (quoth--append-delta "chunk" 'content)
          (goto-char (point-max))
          (should (search-backward "chunk" nil t))
-         ;; The facade appends at point-max; the process mark stays at
+         ;; Appends at point-max; the process mark stays at
          ;; the pre-delta send position (it is no longer the append
          ;; cursor).
          (should (< (marker-position (process-mark fake)) (point-max)))))
     (quoth-test--cleanup)))
-
-(defun quoth-test--stream-source (library)
-  "Return the uncompiled source of LIBRARY (strip any .elc)."
-  (let ((lib (locate-library library)))
-    (when (and lib (string-suffix-p ".elc" lib))
-      (setq lib (replace-regexp-in-string "\\.elc\\'" ".el" lib)))
-    (when lib
-      (with-temp-buffer
-        (insert-file-contents lib)
-        (buffer-string)))))
-
-(ert-deftest quoth-test/stream-file-provides-protocol ()
-  "The stream protocol lives in its own file, not the core.
-State, progress, and the error pane live in `quoth-stream.el'; the
-facade delegates to a dedicated stream module."
-  (let ((stream-src (quoth-test--stream-source "quoth-stream")))
-    (should stream-src)
-    (should (string-match-p "defun quoth-facade--stream-progress" stream-src))
-    (should (string-match-p "defun quoth-facade--record-error" stream-src))
-    (should (string-match-p "quoth--stream-state" stream-src)))
-  ;; quoth.el should load it and no longer define the protocol itself.
-  (let ((core (quoth-test--stream-source "quoth")))
-    (should (string-match-p "\"quoth-stream\"" core))
-    (should-not (string-match-p "defun quoth-facade--stream-progress" core))))
 
 (provide 'quoth-test-stream)
 ;;; quoth-test-stream.el ends here

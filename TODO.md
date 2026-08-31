@@ -100,7 +100,7 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
 - [x] `quoth-hyper-provider` struct + default provider
 - [x] Request composition (`quoth-openai-compose-request`): messages array, model, `stream: t`, max tokens, temperature, thinking/reasoning-effort options (tools now live in the reusable schema regardless of provider)
 - [x] SSE streaming via curl subprocess (gptel/plz pattern): config + body over stdin, `data-binary = @-`, deltas parsed in the process filter
-- [x] Response finalization via the facade (`quoth-facade--finalize`): tag region, fresh prompt, state reset (buffer-unaware backend emits deltas/errors through callbacks)
+- [x] Response finalization (`quoth--finalize-response`): tag region, fresh prompt, state reset (providers emit deltas/errors through callbacks)
 - [x] Reasoning display: `reasoning_content` deltas streamed into a styled, collapsible region (overlay + fold marker)
 - [x] Dummy server fixture (`test/hyper-server.py`): capture-file philosophy, per-mode responses (ok-stream/slow/error-http/error-event/malformed/not-found/reasoning)
 - [x] Wire integration tests: request capture, delta streaming + finalize, HTTP error surfacing, reasoning highlighting

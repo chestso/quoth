@@ -78,7 +78,7 @@
   "A reasoning delta creates a yellow overlay tagged quoth-overlay."
   (quoth-test--with-reasoning-process
    (lambda (_proc)
-     (quoth-facade--append-delta "think" 'reasoning)
+     (quoth--append-delta "think" 'reasoning)
      (let ((ov (car (overlays-in (point-min) (point-max)))))
        (should (overlayp ov))
        (should (eq (overlay-get ov 'face) 'quoth-reasoning-face))
@@ -92,9 +92,9 @@
   (quoth-test--with-reasoning-process
    (lambda (_proc)
      (goto-char (point-max))
-     (quoth-facade--append-delta "think" 'reasoning)
+     (quoth--append-delta "think" 'reasoning)
      (should (= (point) (point-max)))
-     (quoth-facade--append-delta " harder" 'reasoning)
+     (quoth--append-delta " harder" 'reasoning)
      (should (= (point) (point-max)))
      (should (string= (buffer-substring-no-properties
                        (- (point) (length " harder")) (point))
@@ -104,8 +104,8 @@
   "Subsequent reasoning deltas extend the overlay."
   (quoth-test--with-reasoning-process
    (lambda (_proc)
-     (quoth-facade--append-delta "think" 'reasoning)
-     (quoth-facade--append-delta " harder" 'reasoning)
+     (quoth--append-delta "think" 'reasoning)
+     (quoth--append-delta " harder" 'reasoning)
      (let ((ov (car (overlays-in (point-min) (point-max)))))
        (should (overlayp ov))
        (should (string= (buffer-substring-no-properties
@@ -116,9 +116,9 @@
   "First content delta stops the reasoning overlay."
   (quoth-test--with-reasoning-process
    (lambda (_proc)
-     (quoth-facade--append-delta "think" 'reasoning)
-     (quoth-facade--append-delta " hard" 'reasoning)
-     (quoth-facade--append-delta "answer" 'content)
+     (quoth--append-delta "think" 'reasoning)
+     (quoth--append-delta " hard" 'reasoning)
+     (quoth--append-delta "answer" 'content)
      (let ((ov (car (overlays-in (point-min) (point-max)))))
        (should (overlayp ov))
        (should (string= (buffer-substring-no-properties
@@ -129,8 +129,8 @@
   "The first content delta after reasoning adds two newlines before it."
   (quoth-test--with-reasoning-process
    (lambda (_proc)
-     (quoth-facade--append-delta "think" 'reasoning)
-     (quoth-facade--append-delta "answer" 'content)
+     (quoth--append-delta "think" 'reasoning)
+     (quoth--append-delta "answer" 'content)
      (goto-char (point-min))
      (search-forward "answer")
      (let ((answer-start (match-beginning 0)))
@@ -141,7 +141,7 @@
   "Content-only stream leaves reasoning state nil."
   (quoth-test--with-reasoning-process
    (lambda (_proc)
-     (quoth-facade--append-delta "answer" 'content)
+     (quoth--append-delta "answer" 'content)
      (should-not (overlays-in (point-min) (point-max)))
      (should-not quoth--reasoning-start)
      (should-not quoth--reasoning-overlay))))
@@ -165,7 +165,7 @@ open (`quoth--response-start' at point-max after a newline)."
                          (unwind-protect
                              (progn
                                (funcall insert-fn proc)
-                               (quoth-facade--finalize))
+                               (quoth--finalize-response))
                            (delete-process proc)))
                        (current-buffer)))
       (unless result (quoth-test--cleanup)))
@@ -177,8 +177,8 @@ open (`quoth--response-start' at point-max after a newline)."
     (let ((buf (quoth-test--finalize-with-reasoning
                 (lambda (_proc)
                   (setq expected-id quoth--prompt-id)
-                  (quoth-facade--append-delta "think hard" 'reasoning)
-                  (quoth-facade--append-delta "answer" 'content)))))
+                  (quoth--append-delta "think hard" 'reasoning)
+                  (quoth--append-delta "answer" 'content)))))
       (with-current-buffer buf
         (let ((start (save-excursion
                        (goto-char (point-min))
@@ -198,8 +198,8 @@ open (`quoth--response-start' at point-max after a newline)."
   "The response region should cover the whole answer including reasoning."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta "think" 'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta "think" 'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (save-excursion
         (goto-char (point-min))
@@ -212,7 +212,7 @@ open (`quoth--response-start' at point-max after a newline)."
   "Finalize should reset reasoning markers even with no content."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta "think" 'reasoning)))))
+                (quoth--append-delta "think" 'reasoning)))))
     (with-current-buffer buf
       (should-not quoth--reasoning-start)
       (should-not quoth--reasoning-end)
@@ -258,9 +258,9 @@ open (`quoth--response-start' at point-max after a newline)."
 The body overlay is invisible with a marker overlay's `after-string'."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 12)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 12)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay))
             (preview-ov (quoth-test--reasoning-preview-overlay))
@@ -281,9 +281,9 @@ The body overlay is invisible with a marker overlay's `after-string'."
   "Reasoning of 10 lines or fewer should stay visible with no fold."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 10)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 10)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (should-not (quoth-test--reasoning-fold-overlay))
       (should-not (quoth-test--reasoning-preview-overlay))
@@ -298,9 +298,9 @@ The body overlay is invisible with a marker overlay's `after-string'."
 No `quoth-fold-mark' text property."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((marker-ov (quoth-test--reasoning-marker-overlay)))
         (should (overlayp marker-ov))
@@ -324,9 +324,9 @@ No `quoth-fold-mark' text property."
   "The preview overlay ends at the N-th line boundary."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((preview-ov (quoth-test--reasoning-preview-overlay))
             (body-ov (quoth-test--reasoning-fold-overlay)))
@@ -345,7 +345,7 @@ No `quoth-fold-mark' text property."
   "Content-only responses should get no fold control."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (should-not (quoth-test--reasoning-fold-overlay))
       (goto-char (point-min))
@@ -357,9 +357,9 @@ No `quoth-fold-mark' text property."
 No buffer text is inserted or deleted — only overlay properties change."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay)))
         (should (eq (overlay-get body-ov 'quoth-fold-state) 'collapsed))
@@ -381,9 +381,9 @@ No buffer text is inserted or deleted — only overlay properties change."
   "Quoth-reasoning-toggle should collapse an expanded reasoning region."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay)))
         ;; Expand first.
@@ -404,7 +404,7 @@ No buffer text is inserted or deleted — only overlay properties change."
   "Quoth-reasoning-toggle should message when no fold is at point."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (goto-char (point-min))
       (let ((messages nil))
@@ -422,9 +422,9 @@ No buffer text is inserted or deleted — only overlay properties change."
 getting stuck at its boundary (which caused 'Beginning of buffer')."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay)))
         (should (overlayp body-ov))
@@ -441,9 +441,9 @@ navigate through it.  Making the marker intangible was the cause of the
 arrow-up navigation bug."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((marker-ov (quoth-test--reasoning-marker-overlay)))
         (should (overlayp marker-ov))
@@ -460,9 +460,9 @@ arrow-up navigation bug."
 This ensures buffer-reading tools (markdown-preview, export) see the full text."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay)))
         (should (overlayp body-ov))
@@ -481,9 +481,9 @@ The preview overlay carries the toggle keymap so TAB works from
 the visible preview lines."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay))
             (preview-ov (quoth-test--reasoning-preview-overlay)))
@@ -502,9 +502,9 @@ the visible preview lines."
   "Pressing TAB inside the body overlay should toggle the fold."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay)))
         ;; Point inside the body overlay.
@@ -522,9 +522,9 @@ the visible preview lines."
   "Toggling should be a no-op when reasoning is 10 lines or fewer."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 10)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 10)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (goto-char (point-min))
       (let ((messages nil))
@@ -540,9 +540,9 @@ the visible preview lines."
 The buffer size stays constant across multiple toggle cycles."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay))
             (size-before (buffer-size)))
@@ -570,9 +570,9 @@ All text from the first reasoning char to the last has
 `quoth-region-type' `reasoning'."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (goto-char (point-min))
       (search-forward "line 1")
@@ -604,8 +604,8 @@ All text from the first reasoning char to the last has
             (process-put proc :quoth-target (current-buffer))
             (unwind-protect
                 (progn
-                  (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                              'reasoning)
+                  (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                       'reasoning)
                   ;; The provider transport is the interrupt target; the
                   ;; pipe process cannot be interrupted, so mock the abort.
                   (setq-local quoth-active-provider
@@ -635,7 +635,7 @@ All text from the first reasoning char to the last has
             (process-put proc :quoth-target (current-buffer))
             (unwind-protect
                 (progn
-                  (quoth-facade--append-delta "think" 'reasoning)
+                  (quoth--append-delta "think" 'reasoning)
                   (quoth-clear-buffer)
                   (should-not (quoth-test--reasoning-fold-overlay))
                   (should-not (overlays-in (point-min) (point-max))))
@@ -655,7 +655,7 @@ All text from the first reasoning char to the last has
             (process-put proc :quoth-target (current-buffer))
             (unwind-protect
                 (progn
-                  (quoth-facade--append-delta "think hard" 'reasoning)
+                  (quoth--append-delta "think hard" 'reasoning)
                   ;; The provider transport is the interrupt target; the
                   ;; pipe process cannot be interrupted, so mock the abort.
                   (setq-local quoth-active-provider
@@ -687,7 +687,7 @@ All text from the first reasoning char to the last has
             (process-put proc :quoth-target (current-buffer))
             (unwind-protect
                 (progn
-                  (quoth-facade--append-delta "think" 'reasoning)
+                  (quoth--append-delta "think" 'reasoning)
                   (should (overlays-in (point-min) (point-max)))
                   (quoth-clear-buffer)
                   (should-not (overlays-in (point-min) (point-max)))
@@ -708,15 +708,15 @@ All text from the first reasoning char to the last has
           (save-excursion (goto-char (point-max)) (newline))
           (setq-local quoth--response-start (point-marker))
           ;; Round 1: 11 lines of reasoning then tool block.
-          (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                      'reasoning)
+          (quoth--append-delta (quoth-test--reasoning-lines 11)
+                               'reasoning)
           (quoth--reasoning-stop)
           (quoth--reasoning-reset)
           ;; Round 2: 11 lines of reasoning then content.
-          (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                      'reasoning)
-          (quoth-facade--append-delta "answer" 'content)
-          (quoth-facade--close-response
+          (quoth--append-delta (quoth-test--reasoning-lines 11)
+                               'reasoning)
+          (quoth--append-delta "answer" 'content)
+          (quoth--close-response
            (marker-position quoth--response-start) expected-id)
           ;; Two fold overlays.
           (let ((folds nil))
@@ -737,14 +737,14 @@ All text from the first reasoning char to the last has
           (setq expected-id quoth--prompt-id)
           (save-excursion (goto-char (point-max)) (newline))
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                      'reasoning)
+          (quoth--append-delta (quoth-test--reasoning-lines 11)
+                               'reasoning)
           (quoth--reasoning-stop)
           (quoth--reasoning-reset)
-          (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                      'reasoning)
-          (quoth-facade--append-delta "answer" 'content)
-          (quoth-facade--close-response
+          (quoth--append-delta (quoth-test--reasoning-lines 11)
+                               'reasoning)
+          (quoth--append-delta "answer" 'content)
+          (quoth--close-response
            (marker-position quoth--response-start) expected-id)
           ;; Expand the first fold.
           (let ((folds nil))
@@ -776,8 +776,8 @@ All text from the first reasoning char to the last has
           (save-excursion (goto-char (point-max)) (newline))
           (setq-local quoth--response-start (point-marker))
           ;; Round 1: 11 lines of reasoning then tool block insertion.
-          (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                      'reasoning)
+          (quoth--append-delta (quoth-test--reasoning-lines 11)
+                               'reasoning)
           (quoth--tool-block-insert
            (list :name "bash" :id "call_1"
                  :args-json "{\"command\":\"ls\"}"
@@ -789,10 +789,10 @@ All text from the first reasoning char to the last has
           (quoth--reasoning-reset)
           (setq-local quoth--response-start (point-marker))
           ;; Round 2: 11 lines of reasoning then content.
-          (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                      'reasoning)
-          (quoth-facade--append-delta "answer" 'content)
-          (quoth-facade--close-response
+          (quoth--append-delta (quoth-test--reasoning-lines 11)
+                               'reasoning)
+          (quoth--append-delta "answer" 'content)
+          (quoth--close-response
            (marker-position quoth--response-start) expected-id)
           (let ((folds nil))
             (dolist (ov (overlays-in (point-min) (point-max)))
@@ -823,12 +823,12 @@ response on the final content."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "think hard" 'reasoning)
+          (quoth--append-delta "think hard" 'reasoning)
           (quoth--tool-block-insert
            (list :name "bash" :id "call_1" :args-json "{\"command\":\"ls\"}"
                  :result "<output>files</output>" :exit 0)
            quoth--prompt-id)
-          (quoth-facade--append-delta "final answer" 'content)
+          (quoth--append-delta "final answer" 'content)
           ;; The finalize flow tags the full response through point-max.
           (goto-char (point-max))
           (newline)
@@ -856,7 +856,7 @@ reasoning, so the header line shows region: tool."
           (goto-char (point-max))
           (newline)
           (setq-local quoth--response-start (point-marker))
-          (quoth-facade--append-delta "think" 'reasoning)
+          (quoth--append-delta "think" 'reasoning)
           (quoth--tool-block-insert
            (list :name "bash" :id "call_1" :args-json "{\"command\":\"ls\"}"
                  :result "<output>files</output>" :exit 0)
@@ -883,7 +883,7 @@ This ensures `:extend t' on `quoth-reasoning-face' paints the last
 line's background to the end of the screen line."
   (quoth-test--with-reasoning-process
    (lambda (_proc)
-     (quoth-facade--append-delta "think hard" 'reasoning)
+     (quoth--append-delta "think hard" 'reasoning)
      (quoth--reasoning-stop)
      (let ((ov quoth--reasoning-overlay))
        (should (overlayp ov))
@@ -896,9 +896,9 @@ so the body overlay (and its before-string) starts at the beginning
 of the next line."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay))
             (preview-ov (quoth-test--reasoning-preview-overlay)))
@@ -918,9 +918,9 @@ This gives the marker line the same background color as the reasoning
 text for visual consistency."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((marker-ov (quoth-test--reasoning-marker-overlay)))
         (should (overlayp marker-ov))
@@ -935,9 +935,9 @@ This ensures the last preview line's background extends to EOL via
 `:extend t', matching the reasoning overlay's own trailing newline."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((preview-ov (quoth-test--reasoning-preview-overlay)))
         (should (overlayp preview-ov))
@@ -963,9 +963,9 @@ overlay at the boundary between preview and body.  This overlay is at a
 visible position, so the marker text is tangible and navigable."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
-                (quoth-facade--append-delta (quoth-test--reasoning-lines 11)
-                                            'reasoning)
-                (quoth-facade--append-delta "answer" 'content)))))
+                (quoth--append-delta (quoth-test--reasoning-lines 11)
+                                     'reasoning)
+                (quoth--append-delta "answer" 'content)))))
     (with-current-buffer buf
       (let ((body-ov (quoth-test--reasoning-fold-overlay)))
         (should (overlayp body-ov))
