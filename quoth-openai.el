@@ -95,10 +95,10 @@ same string so the gateway sees an identical client."
 
 (defcustom quoth-openai-system-prompt
   "You are a helpful assistant.  You answer concisely and correctly."
-  "Base system prompt, followed by the <env>, <project_context>,
-and <user_preferences> blocks on every request.
-Read at request-build time; edits apply on the next cache miss
-(context-file change, `quoth-clear-buffer', or a new buffer)."
+  "Base system prompt for every request.
+Followed by the <env>, <project_context>, and <user_preferences>
+blocks.  Read at request-build time; edits apply on the next cache
+miss: context-file change, `quoth-clear-buffer', or a new buffer."
   :type 'string
   :group 'quoth-openai)
 
@@ -881,7 +881,7 @@ core's append-delta); CALLBACK runs with no args when the stream
 finishes; ON-ERROR (optional) receives a stream error message;
 SESSION-ID, when non-nil, is the XXH3-64 of the buffer's session UUID,
 sent as x-session-id / x-session-affinity for prefix caching.
-x-crush-id, when non-nil, is sent as the x-crush-id header (matching
+X-CRUSH-ID, when non-nil, is sent as the x-crush-id header (matching
 the Crush CLI's per-machine ID).  The provider never touches buffers.
 Returns the curl process."
   (let* ((payload (json-encode body))
