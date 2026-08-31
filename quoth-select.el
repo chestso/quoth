@@ -42,12 +42,9 @@
 
 (require 'cl-lib)
 (require 'transient)
+(require 'quoth-provider)   ; session slots, active-provider, model generic, change hook
+(require 'quoth-openai)     ; quoth-model, quoth-openai-default-model
 
-;; quoth.el loads this file at the end of its body (after `provide'),
-;; so the core is fully available before this file's body runs.
-;; All cross-references are declared below for byte-compilation.
-
-(defvar quoth--session-thinking)
 (defvar transient--original-buffer)
 
 (defmacro quoth--select-in-origin (&rest body)
@@ -55,18 +52,6 @@
   `(with-current-buffer (or transient--original-buffer
                             (current-buffer))
      ,@body))
-(defvar quoth--session-reasoning-effort)
-(defvar quoth-active-provider)
-(defvar quoth-model)
-(defvar quoth-openai-default-model)
-(defvar quoth-providers)
-(defvar quoth-active-provider-name)
-(declare-function quoth-provider-p "quoth-provider" (object))
-(declare-function quoth-provider--models "quoth-provider" (provider))
-(declare-function quoth-provider--apply-model "quoth-provider" (provider model-entry))
-(declare-function quoth--update-header-line "quoth.el" ())
-(declare-function quoth-hyper-provider-p "quoth-hyper-provider" (object))
-(declare-function quoth-hyper-provider-model "quoth-hyper-provider" (object))
 
 ;;; Helper functions (testable without transient UI)
 
@@ -132,8 +117,9 @@ only context window and per-token costs appear here."
 ;;; Transient menu
 (defun quoth--select-current-model ()
   "Return the effective model id for the current buffer, or nil."
-  (or (and (quoth-hyper-provider-p quoth-active-provider)
-           (quoth-hyper-provider-model quoth-active-provider))
+  (or (and quoth-active-provider
+           (quoth-provider-p quoth-active-provider)
+           (quoth-provider-model quoth-active-provider))
       quoth-openai-default-model))
 
 (defun quoth--select-effective-model-entry ()
@@ -189,7 +175,7 @@ only context window and per-token costs appear here."
 	(quoth-provider--apply-model
 	 quoth-active-provider
 	 (list :id choice))))
-    (quoth--update-header-line)
+    (run-hooks 'quoth-after-model-change-hook)
     (message "Model: %s"
 	     (or (and (not (string= choice "default")) choice)
 		 quoth-openai-default-model))))

@@ -37,6 +37,87 @@
 
 (require 'cl-lib)
 
+;;; Configuration
+
+(defgroup quoth nil
+  "Chat with AI providers from GNU Emacs."
+  :group 'tools
+  :prefix "quoth-")
+
+(defgroup quoth-openai nil
+  "Reusable OpenAI-compatible client."
+  :group 'quoth
+  :prefix "quoth-openai-")
+
+(defgroup quoth-hyper nil
+  "Charm Hyper gateway provider."
+  :group 'quoth
+  :prefix "quoth-hyper-")
+
+;;; Session state shared across the core, the OpenAI client, and the
+;;; selector UI.  Lives here — in the protocol module — so that
+;;; `quoth-openai.el' and `quoth-select.el' depend on the protocol, not
+;;; on `quoth.el'.  The core sets these buffer-locally at init time.
+
+(defvar-local quoth--session-thinking nil
+  "Per-buffer thinking flag.
+When non-nil, the request body carries `thinking: t' and the model
+emits a reasoning trace before the final answer.  nil (the default)
+omits the key so the model/gateway applies its own default.")
+
+(defvar-local quoth--session-reasoning-effort nil
+  "Per-buffer reasoning effort, or nil.
+When non-nil, the request body carries `reasoning_effort: VALUE'.
+Meaningful only when `quoth--session-thinking' is non-nil; inert
+otherwise.  nil (the default) omits the key.")
+
+;;; Active provider state.  The registry and the active-provider-name
+;;; defcustom live here (protocol concerns); the default registry's
+;;; :factory points at `quoth--make-default-hyper-provider', defined in
+;;; `quoth.el' and resolved at `funcall' time, so this file does not
+;;; require `quoth.el'.  The byte-compiler is told about it via
+;;; `declare-function' below.
+
+(defcustom quoth-active-provider-name "hyper"
+  "Name of the active provider for new quoth buffers.
+Must match the :name of an entry in `quoth-providers'.  The chosen
+provider is instantiated per-buffer in `quoth--init-buffer'.
+Persisted across sessions via `savehist-mode' when enabled."
+  :type 'string
+  :group 'quoth)
+
+(declare-function quoth--make-default-hyper-provider "quoth.el" (&optional buf dir))
+
+(defvar quoth-providers-default
+  (list (list :name    "hyper"
+              :type    'hyper
+              :factory #'quoth--make-default-hyper-provider))
+  "Default value for `quoth-providers' — a registry with one entry: hyper.")
+
+(defcustom quoth-providers quoth-providers-default
+  "Registered quoth providers, in priority order.
+Each entry is a plist: :name (string, display + id), :type (symbol),
+:factory (function of zero args returning a configured provider
+instance).  The first entry is the default active provider for new
+buffers.  Add a second provider by appending an entry with its own
+:factory; nothing in the protocol changes."
+  :type '(repeat (plist :name string :type symbol :factory function))
+  :group 'quoth)
+
+(defvar-local quoth-active-provider nil
+  "The active quoth provider for this buffer.
+Set during buffer initialization; `quoth--send-prompt' and
+`quoth-interrupt' dispatch through it.  Buffer-local.")
+
+(defvar quoth-after-model-change-hook nil
+  "Hook run after a model, thinking, or effort change is applied to a buffer.
+Functions are called with the chat buffer current, so they can refresh
+buffer-local UI (e.g. the header line).  The core wires
+`quoth--update-header-line' here; the selector runs this hook instead
+of calling the core directly, avoiding a load-time dependency on
+`quoth.el'.")
+
+
 (cl-defstruct (quoth-provider
                (:constructor nil)
                (:constructor make-quoth-provider)
@@ -158,6 +239,14 @@ caller to fall back to a static list."
 Sets the provider's model slot from (:id MODEL-ENTRY); returns nil.
 Providers override to pin provider-specific state."
   (ignore provider model-entry)
+  nil)
+
+
+(cl-defgeneric quoth-provider-model (provider)
+  "Return PROVIDER's active model id, or nil.
+Lets the selector and the header line read the current model through
+the protocol instead of reaching into a concrete provider struct."
+  (ignore provider)
   nil)
 
 (provide 'quoth-provider)

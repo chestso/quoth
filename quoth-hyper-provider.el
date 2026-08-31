@@ -478,5 +478,9 @@ when the fetch fails."
   (setf (quoth-hyper-provider-model provider)
         (plist-get model-entry :id)))
 
+(cl-defmethod quoth-provider-model ((provider quoth-hyper-provider))
+  "Return PROVIDER's active model id."
+  (quoth-hyper-provider-model provider))
+
 (provide 'quoth-hyper-provider)
 ;;; quoth-hyper-provider.el ends here

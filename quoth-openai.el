@@ -43,6 +43,7 @@
 (require 'json)
 (require 'subr-x)
 (require 'auth-source)
+(require 'quoth-provider)
 
 (defcustom quoth-openai-timeout 300
   "Seconds to wait for an OpenAI-compatible request before giving up."
@@ -119,8 +120,6 @@ ever uses leading blank lines meaningfully."
   :group 'quoth-openai)
 
 (declare-function quoth--debug-log "quoth.el" (category message))
-(defvar quoth--session-thinking)
-(defvar quoth--session-reasoning-effort)
 
 ;;; System prompt construction: <env> block with project context.
 

@@ -342,7 +342,7 @@ are registered with `savehist-additional-variables'."
   "`quoth--select-can-reason-p' returns non-nil for a reasoning model."
   (let ((buf (generate-new-buffer " *quoth-test-pred*")))
     (with-current-buffer buf
-      (let ((quoth-active-provider t)
+      (let ((quoth-active-provider (make-quoth-provider))
             (transient--original-buffer (current-buffer)))
 	(cl-letf (((symbol-function 'quoth-provider-p)
 		   (lambda (&rest _) t))
@@ -350,9 +350,7 @@ are registered with `savehist-additional-variables'."
 		   (lambda (&rest _)
 		     (list '(:id "m" :can-reason t
 				 :reasoning-levels ("low" "high")))))
-		  ((symbol-function 'quoth-hyper-provider-p)
-		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-hyper-provider-model)
+		  ((symbol-function 'quoth-provider-model)
 		   (lambda (&rest _) "m")))
 	  (should (quoth--select-can-reason-p)))))
     (when (buffer-live-p buf) (kill-buffer buf))))
@@ -361,7 +359,7 @@ are registered with `savehist-additional-variables'."
   "`quoth--select-can-reason-p' returns nil for a non-reasoning model."
   (let ((buf (generate-new-buffer " *quoth-test-pred*")))
     (with-current-buffer buf
-      (let ((quoth-active-provider t)
+      (let ((quoth-active-provider (make-quoth-provider))
             (transient--original-buffer (current-buffer)))
 	(cl-letf (((symbol-function 'quoth-provider-p)
 		   (lambda (&rest _) t))
@@ -369,9 +367,7 @@ are registered with `savehist-additional-variables'."
 		   (lambda (&rest _)
 		     (list '(:id "m" :can-reason nil
 				 :reasoning-levels nil))))
-		  ((symbol-function 'quoth-hyper-provider-p)
-		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-hyper-provider-model)
+		  ((symbol-function 'quoth-provider-model)
 		   (lambda (&rest _) "m")))
 	  (should-not (quoth--select-can-reason-p)))))
     (when (buffer-live-p buf) (kill-buffer buf))))
@@ -380,7 +376,7 @@ are registered with `savehist-additional-variables'."
   "`quoth--select-has-reasoning-levels-p' returns non-nil when levels exist."
   (let ((buf (generate-new-buffer " *quoth-test-pred*")))
     (with-current-buffer buf
-      (let ((quoth-active-provider t)
+      (let ((quoth-active-provider (make-quoth-provider))
             (transient--original-buffer (current-buffer)))
 	(cl-letf (((symbol-function 'quoth-provider-p)
 		   (lambda (&rest _) t))
@@ -388,9 +384,7 @@ are registered with `savehist-additional-variables'."
 		   (lambda (&rest _)
 		     (list '(:id "m" :can-reason t
 				 :reasoning-levels ("low" "high")))))
-		  ((symbol-function 'quoth-hyper-provider-p)
-		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-hyper-provider-model)
+		  ((symbol-function 'quoth-provider-model)
 		   (lambda (&rest _) "m")))
 	  (should (quoth--select-has-reasoning-levels-p)))))
     (when (buffer-live-p buf) (kill-buffer buf))))
@@ -399,7 +393,7 @@ are registered with `savehist-additional-variables'."
   "`quoth--select-has-reasoning-levels-p' returns nil when no levels."
   (let ((buf (generate-new-buffer " *quoth-test-pred*")))
     (with-current-buffer buf
-      (let ((quoth-active-provider t)
+      (let ((quoth-active-provider (make-quoth-provider))
             (transient--original-buffer (current-buffer)))
 	(cl-letf (((symbol-function 'quoth-provider-p)
 		   (lambda (&rest _) t))
@@ -407,9 +401,7 @@ are registered with `savehist-additional-variables'."
 		   (lambda (&rest _)
 		     (list '(:id "m" :can-reason t
 				 :reasoning-levels nil))))
-		  ((symbol-function 'quoth-hyper-provider-p)
-		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-hyper-provider-model)
+		  ((symbol-function 'quoth-provider-model)
 		   (lambda (&rest _) "m")))
 	  (should-not (quoth--select-has-reasoning-levels-p)))))
     (when (buffer-live-p buf) (kill-buffer buf))))

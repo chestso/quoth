@@ -54,22 +54,6 @@
 (require 'json)
 
 ;;; Configuration
-
-(defgroup quoth nil
-  "Chat with AI providers from GNU Emacs."
-  :group 'tools
-  :prefix "quoth-")
-
-(defgroup quoth-openai nil
-  "Reusable OpenAI-compatible client."
-  :group 'quoth
-  :prefix "quoth-openai-")
-
-(defgroup quoth-hyper nil
-  "Charm Hyper gateway provider."
-  :group 'quoth
-  :prefix "quoth-hyper-")
-
 (defface quoth-reasoning-face
   '((t :inherit region :extend t))
   "Face for streamed chain-of-thought reasoning text.
@@ -121,30 +105,6 @@ otherwise `default-directory'."
   :group 'quoth)
 
 
-(defcustom quoth-active-provider-name "hyper"
-  "Name of the active provider for new quoth buffers.
-Must match the :name of an entry in `quoth-providers'.  The chosen
-provider is instantiated per-buffer in `quoth--init-buffer'.
-Persisted across sessions via `savehist-mode' when enabled."
-  :type 'string
-  :group 'quoth)
-
-(defvar quoth-providers-default
-  (list (list :name    "hyper"
-              :type    'hyper
-              :factory #'quoth--make-default-hyper-provider))
-  "Default value for `quoth-providers' — a registry with one entry: hyper.")
-
-(defcustom quoth-providers quoth-providers-default
-  "Registered quoth providers, in priority order.
-Each entry is a plist: :name (string, display + id), :type (symbol),
-:factory (function of zero args returning a configured provider
-instance).  The first entry is the default active provider for new
-buffers.  Add a second provider by appending an entry with its own
-:factory; nothing in quoth.el changes."
-  :type '(repeat (plist :name string :type symbol :factory function))
-  :group 'quoth)
-
 (defvar-local quoth--session nil
   "Session ID to pass to the provider.
 When non-nil, continues a specific session by ID.
@@ -169,24 +129,12 @@ log.  Buffer-local.")
 Set when prompt is sent, used by sentinel to tag response text.")
 
 
-(defvar-local quoth--session-thinking nil
-  "Per-buffer thinking flag.
-When non-nil, the request body carries `thinking: t' and the model
-emits a reasoning trace before the final answer.  nil (the default)
-omits the key so the model/gateway applies its own default.")
-
-(defvar-local quoth--session-reasoning-effort nil
-  "Per-buffer reasoning effort, or nil.
-When non-nil, the request body carries `reasoning_effort: VALUE'.
-Meaningful only when `quoth--session-thinking' is non-nil; inert
-otherwise.  nil (the default) omits the key.")
-
-(defvar quoth-active-provider nil
-  "The active quoth provider for this buffer.
-Set during buffer initialization; `quoth--send-prompt' and
-`quoth-interrupt' dispatch through it.  Buffer-local.")
+(defvar quoth-active-provider)
+(defvar quoth-active-provider-name)
+(defvar quoth-providers)
 (declare-function quoth-provider-p "quoth-provider" (object))
 (declare-function quoth-provider-application-count "quoth-provider" (provider))
+(declare-function quoth-provider-model "quoth-provider" (provider))
 
 ;;; Stream state (idle/active/done/error), progress, and the error pane.
 ;;; Buffer-local; these track the lifecycle of one prompt-response cycle.
@@ -330,7 +278,7 @@ Buffer-local.")
 (eval-and-compile
   (dolist (dep '("quoth-provider" "quoth-openai" "quoth-xxh3"
                  "quoth-process" "quoth-hyper-provider" "quoth-tools"
-                 "quoth-searxng"))
+                 "quoth-searxng" "quoth-select"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -349,8 +297,6 @@ Buffer-local.")
 (declare-function quoth-openai-parse-tool-args "quoth-openai" (args-json))
 (declare-function quoth-process--shell-type "quoth-process" (shell-path))
 (declare-function quoth-hyper--fetch-models "quoth-hyper-provider" (base-url &optional token))
-(declare-function quoth-hyper-provider-p "quoth-hyper-provider" (object))
-(declare-function quoth-hyper-provider-model "quoth-hyper-provider" (object))
 (declare-function quoth-provider-transport-process "quoth-provider" (provider))
 (declare-function quoth-select-model-menu "quoth-select" ())
 
@@ -455,6 +401,13 @@ interrupting, clearing, and session management.
       (add-hook 'post-command-hook #'quoth--update-header-line nil t)
     (remove-hook 'post-command-hook #'quoth--update-header-line t)))
 
+;; The selector (quoth-select.el) applies model/thinking/effort changes
+;; out-of-band; it runs `quoth-after-model-change-hook' instead of
+;; calling `quoth--update-header-line' directly, so it need not depend
+;; on `quoth.el'.  This is a global hook (the function is a no-op
+;; outside a chat buffer).
+(add-hook 'quoth-after-model-change-hook #'quoth--update-header-line)
+
 ;;; Internal helpers
 
 (defun quoth--debug-log (category message)
@@ -538,13 +491,13 @@ Only logs when `quoth-debug-mode' is non-nil."
 
 (defun quoth--header-model ()
   "Return the effective model name for the header line, or nil.
-Reads the provider's model slot (derived from `quoth-model' at buffer
-init); falls back to `quoth-openai-default-model' for hyper providers."
-  (let ((model (and (quoth-hyper-provider-p quoth-active-provider)
-                    (quoth-hyper-provider-model quoth-active-provider))))
-    (or model
-        (and (quoth-hyper-provider-p quoth-active-provider)
-             quoth-openai-default-model))))
+Reads the provider's model via the `quoth-provider-model' generic
+(derived from `quoth-model' at buffer init); falls back to
+`quoth-openai-default-model' when the provider reports none."
+  (or (and quoth-active-provider
+           (quoth-provider-p quoth-active-provider)
+           (quoth-provider-model quoth-active-provider))
+      quoth-openai-default-model))
 
 (defun quoth--region-label-at-point ()
   "Return the `quoth-region-type' at point as a string, or nil.
@@ -2360,12 +2313,4 @@ interaction buffer.
   (add-to-list 'savehist-additional-variables 'quoth-model))
 
 (provide 'quoth)
-
-(eval-and-compile
-  (unless (require 'quoth-select nil t)
-    (load (expand-file-name
-           "quoth-select.el"
-           (file-name-directory
-            (or buffer-file-name load-file-name default-directory)))
-          nil t)))
 ;;; quoth.el ends here

@@ -75,6 +75,7 @@ quoth/                  # Package root
   quoth-provider.el     # Provider protocol: base struct + quoth-provider-* generics
   quoth-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
   quoth-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over quoth-openai)
+  quoth-select.el      # Transient model selector (UI only; depends on the protocol, not quoth.el)
   quoth-process.el      # Process handler: PTY sessions, output buffering, yield, stdin, cleanup
   quoth-tools.el        # Local tool implementations: exec_command + write_stdin (over quoth-process)
   quoth-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
@@ -82,13 +83,20 @@ quoth/                  # Package root
   test/                 # ERT test suite (see "Hacking" below)
 ```
 
-Dependency direction: `quoth-provider.el` has no dependencies;
-`quoth-openai.el` requires no sibling package; `quoth-xxh3.el` has no
+Dependency direction: `quoth-provider.el` has no `require`s (it owns
+the shared session slots, the active-provider state, and the
+`quoth-provider-*` generics, so the OpenAI client and the selector
+depend on the protocol, not on `quoth.el`); `quoth-openai.el` requires
+only `quoth-provider` (for the session slots); `quoth-xxh3.el` has no
 dependencies (pure math); `quoth-process.el` requires only `cl-lib`
 and `subr-x`; `quoth-hyper-provider.el` requires `quoth-provider` +
 `quoth-openai` + `quoth-xxh3`; `quoth-tools.el` requires
 `quoth-openai` + `quoth-process` and registers its tools at load;
-`quoth.el` requires all of them. Stream state, buffer rendering,
+`quoth-select.el` requires `quoth-provider` + `quoth-openai` (both
+leaves) and refreshes the UI through `quoth-after-model-change-hook`
+rather than calling core functions — it never requires `quoth.el`;
+`quoth.el` requires all of them (including `quoth-select`, for the
+`C-c c m` keybinding). Stream state, buffer rendering,
 and error handling (`quoth--append-delta`, `quoth--record-error`,
 `quoth--stream-transition`, `quoth--debug-log`) all live in
 `quoth.el` — the providers call them through buffer-local process
@@ -99,9 +107,11 @@ references and `declare-function` stubs.
 All provider interaction goes through a provider protocol (the
 `cl-defgeneric` methods `quoth-provider-send-prompt`,
 `quoth-provider-interrupt`, `quoth-provider-active-p`,
-`quoth-provider-cleanup`, `quoth-provider-grant-permission`, plus the
-internal `quoth-provider--tool-calls` and
-`quoth-provider--tool-results` used by the tool loop). The protocol and
+`quoth-provider-cleanup`, `quoth-provider-grant-permission`,
+`quoth-provider-model`, and the internal `quoth-provider--models`,
+`quoth-provider--apply-model`, `quoth-provider--tool-calls`, and
+`quoth-provider--tool-results` (the latter four used by the tool loop
+and the model selector). The protocol and
 the shared `quoth-provider` base struct live in `quoth-provider.el`;
 each concrete provider is a dedicated, buffer-unaware file:
 
@@ -321,7 +331,6 @@ every session owned by the cleared buffer. `quoth-process-max-sessions`
 ### Current limitations
 
 - Manual token only (`quoth-hyper-token`); OAuth device flow is planned.
-- No model catalog.
 - `quoth-provider-grant-permission` is a no-op (tools run without
   confirmation).
 
