@@ -72,11 +72,12 @@ The system message should carry the dynamic system prompt (<env> block)."
     (should (string= (quoth--openai-alist-get "content" (nth 1 msgs)) "Hello"))))
 
 (ert-deftest quoth-test/openai-compose-respects-options ()
-  "Optional max-tokens, temperature, thinking, and effort land in the body."
+  "Optional max-tokens, temperature, thinking, and effort land in body.
+Session attributes are buffer-local; set them with `let'."
   (let ((quoth-openai-max-tokens 1234)
         (quoth-openai-temperature 0.5)
-        (quoth-openai-thinking t)
-        (quoth-openai-reasoning-effort "high"))
+        (quoth--session-thinking t)
+        (quoth--session-reasoning-effort "high"))
     (let ((req (quoth-openai-compose-request "P" "my-model")))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))

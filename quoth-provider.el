@@ -39,6 +39,7 @@
 
 (cl-defstruct (quoth-provider
                (:constructor nil)
+               (:constructor make-quoth-provider)
                (:copier nil))
   "Base structure for a quoth provider."
   buffer
@@ -140,6 +141,23 @@ non-nil the values are already a running total — the core must not
 re-sum (it would double-count); it still manages the buffer-local reset
 on new prompt / clear."
   (ignore provider process)
+  nil)
+
+(cl-defgeneric quoth-provider--models (provider)
+  "Return a list of model plists for PROVIDER's catalog, or nil on failure.
+Each plist has keys: :id, :name, :context-window, :default-max-tokens,
+:cost-in, :cost-out, :cost-in-cached, :cost-out-cached, :can-reason,
+:reasoning-levels, :default-reasoning-effort, :supports-attachments.
+Fetches live (sync) when the provider supports it; nil signals the
+caller to fall back to a static list."
+  (ignore provider)
+  nil)
+
+(cl-defgeneric quoth-provider--apply-model (provider model-entry)
+  "Apply MODEL-ENTRY (a plist from `quoth-provider--models') to PROVIDER.
+Sets the provider's model slot from (:id MODEL-ENTRY); returns nil.
+Providers override to pin provider-specific state."
+  (ignore provider model-entry)
   nil)
 
 (provide 'quoth-provider)

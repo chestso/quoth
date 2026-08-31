@@ -77,14 +77,13 @@
       (should (string= (quoth--openai-alist-get "content" (nth 1 msgs)) "Hello")))))
 
 (ert-deftest quoth-test/hyper-compose-respects-defcustoms ()
-  "Model, max-tokens, temperature, thinking, reasoning-effort should land in body."
+  "Model, max-tokens, temperature, thinking, reasoning-effort land in body.
+Session attributes are buffer-local; set them with `let'."
   (let ((quoth-model "my-model")
         (quoth-openai-max-tokens 1234)
         (quoth-openai-temperature 0.5)
-        (quoth-openai-thinking t)
-        (quoth-openai-reasoning-effort "high"))
-    ;; The model is resolved by the caller (the core passes the provider
-    ;; model slot derived from `quoth-model'); compose uses it directly.
+        (quoth--session-thinking t)
+        (quoth--session-reasoning-effort "high"))
     (let ((req (quoth-openai-compose-request "P" quoth-model)))
       (should (string= (alist-get 'model req) "my-model"))
       (should (= (alist-get 'max_tokens req) 1234))
@@ -1785,23 +1784,6 @@ id, name, context window, and reasoning flag."
   "`quoth-hyper--fetch-models' returns nil when the gateway is unreachable."
   (should (null (quoth-hyper--fetch-models "http://127.0.0.1:1" "tok"))))
 
-(ert-deftest quoth-test/hyper-model-choices-format ()
-  "`quoth-hyper--model-choices' maps catalog entries to (ID . DISPLAY)."
-  (let* ((catalog '((models .
-                            [(("id" . "m1") ("name" . "Model One")
-                              ("context_window" . 4096) ("cost_per_1m_in" . 0.5)
-                              ("can_reason" . t))
-                             (("id" . "m2") ("name" . "Model Two")
-                              ("context_window" . 8192) ("cost_per_1m_in" . 0.1)
-                              ("can_reason" . nil))])))
-         (choices (quoth-hyper--model-choices catalog)))
-    (should (= (length choices) 2))
-    (should (string= (caar choices) "m1"))
-    (should (string-match-p "Model One" (cdar choices)))
-    (should (string-match-p "4096" (cdar choices)))
-    (should (string-match-p "reason" (cdar choices)))
-    (should (string-match-p "no reason" (cdr (cadr choices))))))
-
 (ert-deftest quoth-test/select-model-sets-provider-and-global ()
   "`quoth-select-model' updates the provider slot, `quoth-model', and header.
 The catalog is fetched from the dummy server; picking a model applies
@@ -1857,7 +1839,7 @@ it to the current buffer and the global default."
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (cl-letf (((symbol-function 'quoth-hyper--fetch-models)
+            (cl-letf (((symbol-function 'quoth-provider--models)
                        (lambda (&rest _) nil))
                       ((symbol-function 'completing-read)
                        (lambda (_prompt coll &rest _)

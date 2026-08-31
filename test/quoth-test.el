@@ -124,7 +124,7 @@ Initializes with the default hyper provider."
                  "quoth-test-openai" "quoth-test-hyper"
                  "quoth-test-reasoning" "quoth-test-stream"
                  "quoth-test-xxh3" "quoth-test-tools"
-                 "quoth-test-process" "quoth-test-searxng"))
+                 "quoth-test-process" "quoth-test-searxng" "quoth-test-select"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")

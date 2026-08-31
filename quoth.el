@@ -4,7 +4,7 @@
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
 ;;; URL: https://github.com/chestso/quoth
 ;;; Version: 0.3.1
-;;; Package-Requires: ((emacs "28.1"))
+;;; Package-Requires: ((emacs "28.1") (transient "0.4"))
 ;;; Keywords: tools, ai, convenience
 ;;; Prefix: quoth-
 
@@ -120,6 +120,31 @@ otherwise `default-directory'."
   :type 'boolean
   :group 'quoth)
 
+
+(defcustom quoth-active-provider-name "hyper"
+  "Name of the active provider for new quoth buffers.
+Must match the :name of an entry in `quoth-providers'.  The chosen
+provider is instantiated per-buffer in `quoth--init-buffer'.
+Persisted across sessions via `savehist-mode' when enabled."
+  :type 'string
+  :group 'quoth)
+
+(defvar quoth-providers-default
+  (list (list :name    "hyper"
+              :type    'hyper
+              :factory #'quoth--make-default-hyper-provider))
+  "Default value for `quoth-providers' — a registry with one entry: hyper.")
+
+(defcustom quoth-providers quoth-providers-default
+  "Registered quoth providers, in priority order.
+Each entry is a plist: :name (string, display + id), :type (symbol),
+:factory (function of zero args returning a configured provider
+instance).  The first entry is the default active provider for new
+buffers.  Add a second provider by appending an entry with its own
+:factory; nothing in quoth.el changes."
+  :type '(repeat (plist :name string :type symbol :factory function))
+  :group 'quoth)
+
 (defvar-local quoth--session nil
   "Session ID to pass to the provider.
 When non-nil, continues a specific session by ID.
@@ -142,6 +167,19 @@ log.  Buffer-local.")
 (defvar-local quoth--response-start nil
   "Marker for where response text starts.
 Set when prompt is sent, used by sentinel to tag response text.")
+
+
+(defvar-local quoth--session-thinking nil
+  "Per-buffer thinking flag.
+When non-nil, the request body carries `thinking: t' and the model
+emits a reasoning trace before the final answer.  nil (the default)
+omits the key so the model/gateway applies its own default.")
+
+(defvar-local quoth--session-reasoning-effort nil
+  "Per-buffer reasoning effort, or nil.
+When non-nil, the request body carries `reasoning_effort: VALUE'.
+Meaningful only when `quoth--session-thinking' is non-nil; inert
+otherwise.  nil (the default) omits the key.")
 
 (defvar quoth-active-provider nil
   "The active quoth provider for this buffer.
@@ -311,10 +349,10 @@ Buffer-local.")
 (declare-function quoth-openai-parse-tool-args "quoth-openai" (args-json))
 (declare-function quoth-process--shell-type "quoth-process" (shell-path))
 (declare-function quoth-hyper--fetch-models "quoth-hyper-provider" (base-url &optional token))
-(declare-function quoth-hyper--model-choices "quoth-hyper-provider" (catalog))
 (declare-function quoth-hyper-provider-p "quoth-hyper-provider" (object))
 (declare-function quoth-hyper-provider-model "quoth-hyper-provider" (object))
 (declare-function quoth-provider-transport-process "quoth-provider" (provider))
+(declare-function quoth-select-model-menu "quoth-select" ())
 
 ;;; Buffer naming
 
@@ -386,7 +424,7 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
     (define-key map (kbd "i") #'quoth-interrupt)
     (define-key map (kbd "k") #'quoth-clear-buffer)
     (define-key map (kbd "r") #'quoth-reasoning-toggle)
-    (define-key map (kbd "m") #'quoth-select-model)
+    (define-key map (kbd "m") #'quoth-select-model-menu)
     map)
   "Keymap under `C-c c' for quoth chat-buffer commands.")
 
@@ -1035,6 +1073,31 @@ buffer-local and never leaves via the network; only the hash is sent."
                       (substring (md5 (format "%s%s" (random) (current-time))) 0 8)))
   (setq-local quoth--session-id (quoth-xxh3-hash64 quoth--session-uuid)))
 
+
+(defun quoth--make-default-hyper-provider (&optional buf dir)
+  "Return a hyper provider configured from the current defcustoms.
+BUF is the buffer slot; DIR is the working-directory slot.  Uses
+`quoth-hyper-base-url', `quoth-hyper-token', and `quoth-model'."
+  (quoth-make-hyper-provider
+   :buffer buf
+   :working-directory dir
+   :base-url quoth-hyper-base-url
+   :token quoth-hyper-token
+   :model quoth-model))
+
+(defun quoth--instantiate-provider (name buf dir)
+  "Look up provider NAME in `quoth-providers' and call its :factory.
+Returns a provider instance configured for BUF and DIR, or nil when
+the name is not found."
+  (let ((entry (cl-find name quoth-providers
+                        :test #'string=
+                        :key (lambda (e) (plist-get e :name)))))
+    (when entry
+      (let ((factory (plist-get entry :factory)))
+        (if (functionp factory)
+            (funcall factory buf dir)
+          (error "Provider %s has no valid :factory" name))))))
+
 (defun quoth--init-buffer (buf)
   "Initialize BUF as a quoth buffer if not already initialized."
   (with-current-buffer buf
@@ -1078,12 +1141,9 @@ buffer-local and never leaves via the network; only the hash is sent."
       (setq-local quoth--project-root
                   (quoth--canonical-root default-directory))
       (setq-local quoth-active-provider
-                  (quoth-make-hyper-provider
-                   :buffer buf
-                   :working-directory default-directory
-                   :base-url quoth-hyper-base-url
-                   :token quoth-hyper-token
-                   :model quoth-model))
+                  (quoth--instantiate-provider
+                   (or quoth-active-provider-name "hyper")
+                   buf default-directory))
       ;; Mark initialized only after mode setup so the flag is not wiped
       ;; by the parent mode (which calls kill-all-local-variables).
       (setq-local quoth--initialized t))))
@@ -2176,24 +2236,23 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (setq-local buffer-undo-list nil))
 
 (defun quoth-select-model ()
-  "Select a model from the Hyper gateway's catalog.
-Fetches the live model catalog from `quoth-hyper-base-url'/provider
-\(sync) and prompts for a choice; picking a model sets the global
-`quoth-model' and the current buffer's provider model slot, so the
-header line updates immediately and future buffers use the choice.
-Choosing the `default' entry clears the selection back to
-`quoth-openai-default-model'.  When the catalog fetch fails, offers a
-small fallback list so selection still works offline."
+  "Select a model from the active provider's catalog.
+Fetches the live model catalog via `quoth-provider--models' (sync)
+and prompts for a choice; picking a model applies it through
+`quoth-provider--apply-model' (which sets the provider's model slot)
+and also sets the global `quoth-model' so future buffers use the
+choice.  Choosing the `default' entry clears the selection back to the
+provider default.  When the catalog fetch fails, offers a small
+fallback list so selection still works offline."
   (interactive)
-  (let* ((base-url (or (getenv "HYPER_URL")
-                       (and (quoth-hyper-provider-p quoth-active-provider)
-                            (quoth-hyper-provider-base-url quoth-active-provider))
-                       quoth-hyper-base-url))
-         (fetched (quoth-hyper--fetch-models base-url
-                                             quoth-hyper-token))
-         (catalog (car fetched))
-         (choices (if catalog
-                      (quoth-hyper--model-choices catalog)
+  (let* ((models (and quoth-active-provider
+                      (quoth-provider-p quoth-active-provider)
+                      (quoth-provider--models quoth-active-provider)))
+         (choices (if models
+                      (mapcar (lambda (m)
+                                (cons (plist-get m :id)
+                                      (plist-get m :id)))
+                              models)
                     (list (cons quoth-openai-default-model
                                 (format "%s (default)" quoth-openai-default-model))
                           (cons "qwen3.7-plus" "qwen3.7-plus")
@@ -2206,11 +2265,15 @@ small fallback list so selection still works offline."
     (if (string= choice "default")
         (progn
           (setq quoth-model nil)
-          (when (quoth-hyper-provider-p quoth-active-provider)
-            (setf (quoth-hyper-provider-model quoth-active-provider) nil)))
+          (when (and quoth-active-provider
+                     (quoth-provider-p quoth-active-provider))
+            (quoth-provider--apply-model quoth-active-provider '(:id nil))))
       (setq quoth-model choice)
-      (when (quoth-hyper-provider-p quoth-active-provider)
-        (setf (quoth-hyper-provider-model quoth-active-provider) choice)))
+      (when (and quoth-active-provider
+                 (quoth-provider-p quoth-active-provider))
+        (quoth-provider--apply-model
+         quoth-active-provider
+         (list :id choice))))
     (quoth--update-header-line)
     (message "Model: %s"
              (or (and (not (string= choice "default")) choice)
@@ -2286,5 +2349,23 @@ interaction buffer.
   :group 'quoth
   :keymap quoth-minor-mode-map)
 
+
+(defvar savehist-additional-variables)
+;; Persistence: register provider and model with savehist so they
+;; survive restarts.  Guarded by `with-eval-after-load' so savehist is
+;; never required at load time; users without `savehist-mode' still
+;; get the defcustom defaults via Customize.
+(with-eval-after-load 'savehist
+  (add-to-list 'savehist-additional-variables 'quoth-active-provider-name)
+  (add-to-list 'savehist-additional-variables 'quoth-model))
+
 (provide 'quoth)
+
+(eval-and-compile
+  (unless (require 'quoth-select nil t)
+    (load (expand-file-name
+           "quoth-select.el"
+           (file-name-directory
+            (or buffer-file-name load-file-name default-directory)))
+          nil t)))
 ;;; quoth.el ends here

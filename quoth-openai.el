@@ -59,24 +59,6 @@
   :type '(choice (const nil) number)
   :group 'quoth-openai)
 
-(defcustom quoth-openai-thinking nil
-  "Enable chain-of-thought reasoning for each request.
-When non-nil, the request body carries `thinking: t' and the model
-emits a `reasoning_content' trace (streamed as reasoning deltas)
-before the final answer.  This is the master switch:
-`quoth-openai-reasoning-effort' only tunes the depth of that reasoning
-and is a no-op while thinking is disabled."
-  :type 'boolean
-  :group 'quoth-openai)
-
-(defcustom quoth-openai-reasoning-effort nil
-  "Reasoning depth for the model; nil means use the model default.
-Values like `low', `medium', `high', `max'.  Gated by
-`quoth-openai-thinking': effort tunes how deep the chain-of-thought
-reasoning goes, but only when thinking is enabled."
-  :type '(choice (const nil) string)
-  :group 'quoth-openai)
-
 (defcustom quoth-openai-curl-program "curl"
   "Path to the curl executable used by the OpenAI client transport."
   :type 'string
@@ -137,6 +119,8 @@ ever uses leading blank lines meaningfully."
   :group 'quoth-openai)
 
 (declare-function quoth--debug-log "quoth.el" (category message))
+(defvar quoth--session-thinking)
+(defvar quoth--session-reasoning-effort)
 
 ;;; System prompt construction: <env> block with project context.
 
@@ -473,11 +457,11 @@ announces the `bash' tool and `tool_choice: \"auto\"'."
       (setq body (cons (cons 'max_tokens quoth-openai-max-tokens) body)))
     (when quoth-openai-temperature
       (setq body (cons (cons 'temperature quoth-openai-temperature) body)))
-    (when quoth-openai-thinking
+    (when quoth--session-thinking
       (setq body (cons '(thinking . t) body)))
-    (when quoth-openai-reasoning-effort
+    (when (and quoth--session-thinking quoth--session-reasoning-effort)
       (setq body (append body
-                         `((reasoning_effort . ,quoth-openai-reasoning-effort)))))
+                         `((reasoning_effort . ,quoth--session-reasoning-effort)))))
     (when quoth-tools-enabled
       (setq body (append body
                          (list (cons 'tools (quoth--openai-tool-schema))

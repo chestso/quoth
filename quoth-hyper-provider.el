@@ -437,5 +437,46 @@ persist until GC)."
     (let ((sse (process-get process :quoth-sse)))
       (and sse (plist-get sse :tool-calls)))))
 
+(defun quoth-hyper--normalize-model (m)
+  "Normalize a JSON model entry M into a structured plist.
+Keys: :id, :name, :context-window, :default-max-tokens, :cost-in,
+:cost-out, :cost-in-cached, :cost-out-cached, :can-reason,
+:reasoning-levels, :default-reasoning-effort,
+:supports-attachments."
+  (let ((get (lambda (k) (quoth--openai-alist-get k m))))
+    (list :id                       (funcall get "id")
+          :name                     (funcall get "name")
+          :context-window           (funcall get "context_window")
+          :default-max-tokens       (funcall get "default_max_tokens")
+          :cost-in                  (funcall get "cost_per_1m_in")
+          :cost-out                 (funcall get "cost_per_1m_out")
+          :cost-in-cached           (funcall get "cost_per_1m_in_cached")
+          :cost-out-cached          (funcall get "cost_per_1m_out_cached")
+          :can-reason               (eq (funcall get "can_reason") t)
+          :reasoning-levels         (let ((v (funcall get "reasoning_levels")))
+                                      (if (vectorp v) (append v nil) v))
+          :default-reasoning-effort (funcall get "default_reasoning_effort")
+          :supports-attachments     (eq (funcall get "supports_attachments") t))))
+
+(cl-defmethod quoth-provider--models ((provider quoth-hyper-provider))
+  "Return a list of model plists from the Hyper gateway catalog.
+Fetches the live catalog via `quoth-hyper--fetch-models' (sync) and
+normalizes each entry with `quoth-hyper--normalize-model'.  Returns nil
+when the fetch fails."
+  (let* ((base-url (or (quoth-hyper-provider-base-url provider)
+                       (getenv "HYPER_URL")
+                       quoth-hyper-base-url))
+         (fetched (quoth-hyper--fetch-models base-url
+                                             (quoth-hyper-provider-token provider))))
+    (when fetched
+      (let ((models (cdr fetched)))
+        (mapcar #'quoth-hyper--normalize-model
+                (if (vectorp models) (append models nil) models))))))
+
+(cl-defmethod quoth-provider--apply-model ((provider quoth-hyper-provider) model-entry)
+  "Apply MODEL-ENTRY to PROVIDER by setting its model slot from :id."
+  (setf (quoth-hyper-provider-model provider)
+        (plist-get model-entry :id)))
+
 (provide 'quoth-hyper-provider)
 ;;; quoth-hyper-provider.el ends here
