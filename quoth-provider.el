@@ -112,7 +112,7 @@ providers return nil."
   "Return one round's usage as a normalized plist, or nil.
 PROCESS is the transport process returned by `quoth-provider-send-prompt'
 for the round that just finished.  Returns nil when the provider has no
-usage to surface (before any response, or a provider that does not
+usage to surface (before any response, or a PROVIDER that does not
 report usage).
 
 The plist may carry any subset of these keys; the core renders only
