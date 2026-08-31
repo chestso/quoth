@@ -143,6 +143,13 @@ log.  Buffer-local.")
   "Marker for where response text starts.
 Set when prompt is sent, used by sentinel to tag response text.")
 
+(defvar quoth-active-provider nil
+  "The active quoth provider for this buffer.
+Set during buffer initialization; `quoth--send-prompt' and
+`quoth-interrupt' dispatch through it.  Buffer-local.")
+(declare-function quoth-provider-p "quoth-provider" (object))
+(declare-function quoth-provider-application-count "quoth-provider" (provider))
+
 ;;; Stream state (idle/active/done/error), progress, and the error pane.
 ;;; Buffer-local; these track the lifecycle of one prompt-response cycle.
 
@@ -296,10 +303,6 @@ Buffer-local.")
               (or buffer-file-name load-file-name default-directory)))
             nil t))))
 
-(defvar quoth-active-provider nil
-  "The active quoth provider for this buffer.
-Set during buffer initialization; `quoth--send-prompt' and
-`quoth-interrupt' dispatch through it.  Buffer-local.")
 (declare-function markdown-mode "markdown-mode" ())
 (declare-function quoth-xxh3-hash64 "quoth-xxh3" (input))
 (declare-function quoth-provider--tool-calls "quoth-provider" (provider process))
