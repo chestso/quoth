@@ -79,7 +79,7 @@ quoth/                  # Package root
   quoth-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over quoth-openai)
   quoth-select.el      # Transient model selector (UI only; depends on the protocol, not quoth.el)
   quoth-process.el      # Process handler: PTY sessions, output buffering, yield, stdin, cleanup
-  quoth-tools.el        # Local tool implementations: exec_command + write_stdin (over quoth-process)
+  quoth-tools.el        # Local tool implementations: exec_command, write_stdin, write_file, read_file
   quoth-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
   quoth-json.el        # JSON decode/encode abstraction: native C parser when available, json.el fallback
   quoth-debug-tools.el  # On-demand debug commands (region dump, history reconstruction; not loaded by default)
@@ -278,8 +278,8 @@ as a file local variable is planned but not yet implemented.
 ### Tool calls
 
 When `quoth-tools-enabled` is non-nil (default), the model may call a
-tool. There are two tools, both implemented in `quoth-tools.el` as thin
-wrappers over the `quoth-process.el` session handler:
+tool. There are four tools, all implemented in `quoth-tools.el`. Two wrap
+the `quoth-process.el` session handler:
 
 - `exec_command` — starts a command in a new PTY session, yields for
   the requested window (default `quoth-process-yield-ms`, clamped
@@ -288,6 +288,17 @@ wrappers over the `quoth-process.el` session handler:
 - `write_stdin` — writes to a live session (identified by the session
   id echoed by `exec_command`) and returns the output produced since
   the last report.
+
+Two do byte-exact file I/O (no process involved):
+
+- `write_file` — writes the `content` arg byte-exact to `path`,
+  creating missing parent directories and replacing an existing file
+  unless `overwrite` is false; fresh-file writes go through a temp
+  file and atomic rename so no reader observes a half-written file.
+- `read_file` — reads the file at `path` byte-exact (a `\r\n` on disk
+  stays `\r\n`), errors on non-UTF-8 content, and truncates
+  over-long results to `quoth-tool-max-output` without trimming
+  trailing newlines.
 
 The tool block is rendered in the buffer as valid markdown:
 

@@ -129,8 +129,8 @@ Quoth talks to providers through a small provider protocol
 directly to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE — no
 CLI binary needed — using the reusable OpenAI client in
 `quoth-openai.el` for request composition and streaming, and the local
-tools (`exec_command`, `write_stdin`, `web_search`) in `quoth-tools.el`
-and `quoth-searxng.el`. The chat buffer behaves identically
+tools (`exec_command`, `write_stdin`, `write_file`, `read_file` in
+`quoth-tools.el`, `web_search` in `quoth-searxng.el`). The chat buffer behaves identically
 whichever provider is active.
 
 Details — how requests are composed and streamed, session continuity,

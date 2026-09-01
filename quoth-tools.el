@@ -29,14 +29,17 @@
 
 ;;; Commentary:
 
-;; Local tool implementations for quoth.el: the `exec_command' and
-;; `write_stdin' tools.  Both are thin
+;; Local tool implementations for quoth.el: `exec_command',
+;; `write_stdin', `write_file', and `read_file'.  The first two are thin
 ;; wrappers over the general-purpose process handler in
 ;; `quoth-process.el': `exec_command' starts a session and yields,
 ;; `write_stdin' feeds input to a live session.  Results use Codex's
 ;; prose status convention (`Process exited with code N' / `Process
 ;; running with session ID N' + `Output:') so models read them
-;; naturally and echo the session id back verbatim.
+;; naturally and echo the session id back verbatim.  The latter two do
+;; byte-exact file I/O: `write_file' writes `content' to `path'
+;; (atomic on a fresh file, byte-exact line endings) and `read_file'
+;; reads a file back byte-exact, erroring on non-UTF-8 content.
 ;;
 ;; The tool *protocol* (the `quoth-openai-tool-call' struct, registry,
 ;; dispatch, arg parsing, and the execution policy) lives in
