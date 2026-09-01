@@ -333,7 +333,7 @@ Returns the capture output."
   "The full path should fetch JSON from a real server and normalize it.
 A live dummy SearXNG server serves a canned JSON payload; the tool
 should return the normalized prose result and the server should have
-captured a GET with the query."
+captured a GET with the query." :tags '(:integration)
   (quoth-test--with-searxng-server
    (lambda (base)
      (let ((quoth-searxng-base-url base)

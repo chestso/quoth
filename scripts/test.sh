@@ -1,7 +1,21 @@
 #!/bin/sh
-# Run quoth tests: byte-compile + ERT suite
+# Run quoth tests: byte-compile + ERT suite.
+#
+# By default the wire-integration tests (tagged :integration) are skipped so
+# the everyday suite stays fast and needs no external server processes.  Pass
+# "wire" (make test-wire) to include them too.
 set -e
 cd "$(dirname "$0")/.."
+
+MODE="${1:-unit}"
+case "$MODE" in
+unit) selector="(not (tag :integration))" ;;
+wire) selector="t" ;;
+*)
+	echo "usage: $0 [unit|wire]" >&2
+	exit 2
+	;;
+esac
 
 # Add markdown-mode to the load path when installed, so fontification
 # tests run under the markdown-mode parent as well.
@@ -16,7 +30,7 @@ for f in quoth.el quoth-provider.el quoth-openai.el quoth-hyper-provider.el quot
 	emacs --batch -L . -f batch-byte-compile "$f" 2>&1 | grep -v "site-start" || true
 done
 
-echo "=== ERT tests ==="
+echo "=== ERT tests (${MODE}) ==="
 emacs --batch -L . -L test $MD_L \
 	--eval "(progn (setq load-prefer-newer t) (require 'quoth) (require 'quoth-test) \
-              (ert-run-tests-batch-and-exit))" 2>&1 | grep -v "site-start" || true
+              (ert-run-tests-batch-and-exit '$selector))" 2>&1 | grep -v "site-start" || true

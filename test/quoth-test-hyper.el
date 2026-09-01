@@ -558,6 +558,47 @@ The hash is of the session UUID as the cache-affinity session id."
       (with-current-buffer buf
         (quoth--record-error message)))))
 
+;;; Mocked-stream transport harness.  Instead of starting the dummy HTTP
+;;; server and running real curl, these tests drive the *real* curl
+;;; transport filter (`quoth--openai-curl-filter') with synthetic SSE
+;;; over a fake pipe process.  That exercises the exact parse -> delta
+;;; -> finalize path for the buffer assertions, fast, with no HTTP.
+
+(defun quoth-test--make-transport-proc (target &optional done-callback)
+  "Make a fake pipe process wired like a completed curl transport.
+TARGET is the buffer its on-delta / finalize callbacks write into.
+Sets up the SSE parser, the append-delta callback, DONE-CALLBACK (or a
+no-op), and the HTTP-head slots so feeding `quoth--openai-curl-filter'
+with an HTTP head plus SSE frames drives the real pipeline.  Return the
+process; callers `delete-process' it when done."
+  (let ((proc (make-pipe-process :name "quoth-hyper-test-transport"
+                                 :noquery t
+                                 :coding 'binary)))
+    (process-put proc :quoth-sse (quoth-openai-sse-new-state))
+    (process-put proc :quoth-on-delta (quoth-test--hyper-on-delta target))
+    (process-put proc :quoth-on-error #'ignore)
+    (process-put proc :quoth-done-callback (or done-callback #'ignore))
+    (process-put proc :quoth-head "")
+    (process-put proc :quoth-head-parsed nil)
+    (process-put proc :quoth-status nil)
+    (process-put proc :quoth-url "http://test/chat/completions")
+    (process-put proc :quoth-model "m")
+    (process-put proc :quoth-token-p nil)
+    proc))
+
+(defun quoth-test--stream-into-buffer (proc &rest chunks)
+  "Feed PROC an HTTP 200 head followed by CHUNKS of SSE text.
+Runs the real transport filter, so content streams into the transport
+target buffer and a final `[DONE]' frame finalizes the response."
+  (quoth--openai-curl-filter
+   proc "HTTP/1.1 200 OK
+Content-Type: text/event-stream
+
+")
+  (dolist (chunk chunks)
+    (quoth--openai-curl-filter proc chunk)))
+
+
 ;;; `quoth-hyper--resolve-token' supports string, function, and nil
 ;;; tokens; the default `quoth-hyper-token' function reads from
 ;;; `auth-source' (like gptel).
@@ -756,7 +797,7 @@ test sees a clean capture (the server appends per-request).  Returns
 (add-hook 'kill-emacs-hook #'quoth-test--hyper-stop-servers)
 
 (ert-deftest quoth-test/hyper-wire-captures-request-body ()
-  "The dummy server should capture the composed JSON request body."
+  "The dummy server should capture the composed JSON request body." :tags '(:integration)
   (let* ((result (quoth-test--with-hyper-server
                   'ok-stream
                   (lambda (base)
@@ -801,37 +842,34 @@ test sees a clean capture (the server appends per-request).  Returns
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
           (let ((old-prompt-id quoth--prompt-id))
-            (quoth-test--with-hyper-server
-             'ok-stream
-             (lambda (base)
-               (save-excursion (goto-char (point-max)) (newline))
-               (setq-local quoth--response-start (point-marker))
-               (let ((buf (current-buffer)))
-                 (let ((proc (quoth-openai-request
-                              base "tok" (quoth-openai-compose-request "hi" "m")
-                              (quoth-test--hyper-on-delta buf)
-                              (quoth-test--hyper-completion buf))))
-                   (let ((deadline (+ (float-time) 6)))
-                     (while (and (process-live-p proc)
-                                 (null (process-get proc :quoth-finished))
-                                 (< (float-time) deadline))
-                       (accept-process-output nil 0.1)
-                       (sit-for 0.02)))))
-               ;; Streamed content landed in the buffer.
-               (goto-char (point-min))
-               (should (search-forward "mock response!" nil t))
-               ;; The [DONE] event finalized the response: tagged text
-               ;; (quoth-response-to) and a fresh prompt.
-               (search-backward "mock response!")
-               (let* ((resp-start (point))
-                      (resp-end (+ resp-start (length "mock response!"))))
-                 (should (eq (get-text-property resp-start 'quoth-region-type)
-                             'response))
-                 (should (string= (get-text-property resp-end 'quoth-response-to)
-                                  old-prompt-id)))
-               (goto-char (point-max))
-               (search-backward "---")
-               (should (not (string= quoth--prompt-id old-prompt-id)))))))
+            (save-excursion (goto-char (point-max)) (newline))
+            (setq-local quoth--response-start (point-marker))
+            (let ((proc (quoth-test--make-transport-proc
+                         (current-buffer)
+                         (quoth-test--hyper-completion (current-buffer)))))
+              (unwind-protect
+                  (progn
+                    ;; Streamed content landed in the buffer.
+                    (quoth-test--stream-into-buffer
+                     proc
+                     "data: {\"choices\":[{\"delta\":{\"content\":\"mock\"}}]}\n\n"
+                     "data: {\"choices\":[{\"delta\":{\"content\":\" response!\"}}]}\n\n"
+                     "data: [DONE]\n\n")
+                    (goto-char (point-min))
+                    (should (search-forward "mock response!" nil t))
+                    ;; The [DONE] event finalized the response: tagged text
+                    ;; (quoth-response-to) and a fresh prompt.
+                    (search-backward "mock response!")
+                    (let* ((resp-start (point))
+                           (resp-end (+ resp-start (length "mock response!"))))
+                      (should (eq (get-text-property resp-start 'quoth-region-type)
+                                  'response))
+                      (should (string= (get-text-property resp-end 'quoth-response-to)
+                                       old-prompt-id)))
+                    (goto-char (point-max))
+                    (search-backward "---")
+                    (should (not (string= quoth--prompt-id old-prompt-id))))
+                (when (process-live-p proc) (delete-process proc))))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/hyper-wire-reasoning-stream-highlights-cot ()
@@ -839,57 +877,50 @@ test sees a clean capture (the server appends per-request).  Returns
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (let ((_old-prompt-id quoth--prompt-id))
-            (quoth-test--with-hyper-server
-             'reasoning
-             (lambda (base)
-               (save-excursion (goto-char (point-max)) (newline))
-               (setq-local quoth--response-start (point-marker))
-               (let ((buf (current-buffer)))
-                 (let ((proc (quoth-openai-request
-                              base "tok" (quoth-openai-compose-request "hi" "m")
-                              (quoth-test--hyper-on-delta buf)
-                              (quoth-test--hyper-completion buf))))
-                   (let ((deadline (+ (float-time) 6)))
-                     (while (and (process-live-p proc)
-                                 (null (process-get proc :quoth-finished))
-                                 (< (float-time) deadline))
-                       (accept-process-output nil 0.1)
-                       (sit-for 0.02)))))
-               ;; Finalize ran synchronously inside the first loop's
-               ;; accept-process-output (the [DONE] filter calls the
-               ;; done-callback before returning), so the streamed text
-               ;; and region tags are already in the buffer.  The
-               ;; reasoning is a single line, so no fold is installed
-               ;; (quoth--reasoning-install-fold skips <= 10 lines).
-               (goto-char (point-min))
-               (should (search-forward "mock think harder" nil t))
-               (search-backward "mock")
-               (let ((rs (point)))
-                 (search-forward "harder")
-                 (should (eq (get-text-property rs 'quoth-region-type)
-                             'reasoning)))
-               ;; The answer after it is tagged response.
-               (search-forward "answer")
-               (let ((as (point)))
-                 (should (eq (get-text-property (- as 6) 'quoth-region-type)
-                             'response)))
-               ;; An overlay with the reasoning face covers the CoT.
-               (let ((found nil))
-                 (dolist (ov (overlays-in (point-min) (point-max)))
-                   (when (and (eq (overlay-get ov 'face) 'quoth-reasoning-face)
-                              (overlay-get ov 'quoth-overlay))
-                     (setq found ov)))
-                 (should (overlayp found))
-                 (should (string= (buffer-substring-no-properties
-                                   (overlay-start found) (overlay-end found))
-                                  "mock think harder\n")))))))
+          (save-excursion (goto-char (point-max)) (newline))
+          (setq-local quoth--response-start (point-marker))
+          (let ((proc (quoth-test--make-transport-proc
+                       (current-buffer)
+                       (quoth-test--hyper-completion (current-buffer)))))
+            (unwind-protect
+                (progn
+                  (quoth-test--stream-into-buffer
+                   proc
+                   "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"mock think harder\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n"
+                   "data: [DONE]\n\n")
+                  ;; Finalize ran synchronously in the [DONE] frame.  The
+                  ;; reasoning is a single line, so no fold is installed
+                  ;; (quoth--reasoning-install-fold skips <= 10 lines).
+                  (goto-char (point-min))
+                  (should (search-forward "mock think harder" nil t))
+                  (search-backward "mock")
+                  (let ((rs (point)))
+                    (search-forward "harder")
+                    (should (eq (get-text-property rs 'quoth-region-type)
+                                'reasoning)))
+                  ;; The answer after it is tagged response.
+                  (search-forward "answer")
+                  (let ((as (point)))
+                    (should (eq (get-text-property (- as 6) 'quoth-region-type)
+                                'response)))
+                  ;; An overlay with the reasoning face covers the CoT.
+                  (let ((found nil))
+                    (dolist (ov (overlays-in (point-min) (point-max)))
+                      (when (and (eq (overlay-get ov 'face) 'quoth-reasoning-face)
+                                 (overlay-get ov 'quoth-overlay))
+                        (setq found ov)))
+                    (should (overlayp found))
+                    (should (string= (buffer-substring-no-properties
+                                      (overlay-start found) (overlay-end found))
+                                     "mock think harder\n"))))
+              (when (process-live-p proc) (delete-process proc)))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/hyper-wire-non-2xx-surfaces-error-pane ()
   "A non-2xx status surfaces an error pane tagged `system'.
 The pane is a blockquote (`> **Error:** HTTP <code>') and the parsed
-status is recorded on the process."
+status is recorded on the process." :tags '(:integration)
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -925,37 +956,35 @@ status is recorded on the process."
 
 (ert-deftest quoth-test/hyper-wire-logs-request-without-token ()
   "The request diagnostic line in *quoth-debug* should not contain the token."
-  (let ((default-directory quoth-test--root))
+  (let ((default-directory quoth-test--root)
+        (proc (make-pipe-process :name "quoth-hyper-test-log" :noquery t)))
     (unwind-protect
-        (with-current-buffer (quoth-test--fresh-buffer)
-          (quoth-test--with-hyper-server
-           'ok-stream
-           (lambda (base)
-             (setq-local quoth--response-start (point-marker))
-             (let ((proc (quoth-openai-request
-                          base "sk-hyper-supersecret"
-                          (quoth-openai-compose-request "hi" "m")
-                          (quoth-test--hyper-on-delta (current-buffer))
-                          (quoth-test--hyper-completion (current-buffer)))))
-               (let ((deadline (+ (float-time) 6)))
-                 (while (and (process-live-p proc)
-                             (null (process-get proc :quoth-finished))
-                             (< (float-time) deadline))
-                   (accept-process-output nil 0.1)
-                   (sit-for 0.02))))
-             ;; The request diagnostic must be logged without the token.
-             (let ((debug-buf (get-buffer "*quoth-debug*")))
-               (should (buffer-live-p debug-buf))
-               (with-current-buffer debug-buf
-                 (goto-char (point-min))
-                 (should (search-forward "request: POST" nil t))
-                 (should (search-forward "body:" nil t))
-                 (goto-char (point-min))
-                 (should (search-forward "response: POST" nil t))
-                 (goto-char (point-min))
-                 (should-not (search-forward "sk-hyper-supersecret" nil t)))))))
+        (progn
+          (cl-letf (((symbol-function 'make-process)
+                     (lambda (&rest _args) proc))
+                    ((symbol-function 'process-send-string) #'ignore)
+                    ((symbol-function 'process-send-eof) #'ignore))
+            (quoth-openai-request
+             "http://127.0.0.1:1" "sk-hyper-supersecret"
+             (quoth-openai-compose-request "hi" "m")
+             #'ignore #'ignore)
+            ;; Parse a response head so the `response: POST' diagnostic
+            ;; line is logged too (the token is never in it).
+            (quoth--openai-curl-filter
+             proc "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"))
+          ;; The diagnostics must be logged without the token.
+          (let ((debug-buf (get-buffer "*quoth-debug*")))
+            (should (buffer-live-p debug-buf))
+            (with-current-buffer debug-buf
+              (goto-char (point-min))
+              (should (search-forward "request: POST" nil t))
+              (should (search-forward "body:" nil t))
+              (goto-char (point-min))
+              (should (search-forward "response: POST" nil t))
+              (goto-char (point-min))
+              (should-not (search-forward "sk-hyper-supersecret" nil t)))))
+      (when (process-live-p proc) (delete-process proc))
       (quoth-test--cleanup))))
-
 ;;; 94. Hyper provider: conversation history
 
 ;;; Prior turns always ride in the composed request body as
@@ -999,7 +1028,7 @@ the caller (quoth--history-turns) is responsible for dropping junk."
 (ert-deftest quoth-test/hyper-history-wire-roundtrip ()
   "A second prompt is sent with the prior user+assistant turns as history.
 The first request is a plain [system, user]; the second request body's
-messages array is [system, prior-user, prior-assistant, current]."
+messages array is [system, prior-user, prior-assistant, current]." :tags '(:integration)
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -1088,7 +1117,7 @@ messages array is [system, prior-user, prior-assistant, current]."
 (ert-deftest quoth-test/hyper-history-real-send-input-flow ()
   "Driving `quoth-send-input' twice re-sends prior turns as history.
 The second request body must be [system, user \"hi\", assistant reply,
-user \"hello\"]; the first stays [system, user \"hi\"]."
+user \"hello\"]; the first stays [system, user \"hi\"]." :tags '(:integration)
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -1143,7 +1172,7 @@ user \"hello\"]; the first stays [system, user \"hi\"]."
 
 (ert-deftest quoth-test/hyper-history-limit-zero-disables ()
   "Setting `quoth-hyper-history-limit' to 0 disables history.
-The second request is a plain [system, user]."
+The second request is a plain [system, user]." :tags '(:integration)
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -1232,7 +1261,7 @@ history arrives pre-filtered here, so the request stays system + user."
     (should (= (length msgs) 2))))
 
 (ert-deftest quoth-test/hyper-history-wire-reasoning-content-field ()
-  "A later request's assistant message carries both fields.\nWith `quoth-hyper-history-include-reasoning', `content' and\n`reasoning_content' are siblings (HYPER-API.md section 3.4)."
+  "A later request's assistant message carries both fields.\nWith `quoth-hyper-history-include-reasoning', `content' and\n`reasoning_content' are siblings (HYPER-API.md section 3.4)." :tags '(:integration)
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -1290,30 +1319,28 @@ The SSE state carries them and the parser reports them."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (quoth-test--with-hyper-server
-           'tool-call
-           (lambda (base)
-             (setq-local quoth--response-start (point-marker))
-             (let ((buf (current-buffer)))
-               (let ((proc (quoth-openai-request
-                            base "tok" (quoth-openai-compose-request "hi" "m")
-                            (quoth-test--hyper-on-delta buf)
-                            (lambda ()
-                              (with-current-buffer buf
-                                (message "tool-call done"))))))
-                 (let ((deadline (+ (float-time) 6)))
-                   (while (and (process-live-p proc)
-                               (null (process-get proc :quoth-finished))
-                               (< (float-time) deadline))
-                     (accept-process-output nil 0.1)
-                     (sit-for 0.02)))
-                 (let ((sse (process-get proc :quoth-sse)))
-                   (should sse)
-                   (let ((tcs (plist-get sse :tool-calls)))
-                     (should (vectorp tcs))
-                     (should (>= (length tcs) 1))
-                     (should (string= (quoth--openai-alist-get "id" (aref tcs 0))
-                                      "call_abc")))))))))
+          (let ((proc (quoth-test--make-transport-proc
+                       (current-buffer)
+                       (lambda () (message "tool-call done")))))
+            (unwind-protect
+                (progn
+                  (quoth-test--stream-into-buffer
+                   proc
+                   (concat
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":["
+                    "{\"index\":0,\"id\":\"call_abc\","
+                    "\"function\":{\"name\":\"exec_command\","
+                    "\"arguments\":\"{\\\"cmd\\\": \\\"echo hi\\\"}\"}}"
+                    "]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+                   "data: [DONE]\n\n")
+                  (let ((sse (process-get proc :quoth-sse)))
+                    (should sse)
+                    (let ((tcs (plist-get sse :tool-calls)))
+                      (should (vectorp tcs))
+                      (should (>= (length tcs) 1))
+                      (should (string= (quoth--openai-alist-get "id" (aref tcs 0))
+                                       "call_abc")))))
+              (when (process-live-p proc) (delete-process proc)))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/hyper-compose-disabled-tools-no-key ()
@@ -1334,52 +1361,51 @@ un-stopped, so its advancing end marker hides the next prompt under
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
           (let ((old-prompt-id quoth--prompt-id))
-            (quoth-test--with-hyper-server
-             'reasoning-tool
-             (lambda (base)
-               (save-excursion (goto-char (point-max)) (newline))
-               (setq-local quoth--response-start (point-marker))
-               (let ((buf (current-buffer)))
-                 (let ((proc (quoth-openai-request
-                              base "tok" (quoth-openai-compose-request "hi" "m")
-                              (quoth-test--hyper-on-delta buf)
-                              (quoth-test--hyper-completion buf))))
-                   (let ((deadline (+ (float-time) 6)))
-                     (while (and (process-live-p proc)
-                                 (null (process-get proc :quoth-finished))
-                                 (< (float-time) deadline))
-                       (accept-process-output nil 0.1)
-                       (sit-for 0.02)))))
-               ;; Finalize ran synchronously inside the first loop's
-               ;; accept-process-output, so overlays are already
-               ;; installed.  The reasoning is a single line, so no
-               ;; fold is created (quoth--reasoning-install-fold skips
-               ;; <= 10 lines); the reasoning overlay stays as-is.
-               ;; The reasoning text should be present.
-               (goto-char (point-min))
-               (should (search-forward "think step hidden" nil t))
-               ;; The new prompt must be visible (not invisible).
-               (goto-char (point-max))
-               (should (search-backward "---" nil t))
-               (let ((prompt-pos (point)))
-                 (should (not (get-char-property prompt-pos 'invisible)))
-                 ;; The fold overlay must not cover the prompt.
-                 (dolist (ov (overlays-in (point-min) (point-max)))
-                   (when (overlay-get ov 'quoth-fold-state)
-                     (should (<= (overlay-end ov) prompt-pos))))
-                 ;; New prompt ID was generated.
-                 (should (not (string= quoth--prompt-id old-prompt-id))))))))
+            (save-excursion (goto-char (point-max)) (newline))
+            (setq-local quoth--response-start (point-marker))
+            (let ((proc (quoth-test--make-transport-proc
+                         (current-buffer)
+                         (quoth-test--hyper-completion (current-buffer)))))
+              (unwind-protect
+                  (progn
+                    (quoth-test--stream-into-buffer
+                     proc
+                     "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think step \"}}]}\n\n"
+                     "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden\"}}]}\n\n"
+                     (concat
+                      "data: {\"choices\":[{\"delta\":{\"tool_calls\":["
+                      "{\"index\":0,\"id\":\"call_rt\","
+                      "\"function\":{\"name\":\"exec_command\","
+                      "\"arguments\":\"{\\\"cmd\\\": \\\"echo hi\\\"}\"}}"
+                      "]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+                     "data: [DONE]\n\n")
+                    ;; Finalize ran synchronously in the [DONE] frame, so
+                    ;; overlays are already installed.  The reasoning is a
+                    ;; single line, so no fold is created
+                    ;; (quoth--reasoning-install-fold skips <= 10 lines);
+                    ;; the reasoning overlay stays as-is.
+                    ;; The reasoning text should be present.
+                    (goto-char (point-min))
+                    (should (search-forward "think step hidden" nil t))
+                    ;; The new prompt must be visible (not invisible).
+                    (goto-char (point-max))
+                    (should (search-backward "---" nil t))
+                    (let ((prompt-pos (point)))
+                      (should (not (get-char-property prompt-pos 'invisible)))
+                      ;; The fold overlay must not cover the prompt.
+                      (dolist (ov (overlays-in (point-min) (point-max)))
+                        (when (overlay-get ov 'quoth-fold-state)
+                          (should (<= (overlay-end ov) prompt-pos))))
+                      ;; New prompt ID was generated.
+                      (should (not (string= quoth--prompt-id old-prompt-id)))))
+                (when (process-live-p proc) (delete-process proc))))))
       (quoth-test--cleanup))))
-
-;;; Tool loop: the hyper provider must execute tool calls and send
-;;; follow-up requests with the results, looping up to
-;;; `quoth-tool-loop-max' rounds.
 
 (ert-deftest quoth-test/hyper-tool-loop-executes-and-resends ()
   "A tool_calls response triggers bash execution and a follow-up request.
 The first request gets tool_calls; the loop executes `echo hi', inserts
 a tool block, and sends a second request carrying the tool result.
-The second request gets a content answer and finalizes."
+The second request gets a content answer and finalizes." :tags '(:integration)
   (let ((default-directory quoth-test--root)
         (quoth-tools-enabled t))
     (unwind-protect
@@ -1452,7 +1478,7 @@ The second request gets a content answer and finalizes."
 (ert-deftest quoth-test/hyper-tool-loop-cap-stops-and-finalizes ()
   "The tool loop stops after `quoth-tool-loop-max' rounds and finalizes.
 Uses a server that always returns tool_calls; the loop should hit
-the cap, insert a final prompt, and stop sending requests."
+the cap, insert a final prompt, and stop sending requests." :tags '(:integration)
   (let ((default-directory quoth-test--root)
         (quoth-tools-enabled t)
         (quoth-tool-loop-max 2))
@@ -1495,7 +1521,7 @@ the cap, insert a final prompt, and stop sending requests."
 (ert-deftest quoth-test/hyper-tool-loop-accumulates-continuation ()
   "Each tool-loop follow-up carries every prior tool call + result.
 When a turn spans multiple tool rounds, the wire continuation must
-accumulate, not replace, so the model sees its earlier calls."
+accumulate, not replace, so the model sees its earlier calls." :tags '(:integration)
   (let ((default-directory quoth-test--root)
         (quoth-tools-enabled t)
         (quoth-tool-loop-max 2))
@@ -1532,7 +1558,7 @@ accumulate, not replace, so the model sees its earlier calls."
 (ert-deftest quoth-test/hyper-tool-loop-finalizes-after-content-answer ()
   "After a tool loop round, a content answer finalizes normally.
 The first request gets tool_calls; the follow-up gets a content
-answer; the buffer should have a new prompt and the response tagged."
+answer; the buffer should have a new prompt and the response tagged." :tags '(:integration)
   (let ((default-directory quoth-test--root)
         (quoth-tools-enabled t))
     (unwind-protect
@@ -1576,7 +1602,7 @@ answer; the buffer should have a new prompt and the response tagged."
 (ert-deftest quoth-test/hyper-tool-loop-header-shows-region-tool ()
   "Test that after a tool round-trip, the header line shows the region.
 When point is on the tool block, it shows `region: tool', and `region:
-response' on the final content."
+response' on the final content." :tags '(:integration)
   (let ((default-directory quoth-test--root)
         (quoth-tools-enabled t)
         (buf (quoth-test--fresh-buffer)))
@@ -1630,7 +1656,7 @@ response' on the final content."
   "Test that a follow-up request replays the tool call as a valid pair.
 It replays an assistant message carrying the persisted tool_calls id,
 and a tool result whose tool_call_id matches it.  The live tool loop
-already sends correct ids; this pins the history-replay path."
+already sends correct ids; this pins the history-replay path." :tags '(:integration)
   (let ((default-directory quoth-test--root)
         (quoth-tools-enabled t))
     (unwind-protect
@@ -1734,7 +1760,7 @@ own (those live in quoth-openai.el)."
 (ert-deftest quoth-test/hyper-fetch-models-parses-catalog ()
   "`quoth-hyper--fetch-models' parses the /provider catalog into an alist.
 The dummy server's catalog has three models; the first must carry the
-id, name, context window, and reasoning flag."
+id, name, context window, and reasoning flag." :tags '(:integration)
   (let ((fetched (cons 'unset nil)))
     (let ((result (quoth-test--with-hyper-server
                    'ok-stream
@@ -1771,7 +1797,7 @@ id, name, context window, and reasoning flag."
 (ert-deftest quoth-test/select-model-sets-provider-and-global ()
   "`quoth-select-model' updates the provider slot, `quoth-model', and header.
 The catalog is fetched from the dummy server; picking a model applies
-it to the current buffer and the global default."
+it to the current buffer and the global default." :tags '(:integration)
   (let ((quoth-model nil))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -1798,7 +1824,7 @@ it to the current buffer and the global default."
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/select-model-resets-to-default ()
-  "Choosing the `default' entry clears the model back to the default."
+  "Choosing the `default' entry clears the model back to the default." :tags '(:integration)
   (let ((quoth-model "qwen3.7-plus"))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -2058,34 +2084,26 @@ The provider returns :input-tokens, :output-tokens, :cost-unit,
 
 (ert-deftest quoth-test/hyper-wire-usage-in-header-after-stream ()
   "A stream with a final usage chunk surfaces tok/hc/cache in the header.
-The ok-stream-usage mode streams content then a final chunk with
-finish_reason and usage; the core accumulates and the header line
-shows the stats."
+A final chunk with finish_reason and usage; the core accumulates and the
+header line shows the stats."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
           (let ((quoth-hyper-usage-currency 'credits))
-            (quoth-test--with-hyper-server
-             'ok-stream-usage
-             (lambda (base)
-               (save-excursion (goto-char (point-max)) (newline))
-               (setq-local quoth--response-start (point-marker))
-               (let ((buf (current-buffer)))
-                 (setf (quoth-hyper-provider-base-url quoth-active-provider) base)
-                 (setf (quoth-hyper-provider-token quoth-active-provider) "tok")
-                 (let ((proc (quoth-openai-request
-                              base "tok"
-                              (quoth-openai-compose-request "hi" "m")
-                              (quoth-test--hyper-on-delta buf)
-                              (quoth-test--hyper-completion buf))))
-                   (setf (quoth-provider-transport-process
-                          quoth-active-provider) proc)
-                   (let ((deadline (+ (float-time) 6)))
-                     (while (and (process-live-p proc)
-                                 (null (process-get proc :quoth-finished))
-                                 (< (float-time) deadline))
-                       (accept-process-output nil 0.1)
-                       (sit-for 0.02))))))))
+            (save-excursion (goto-char (point-max)) (newline))
+            (setq-local quoth--response-start (point-marker))
+            (let ((proc (quoth-test--make-transport-proc
+                         (current-buffer)
+                         (quoth-test--hyper-completion (current-buffer)))))
+              (unwind-protect
+                  (progn
+                    (setf (quoth-provider-transport-process quoth-active-provider) proc)
+                    (quoth-test--stream-into-buffer
+                     proc
+                     "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n"
+                     "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8923,\"completion_tokens\":68,\"total_tokens\":8991,\"prompt_tokens_details\":{\"cached_tokens\":8320},\"cost\":{\"usd\":0.00216348,\"hypercredits\":0.0432696}}}\n\n"
+                     "data: [DONE]\n\n"))
+                (when (process-live-p proc) (delete-process proc)))))
           ;; The usage was captured and accumulated; header shows stats.
           (with-current-buffer (get-buffer (quoth-test--buffer-name))
             (should (plist-get quoth--usage-acc :input-tokens))
@@ -2099,7 +2117,6 @@ shows the stats."
               (should (string-match-p "hc0.043" h))
               (should (string-match-p "93%%" h)))))
       (quoth-test--cleanup))))
-(provide 'quoth-test-hyper)
-;;; quoth-test-hyper.el ends here
+
 (provide 'quoth-test-hyper)
 ;;; quoth-test-hyper.el ends here

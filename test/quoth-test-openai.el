@@ -619,5 +619,21 @@ The on-error contract stays a string, never an alist."
       (should (string-match-p "boom detail" err))
       (should (string-match-p "server_error" err)))))
 
+(ert-deftest quoth-test/openai-json-pretty-caps-large-payloads ()
+  "`quoth--openai-json-pretty' truncates payloads over the debug cap.
+Large request bodies (full system prompt) would otherwise pay a slow
+full pretty-print on every request; the result is compact and marked."
+  (let ((quoth-openai-debug-pretty-max 100))
+    ;; Under the cap: fully pretty-printed with 2-space indentation.
+    (let ((pretty (quoth--openai-json-pretty "{\"a\":[1,2]}")))
+      (should (string-match-p "\n  \"a\"" pretty))
+      (should-not (string-match-p "omitted" pretty)))
+    ;; Over the cap: truncated excerpt + an omission note, no full body.
+    (let* ((big (concat "{\"long\":\"" (make-string 500 ?x) "\"}"))
+           (pretty (quoth--openai-json-pretty big)))
+      (should (string-match-p (regexp-quote (substring big 0 100)) pretty))
+      (should (string-match-p "chars omitted" pretty))
+      (should-not (string-match-p (regexp-quote (substring big 200)) pretty)))))
+
 (provide 'quoth-test-openai)
 ;;; quoth-test-openai.el ends here

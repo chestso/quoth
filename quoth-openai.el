@@ -122,6 +122,15 @@ ever uses leading blank lines meaningfully."
   :type 'boolean
   :group 'quoth-openai)
 
+(defcustom quoth-openai-debug-pretty-max 4096
+  "Largest JSON payload (chars) that `quoth--openai-json-pretty' will format.
+Request bodies grow with the system prompt (project context, git state),
+so pretty-printing them on every request is both slow and a log bloat;
+bodies larger than this cap are logged in compact, truncated form.  SSE
+event payloads the debug log pretty-prints are small and unaffected."
+  :type 'integer
+  :group 'quoth-openai)
+
 (declare-function quoth--debug-log "quoth.el" (category message))
 
 ;;; System prompt construction: <env> block with project context.
@@ -851,11 +860,19 @@ HTTP error), finish with an error; otherwise ensure cleanup."
 (defun quoth--openai-json-pretty (json-string)
   "Return JSON-STRING pretty-printed with 2-space indentation.
 Uses `json-pretty-print' in a temp buffer, avoiding any dependency on
-`json-pretty-print-string' (not present in older json.el)."
-  (with-temp-buffer
-    (insert json-string)
-    (json-pretty-print (point-min) (point-max))
-    (buffer-string)))
+`json-pretty-print-string' (not present in older json.el).  Payloads
+longer than `quoth-openai-debug-pretty-max' are returned compact and
+truncated (with a size note) rather than pretty-printed, so the debug
+log stays cheap and bounded on large request bodies."
+  (if (> (length json-string) quoth-openai-debug-pretty-max)
+      (let ((max quoth-openai-debug-pretty-max))
+        (format "%s
+... [%d chars omitted]" (substring json-string 0 max)
+(- (length json-string) max)))
+    (with-temp-buffer
+      (insert json-string)
+      (json-pretty-print (point-min) (point-max))
+      (buffer-string))))
 
 (defun quoth--openai-event-worth-pretty-p (payload)
   "Return non-nil if SSE PAYLOAD deserves pretty-printing in the log.

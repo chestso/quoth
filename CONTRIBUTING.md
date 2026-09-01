@@ -43,9 +43,14 @@ tests are skipped without it.
 After making changes:
 
 ```sh
-make check     # version gate + tests (byte-compile + ERT)
-make format    # format Elisp, Markdown, Shell, Python
+make check      # version gate + tests (byte-compile + ERT)
+make test-wire  # full suite including the :integration wire tests
+make format     # format Elisp, Markdown, Shell, Python
 ```
+
+`make test` / `make check` run the fast default suite, which skips the
+live-server `:integration` wire tests (they need emacs+curl plus the
+dummy HTTP servers and are opt-in via `make test-wire`).
 
 The test runner treats byte-compiler warnings as errors-in-waiting:
 do not introduce new ones. `make format` must produce no further
@@ -60,8 +65,9 @@ changes before you push.
   `quoth-test-hyper.el`, `quoth-test-openai.el`, `quoth-test-tools.el`, ...).
   Harness helpers (`quoth-test--with-hyper-server`) travel
   with their topic file.
-- New behavior gets a test; the suite currently runs 300+ tests in
-  ~20 seconds.
+- New behavior gets a test; the suite runs 400+ tests. Default `make test`
+  (~440 tests, skipping `:integration`) is fast; `make test-wire` adds the
+  live-server tests (454 total).
 
 ## Code Style
 

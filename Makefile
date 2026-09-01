@@ -2,14 +2,15 @@ SHELL := /bin/sh
 
 VERSION ?=
 
-.PHONY: all help test check format version check-version dist release clean
+.PHONY: all help test test-wire check format version check-version dist release clean
 
 all: check
 .DEFAULT_GOAL := help
 
 help:
 	@echo "quoth developer targets"
-	@echo "  make test                     run byte-compile + ERT suite"
+	@echo "  make test                     run byte-compile + ERT suite (skips :integration wire tests)"
+	@echo "  make test-wire                byte-compile + full ERT suite incl. :integration wire tests"
 	@echo "  make check                    version gate + tests"
 	@echo "  make format                   format Elisp / Markdown / Shell / Python"
 	@echo "  make version                  print the ;;; Version: header"
@@ -19,7 +20,10 @@ help:
 	@echo "  make clean                    remove byte-compiled and cache artifacts"
 
 test:
-	./scripts/test.sh
+	./scripts/test.sh unit
+
+test-wire:
+	./scripts/test.sh wire
 
 check: check-version test
 
