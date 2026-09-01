@@ -419,7 +419,7 @@ No buffer text is inserted or deleted — only overlay properties change."
   "Collapsed fold body overlay must be intangible so navigation skips it.
 `intangible t' alongside `invisible t' ensures cursor motion commands
 `line-move', `previous-line', etc. jump over the hidden region instead of
-getting stuck at its boundary (which caused 'Beginning of buffer')."
+getting stuck at its boundary."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
                 (quoth--append-delta (quoth-test--reasoning-lines 11)
@@ -437,8 +437,7 @@ getting stuck at its boundary (which caused 'Beginning of buffer')."
   "The fold marker overlay must NOT carry `intangible'.
 The marker overlay is at a visible position (before the invisible body),
 so its `after-string' text must be tangible for `line-move-visual' to
-navigate through it.  Making the marker intangible was the cause of the
-arrow-up navigation bug."
+navigate through it."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
                 (quoth--append-delta (quoth-test--reasoning-lines 11)
@@ -807,11 +806,7 @@ All text from the first reasoning char to the last has
 ;;;
 ;;; `quoth--tag-response-region' must tag the content-before-toolblock
 ;;; span, the tool blocks, and the content-after-toolblock span so the
-;;; header line shows the right region type at any point.  Regression
-;;; for the header-line region label showing "plain"/"prompt" instead
-;;; of "tool" when point sat on a tool block (the old code derived the
-;;; reasoning sub-span only from the reasoning overlay, which ends
-;;; before the first tool block, and never re-tagged the response).
+;;; header line shows the right region type at any point.
 
 (ert-deftest quoth-test/tools-reasoning-tags-content-and-tools ()
   "Test that a response with reasoning, tool blocks, and content tags every span.

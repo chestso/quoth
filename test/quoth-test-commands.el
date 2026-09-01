@@ -232,11 +232,9 @@ Context insertion does not touch the transport."
 ;;; 21. Inserted content has prompt-id properties
 
 (ert-deftest quoth-test/init-buffer-is-idempotent ()
-  "An initialized quoth buffer resists re-initialization:
-regenerating the prompt ID or clobbering existing state must not happen.
-Regression: with markdown-mode as the parent, major-mode is markdown-mode,
-not quoth-mode, so the old 'eq major-mode' guard failed to detect an
-already-initialized buffer and re-initialized it."
+  "An initialized quoth buffer resists re-initialization.
+The major mode is the parent mode; re-initializing must not regenerate
+the prompt ID or clobber existing state."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))

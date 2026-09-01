@@ -338,9 +338,8 @@ output is a fenced code block tagged `text`."
 
 (ert-deftest quoth-test/tool-block-output-fence-single-blank-after ()
   "The output fence is followed by exactly one blank line.
-Regression: the output block previously ended with a trailing newline
-while the assembler also appended a blank-line separator, producing
-two blank lines between the closing fence and the text that follows."
+The assembler inserts the fence's trailing newline and the blank-line
+separator once, so exactly one blank line follows the closing fence."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)

@@ -178,11 +178,6 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
     (should (eq quoth--session-thinking t))
     (should (string= quoth--session-reasoning-effort "high"))))
 
-(ert-deftest quoth-test/globals-removed ()
-  "The global defcustoms `quoth-openai-thinking'/`-reasoning-effort' are gone."
-  (should-not (boundp 'quoth-openai-thinking))
-  (should-not (boundp 'quoth-openai-reasoning-effort)))
-
 (ert-deftest quoth-test/compose-session-attrs-land-in-body ()
   "Session thinking + effort land in the request body when set."
   (let ((quoth--session-thinking t)

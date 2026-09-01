@@ -181,9 +181,8 @@ short to avoid sleeping through a full second."
 
 (ert-deftest quoth-test-process/spawn-env-reaches-child ()
   "The sanitized environment (pagers off, TERM=dumb) reaches the child.
-Regression: `quoth-process--spawn' once bound `process-environment' and
-`make-process' in the same `let', so the pager vars were bound only
-after the child had already inherited the unsanitized environment."
+The child process is spawned with the sanitized `process-environment'
+already in effect."
   (let ((owner (quoth-test-process--owner))
         (session nil))
     (unwind-protect
