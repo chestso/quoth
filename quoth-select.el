@@ -251,12 +251,27 @@ reachable via `quoth--select-defaults-apply'."
   (interactive)
   (quoth--select-apply-defaults))
 
+(defconst quoth--select-info-labels
+  '("provider" "model" "thinking" "effort")
+  "Labels shown by the selector info lines, in display order.")
+
+(defun quoth--select-label (label)
+  "Return \"LABEL:\" padded so the value column aligns across lines.
+The colon stays immediately after LABEL; padding is inserted after
+the colon to align the value with the longest selector label."
+  (concat label ":"
+          (make-string
+           (- (apply #'max (mapcar #'length quoth--select-info-labels))
+              (length label))
+           ?\s)
+          " "))
+
 (defun quoth--select-info-thinking (&rest _)
   "Return the thinking state as a suffix description.
 nil means the key is omitted (provider default); t sends
 `thinking: true'; :json-false sends `thinking: false'."
   (quoth--select-in-origin
-   (format "thinking: %s"
+   (format "%s%s" (quoth--select-label "thinking")
            (cond
             ((eq quoth--session-thinking t) "on")
             ((eq quoth--session-thinking :json-false) "off")
@@ -273,7 +288,7 @@ as a hint when available."
           (catalog-default (and entry
                                 (plist-get entry :default-reasoning-effort)))
           (levels (and entry (plist-get entry :reasoning-levels))))
-     (format "effort: %s%s"
+     (format "%s%s%s" (quoth--select-label "effort")
              (cond
               (quoth--session-reasoning-effort
                (format "%s (explicit)" quoth--session-reasoning-effort))
@@ -288,7 +303,7 @@ as a hint when available."
 (defun quoth--select-info-provider (&rest _)
   "Return the active provider name as a suffix description."
   (quoth--select-in-origin
-   (format "provider: %s" (or quoth-active-provider-name "hyper"))))
+   (format "%s%s" (quoth--select-label "provider") (or quoth-active-provider-name "hyper"))))
 
 (defun quoth--select-info-model (&rest _)
   "Return the current model with pricing detail as a suffix description."
@@ -300,7 +315,7 @@ as a hint when available."
           (prices  (and models current
                         (quoth--select-model-detail models current))))
      (string-trim
-      (format "model: %s%s"
+      (format "%s%s%s" (quoth--select-label "model")
               (or current "-")
               (if prices (format "  (%s)" prices) ""))))))
 
