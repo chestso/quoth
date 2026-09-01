@@ -81,6 +81,7 @@ quoth/                  # Package root
   quoth-process.el      # Process handler: PTY sessions, output buffering, yield, stdin, cleanup
   quoth-tools.el        # Local tool implementations: exec_command + write_stdin (over quoth-process)
   quoth-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
+  quoth-json.el        # JSON decode/encode abstraction: native C parser when available, json.el fallback
   quoth-debug-tools.el  # On-demand debug commands (region dump, history reconstruction; not loaded by default)
   test/                 # ERT test suite (see "Hacking" below)
 ```
@@ -88,7 +89,11 @@ quoth/                  # Package root
 Dependency direction: `quoth-provider.el` has no `require`s (it owns
 the shared session slots, the active-provider state, and the
 `quoth-provider-*` generics, so the OpenAI client and the selector
-depend on the protocol, not on `quoth.el`); `quoth-openai.el` requires
+depend on the protocol, not on `quoth.el`); `quoth-json.el` requires only `json` (a fallback); it exposes `quoth-json-read`
+and `quoth-json-write`, preferring the native C `json-parse-string` when
+`json-available-p` and keeping `json.el`'s representation contract. Every
+file that parses or emits JSON (`quoth-openai`, `quoth-hyper-provider`,
+`quoth-searxng`) calls through it. `quoth-openai.el` requires
 only `quoth-provider` (for the session slots); `quoth-xxh3.el` has no
 dependencies (pure math); `quoth-process.el` requires only `cl-lib`
 and `subr-x`; `quoth-hyper-provider.el` requires `quoth-provider` +

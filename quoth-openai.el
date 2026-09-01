@@ -41,6 +41,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'quoth-json)
 (require 'subr-x)
 (require 'auth-source)
 (require 'quoth-provider)
@@ -388,7 +389,7 @@ EXIT the exit code (filled after execution)."
   "Parse ARGS-JSON (a JSON string) into a plist, or nil when malformed.
 Unknown keys are ignored; a non-alist payload yields nil."
   (when (and (stringp args-json) (> (length args-json) 0))
-    (let ((obj (ignore-errors (json-read-from-string args-json))))
+    (let ((obj (ignore-errors (quoth-json-read args-json))))
       (when (consp obj)
         (let (plist)
           (pcase-dolist (`(,key . ,value) obj)
@@ -589,7 +590,7 @@ of each COMPLETE `data:' event (before it is dispatched), including
                  ((string= payload "[DONE]")
                   (setq done t))
                  ((string-prefix-p "{" payload)
-                  (let ((obj (ignore-errors (json-read-from-string payload))))
+                  (let ((obj (ignore-errors (quoth-json-read payload))))
                     (if (and obj (quoth--openai-alist-get "error" obj))
                         (progn
                           (setq done t)
@@ -882,7 +883,7 @@ carries the final chunk (`choices[].finish_reason' or top-level
 short per-token deltas, `[DONE]', malformed payloads -- is kept
 compact to bound the debug log during long streams."
   (when (and (string-prefix-p "{" payload))
-    (let ((obj (ignore-errors (json-read-from-string payload))))
+    (let ((obj (ignore-errors (quoth-json-read payload))))
       (when obj
         (let* ((first-choice (quoth--openai-first-choice obj))
                (delta (and first-choice
@@ -909,7 +910,7 @@ sent as x-session-id / x-session-affinity for prefix caching.
 X-CRUSH-ID, when non-nil, is sent as the x-crush-id header (matching
 the Crush CLI's per-machine ID).  The provider never touches buffers.
 Returns the curl process."
-  (let* ((payload (json-encode body))
+  (let* ((payload (quoth-json-write body))
          (config (concat
                   (format "url = %s/chat/completions\n" base-url)
                   "request = POST\n"
@@ -957,7 +958,7 @@ Returns the curl process."
              (process-get proc :quoth-model)
              (if (process-get proc :quoth-token-p) "present" "none")
              (or session-id "-")
-             (quoth--openai-json-pretty (json-encode body))))
+             (quoth--openai-json-pretty (quoth-json-write body))))
     ;; Config + JSON body over stdin; EOF closes the request.
     (process-send-string proc config)
     (process-send-string proc payload)

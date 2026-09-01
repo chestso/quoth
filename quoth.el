@@ -303,7 +303,7 @@ Buffer-local.")
 ;;; first, then fall back to loading from this file's own directory so
 ;;; both setups work.
 (eval-and-compile
-  (dolist (dep '("quoth-provider" "quoth-openai" "quoth-xxh3"
+  (dolist (dep '("quoth-json" "quoth-provider" "quoth-openai" "quoth-xxh3"
                  "quoth-process" "quoth-hyper-provider" "quoth-tools"
                  "quoth-searxng" "quoth-select"))
     (unless (require (intern dep) nil t)

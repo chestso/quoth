@@ -11,7 +11,7 @@ fi
 
 ./scripts/check-version.sh >/dev/null
 
-files="quoth.el quoth-provider.el quoth-openai.el quoth-hyper-provider.el \
+files="quoth.el quoth-json.el quoth-provider.el quoth-openai.el quoth-hyper-provider.el \
 quoth-xxh3.el quoth-process.el quoth-tools.el quoth-searxng.el quoth-select.el \
 quoth-debug-tools.el LICENSE README.md SEARXNG.md"
 

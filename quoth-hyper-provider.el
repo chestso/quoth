@@ -39,7 +39,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'auth-source)
 ;;; flycheck's emacs-lisp checker byte-compiles each file in isolation,
 ;;; and its batch child's `load-path' excludes the package directory.
@@ -49,7 +48,7 @@
 ;;; first, then `quoth-openai' (the client it delegates to), then
 ;;; `quoth-xxh3' which it uses.
 (eval-and-compile
-  (dolist (dep '("quoth-provider" "quoth-openai" "quoth-xxh3" "quoth-tools"))
+  (dolist (dep '("quoth-json" "quoth-provider" "quoth-openai" "quoth-xxh3" "quoth-tools"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -174,7 +173,7 @@ to a static list."
                        raw)))
           (when (string-empty-p (string-trim body))
             (error "empty catalog response"))
-          (let* ((catalog (json-read-from-string (string-trim body)))
+          (let* ((catalog (quoth-json-read (string-trim body)))
                  (models (quoth--openai-alist-get "models" catalog)))
             (unless models
               (error "catalog has no models key"))

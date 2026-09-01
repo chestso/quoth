@@ -121,7 +121,7 @@ Initializes with the default hyper provider."
 ;;; fall back to this directory so flycheck and direct loads work.
 (eval-and-compile
   (dolist (dep '("quoth-test-buffer" "quoth-test-commands"
-                 "quoth-test-openai" "quoth-test-hyper"
+                 "quoth-test-json" "quoth-test-openai" "quoth-test-hyper"
                  "quoth-test-reasoning" "quoth-test-stream"
                  "quoth-test-xxh3" "quoth-test-tools"
                  "quoth-test-process" "quoth-test-searxng" "quoth-test-select"))

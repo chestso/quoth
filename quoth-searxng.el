@@ -46,6 +46,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'quoth-json)
 (require 'subr-x)
 (require 'url-util)
 (eval-and-compile
@@ -257,7 +258,7 @@ Errors yield an error result with exit code -1."
                               (point-min) (line-end-position))))
                    tool-call))
               (let ((body (quoth-searxng--response-body buf)))
-                (let ((obj (json-read-from-string body)))
+                (let ((obj (quoth-json-read body)))
                   (if (not obj)
                       (progn
                         (setq-local quoth-searxng--healthy 'unreachable)
