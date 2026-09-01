@@ -1627,7 +1627,13 @@ verbatim; otherwise sum into the accumulator."
                               :cost-unit      (plist-get u :cost-unit)
                               :cost-value     (plist-get u :cost-value)))
           (setq-local quoth--usage-acc
-                      (quoth--merge-usage quoth--usage-acc u)))))))
+                      (quoth--merge-usage quoth--usage-acc u)))
+        ;; Refresh the header immediately so mid-tool-loop rounds show
+        ;; up live.  The tool loop runs synchronously inside a single
+        ;; process-filter callback, so `post-command-hook' never fires
+        ;; between rounds; without this the usage display stays frozen
+        ;; at the pre-loop value until the whole chain unwinds.
+        (quoth--update-header-line)))))
 
 (defun quoth--group-number-compact (n)
   "Format integer N compactly with a k/M suffix and one decimal.
