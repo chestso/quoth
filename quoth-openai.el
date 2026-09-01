@@ -482,8 +482,8 @@ announces the `bash' tool and `tool_choice: \"auto\"'."
 
 (defun quoth--openai-tool-schema ()
   "Return the tool schema vector for all registered tools.
-Includes `exec_command', `write_stdin', and `web_search' (when
-`quoth-searxng-enabled' is non-nil)."
+Includes `exec_command', `write_stdin', `write_file', `read_file', and
+`web_search' (when `quoth-searxng-enabled' is non-nil)."
   (let ((exec-props
          `((cmd . ((type . "string")
                    (description . "Shell command to execute")))
@@ -502,6 +502,24 @@ Includes `exec_command', `write_stdin', and `web_search' (when
                      (description . "Characters to write to the session's stdin; use \\x04 (EOT) to close stdin")))
            (yield_time_ms . ((type . "number")
                              (description . "Read window to collect fresh output after writing. Defaults 1000 ms.")))))
+        (write-file-props
+         `((path . ((type . "string")
+                    (description . "Target path, absolute or relative to workdir; tilde is expanded.")))
+           (content . ((type . "string")
+                       (description . "Full file text written byte-exact; line endings are preserved as given (no trailing newline is added).")))
+           (workdir . ((type . "string")
+                       (description . "Base directory for a relative path (defaults to the buffer's project root).")))
+           (mode . ((type . "number")
+                    (description . "POSIX permission bits (e.g. 644, 755) applied to the new file. Optional.")))
+           (overwrite . ((type . "boolean")
+                         (description . "When false, fail if the file already exists. Defaults to true.")))))
+        (read-file-props
+         `((path . ((type . "string")
+                    (description . "Target path, absolute or relative to workdir; tilde is expanded.")))
+           (workdir . ((type . "string")
+                       (description . "Base directory for a relative path (defaults to the buffer's project root).")))
+           (max_bytes . ((type . "number")
+                         (description . "Cap on returned bytes; larger files are truncated head/tail. Optional.")))))
         (search-props
          `((query . ((type . "string")
                      (description . "Search query")))
@@ -522,7 +540,19 @@ Includes `exec_command', `write_stdin', and `web_search' (when
                                  (description . "Write to a running exec_command session and return recently produced output.")
                                  (parameters . ((type . "object")
                                                 (properties . ,write-props)
-                                                (required . ["session_id"]))))))]))
+                                                (required . ["session_id"]))))))
+                   ((type . "function")
+                    (function . ((name . "write_file")
+                                 (description . "Write a complete file atomically and byte-exact to the given path. Replaces any existing file unless overwrite is false, and creates parent directories as needed.")
+                                 (parameters . ((type . "object")
+                                                (properties . ,write-file-props)
+                                                (required . ["path" "content"]))))))
+                   ((type . "function")
+                    (function . ((name . "read_file")
+                                 (description . "Read a complete file's text byte-exact and return it in the output. Returns an error if the path is missing or unreadable.")
+                                 (parameters . ((type . "object")
+                                                (properties . ,read-file-props)
+                                                (required . ["path"]))))))]))
       (when (bound-and-true-p quoth-searxng-enabled)
         (setq tools
               (vconcat tools
@@ -533,7 +563,6 @@ Includes `exec_command', `write_stdin', and `web_search' (when
                                                       (properties . ,search-props)
                                                       (required . ["query"]))))))])))
       tools)))
-
 (defun quoth-openai-sse-new-state ()
   "Return a fresh SSE parser state plist."
   (list :pending "" :done nil :error nil :tool-calls nil :content-started nil :usage nil))

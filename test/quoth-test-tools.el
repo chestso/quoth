@@ -689,6 +689,40 @@ extraction; argument blocks are display decoration."
                       'tool-output)))
       (quoth-test--cleanup))))
 
+(ert-deftest quoth-test/write-file-tool-block-renders-path ()
+  "A `write_file' tool block renders its path and content in the buffer."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (quoth--tool-block-insert
+           (list :name "write_file" :id "call_1"
+                 :args-json "{\"path\":\"/tmp/out.txt\",\"content\":\"hi\"}"
+                 :result "ok"
+                 :exit 0)
+           quoth--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "\\*\\*✍️ write_file\\*\\*" content))
+            (should (string-match-p "path: /tmp/out.txt" content))
+            (should (string-match-p "content:" content))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/read-file-tool-block-renders-path ()
+  "A `read_file' tool block renders its path in the buffer."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (quoth--tool-block-insert
+           (list :name "read_file" :id "call_2"
+                 :args-json "{\"path\":\"/tmp/in.txt\"}"
+                 :result "out"
+                 :exit 0)
+           quoth--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "\\*\\*📖 read_file\\*\\*" content))
+            (should (string-match-p "path: /tmp/in.txt" content))))
+      (quoth-test--cleanup))))
+
+
 ;;; 8. Fence escaping: protect against nested fences in tool output
 
 (ert-deftest quoth-test/fence-str-empty-output ()
@@ -730,6 +764,239 @@ extraction; argument blocks are display decoration."
             (should (string-match-p "````text\n" content))
             (should (string-match-p "````\n$" content))))
       (quoth-test--cleanup))))
+
+
+;;; 9. read_file / write_file execution
+
+(defun quoth-test--tmpdir ()
+  "Return a fresh temp dir for a filesystem-tool test."
+  (make-temp-file "quoth-fs" t))
+
+(defun quoth-test--args-json (&rest args)
+  "Return an args-json string from keyword ARGS.
+Uses `quoth-json-write' so string values containing newlines/CR are
+escaped correctly (JSON, unlike `format %S', escapes control chars)."
+  (quoth-json-write args))
+
+(ert-deftest quoth-test/tool-registry-has-read-file ()
+  "The registry should map \"read_file\" to `quoth-read-file--exec'."
+  (should (equal (cdr (assoc "read_file" quoth-openai-tool-registry))
+                 #'quoth-read-file--exec)))
+
+(ert-deftest quoth-test/tool-registry-has-write-file ()
+  "The registry should map \"write_file\" to `quoth-write-file--exec'."
+  (should (equal (cdr (assoc "write_file" quoth-openai-tool-registry))
+                 #'quoth-write-file--exec)))
+
+(ert-deftest quoth-test/write-file-creates-file-with-exact-content ()
+  "`quoth-write-file--exec' writes the exact content and reports exit 0."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "out.txt" dir))
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content "hello\nworld\n")))
+               (result (quoth-write-file--exec call)))
+          (should (string-match-p "Process exited with code 0" (car result)))
+          (should (= (cdr result) 0))
+          (should (file-exists-p target))
+          (with-temp-buffer
+            (insert-file-contents target)
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "hello\nworld\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-preserves-crlf ()
+  "A content with CRLF stays CRLF on disk (byte-exact, no newline munging)."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "crlf.txt" dir))
+               (content "line1\r\nline2\r\n")
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content content)))
+               (result (quoth-write-file--exec call)))
+          (should (= (cdr result) 0))
+          (with-temp-buffer
+            ;; Force no newline translation on insert so we read raw bytes.
+            (let ((coding-system-for-read 'binary))
+              (insert-file-contents target))
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "line1\r\nline2\r\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-relative-path-uses-workdir ()
+  "A relative `path' resolves against `workdir'."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path "rel.txt" :content "x" :workdir dir)))
+               (result (quoth-write-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (file-exists-p (expand-file-name "rel.txt" dir))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-creates-parent-directories ()
+  "`write_file' creates missing parent directories for the target path."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "a/b/c.txt" dir))
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content "nested")))
+               (result (quoth-write-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (file-exists-p target)))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-overwrite-false-refuses-existing ()
+  "`overwrite: false' fails on an existing file without touching it."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "keep.txt" dir))
+               (_ (write-region "original" nil target))
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content "new" :overwrite :json-false)))
+               (result (quoth-write-file--exec call)))
+          (should (string-match-p "Process exited with code -1" (car result)))
+          (should (= (cdr result) -1))
+          ;; Existing content is untouched.
+          (with-temp-buffer
+            (insert-file-contents target)
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "original"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-overwrite-default-clobbers ()
+  "By default `write_file' overwrites an existing file."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "clob.txt" dir))
+               (_ (write-region "old" nil target))
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content "new")))
+               (result (quoth-write-file--exec call)))
+          (should (= (cdr result) 0))
+          (with-temp-buffer
+            (insert-file-contents target)
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "new"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-no-temp-file-left-behind ()
+  "`write_file' is atomic: no temp file remains in the target directory."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "atomic.txt" dir))
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content "data")))
+               (result (quoth-write-file--exec call)))
+          (should (= (cdr result) 0))
+          ;; No leftover atomic-write temp file remains.
+          (should-not (directory-files dir nil "\\.tmp\\'"))
+          ;; Exactly the one target file (besides `.`/`..`).
+          (should (equal (directory-files dir nil "\\`[^.]")
+                         (list (file-name-nondirectory target)))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-missing-path-errors ()
+  "A missing or empty `path' yields an error result."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (dolist (json (list (quoth-test--args-json :content "x" :workdir dir)
+                            (quoth-test--args-json :path "" :content "x")))
+          (let* ((call (quoth-test--tool-call "write_file" json))
+                 (result (quoth-write-file--exec call)))
+            (should (string-match-p "Process exited with code -1" (car result)))
+            (should (= (cdr result) -1))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-round-trip ()
+  "`quoth-read-file--exec' returns the file's exact content with exit 0."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "read.txt" dir))
+               (_ (write-region "some\ncontent\n" nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target)))
+               (result (quoth-read-file--exec call)))
+          (should (string-match-p "Process exited with code 0" (car result)))
+          (should (= (cdr result) 0))
+          (should (string-match-p "some\ncontent\n" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-preserves-crlf ()
+  "`read_file' returns CRLF content byte-exact (no re-cooking)."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "readcrlf.txt" dir))
+               (_ (write-region "a\r\nb\r\n" nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target)))
+               (result (quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p "a\r\nb\r\n" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-relative-path-uses-workdir ()
+  "A relative `path' resolves against `workdir'."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "rel.txt" dir))
+               (_ (write-region "hi" nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path "rel.txt" :workdir dir)))
+               (result (quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p "hi" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-missing-file-errors ()
+  "A missing file yields an error result."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "nope.txt" dir))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target)))
+               (result (quoth-read-file--exec call)))
+          (should (string-match-p "Process exited with code -1" (car result)))
+          (should (= (cdr result) -1)))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-truncates-large-content ()
+  "`read_file' caps output at `quoth-tool-max-output'."
+  (let ((dir (quoth-test--tmpdir))
+        (quoth-tool-max-output 100))
+    (unwind-protect
+        (let* ((target (expand-file-name "big.txt" dir))
+               (body (make-string 500 ?x))
+               (_ (write-region body nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target)))
+               (result (quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p "omitted" (car result))))
+      (ignore-errors (delete-directory dir t)))))
 
 (provide 'quoth-test-tools)
 ;;; quoth-test-tools.el ends here

@@ -98,7 +98,9 @@ The default is non-nil, so `tool_choice' is `auto'."
                                         (cdr (assq 'function tool)))))
                            (append tools nil))))
         (should (member "exec_command" names))
-        (should (member "write_stdin" names))))))
+        (should (member "write_stdin" names))
+        (should (member "write_file" names))
+        (should (member "read_file" names))))))
 
 (ert-deftest quoth-test/openai-compose-no-tools-when-disabled ()
   "With `quoth-tools-enabled' nil the body has no `tools' or `tool_choice'."
@@ -106,6 +108,15 @@ The default is non-nil, so `tool_choice' is `auto'."
     (let ((req (quoth-openai-compose-request "P" "m")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
+
+(ert-deftest quoth-test/openai-schema-has-file-tools ()
+  "The tool schema should announce `read_file' and `write_file'."
+  (let* ((schema (quoth--openai-tool-schema))
+         (names (mapcar (lambda (tool)
+                          (cdr (assq 'name (cdr (assq 'function tool)))))
+                        (append schema nil))))
+    (should (member "read_file" names))
+    (should (member "write_file" names))))
 
 (ert-deftest quoth-test/openai-compose-continuation-replaces-user ()
   "A non-nil CONTINUATION replaces the user message with follow-up msgs."
