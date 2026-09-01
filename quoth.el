@@ -1028,7 +1028,7 @@ buffer-local and never leaves via the network; only the hash is sent."
 
 
 (defun quoth--make-default-hyper-provider (&optional buf dir)
-  "Return a hyper provider configured from the current defcustoms.
+  "Return a hyper provider configured from the current settings.
 BUF is the buffer slot; DIR is the working-directory slot.  Uses
 `quoth-hyper-base-url', `quoth-hyper-token', and `quoth-model'."
   (quoth-make-hyper-provider
@@ -2305,9 +2305,12 @@ interaction buffer.
 
 (defvar savehist-additional-variables)
 ;; Persistence: register provider and model with savehist so they
-;; survive restarts.  Guarded by `with-eval-after-load' so savehist is
-;; never required at load time; users without `savehist-mode' still
-;; get the defcustom defaults via Customize.
+;; survive restarts.  Registered via `with-eval-after-load' so savehist
+;; is never required at quoth load time.  `quoth-model' is a plain
+;; defvar (not a defcustom): it is the runtime selection owned by
+;; savehist, not a user option owned by Customize, so the two never
+;; fight over it at startup.  `quoth-active-provider-name' stays a
+;; defcustom since its default picks the provider new buffers use.
 (with-eval-after-load 'savehist
   (add-to-list 'savehist-additional-variables 'quoth-active-provider-name)
   (add-to-list 'savehist-additional-variables 'quoth-model))

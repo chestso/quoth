@@ -74,9 +74,9 @@ Most of Quoth's behavior is configurable through Emacs customization:
 M-x customize-group RET quoth
 ```
 
-The `quoth` group covers the essentials — model (`quoth-model`), working
-directory, request tuning (`quoth-openai-timeout`, `-max-tokens`,
-`-temperature`, `-thinking`, `-reasoning-effort`), history replay
+The `quoth` group covers the essentials — working directory,
+request tuning (`quoth-openai-timeout`, `-max-tokens`, `-temperature`,
+`-thinking`, `-reasoning-effort`), history replay
 (`quoth-hyper-history-limit`, `quoth-hyper-history-include-reasoning`),
 reasoning display (`quoth-reasoning-preview-lines`), the system prompt
 (`quoth-openai-system-prompt`), debug logging, and the hyper provider
@@ -145,6 +145,7 @@ live in [ARCHITECTURE.md](ARCHITECTURE.md).
 - Type a prompt and press `C-c c s` (or `C-return` in graphical Emacs and in terminals that report it, e.g. portty/xterm) to send it to the active provider; `RET` (or `C-j`) inserts a newline for multiline prompts
 - `M-p` / `M-n` — navigate input history (previous/next input)
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point; otherwise normal TAB
+- `C-c c m` — open the model selector (choose a model; toggle thinking, set reasoning effort, or reset to provider defaults)
 - `C-c c i` — interrupt the running quoth process
 - `C-c c k` — clear the quoth buffer (also starts a fresh session and rotates the session UUID)
 - `C-c c r` — expand/collapse the reasoning fold at point
@@ -211,6 +212,25 @@ response. The region type updates as the cursor moves: `user` on the
 input line, `separator` on a divider, `reasoning` on chain-of-thought
 text, `tool` and `tool-output` on tool blocks, and `response` on the
 final answer.
+
+### Model selection and persistence
+
+`C-c c m` opens a transient selector: pick a model from the active
+provider's catalog, toggle thinking on/off, set a reasoning-effort
+level, or use `d` to reset the per-session attributes to the provider
+defaults. The catalog is fetched live from the provider, so prices and
+context windows show for each model.
+
+The selected model lives in the `quoth-model` variable (a plain
+`defvar`, not a Customize option) and is applied to the buffer's
+provider at initialization. `quoth-model` is registered with savehist,
+so the choice persists across Emacs restarts — mirroring the input
+history ring's persistence. Savehist is opt-in, so enable `savehist-mode`
+in your init (`(savehist-mode 1)`); when on, it restores `quoth-model`
+on startup and writes it back on exit, just as it does for minibuffer
+history. Users who want a fixed default instead of a per-session choice
+can `(setq quoth-model "...")` in their init after quoth loads, or
+customize `quoth-openai-default-model`.
 
 ## Rendering
 

@@ -85,14 +85,17 @@ miss: context-file change, `quoth-clear-buffer', or a new buffer."
   :type 'string
   :group 'quoth-openai)
 
-(defcustom quoth-model nil
-  "Model to use for Quoth requests.
+(defvar quoth-model nil
+  "Model to use for Quoth requests (runtime selection, not a defcustom).
 When nil, the provider falls back to `quoth-openai-default-model'.  The
 core passes this into the provider's model slot at buffer
 initialization.  Should be a model name like
-`claude-sonnet-4-20250514' or `gpt-4o'."
-  :type '(choice (const nil) string)
-  :group 'quoth-openai)
+`claude-sonnet-4-20250514' or `gpt-4o'.
+
+A plain defvar: it is the runtime selection persisted by savehist, not
+a user option owned by Customize.  To set a default, put `(setq
+quoth-model ...)' in your init after quoth loads, or customize
+`quoth-openai-default-model'.")
 
 (defconst quoth-openai-default-model "deepseek-v4-flash"
   "Model used when the provider model slot and `quoth-model' are both nil.")
@@ -415,7 +418,7 @@ call name, args, result, and exit under the `tool' category; executors must not 
 (defun quoth-openai-compose-request (prompt model &optional history continuation)
   "Compose a chat-completions request alist for PROMPT.
 MODEL is the resolved model (the caller passes the provider's model
-slot, already derived from the shared `quoth-model' defcustom).  Falls
+slot, already derived from the shared `quoth-model' variable).  Falls
 back to `quoth-openai-default-model'.  HISTORY is a list of message
 alists (already reconstructed from the buffer by `quoth--history-for');
 they ride between the system prompt and the new user message.  With no
