@@ -263,10 +263,12 @@ string, or empty after trim."
 
 (defun quoth-file--read-bytes (path)
   "Return the raw bytes of the file at PATH as a unibyte string.
-Reads with `coding-system-for-read' bound to `binary' so no newline
-translation happens on the way in; the caller re-decodes as text.  This
-keeps the read byte-exact."
+Reads into a unibyte temp buffer with `coding-system-for-read' bound to
+`binary', so no newline translation or charset conversion happens on the
+way in and each byte is a plain 0-255 value; the caller re-decodes these
+bytes as text.  This keeps the read byte-exact."
   (with-temp-buffer
+    (set-buffer-multibyte nil)
     (let ((coding-system-for-read 'binary))
       (insert-file-contents path))
     (buffer-substring-no-properties (point-min) (point-max))))
@@ -412,23 +414,26 @@ an error when the file is not valid UTF-8.  The result is byte-exact for
 line endings: a `\\r\\n' on disk stays `\\r\\n' in the returned text."
   (let* ((bytes (quoth-file--read-bytes path))
          (n (length bytes))
-         (out (make-string n 0))
-         (i 0)
-         (o 0))
+         (chars nil)
+         (i 0))
     (unless (quoth-file--utf8-valid-p bytes)
       (error "File is not valid UTF-8: %s" path))
     (while (< i n)
       (let ((b (aref bytes i)))
         (if (< b 128)
             (progn
-              (aset out o b)
-              (setq i (1+ i) o (1+ o)))
+              (push b chars)
+              (setq i (1+ i)))
           (let* ((seq (quoth-file--utf8-next bytes i))
                  (cp (car seq))
                  (len (cdr seq)))
-            (aset out o cp)
-            (setq i (+ i len) o (1+ o))))))
-    (substring out 0 o)))
+            (push cp chars)
+            (setq i (+ i len))))))
+    ;; `apply #'string' builds a proper multibyte string from the decoded
+    ;; codepoints.  A pre-allocated `make-string' is unibyte and `aset'
+    ;; cannot store a character >= #x100 into it, so we accumulate a list
+    ;; of characters instead of writing into a fixed-length buffer.
+    (apply #'string (nreverse chars))))
 
 (defun quoth-read-file--exec (tool-call)
   "Execute TOOL-CALL as `read_file' and return (RESULT . EXIT-OR-NIL).

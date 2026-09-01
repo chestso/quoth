@@ -955,6 +955,29 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
           (should (string-match-p "a\r\nb\r\n" (car result))))
       (ignore-errors (delete-directory dir t)))))
 
+(ert-deftest quoth-test/read-file-decodes-utf8 ()
+  "`read_file' reads and decodes a file with multi-byte UTF-8 content.
+A regression test: bytes >= #x80 are read as raw byte values (a unibyte
+string) so the UTF-8 validator sees `0xE2` rather than Emacs's eight-bit
+character form, and the decoded codepoints (including any >= #x100) land
+in a proper multibyte result string."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "utf8.txt" dir))
+               (_ (with-temp-buffer
+                    (set-buffer-multibyte nil)
+                    (insert "caf\303\251 \342\200\224 ok\n")
+                    (write-region (point-min) (point-max) target nil 'silent)))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target)))
+               (result (quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          ;; The multi-byte sequences on disk (C3 A9 for é, E2 80 94 for
+          ;; the em dash) decode to the single chars U+00E9 and U+2014.
+          (should (string-match-p "caf\u00e9 \u2014 ok" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
 (ert-deftest quoth-test/read-file-relative-path-uses-workdir ()
   "A relative `path' resolves against `workdir'."
   (let ((dir (quoth-test--tmpdir)))
