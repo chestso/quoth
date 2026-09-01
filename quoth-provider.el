@@ -60,16 +60,15 @@
 ;;; on `quoth.el'.  The core sets these buffer-locally at init time.
 
 (defvar-local quoth--session-thinking nil
-  "Per-buffer thinking flag.
-When non-nil, the request body carries `thinking: t' and the model
-emits a reasoning trace before the final answer.  nil (the default)
-omits the key so the model/gateway applies its own default.")
+  "Per-buffer thinking flag: nil (unset), t (on), or :json-false (off).
+nil (the default) omits the key so the model/gateway applies its own
+default.  t sends `thinking: true'; :json-false sends `thinking:
+false', explicitly disabling reasoning.")
 
 (defvar-local quoth--session-reasoning-effort nil
   "Per-buffer reasoning effort, or nil.
 When non-nil, the request body carries `reasoning_effort: VALUE'.
-Meaningful only when `quoth--session-thinking' is non-nil; inert
-otherwise.  nil (the default) omits the key.")
+nil (the default) omits the key.")
 
 ;;; Active provider state.  The registry and the active-provider-name
 ;;; defcustom live here (protocol concerns); the default registry's

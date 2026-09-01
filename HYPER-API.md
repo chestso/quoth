@@ -195,8 +195,8 @@ verbatim, function, or `nil` to omit).
 {
   "model": "qwen3.7-plus",
   "stream": true,
-  "reasoning_effort": "high", // depth of reasoning; only matters when thinking is true
-  "thinking": false, // master switch: false = no chain-of-thought, effort is inert
+  "reasoning_effort": "high", // sets reasoning depth when reasoning is active
+  "thinking": false, // false = direct answer when sent WITHOUT reasoning_effort
   "max_tokens": 64000,
   "temperature": 0.7, // optional
   "tool_choice": "auto", // optional
@@ -207,11 +207,11 @@ verbatim, function, or `nil` to omit).
 
 **Hyper-specific / notable fields:**
 
-| Field              | Meaning                                                                                                                                                                                                                                                                                                                                                               |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reasoning_effort` | Reasoning level for models that support it; defaults come from the model catalog (`default_reasoning_effort`, e.g. `high`, `max`).                                                                                                                                                                                                                                    |
-| `thinking`         | Master switch for chain-of-thought reasoning (deepseek-style thinking mode). When `true` the model emits a `reasoning_content` trace before the final answer; `false` skips reasoning and answers directly, making `reasoning_effort` a no-op. Equivalent to DeepSeek's `{"thinking": {"type": "enabled"}}`. Sent as a bare boolean by Crush on the `hyper` provider. |
-| `extra_body`       | Additional provider-specific fields are merged into the body for openai-compatible providers.                                                                                                                                                                                                                                                                         |
+| Field              | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reasoning_effort` | Reasoning level for models that support it; defaults come from the model catalog (`default_reasoning_effort`, e.g. `high`, `max`).                                                                                                                                                                                                                                                                                                                                                                             |
+| `thinking`         | Chain-of-thought switch (deepseek-style thinking mode). When `true` the model emits a `reasoning_content` trace before the final answer. When `false` and `reasoning_effort` is **omitted**, the model answers directly with no reasoning trace. Sending `reasoning_effort` alongside `false` re-enables the reasoning trace (validated empirically on the `hyper` provider). Equivalent to DeepSeek's `{"thinking": {"type": "enabled"}}` when true. Sent as a bare boolean by Crush on the `hyper` provider. |
+| `extra_body`       | Additional provider-specific fields are merged into the body for openai-compatible providers.                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ### 3.3 Tool announcements
 
@@ -305,15 +305,16 @@ Non-streamed response (`choices[0].message`, OpenAI shape):
 
 **Reasoning content:** models with `can_reason` may return a
 `reasoning_content` field on the assistant message. This field carries the
-model's chain-of-thought trace, produced only when `thinking: true` (the
-on/off switch). Crush reads it from the raw JSON and surfaces it as a
-thinking/reasoning trace (streamed via `reasoning_content` deltas before the
-final `content` deltas), distinct from the visible `content`. `reasoning_effort`
-is not independent of `thinking`: it only selects how deep that reasoning
-goes, and has no effect when `thinking` is false. When thinking is enabled, the trace must be echoed back — as
-`reasoning_content` on the assistant message — on any subsequent request that
-carries that turn (including tool-call rounds); some providers require it
-present (or empty) on assistant tool-call messages in the history.
+model's chain-of-thought trace, produced when reasoning is active. Crush
+reads it from the raw JSON and surfaces it as a thinking/reasoning trace
+(streamed via `reasoning_content` deltas before the final `content` deltas),
+distinct from the visible `content`. On the `hyper` provider, `thinking:
+false` suppresses the trace only when `reasoning_effort` is omitted; sending
+`reasoning_effort` alongside it re-enables reasoning. When reasoning is
+enabled, the trace must be echoed back — as `reasoning_content` on the
+assistant message — on any subsequent request that carries that turn
+(including tool-call rounds); some providers require it present (or empty)
+on assistant tool-call messages in the history.
 
 **Tool-call round trip:** the assistant turn with `tool_calls` and
 `finish_reason: "tool_calls"` is persisted and re-sent on the next request,
@@ -408,15 +409,15 @@ Each model entry:
   presented refresh token, an HTTP `401` on an LLM request indicates the
   refresh token is stale/consumed and the client must re-run the device
   flow (`crush auth`).
-- **`thinking` gates `reasoning_effort`.** `thinking` (boolean) is the master
-  switch for chain-of-thought reasoning: `true` makes the model emit
-  `reasoning_content` deltas before the answer, `false` skips reasoning
-  entirely. `reasoning_effort` (`low`/`medium`/`high`/`max`) only tunes how
-  deep that reasoning goes, and is inert while `thinking` is false. Hyper
-  maps the boolean to the DeepSeek thinking-mode format
-  (`{"thinking": {"type": "enabled"}}`). Crush sets `thinking` from the
-  per-model `think` config and injects a default `reasoning_effort` for
-  reasoning-capable models.
+- **`thinking` and `reasoning_effort` interact nontrivially.** `thinking`
+  (boolean) is the chain-of-thought switch: `true` makes the model emit
+  `reasoning_content` deltas before the answer. `false` answers directly
+  **only when `reasoning_effort` is omitted**; sending `reasoning_effort`
+  alongside `false` re-enables reasoning (validated empirically on the
+  `hyper` provider). Hyper maps `thinking: true` to the DeepSeek
+  thinking-mode format (`{"thinking": {"type": "enabled"}}`). Crush sets
+  `thinking` from the per-model `think` config and injects a default
+  `reasoning_effort` for reasoning-capable models.
 - **Provider-family quirks.** Because Hyper is openai-compatible, Crush's
   OpenAI/`openaicompat` hooks apply: media tool results are fanned out into
   separate messages (an OpenAI `tool` message cannot carry images/audio), and

@@ -457,8 +457,8 @@ announces the `bash' tool and `tool_choice: \"auto\"'."
     (when quoth-openai-temperature
       (setq body (cons (cons 'temperature quoth-openai-temperature) body)))
     (when quoth--session-thinking
-      (setq body (cons '(thinking . t) body)))
-    (when (and quoth--session-thinking quoth--session-reasoning-effort)
+      (setq body (cons (cons 'thinking quoth--session-thinking) body)))
+    (when quoth--session-reasoning-effort
       (setq body (append body
                          `((reasoning_effort . ,quoth--session-reasoning-effort)))))
     (when quoth-tools-enabled

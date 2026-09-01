@@ -206,13 +206,21 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
       (should (eq (alist-get 'thinking req) t))
       (should-not (assq 'reasoning_effort req)))))
 
-(ert-deftest quoth-test/compose-effort-without-thinking-omits-both ()
-  "Effort set but thinking nil: neither key in body (effort is inert)."
+(ert-deftest quoth-test/compose-effort-without-thinking-sends-effort ()
+  "Effort set but thinking unset: no thinking key, but effort is sent."
   (let (quoth--session-thinking
         (quoth--session-reasoning-effort "high"))
     (let ((req (quoth-openai-compose-request "P" "m")))
       (should-not (assq 'thinking req))
-      (should-not (assq 'reasoning_effort req)))))
+      (should (string= (alist-get 'reasoning_effort req) "high")))))
+
+(ert-deftest quoth-test/compose-thinking-off-sends-false-and-effort ()
+  "Thinking off (:json-false) sends `thinking: false'; effort still sent."
+  (let ((quoth--session-thinking :json-false)
+        (quoth--session-reasoning-effort "high"))
+    (let ((req (quoth-openai-compose-request "P" "m")))
+      (should (eq (alist-get 'thinking req) :json-false))
+      (should (string= (alist-get 'reasoning_effort req) "high")))))
 
 ;;; 104. Select-model via the new apply path
 
@@ -309,8 +317,38 @@ are registered with `savehist-additional-variables'."
   (with-temp-buffer
     (quoth--select-apply-thinking t)
     (should (eq quoth--session-thinking t))
+    (quoth--select-apply-thinking :json-false)
+    (should (eq quoth--session-thinking :json-false))
     (quoth--select-apply-thinking nil)
     (should (null quoth--session-thinking))))
+
+(ert-deftest quoth-test/select-effort-matrix-cell ()
+  "`quoth--select-effort-matrix-cell' reflects the observed interplay."
+  (should (string= (quoth--select-effort-matrix-cell 'off nil)
+                   "direct (no reason)"))
+  (should (string= (quoth--select-effort-matrix-cell 'off t)
+                   "reasoning"))
+  (should (string= (quoth--select-effort-matrix-cell 'on nil)
+                   "reasoning"))
+  (should (string= (quoth--select-effort-matrix-cell 'on t)
+                   "reasoning"))
+  (should (string= (quoth--select-effort-matrix-cell 'unset nil)
+                   "provider default"))
+  (should (string= (quoth--select-effort-matrix-cell 'unset t)
+                   "reasoning")))
+
+(ert-deftest quoth-test/select-thinking-toggle-cycles-on-off ()
+  "`quoth--select-thinking-toggle' cycles on -> off -> on, never unset."
+  (with-temp-buffer
+    ;; unset -> on
+    (quoth--select-thinking-toggle)
+    (should (eq quoth--session-thinking t))
+    ;; on -> off
+    (quoth--select-thinking-toggle)
+    (should (eq quoth--session-thinking :json-false))
+    ;; off -> on
+    (quoth--select-thinking-toggle)
+    (should (eq quoth--session-thinking t))))
 
 (ert-deftest quoth-test/select-apply-effort-sets-session ()
   "`quoth--select-apply-effort' sets the buffer-local session slot."

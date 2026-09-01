@@ -21,11 +21,11 @@
 
 ;;; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 ;;; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-;;; THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+;;; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 ;;; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-;;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-;;; THE SOFTWARE.
+;;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+;;; SOFTWARE.
 
 ;;; Commentary:
 
@@ -82,10 +82,10 @@ and reasoning support, aligned in fixed-width columns."
            :test #'string=
            :key (lambda (m) (plist-get m :id))))
 
-(defun quoth--select-apply-thinking (enabled)
-  "Set `quoth--session-thinking' to ENABLED in the current buffer."
-  (setq-local quoth--session-thinking
-              (if enabled t nil)))
+(defun quoth--select-apply-thinking (value)
+  "Set `quoth--session-thinking' to VALUE in the current buffer.
+VALUE is one of t (on), :json-false (off), or nil (unset)."
+  (setq-local quoth--session-thinking value))
 
 (defun quoth--select-apply-effort (effort)
   "Set `quoth--session-reasoning-effort' to EFFORT in the current buffer."
@@ -99,8 +99,8 @@ and reasoning support, aligned in fixed-width columns."
 
 (defun quoth--select-model-detail (models model-id)
   "Return a pricing/context string for the model with :id MODEL-ID, or nil.
-The model id and name are shown on the `Model' header line above, so
-only context window and per-token costs appear here."
+Only context window and per-token costs appear; the model id is shown
+by the caller."
   (let ((m (quoth--select-current-model-entry models model-id)))
     (when m
       (let ((ctx   (or (plist-get m :context-window) "?"))
@@ -145,6 +145,49 @@ only context window and per-token costs appear here."
           (let ((levels (plist-get entry :reasoning-levels)))
             (and (consp levels) levels))))))
 
+(defun quoth--select-effort-matrix-cell (thinking effort-p)
+  "Return the reasoning outcome cell for THINKING with EFFORT-P.
+THINKING is `off', `on', or `unset'; EFFORT-P is non-nil when a
+`reasoning_effort' would be sent.  Behavior is provider specific
+(validated on the hyper provider with `deepseek-v4-pro-0813'):
+`thinking: false' suppresses reasoning when sent alone, but sending
+`reasoning_effort' alongside re-enables the reasoning trace."
+  (pcase thinking
+    ('off (if effort-p "reasoning" "direct (no reason)"))
+    ('on "reasoning")
+    ('unset (if effort-p "reasoning" "provider default"))
+    (_ "?")))
+
+(defun quoth--select-info-reasoning-matrix (&rest _)
+  "Return a compact visual matrix of the thinking/effort interplay.
+Validated on the hyper provider (`deepseek-v4-pro-0813'): `thinking:
+false' suppresses reasoning only when sent without `reasoning_effort';
+sending one re-enables the reasoning trace."
+  (quoth--select-in-origin
+   (let* ((headers '("" "effort unset" "effort set"))
+          (rows (list
+                 (list "thinking off"
+                       (quoth--select-effort-matrix-cell 'off nil)
+                       (quoth--select-effort-matrix-cell 'off t))
+                 (list "thinking on"
+                       (quoth--select-effort-matrix-cell 'on nil)
+                       (quoth--select-effort-matrix-cell 'on t))
+                 (list "thinking unset"
+                       (quoth--select-effort-matrix-cell 'unset nil)
+                       (quoth--select-effort-matrix-cell 'unset t))))
+          (all (cons headers rows))
+          (widths (cl-loop for c below (length headers)
+                           collect (1+ (apply #'max
+                                              (mapcar (lambda (row)
+                                                        (length (nth c row)))
+                                                      all)))))
+          (fmt (concat "%-" (number-to-string (nth 0 widths)) "s   %-"
+                       (number-to-string (nth 1 widths)) "s   %-"
+                       (number-to-string (nth 2 widths)) "s")))
+     (concat
+      "Reasoning outcome (hyper; tested on deepseek-v4-pro-0813):"
+      "\n"
+      (mapconcat (lambda (row) (apply #'format fmt row)) all "\n")))))
 
 (defun quoth--select-model-picker (&rest _)
   "Prompt for a model from the active provider's catalog."
@@ -181,9 +224,13 @@ only context window and per-token costs appear here."
 		 quoth-openai-default-model))))
 
 (defun quoth--select-thinking-toggle (&rest _)
-  "Toggle thinking on/off for the current buffer."
+  "Toggle thinking on/off for the current buffer.
+Cycles off -> on -> off; the unset (provider default) state is only
+reachable via `quoth--select-defaults-apply'."
   (interactive)
-  (quoth--select-apply-thinking (not quoth--session-thinking)))
+  (quoth--select-apply-thinking (if (eq quoth--session-thinking t)
+                                    :json-false
+                                  t)))
 
 (defun quoth--select-effort-picker (&rest _)
   "Prompt for a reasoning effort level from the current model's levels."
@@ -205,18 +252,18 @@ only context window and per-token costs appear here."
   (quoth--select-apply-defaults))
 
 (defun quoth--select-info-thinking (&rest _)
-  "Return the thinking state for the info line.
-When `quoth--session-thinking' is nil, no thinking flag is sent on
-the request, so the gateway applies its own default; show that as
-\='unset\=' rather than the misleading \='off\='."
+  "Return the thinking state as a suffix description.
+nil means the key is omitted (provider default); t sends
+`thinking: true'; :json-false sends `thinking: false'."
   (quoth--select-in-origin
-   (format "Thinking  %s"
+   (format "thinking: %s"
            (cond
-            (quoth--session-thinking "on")
+            ((eq quoth--session-thinking t) "on")
+            ((eq quoth--session-thinking :json-false) "off")
             (t "unset (provider default)")))))
 
 (defun quoth--select-info-effort (&rest _)
-  "Return the effort level for the info line.
+  "Return the effort level as a suffix description.
 When `quoth--session-reasoning-effort' is nil, no reasoning_effort
 is sent on the request, so the gateway applies its own default;
 show \='unset\=' in that case, with the catalog documented default
@@ -226,7 +273,7 @@ as a hint when available."
           (catalog-default (and entry
                                 (plist-get entry :default-reasoning-effort)))
           (levels (and entry (plist-get entry :reasoning-levels))))
-     (format "Effort    %s%s"
+     (format "effort: %s%s"
              (cond
               (quoth--session-reasoning-effort
                (format "%s (explicit)" quoth--session-reasoning-effort))
@@ -238,15 +285,13 @@ as a hint when available."
                          (mapconcat #'identity levels " "))
                "")))))
 
-
-
 (defun quoth--select-info-provider (&rest _)
-  "Return the active provider name for the info line."
+  "Return the active provider name as a suffix description."
   (quoth--select-in-origin
-   (format "Provider  %s" (or quoth-active-provider-name "hyper"))))
+   (format "provider: %s" (or quoth-active-provider-name "hyper"))))
 
 (defun quoth--select-info-model (&rest _)
-  "Return the current model with pricing detail for the info line."
+  "Return the current model with pricing detail as a suffix description."
   (quoth--select-in-origin
    (let* ((models  (and quoth-active-provider
                         (quoth-provider-p quoth-active-provider)
@@ -255,27 +300,9 @@ as a hint when available."
           (prices  (and models current
                         (quoth--select-model-detail models current))))
      (string-trim
-      (format "Model     %s%s"
+      (format "model: %s%s"
               (or current "-")
               (if prices (format "  (%s)" prices) ""))))))
-
-(transient-define-prefix quoth-select-model-menu ()
-                         "Model and attribute selector for Quoth."
-                         [:description quoth--select-info-provider
-		                       ("p" "provider" quoth--select-provider-switch :transient t)]
-                         [:description quoth--select-info-model
-		                       ("m" "model" quoth--select-model-picker :transient t)]
-                         [:description quoth--select-info-thinking
-		                       ("t" "toggle thinking" quoth--select-thinking-toggle
-		                        :transient t :if quoth--select-can-reason-p)]
-                         [:description quoth--select-info-effort
-		                       ("e" "effort" quoth--select-effort-picker
-		                        :transient t :if quoth--select-has-reasoning-levels-p)]
-                         [:description "Defaults"
-		                       ("d" "use provider defaults" quoth--select-defaults-apply
-		                        :transient t)]
-                         ["Actions"
-                          ("q" "quit" transient-quit-one)])
 
 (defun quoth--select-provider-switch (&rest _)
   "Switch the active provider (placeholder — only hyper is registered)."
@@ -285,6 +312,25 @@ as a hint when available."
     (when choice
       (setq quoth-active-provider-name choice)
       (message "Provider: %s" choice))))
+
+
+(transient-define-prefix quoth-select-model-menu ()
+                         "Model and attribute selector for Quoth."
+                         [("p" quoth--select-provider-switch
+                           :description quoth--select-info-provider :transient t)
+                          ("m" quoth--select-model-picker
+                           :description quoth--select-info-model :transient t)
+                          ("t" quoth--select-thinking-toggle
+                           :description quoth--select-info-thinking
+                           :transient t :if quoth--select-can-reason-p)
+                          ("e" quoth--select-effort-picker
+                           :description quoth--select-info-effort
+                           :transient t :if quoth--select-has-reasoning-levels-p)]
+                         [(" " :info* #'quoth--select-info-reasoning-matrix :format "%d"
+                           :if quoth--select-can-reason-p)]
+                         [("d" quoth--select-defaults-apply
+                           :description "use provider defaults" :transient t)
+                          ("q" transient-quit-one :description "quit")])
 
 (provide 'quoth-select)
 ;;; quoth-select.el ends here
