@@ -53,7 +53,7 @@
 ;;; Prefer `require'; fall back to loading the sibling from this file's
 ;;; own directory so both flycheck and package-installed loads work.
 (eval-and-compile
-  (dolist (dep '("quoth-openai" "quoth-process"))
+  (dolist (dep '("quoth-json" "quoth-provider" "quoth-openai" "quoth-process"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -293,9 +293,18 @@ exit code -1."
           (let* ((overwrite (not (eq (plist-get args :overwrite) :json-false)))
                  (dir (file-name-directory path)))
             (when (and (not overwrite) (file-exists-p path))
-              (error "file exists: %s" path))
+              (error "File exists: %s" path))
             ;; Create parent directories, ignoring failure when present.
             (make-directory dir t)
+            ;; `utf-8-unix' pins the write coding so the write stays
+            ;; byte-exact for text.  Content always arrives as a multibyte
+            ;; string (decoded from JSON) whose line endings were preserved
+            ;; by `quoth-file--read-content'; a `\r\n' on disk is a CR and
+            ;; an LF character in that string.  Writing under the `unix'
+            ;; EOL is the identity: `\n' -> LF and `\r' is left untouched,
+            ;; so a byte-exact round trip survives.  A bare `utf-8' or a
+            ;; platform-default EOL could translate `\n' to `\r\n' (or
+            ;; vice versa) and corrupt the file.
             (let ((coding-system-for-write 'utf-8-unix))
               (if (file-exists-p path)
                   ;; Overwrite: rename-file cannot replace on all
@@ -341,7 +350,7 @@ omission marker."
 (defun quoth-file--utf8-valid-p (bytes)
   "Return non-nil when unibyte string BYTES is valid UTF-8.
 Scans byte-by-byte without decoding to multibyte, so newline bytes
-(`\\n' and `\\r') are never subject to Emacs EOL conversion, which would
+\(`\\n' and `\\r') are never subject to Emacs EOL conversion, which would
 normalize `\\r\\n' to `\\n'.  Accepts the 1-4 byte UTF-8 sequences and
 rejects overlongs, surrogates, and values above U+10FFFF."
   (let ((i 0)
@@ -407,7 +416,7 @@ line endings: a `\\r\\n' on disk stays `\\r\\n' in the returned text."
          (i 0)
          (o 0))
     (unless (quoth-file--utf8-valid-p bytes)
-      (error "file is not valid UTF-8: %s" path))
+      (error "File is not valid UTF-8: %s" path))
     (while (< i n)
       (let ((b (aref bytes i)))
         (if (< b 128)
@@ -435,7 +444,7 @@ an error result with exit code -1."
       (condition-case err
           (progn
             (unless (file-readable-p path)
-              (error "cannot read %s" path))
+              (error "Cannot read %s" path))
             (let* ((text (quoth-file--read-content path))
                    (out (quoth-file--read-truncate text))
                    (formatted (concat
