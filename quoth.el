@@ -64,6 +64,14 @@ visible on top.  `:extend t' paints the background across the full
 window width on every line the reasoning covers."
   :group 'quoth)
 
+(defface quoth-interrupt-face
+  '((t :inherit shadow :extend t))
+  "Face for a user-interrupt system note (`> **Interrupted.**').
+Applied via an overlay (not a text property) so markdown-mode
+refontification cannot strip it.  Distinct from the `error' face used for
+server-failure panes so the two interruption kinds read differently."
+  :group 'quoth)
+
 ;;; Buffer-local state
 
 ;;; `quoth--continue', `quoth--session-uuid', `quoth--session-id', and
@@ -129,6 +137,15 @@ log.  Buffer-local.")
 Set when prompt is sent, used by sentinel to tag response text.")
 
 
+(defvar-local quoth--pending-interrupt nil
+  "Interruption kind (`user' or `error') for the in-flight turn, or nil.
+Set by `quoth-interrupt' and the failure path before the unified
+finalizer closes the partial; consumed (and cleared) by
+`quoth--finalize-response'-driven tagging so the partial is stamped
+with `quoth-interrupted' exactly once and the flag never leaks into a
+later turn.")
+
+
 (defvar quoth-active-provider)
 (defvar quoth-active-provider-name)
 (defvar quoth-providers)
@@ -175,41 +192,51 @@ as the runnable-pipeline/inflight/blocked count for UI consumers."
   (setq-local quoth--stream-state
               (list :status 'idle :error nil :count 1)))
 
-(defun quoth--record-error (message)
-  "Record an error MESSAGE on the stream and render the error pane.
-Marks the stream `error' and inserts a clickable error pane overlay at
-point-max carrying `quoth-error-action' (so `quoth-clear-buffer' sweeps
-it)."
-  (quoth--stream-transition 'error nil message)
-  (let ((pos (point-max)))
+(defun quoth--insert-system-note (text &rest args)
+  "Insert a system note with TEXT as real buffer text.
+TEXT is the full blockquote (a `>' prefix on each line keeps a multi-line
+note one markdown block).  The inserted text is tagged
+`quoth-region-type' = `system' at insert time, so it can never be swept
+into a `response' tag by `quoth--tag-response-region'.  A display-only
+overlay carries KIND (`user' or `error'), the `help-echo', and the
+structured `quoth-system-detail' plist `(:kind :message :hint)' so
+actions and future readers can inspect the note.  The overlay is tagged
+`quoth-overlay' (swept by `quoth-clear-buffer').  The text itself is
+always visible on save / preview (real buffer text, never display-only)."
+  (let ((kind (plist-get args :kind))
+        (hint (plist-get args :hint)))
     (save-excursion
-      (goto-char pos)
+      (goto-char (point-max))
       (newline)
       (let ((start (point)))
-        (insert (format "[quoth error: %s]" message))
+        (insert text)
+        (put-text-property start (point) 'quoth-region-type 'system)
         (let ((ov (make-overlay start (point) (current-buffer) t nil)))
-          (overlay-put ov 'face 'error)
+          (overlay-put ov 'face (if (eq kind 'error)
+                                    'error
+                                  'quoth-interrupt-face))
           (overlay-put ov 'quoth-overlay t)
-          (overlay-put ov 'quoth-error-action #'quoth--dismiss-error-pane)
-          (overlay-put ov 'keymap (let ((map (make-sparse-keymap)))
-                                    (define-key map (kbd "RET")
-                                                #'quoth--dismiss-error-pane)
-                                    map)))))))
+          (overlay-put ov 'quoth-system-detail
+                       (list :kind kind :message text :hint hint))
+          (overlay-put ov 'help-echo
+                       (format "%s%s"
+                               (if hint (format "hint: %s\n" hint) "")
+                               text)))))))
 
-(defun quoth--dismiss-error-pane ()
-  "Dismiss the error pane overlay at point (or the most recent one)."
-  (interactive)
-  (let ((ov (or (cl-find-if
-                 (lambda (o) (overlay-get o 'quoth-error-action))
-                 (overlays-at (point)))
-                (cl-find-if
-                 (lambda (o) (overlay-get o 'quoth-error-action))
-                 (overlays-in (point-min) (point-max))))))
-    (when (overlayp ov)
-      (delete-region (overlay-start ov) (1+ (overlay-end ov)))
-      (delete-overlay ov)
-      (quoth--stream-clear)
-      (message "Error dismissed"))))
+(defun quoth--record-error (message)
+  "Record an error MESSAGE on the stream and insert the system pane.
+Marks the stream `error', flags the in-flight turn as an `error'
+interruption via `quoth--pending-interrupt', and inserts a blockquote
+pane (`> **Error:** …') tagged `quoth-region-type' = `system', carrying
+the structured detail in `quoth-system-detail'.  The unified finalizer
+(which follows via the done-callback) stamps `quoth-interrupted' =
+`error' on the partial."
+  (quoth--stream-transition 'error nil message)
+  (setq-local quoth--pending-interrupt 'error)
+  (quoth--insert-system-note
+   (format "> **Error:** %s" message)
+   :kind 'error
+   :hint "See *quoth-debug* / *quoth-errors* for the full trace."))
 
 (defvar quoth--prompt-id nil
   "Unique ID for the current pending prompt.
@@ -713,8 +740,9 @@ the user scrolled back: stop following."
 (defun quoth-get-response-text (prompt-id)
   "Return the assistant answer text for PROMPT-ID, or nil.
 The text tagged `quoth-response-to' equal to PROMPT-ID, excluding the
-streamed reasoning (CoT) span, the reasoning-fold marker line, and any
-tool blocks (display decoration around tool results).  Reasoning
+streamed reasoning (CoT) span, the reasoning-fold marker line, any
+tool blocks (display decoration around tool results), and any `system'
+pane (transcript annotations) that may sit within the response span.  Reasoning
 streams before the answer, and tool blocks may interrupt it, so the
 answer is the concatenation of the non-reasoning, non-tool runs.
 Returns nil when no such region exists."
@@ -732,7 +760,7 @@ Returns nil when no such region exists."
                 (run-end (or (next-single-property-change p 'quoth-region-type
                                                           nil end)
                              end)))
-            (unless (memq type '(reasoning tool tool-output))
+            (unless (memq type '(reasoning tool tool-output system))
               (push (buffer-substring-no-properties p run-end) chunks))
             (setq p run-end)))
         (let ((text (string-join (nreverse chunks) "")))
@@ -893,7 +921,9 @@ accumulate assistant content; each `tool' span contributes an assistant
 `tool_calls' message (carrying any accumulated leading content) followed
 by its `role: \"tool\"' result.  Contiguous `tool' spans share one
 assistant message (parallel invocation in a round).  Reasoning and the nested
-`tool-output' spans are skipped.  START/END bound the walk, defaulting to
+`tool-output' spans are skipped, and any `system' pane (transcript
+annotation) falls out of the default skip branch (anything not
+`response' or `tool').  START/END bound the walk, defaulting to
 the whole response region for PROMPT-ID.  This is the single buffer->wire
 reconstruction used by both history replay and the live tool loop."
   (let* ((start (or start
@@ -1454,20 +1484,24 @@ it.  Markers are invalidated."
   (setq-local quoth--reasoning-end nil)
   (setq-local quoth--reasoning-overlay nil))
 
-(defun quoth--tag-response-region (response-start response-end prompt-id)
+(defun quoth--tag-response-region (response-start response-end prompt-id &optional kind)
   "Tag the response and reasoning regions from RESPONSE-START to RESPONSE-END.
 PROMPT-ID is applied to both regions.  Applies `quoth-prompt-id',
 `quoth-response-to' and `quoth-region-type' (`response', with the
 reasoning sub-span retagged `reasoning').  Shared by
-`quoth--finalize-response' and `quoth-interrupt'.  Tool regions within
-the response are tagged `tool' (and their nested raw-result span
-`tool-output') and carry the `quoth-tool-call' property for wire
-resume."
+`quoth--finalize-response', `quoth-interrupt', and the unified
+failure-finalization path.  Tool regions within the response are tagged
+`tool' (and their nested raw-result span `tool-output') and carry the
+`quoth-tool-call' property for wire resume.  When KIND is `user' or
+`error', the response span is stamped `quoth-interrupted' = KIND
+recording that the turn was cut off; nil means normal completion."
   (when (and response-start (> response-end response-start))
     ;; Tag the response span, but never overwrite existing `tool',
-    ;; `tool-output', or `reasoning' regions: the tool loop tags its
-    ;; blocks (and their nested raw-result spans) before this runs,
-    ;; and the reasoning overlay retags its CoT span separately.
+    ;; `tool-output', `reasoning', or `system' regions: the tool loop
+    ;; tags its blocks (and their nested raw-result spans) before this
+    ;; runs, the reasoning overlay retags its CoT span separately, and
+    ;; system notes (error panes / interrupt annotations) are tagged
+    ;; `system' at insert time so they must never become `response'.
     ;; Overwriting reasoning to `response' would make history replay
     ;; send the CoT as plain assistant content and, worse, cause a
     ;; bare `tool' message (tool_call_id unknown) to be emitted for
@@ -1481,7 +1515,7 @@ resume."
               (run-end (or (next-single-property-change pos 'quoth-region-type
                                                         nil response-end)
                            response-end)))
-          (if (memq type '(tool tool-output reasoning))
+          (if (memq type '(tool tool-output reasoning system))
               (setq pos run-end)
             (put-text-property pos run-end
                                'quoth-prompt-id prompt-id)
@@ -1489,6 +1523,9 @@ resume."
                                'quoth-response-to prompt-id)
             (put-text-property pos run-end
                                'quoth-region-type 'response)
+            (when kind
+              (put-text-property pos run-end
+                                 'quoth-interrupted kind))
             (setq pos run-end)))))
     (dolist (region (quoth--reasoning-regions))
       (let ((rs (car region))
@@ -1501,11 +1538,12 @@ resume."
           (put-text-property rs re
                              'quoth-region-type 'reasoning))))))
 
-(defun quoth--close-response (response-start prompt-id)
+(defun quoth--close-response (response-start prompt-id &optional kind)
   "Close the response started at RESPONSE-START with PROMPT-ID.
 Tags the response text (including any reasoning sub-span), auto-collapses
 the reasoning fold, resets reasoning state, and inserts a fresh prompt.
-Runs in the quoth buffer, which owns all response text."
+KIND stamps `quoth-interrupted' on the partial; nil means normal
+completion.  Runs in the quoth buffer, which owns all response text."
   (save-excursion
     (goto-char (point-max))
     (newline)
@@ -1514,7 +1552,8 @@ Runs in the quoth buffer, which owns all response text."
       ;; Tag the full response text with the prompt ID it answers and
       ;; region type.  Deltas were inserted with modification hooks
       ;; suppressed, so this is the only tagging the response gets.
-      (quoth--tag-response-region response-start response-end prompt-id)
+      (quoth--tag-response-region response-start response-end
+                                  prompt-id kind)
       ;; Auto-collapse every reasoning overlay in the response
       ;; (there may be multiple across tool-call rounds).
       ;; Use (point-min) instead of response-start because
@@ -1646,8 +1685,10 @@ provider's completion action invokes this."
     (quoth--stream-transition 'done 1)
     (let ((response-start (when (markerp quoth--response-start)
                             (marker-position quoth--response-start)))
-          (prompt-id quoth--prompt-id))
-      (quoth--close-response response-start prompt-id))))
+          (prompt-id quoth--prompt-id)
+          (kind quoth--pending-interrupt))
+      (setq-local quoth--pending-interrupt nil)
+      (quoth--close-response response-start prompt-id kind))))
 
 (defvar-local quoth--tool-loop-count 0
   "Number of tool-loop rounds executed for the current prompt.")
@@ -1666,8 +1707,10 @@ come back, finalize via `quoth--close-response'."
         (quoth--stream-transition 'done 1)
         (let ((response-start (when (markerp quoth--response-start)
                                 (marker-position quoth--response-start)))
-              (prompt-id quoth--prompt-id))
-          (quoth--close-response response-start prompt-id)))
+              (prompt-id quoth--prompt-id)
+              (kind quoth--pending-interrupt))
+          (setq-local quoth--pending-interrupt nil)
+          (quoth--close-response response-start prompt-id kind)))
     (let* ((tool-calls (quoth-provider--tool-calls
                         quoth-active-provider
                         (quoth-provider-transport-process quoth-active-provider)))
@@ -1686,7 +1729,8 @@ come back, finalize via `quoth--close-response'."
       ;; continuation from the buffer alone.
       (let ((response-start (when (markerp quoth--response-start)
                               (marker-position quoth--response-start))))
-        (quoth--tag-response-region response-start (point-max) prompt-id))
+        (quoth--tag-response-region response-start (point-max)
+                                    prompt-id quoth--pending-interrupt))
       (quoth--reasoning-reset)
       ;; Reconstruct the continuation: the current prompt's user message
       ;; followed by every assistant(tool_calls)/tool exchange so far,
@@ -2121,8 +2165,11 @@ for wire resume.  Returns the end position of the inserted block."
 (defun quoth-interrupt ()
   "Interrupt the active provider's in-flight request.
 Dispatches through `quoth-provider-interrupt' so the provider owns its
-transport process.  The partial response is tagged and a fresh
-input divider inserted, mirroring normal finalization."
+transport process.  Flags the turn as a `user' interruption via
+`quoth--pending-interrupt', inserts the `> **Interrupted.**' system note,
+then closes the partial through the same `quoth--close-response' path as
+normal completion and server failure (the unified finalizer).  The
+partial is stamped `quoth-interrupted' = `user'."
   (interactive)
   (let ((active (and quoth-active-provider
                      (quoth-provider-p quoth-active-provider)
@@ -2130,34 +2177,16 @@ input divider inserted, mirroring normal finalization."
     (if (not active)
         (message "No quoth process running")
       (quoth-provider-interrupt quoth-active-provider)
-      (save-excursion
-        (goto-char (point-max))
-        (newline)
-        ;; Tag the partial response (including any streamed reasoning)
-        ;; up to the interrupt point, and auto-collapse the reasoning.
-        (let ((response-start (when (markerp quoth--response-start)
-                                (marker-position quoth--response-start))))
-          (quoth--tag-response-region response-start (point) quoth--prompt-id)
-          (dolist (ov (overlays-in (or response-start (point-min)) (point)))
-            (when (and (overlay-get ov 'quoth-reasoning)
-                       (not (overlay-get ov 'quoth-fold-state)))
-              (quoth--reasoning-install-fold
-               (cons (overlay-start ov) (overlay-end ov)))))
-          (quoth--reasoning-reset))
-        ;; Generate a fresh pending ID before the new marker, exactly
-        ;; like `quoth--close-response'.
-        (setq-local quoth--prompt-id (quoth--generate-id))
-        (quoth--insert-input-separator))
-      (when quoth--follow-p
-        (let ((win (get-buffer-window (current-buffer) 'visible)))
-          (goto-char (point-max))
-          (when win
-            (set-window-point win (point-max)))
-          (setq-local quoth--last-follow-point (point-max))))
-      (setq-local quoth--response-start nil)
-      (setq-local quoth--tool-loop-count 0)
-      (quoth--stream-transition 'done 1)
-      (setq-local buffer-undo-list nil)
+      (setq-local quoth--pending-interrupt 'user)
+      ;; The user-interrupt system note records the cut-off turn.
+      (quoth--insert-system-note
+       "> **Interrupted.**"
+       :kind 'user
+       :hint "The turn was cut off by the user.")
+      (let ((response-start (when (markerp quoth--response-start)
+                              (marker-position quoth--response-start)))
+            (prompt-id quoth--prompt-id))
+        (quoth--close-response response-start prompt-id 'user))
       (message "Quoth process interrupted"))))
 
 (defun quoth-clear-buffer ()

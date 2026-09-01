@@ -546,5 +546,78 @@ The sentinel must not re-finalize after a deliberate interrupt."
     (quoth--openai-curl-sentinel proc "finished\n")
     (should-not finished)))
 
+
+;;; 8. Sentinel error classification (ERROR-DESIGN A)
+
+(ert-deftest quoth-test/openai-sentinel-stream-closed-before-done ()
+  "A 2xx stream that ends without [DONE] reports truncation, not the status.
+The HTTP status is not itself the error; a 200 that dropped mid-stream is
+a truncation.  Design A middle branch."
+  (let ((error nil)
+        (proc (make-pipe-process :name "quoth-test-trunc"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (unwind-protect
+        (progn
+          (process-put proc :quoth-status 200)
+          (process-put proc :quoth-finished nil)
+          (process-put proc :quoth-url "https://hyper.charm.land/chat/completions")
+          (process-put proc :quoth-on-error
+                       (lambda (msg) (setq error msg)))
+          (quoth--openai-curl-sentinel proc "finished\n")
+          (should (string-match-p "stream closed before \\[DONE\\]"
+                                  error))
+          (should (string-match-p "HTTP 200" error)))
+      (when (process-live-p proc) (delete-process proc)))))
+
+(ert-deftest quoth-test/openai-sentinel-no-head-reports-connection-closed ()
+  "A stream that ends before the response head is a connection failure."
+  (let ((error nil)
+        (proc (make-pipe-process :name "quoth-test-nohead"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (unwind-protect
+        (progn
+          (process-put proc :quoth-status nil)
+          (process-put proc :quoth-finished nil)
+          (process-put proc :quoth-url "https://hyper.charm.land/chat/completions")
+          (process-put proc :quoth-on-error
+                       (lambda (msg) (setq error msg)))
+          (quoth--openai-curl-sentinel proc "finished\n")
+          (should (string-match-p "connection closed before response head"
+                                  error)))
+      (when (process-live-p proc) (delete-process proc)))))
+
+(ert-deftest quoth-test/openai-sentinel-non-2xx-reports-status ()
+  "A genuine non-2xx status is reported with its code (unchanged)."
+  (let ((error nil)
+        (proc (make-pipe-process :name "quoth-test-404"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (unwind-protect
+        (progn
+          (process-put proc :quoth-status 404)
+          (process-put proc :quoth-finished nil)
+          (process-put proc :quoth-url "https://hyper.charm.land/chat/completions")
+          (process-put proc :quoth-on-error
+                       (lambda (msg) (setq error msg)))
+          (quoth--openai-curl-sentinel proc "finished\n")
+          (should (string-match-p "HTTP 404 from" error))
+          (should-not (string-match-p "\\[DONE\\]" error)))
+      (when (process-live-p proc) (delete-process proc)))))
+
+(ert-deftest quoth-test/openai-sse-error-object-renders-fields ()
+  "An SSE error payload whose 'error' is an object renders message/type.
+The on-error contract stays a string, never an alist."
+  (let* ((result (quoth-openai-sse-feed
+                  (list :pending "" :done nil :error nil
+                        :tool-calls nil :content-started nil :usage nil)
+                  "data: {\"error\":{\"message\":\"boom detail\",\"type\":\"server_error\"}}\n\n")))
+    (should (plist-get (cdr result) :done))
+    (let ((err (plist-get (cdr result) :error)))
+      (should (stringp err))
+      (should (string-match-p "boom detail" err))
+      (should (string-match-p "server_error" err)))))
+
 (provide 'quoth-test-openai)
 ;;; quoth-test-openai.el ends here

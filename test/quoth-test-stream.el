@@ -103,36 +103,184 @@ Returns the completion action the send loop injected."
               (should (= (plist-get state :applications) 1))))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/stream-record-error-renders-clickable-pane ()
-  "Recording an error marks the stream errored and renders a clickable pane."
+(ert-deftest quoth-test/stream-record-error-tags-system-pane ()
+  "Recording an error marks the stream errored and renders a system pane.
+The pane is a blockquote tagged `system' (never `response'), carrying a
+`help-echo' and a `quoth-system-detail' plist with `:kind' `error'."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
         (quoth--record-error "Boom")
         (let ((state (quoth--stream-progress)))
           (should (eq (plist-get state :status) 'error))
           (should (string= (plist-get state :error) "Boom")))
+        (save-excursion
+          (goto-char (point-min))
+          (should (re-search-forward "> \\*\\*Error:\\*\\*" nil t)))
         (let ((ov (cl-find-if
-                   (lambda (o) (overlay-get o 'quoth-error-action))
+                   (lambda (o) (overlay-get o 'quoth-overlay))
                    (overlays-in (point-min) (point-max)))))
           (should (overlayp ov))
-          (should (string-match-p
-                   "boom"
-                   (buffer-substring-no-properties
-                    (overlay-start ov) (overlay-end ov))))
-          (should (eq (overlay-get ov 'quoth-overlay) t))
-          (should (keymapp (overlay-get ov 'keymap)))))
+          (should (eq (overlay-get ov 'face) 'error))
+          (should (overlay-get ov 'help-echo))
+          (let ((detail (overlay-get ov 'quoth-system-detail)))
+            (should (consp detail))
+            (should (eq (plist-get detail :kind) 'error)))
+          (let ((type (get-text-property (overlay-start ov)
+                                         'quoth-region-type)))
+            (should (eq type 'system)))
+          (should-not
+           (text-property-any (overlay-start ov) (overlay-end ov)
+                              'quoth-region-type 'response)))
+        ;; The pane is inert: no dismiss keymap.
+        (should-not
+         (cl-some (lambda (o) (overlay-get o 'quoth-error-action))
+                  (overlays-in (point-min) (point-max)))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/clear-buffer-removes-error-pane ()
-  "Quoth-clear-buffer should remove the error pane overlay."
+  "Quoth-clear-buffer should remove the error pane overlay.
+Clear sweeps any `quoth-overlay'-tagged overlay, including the system
+pane; the text beneath is deleted by clear-buffer's full wipe."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
         (quoth--record-error "Boom")
-        (should (cl-some (lambda (o) (overlay-get o 'quoth-error-action))
+        (should (cl-some (lambda (o) (overlay-get o 'quoth-overlay))
                          (overlays-in (point-min) (point-max))))
         (quoth-clear-buffer)
-        (should-not (cl-some (lambda (o) (overlay-get o 'quoth-error-action))
+        (should-not (cl-some (lambda (o) (overlay-get o 'quoth-overlay))
                              (overlays-in (point-min) (point-max)))))
+    (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/interrupt-tags-system-note ()
+  "`quoth-interrupt' leaves a `system' note and stamps the partial.
+The note reads `> **Interrupted.**' tagged `system' (never `response'),
+with a `user'-kind detail; the partial is tagged `response' with
+`quoth-interrupted' = `user'."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert "partial answer")
+          (let ((old-id quoth--prompt-id))
+            (setq-local quoth--response-start
+                        (copy-marker (progn (goto-char (point-min))
+                                            (forward-char 5) (point))))
+            (setf (quoth-provider-transport-process quoth-active-provider)
+                  (make-pipe-process :name "quoth-test-int-note"
+                                     :noquery t :coding 'binary
+                                     :filter #'ignore :sentinel #'ignore))
+            (cl-letf (((symbol-function 'quoth-openai-abort) #'ignore))
+              (quoth-interrupt))
+            ;; The note is a `system' region reading `> **Interrupted.**'.
+            (let ((note-start (text-property-any
+                               (point-min) (point-max)
+                               'quoth-region-type 'system)))
+              (should note-start)
+              (let ((note-end (or (next-single-property-change
+                                   note-start 'quoth-region-type)
+                                  (point-max))))
+                (should (string-match-p
+                         "> \\*\\*Interrupted\\.\\*\\*"
+                         (buffer-substring-no-properties
+                          note-start note-end)))
+                ;; The note is never tagged `response'.
+                (should-not
+                 (text-property-any note-start note-end
+                                    'quoth-region-type 'response)))
+              ;; The note carries a user-kind detail.
+              (let ((ov (cl-find-if
+                         (lambda (o) (overlay-get o 'quoth-system-detail))
+                         (overlays-in (point-min) (point-max)))))
+                (should (overlayp ov))
+                (let ((detail (overlay-get ov 'quoth-system-detail)))
+                  (should (eq (plist-get detail :kind) 'user)))
+                (should-not (eq (overlay-get ov 'face) 'error))))
+            ;; The partial response carries the interruption marker.
+            (let ((resp-start (text-property-any
+                               (point-min) (point-max)
+                               'quoth-response-to old-id)))
+              (should resp-start)
+              (should (eq (get-text-property resp-start 'quoth-region-type)
+                          'response))
+              (should (eq (get-text-property resp-start 'quoth-interrupted)
+                          'user))))))
+    (quoth-test--cleanup)))
+(ert-deftest quoth-test/system-note-inserts-tagged-buffer-text ()
+  "`quoth--insert-system-note' inserts blockquote text tagged `system'."
+  (unwind-protect
+      (with-current-buffer (quoth-test--fresh-buffer)
+        (quoth--insert-system-note "> **Error:** boom" :kind 'error)
+        (let ((note-start (text-property-any
+                           (point-min) (point-max)
+                           'quoth-region-type 'system)))
+          (should note-start)
+          (let ((note-end (or (next-single-property-change
+                               note-start 'quoth-region-type)
+                              (point-max))))
+            (should (string-match-p
+                     "boom"
+                     (buffer-substring-no-properties note-start note-end)))
+            ;; Text is present (save-able), not display-only.
+            (should (string-search "boom"
+                                   (buffer-substring-no-properties
+                                    (point-min) (point-max)))))))
+    (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/system-note-visible-on-save ()
+  "The `system' pane is real buffer text included in buffer-substring."
+  (unwind-protect
+      (with-current-buffer (quoth-test--fresh-buffer)
+        (quoth--insert-system-note "> **Error:** boom" :kind 'error)
+        (let ((saved (buffer-substring-no-properties
+                      (point-min) (point-max))))
+          (should (string-match-p "> \\*\\*Error:\\*\\* boom" saved))))
+    (quoth-test--cleanup)))
+
+
+(ert-deftest quoth-test/error-finalization-stamps-interrupted-markers ()
+  "A server failure finalizes the turn immediately with the error marker.
+`quoth--record-error' sets `quoth--pending-interrupt' = `error'; the
+unified finalizer then tags the partial `response' with
+`quoth-interrupted' = `error', keeps the `system' pane, and inserts a
+fresh input separator — no separate continue step."
+  (unwind-protect
+      (with-current-buffer (quoth-test--fresh-buffer)
+        ;; Simulate an in-flight turn: user prompt then streamed partial.
+        (let* ((prompt-id quoth--prompt-id)
+               (user-start (point-max)))
+          (insert "hi")
+          (put-text-property user-start (point) 'quoth-region-type 'user)
+          (put-text-property user-start (point) 'quoth-prompt-id prompt-id)
+          (goto-char (point-max)) (newline)
+          (let ((resp-start (point)))
+            (insert "partial answer")
+            (setq-local quoth--response-start (copy-marker resp-start)))
+          ;; Failure surfaces: pane + pending-interrupt = error.
+          (quoth--record-error "stream closed before [DONE]")
+          (should (eq quoth--pending-interrupt 'error))
+          ;; The unified finalizer closes the partial.
+          (quoth--finalize-response)
+          (should (null quoth--pending-interrupt))
+          ;; The partial is tagged response with the error marker.
+          (let ((resp-start (text-property-any
+                             (point-min) (point-max)
+                             'quoth-region-type 'response)))
+            (should resp-start)
+            (should (eq (get-text-property resp-start 'quoth-interrupted)
+                        'error)))
+          ;; The system pane remains and the fresh separator follows it.
+          (let ((pane-start (text-property-any
+                             (point-min) (point-max)
+                             'quoth-region-type 'system)))
+            (should pane-start)
+            (should (string-match-p "stream closed before"
+                                    (buffer-substring-no-properties
+                                     pane-start (point-max))))
+            (should (text-property-any (or (next-single-property-change
+                                            pane-start 'quoth-region-type)
+                                           (point-max))
+                                       (point-max)
+                                       'quoth-region-type 'separator)))))
     (quoth-test--cleanup)))
 
 ;;; Test harness
@@ -242,9 +390,8 @@ Streamed deltas append at point-max (not via the mark)."
          (quoth--append-delta "chunk" 'content)
          (goto-char (point-max))
          (should (search-backward "chunk" nil t))
-         ;; Appends at point-max; the process mark stays at
-         ;; the pre-delta send position (it is no longer the append
-         ;; cursor).
+         ;; Appends at point-max; the process mark stays at the
+         ;; pre-delta send position, not at the append cursor.
          (should (< (marker-position (process-mark fake)) (point-max)))))
     (quoth-test--cleanup)))
 

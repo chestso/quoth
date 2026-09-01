@@ -32,7 +32,9 @@ them, and new code must too.
    payloads) is stored as text properties so it survives
    font-lock refontification. Overlays are reserved for transient,
    display-only features — the reasoning highlight + fold and the
-   clickable error pane.
+   `system`-note overlays (transcript annotations; the underlying text
+   is buffer text tagged `quoth-region-type` = `system`, never
+   display-only).
 
 4. **Protocols live in their own files.** The provider protocol
    (`quoth-provider.el`), the OpenAI chat-completions + tool protocol
@@ -139,15 +141,17 @@ that sits between the provider (wire work) and the chat buffer (source
 of truth). It is the **single place that owns the buffer** and drives
 the lifecycle of one prompt → response cycle.
 
-| Function                                            | Role                                                                                         |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `quoth--send-prompt`                                | Start a request, inject the callbacks, transition to `active`                                |
-| `quoth--append-delta`                               | Consume streamed `(delta kind)` chunks and insert them at point-max (the only buffer writer) |
-| `quoth--finalize-response`                          | On completion: accumulate usage, then drive the tool loop or close the response              |
-| `quoth--tool-loop`                                  | Execute tool calls, insert tool blocks, rebuild the continuation from the buffer, re-send    |
-| `quoth--close-response`                             | Tag the response region, insert a fresh `---` divider                                        |
-| `quoth--record-error`                               | Render the clickable error pane                                                              |
-| `quoth--stream-transition` / `-progress` / `-clear` | Own the `idle`/`active`/`done`/`error` state machine (buffer-local in `quoth.el`)            |
+| Function                                            | Role                                                                                            |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `quoth--send-prompt`                                | Start a request, inject the callbacks, transition to `active`                                   |
+| `quoth--append-delta`                               | Consume streamed `(delta kind)` chunks and insert them at point-max (the only buffer writer)    |
+| `quoth--finalize-response`                          | On completion: accumulate usage, then drive the tool loop or close the response                 |
+| `quoth--tool-loop`                                  | Execute tool calls, insert tool blocks, rebuild the continuation from the buffer, re-send       |
+| `quoth--close-response`                             | Tag the response region, insert a fresh `---` divider                                           |
+| `quoth--record-error`                               | On failure: set `quoth--pending-interrupt` = `error` and insert the `> **Error:**` system pane  |
+| `quoth--insert-system-note`                         | Shared `system`-region inserter (error pane / `> **Interrupted.**` note), tagged at insert time |
+| `quoth--tag-response-region`                        | Tag response (and reasoning) spans; stamp `quoth-interrupted`; skip `tool`/`reasoning`/`system` |
+| `quoth--stream-transition` / `-progress` / `-clear` | Own the `idle`/`active`/`done`/`error` state machine (buffer-local in `quoth.el`)               |
 
 ### Why the boundary exists
 
@@ -230,8 +234,14 @@ x-crush-id) and mapping the provider protocol onto the client's
 3. A final `[DONE]` event, or the process exiting, runs the injected
    completion (`quoth--finalize-response`), which tags the response and
    inserts a fresh input divider (`---`, framed by blank lines). Stream
-   errors
-   surface through `:on-error` into a clickable error pane.
+   errors and user interrupts both finalize the interrupted turn
+   immediately through that same unified path: `:on-error` inserts and
+   tags a `system` pane (`> **Error:** …` for a failure, `>
+**Interrupted.**` for `quoth-interrupt`) and sets
+   `quoth--pending-interrupt`; `quoth--finalize-response` then stamps
+   `quoth-interrupted` on the partial and closes it. The `system` pane
+   is real buffer text (visible on save/preview), tagged at insert time
+   so it is never swept into a `response` region or a wire message.
 
 ### Session continuity
 
@@ -364,24 +374,38 @@ properties):
   overlay carrying `invisible` + a display-only `before-string` marker.
   No buffer text is inserted or deleted during toggle, keeping the
   buffer-as-database intact.
-- **Error pane.** Stream errors render as a clickable overlay at
-  point-max carrying `quoth-error-action`; `RET` dismisses it. Both
-  overlay kinds are tagged `quoth-overlay` so `quoth-clear-buffer`
-  sweeps them.
+- **System notes.** Stream errors and user interrupts insert a
+  `system`-tagged blockquote pane (`> **Error:** …` / `> **Interrupted.**`)
+  at point-max, with a display-only overlay carrying the `face`, a
+  `help-echo`, and a `quoth-system-detail` plist (`:kind` `user` or
+  `error`). The pane is inert (no dismiss keymap): the turn finalizes on
+  its own, and the text is buffer text saved with the buffer. Overlays
+  are tagged `quoth-overlay` so `quoth-clear-buffer` sweeps them. The
+  `system` text is skipped by history reconstruction and
+  `quoth--tag-response-region`, so it never becomes a response or a
+  wire message.
 
 ### Metadata
 
 All metadata is stored as **text properties** on buffer content;
 highlighting is left to markdown-mode's native font-lock.
 
-| Text Region                           | Property                                                                                               | Value                                                   |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| Input separator (`---` divider)       | `quoth-prompt-id` + `quoth-region-type 'separator`                                                     | Markdown divider above the input area                   |
-| User input (typed + inserted context) | `quoth-prompt-id` + `quoth-region-type 'user`                                                          | Editable input; inserted context appended as user input |
-| Tool blocks                           | `quoth-region-type 'tool` + `quoth-prompt-id` + `quoth-response-to` + `quoth-tool-call` (id/name/args) | Displayed tool call                                     |
-| Tool raw result                       | `quoth-region-type 'tool-output` (nested) + `quoth-prompt-id` + `quoth-response-to`                    | Raw result sent in history                              |
-| Response text                         | `quoth-response-to` + `quoth-region-type 'response`                                                    | The prompt ID being answered                            |
-| Reasoning text                        | `quoth-region-type 'reasoning` + `quoth-prompt-id` + `quoth-response-to`                               | Chain-of-thought sub-span                               |
+| Text Region                           | Property                                                                                               | Value                                                                                       |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Input separator (`---` divider)       | `quoth-prompt-id` + `quoth-region-type 'separator`                                                     | Markdown divider above the input area                                                       |
+| User input (typed + inserted context) | `quoth-prompt-id` + `quoth-region-type 'user`                                                          | Editable input; inserted context appended as user input                                     |
+| Tool blocks                           | `quoth-region-type 'tool` + `quoth-prompt-id` + `quoth-response-to` + `quoth-tool-call` (id/name/args) | Displayed tool call                                                                         |
+| Tool raw result                       | `quoth-region-type 'tool-output` (nested) + `quoth-prompt-id` + `quoth-response-to`                    | Raw result sent in history                                                                  |
+| Response text                         | `quoth-response-to` + `quoth-region-type 'response` (+ `quoth-interrupted` when the turn was cut off)  | The prompt ID being answered; `quoth-interrupted` is `user`/`error` for an interrupted turn |
+| Reasoning text                        | `quoth-region-type 'reasoning` + `quoth-prompt-id` + `quoth-response-to`                               | Chain-of-thought sub-span                                                                   |
+| System notes (error / interrupt)      | `quoth-region-type 'system`                                                                            | A transcript annotation: error pane or `> **Interrupted.**` note                            |
+
+The `system` region is a distinct `quoth-region-type`, never reconstructed
+into a wire message: `quoth-get-response-text`, `quoth--tool-rounds`, and
+`quoth--tag-response-region` all skip it (like `reasoning` and tool
+spans). The interruption kind is carried on the **response** span via
+`quoth-interrupted` (not on the `system` region) so a future reader-only
+change can tell the model that a prior turn was cut off.
 
 ### History Retrieval Functions
 

@@ -130,10 +130,10 @@ a single `content' delta.  Runs in the quoth buffer."
 
 ;;; 3. Input separator line management
 
-;;; A markdown horizontal divider (`---`) replaces the old
-;;; `quoth> ' prompt marker.  `quoth--prompt-start-marker' sits at the
-;;; divider's start; `quoth--input-start-marker' sits right after the
-;;; divider's trailing blank line, where the editable input region begins.
+;; The input separator is a markdown horizontal divider (`---`).
+;;; `quoth--prompt-start-marker' sits at the divider's start;
+;;; `quoth--input-start-marker' sits right after the divider's trailing
+;;; blank line, where the editable input region begins.
 ;;; The divider is tagged `quoth-region-type' `separator' so the header
 ;;; label is honest: untagged input space reports nil, never `user'.
 
@@ -734,14 +734,7 @@ Both the current model and the region type at point appear."
                 (should (member second-id all-prompts)))))))
     (quoth-test--cleanup)))
 
-;;; The previous body used `quoth--process-sentinel' to complete the
-;;; response; the completion-action indirection replaces it.
-
-;;; 30. Region type tagging: prompt (removed - comint handles via fields)
-
-;;; 31. Region type tagging: input (removed - comint handles via fields)
-
-;;; 32. Region type tagging: response
+;;; 30. Region type tagging: response
 
 (ert-deftest quoth-test/response-region-tagged-as-response ()
   "Response text should be tagged with quoth-region-type 'response."
@@ -766,13 +759,7 @@ Both the current model and the region type at point appear."
             (should (eq region-type 'response)))))
     (quoth-test--cleanup)))
 
-;;; 34. Region type tagging: separator (removed - separators no longer inserted)
-
-;;; 35. Region type tagging: separator (removed - separators no longer inserted)
-
-;;; 36. Region type tagging: separator (removed - separators no longer inserted)
-
-;;; 40. Integration: quoth-clear-buffer removes overlays
+;;; 31. Integration: quoth-clear-buffer removes overlays
 
 (ert-deftest quoth-test/clear-buffer-removes-overlays ()
   "Quoth-clear-buffer should remove old quoth-overlay tagged overlays."
@@ -892,10 +879,9 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
 ;;; 62. Debug logging - streamed output logged via
 
 (ert-deftest quoth-test/debug-logs-output ()
-  "Streamed content via inserts into the buffer and finalizes.
+  "Streamed content inserts into the buffer and finalizes.
 The debug *quoth-debug* logging is the transport's job (quoth-provider);
-the send loop owns insertion.  This replaces the deleted
-`quoth--output-filter' test that asserted filter-level logging."
+the send loop owns insertion."
   (unwind-protect
       (let ((quoth-debug-mode t)
             (buf (quoth-test--fresh-buffer)))
@@ -913,9 +899,8 @@ the send loop owns insertion.  This replaces the deleted
 ;;; 63. Debug logging - finalize path logs via continuation
 
 (ert-deftest quoth-test/debug-logs-finalize ()
-  "The the finalize path closes the response and inserts a prompt.
-The run provider's process sentinel (deleted) used to log the sentinel
-event; the send loop continuation now owns completion."
+  "The finalize path closes the response and inserts a prompt.
+The send loop continuation owns completion and logs it."
   (unwind-protect
       (let ((quoth-debug-mode t)
             (buf (quoth-test--fresh-buffer)))
@@ -928,14 +913,6 @@ event; the send loop continuation now owns completion."
           (goto-char (point-min))
           (should (search-forward "---" nil t))))
     (quoth-test--cleanup)))
-
-;;; 64. Input separator insertion rename
-
-(ert-deftest quoth-test/insert-prompt-renamed ()
-  "Test that the input separator function was renamed.
-The `quoth--insert-input-separator' function replaced
-`quoth--insert-prompt'."
-  (should (fboundp 'quoth--insert-input-separator)))
 
 (defun quoth-test--input-area-text ()
   "Return the input area text to the line end.
@@ -2284,13 +2261,11 @@ text."
           (should (consp buffer-undo-list))))
     (quoth-test--cleanup)))
 
-;;; Regression: stale-tagged user text must be retagged at send time
+;;; Stale-tagged user text is retagged at send time
 
 (ert-deftest quoth-test/send-input-retags-stale-user-text ()
-  "quoth-send-input must tag the input region as 'user even when text
-inherited stale tags (e.g. yank, undo).  The user's multi-line
-description was silently lost from history because it kept a stale
-'separator quoth-region-type inherited from the divider."
+  "quoth-send-input tags the input region as 'user even when the text
+inherited stale tags (e.g. yank, undo) from the divider."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer))
             (second-id nil))
@@ -2551,8 +2526,7 @@ INPUT tokens only."
 
 (ert-deftest quoth-test/header-line-cache-percent-divides-input-only ()
   "Cache percentage is cached/input, not cached/(input+output).
-With a large output the old lumped denominator would report ~8%;
-the correct input-based percentage is 50%."
+The input-based percentage is 50%."
   (let ((quoth-model "my-model"))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -2593,5 +2567,49 @@ the correct input-based percentage is 50%."
   (should (string= (quoth--group-number-compact 1000) "1.0k"))
   (should (string= (quoth--group-number-compact 8991) "9.0k"))
   (should (string= (quoth--group-number-compact 1000000) "1.0M")))
+(ert-deftest quoth-test/history-turns-excludes-system-pane ()
+  "A `system'-tagged pane inside a response span is never re-sent.
+Even if a `system' region carries `quoth-response-to', history
+reconstruction skips it like reasoning/tool text; the interrupted
+partial is still included as plain assistant content."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          ;; Build a completed prior prompt whose response span contains
+          ;; a contiguous system-tagged pane in the middle.
+          (let* ((pid quoth--prompt-id)
+                 (resp-start nil)
+                 (pane-start nil)
+                 (pane-end nil)
+                 (resp-end nil))
+            (let ((us (point-max)))
+              (insert "hi")
+              (put-text-property us (point) 'quoth-region-type 'user)
+              (put-text-property us (point) 'quoth-prompt-id pid))
+            (goto-char (point-max)) (newline)
+            (setq resp-start (point))
+            (insert "partial answer ")
+            (setq pane-start (point))
+            (insert "> **Error:** boom")
+            (setq pane-end (point))
+            (insert " tail")
+            (setq resp-end (point-max))
+            (put-text-property resp-start pane-start
+                               'quoth-region-type 'response)
+            (put-text-property pane-start pane-end
+                               'quoth-region-type 'system)
+            (put-text-property pane-end resp-end
+                               'quoth-region-type 'response)
+            (put-text-property resp-start resp-end 'quoth-response-to pid)
+            (put-text-property resp-start resp-end 'quoth-prompt-id pid)
+            (put-text-property resp-start resp-end 'quoth-interrupted 'error)
+            ;; Rotate to a new pending prompt.
+            (setq-local quoth--prompt-id (quoth--generate-id)))
+          (let* ((msgs (quoth--history-turns quoth--prompt-id))
+                 (all-content (mapconcat 'quoth-test--msg-content msgs "")))
+            (should (string-match-p "partial answer" all-content))
+            (should-not (string-match-p "boom" all-content)))))
+    (quoth-test--cleanup)))
+
 (provide 'quoth-test-buffer)
 ;;; quoth-test-buffer.el ends here

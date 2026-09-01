@@ -584,7 +584,23 @@ of each COMPLETE `data:' event (before it is dispatched), including
                     (if (and obj (quoth--openai-alist-get "error" obj))
                         (progn
                           (setq done t)
-                          (setq error (quoth--openai-alist-get "error" obj)))
+                          (let ((err (quoth--openai-alist-get "error" obj)))
+                            ;; An object error carries message/type; render
+                            ;; them to a string so the on-error contract
+                            ;; stays a string (never an alist).
+                            (setq error
+                                  (if (and (consp err)
+                                           (quoth--openai-alist-get
+                                            "message" err))
+                                      (let ((msg (quoth--openai-alist-get
+                                                  "message" err))
+                                            (type (quoth--openai-alist-get
+                                                   "type" err)))
+                                        (format "%s%s"
+                                                (or msg "")
+                                                (and type
+                                                     (format " (%s)" type))))
+                                    err))))
                       (dolist (delta (quoth--openai-sse-extract-deltas obj))
                         (if (and (eq (nth 0 delta) 'content)
                                  (quoth--openai-blank-content-p (nth 1 delta)))
@@ -822,9 +838,15 @@ HTTP error), finish with an error; otherwise ensure cleanup."
     (unless (process-get proc :quoth-finished)
       (quoth--openai-http-finish
        proc
-       (if status
-           (format "HTTP %s from %s" status (process-get proc :quoth-url))
-         "connection closed without [DONE]")))))
+       (cond
+        ((null status)
+         (format "connection closed before response head from %s"
+                 (process-get proc :quoth-url)))
+        ((and (<= 200 status) (< status 300))
+         (format "stream closed before [DONE] (HTTP %s from %s)"
+                 status (process-get proc :quoth-url)))
+        (t
+         (format "HTTP %s from %s" status (process-get proc :quoth-url))))))))
 
 (defun quoth--openai-json-pretty (json-string)
   "Return JSON-STRING pretty-printed with 2-space indentation.

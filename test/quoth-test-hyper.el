@@ -323,9 +323,8 @@ It is not pretty-printed, keeping the debug log bounded during streams."
 
 (ert-deftest quoth-test/hyper-transport-filter-persists-split-events ()
   "A JSON SSE event split across filter chunks must fully stream.
-Regression test: the filter previously persisted the non-existent
-`:sse' key of the parser state, dropping the `:pending' fragment between
-chunks and silently discarding any event split across them."
+The parser state persists `:pending' across filter calls so no fragment
+is dropped between chunks."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -887,32 +886,10 @@ test sees a clean capture (the server appends per-request).  Returns
                                   "mock think harder\n")))))))
       (quoth-test--cleanup))))
 
-(ert-deftest quoth-test/hyper-wire-error-http-surfaces ()
-  "A non-200 status should surface an error instead of streaming."
-  (let ((default-directory quoth-test--root))
-    (unwind-protect
-        (with-current-buffer (quoth-test--fresh-buffer)
-          (quoth-test--with-hyper-server
-           'error-http
-           (lambda (base)
-             (setq-local quoth--response-start (point-marker))
-             (let ((proc (quoth-openai-request
-                          base "tok" (quoth-openai-compose-request "hi" "m")
-                          (quoth-test--hyper-on-delta (current-buffer))
-                          (quoth-test--hyper-completion (current-buffer))
-                          (quoth-test--hyper-on-error (current-buffer)))))
-               (let ((deadline (+ (float-time) 6)))
-                 (while (and (process-live-p proc)
-                             (null (process-get proc :quoth-finished))
-                             (< (float-time) deadline))
-                   (accept-process-output nil 0.1)
-                   (sit-for 0.02))))
-             (goto-char (point-min))
-             (should (search-forward "[quoth error:" nil t)))))
-      (quoth-test--cleanup))))
-
-(ert-deftest quoth-test/hyper-wire-404-reports-status ()
-  "An HTML 404 should be reported with its status code."
+(ert-deftest quoth-test/hyper-wire-non-2xx-surfaces-error-pane ()
+  "A non-2xx status surfaces an error pane tagged `system'.
+The pane is a blockquote (`> **Error:** HTTP <code>') and the parsed
+status is recorded on the process."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -934,8 +911,16 @@ test sees a clean capture (the server appends per-request).  Returns
                ;; Check the parsed status before the process is deleted.
                (let ((status (process-get proc :quoth-status)))
                  (should (= status 404))))
-             (goto-char (point-min))
-             (should (search-forward "[quoth error: HTTP 404" nil t)))))
+             (save-excursion
+               (goto-char (point-min))
+               (should (re-search-forward "> \\*\\*Error:\\*\\* HTTP 404" nil t)))
+             (let ((pane-start (text-property-any
+                                (point-min) (point-max)
+                                'quoth-region-type 'system)))
+               (should pane-start)
+               (should-not
+                (text-property-any pane-start (point-max)
+                                   'quoth-region-type 'response))))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/hyper-wire-logs-request-without-token ()
@@ -1422,10 +1407,9 @@ The second request gets a content answer and finalizes."
                             (dl2 (+ (float-time) 6)))
                         (while (and (< (float-time) dl2) (not found))
                           (accept-process-output nil 0.1) (sit-for 0.02)
-                          ;; The call id no longer renders in the header
-                          ;; (it's display noise); it lives in the
-                          ;; `quoth-tool-call' text property for wire
-                          ;; resume.
+                          ;; The call id lives in the `quoth-tool-call'
+                          ;; text property (for wire resume), not the
+                          ;; header.
                           (setq found (save-excursion
                                         (goto-char (point-min))
                                         (cl-loop with pos = (point-min)
@@ -2115,5 +2099,7 @@ shows the stats."
               (should (string-match-p "hc0.043" h))
               (should (string-match-p "93%%" h)))))
       (quoth-test--cleanup))))
+(provide 'quoth-test-hyper)
+;;; quoth-test-hyper.el ends here
 (provide 'quoth-test-hyper)
 ;;; quoth-test-hyper.el ends here
