@@ -379,7 +379,6 @@ handle: the stage is killed, the curl aborted, and the slot cleared."
             (should-not (quoth-provider-request quoth-active-provider))))
         (quoth-test--cleanup))))
 
-
 ;;; 9. Session UUID state: init, rotation, distinctness
 
 (ert-deftest quoth-test/session-uuid-init ()
@@ -814,7 +813,6 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
           (should (< (marker-position response-start)
                      (point)))))
     (quoth-test--cleanup)))
-
 
 ;;; 56. Region-type/field reconciliation
 
@@ -2315,7 +2313,6 @@ inherited stale tags (e.g. yank, undo) from the divider."
           (should (string-match "line one"
                                 (quoth--user-turn-text second-id)))))
     (quoth-test--cleanup)))
-
 
 ;;; 20b. Usage accumulation
 

@@ -116,7 +116,6 @@ buffer-local UI (e.g. the header line).  The core wires
 of calling the core directly, avoiding a load-time dependency on
 `quoth.el'.")
 
-
 (cl-defstruct (quoth-provider
                (:constructor nil)
                (:constructor make-quoth-provider)
@@ -317,7 +316,6 @@ Sets the provider's model slot from (:id MODEL-ENTRY); returns nil.
 Providers override to pin provider-specific state."
   (ignore provider model-entry)
   nil)
-
 
 (cl-defgeneric quoth-provider-model (provider)
   "Return PROVIDER's active model id, or nil.

@@ -590,7 +590,6 @@ line endings: a `\\r\\n' on disk stays `\\r\\n' in the returned text."
     ;; of characters instead of writing into a fixed-length buffer.
     (apply #'string (nreverse chars))))
 
-
 (defun quoth-file--read-line-numbered-p (args)
   "Return the resolved `line_numbers' flag from ARGS.
 Off when the arg is absent or JSON false (`:json-false'); on

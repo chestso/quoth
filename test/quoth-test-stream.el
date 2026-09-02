@@ -247,7 +247,6 @@ with a `user'-kind detail; the partial is tagged `response' with
           (should (string-match-p "> \\*\\*Error:\\*\\* boom" saved))))
     (quoth-test--cleanup)))
 
-
 (ert-deftest quoth-test/error-finalization-stamps-interrupted-markers ()
   "A server failure finalizes the turn immediately with the error marker.
 `quoth--record-error' sets `quoth--pending-interrupt' = `error'; the

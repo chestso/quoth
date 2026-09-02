@@ -112,7 +112,6 @@ otherwise `default-directory'."
   :type 'boolean
   :group 'quoth)
 
-
 (defvar-local quoth--session nil
   "Session ID to pass to the provider.
 When non-nil, continues a specific session by ID.
@@ -136,7 +135,6 @@ log.  Buffer-local.")
   "Marker for where response text starts.
 Set when prompt is sent, used by sentinel to tag response text.")
 
-
 (defvar-local quoth--pending-interrupt nil
   "Interruption kind (`user' or `error') for the in-flight turn, or nil.
 Set by `quoth-interrupt' and the failure path before the unified
@@ -144,7 +142,6 @@ finalizer closes the partial; consumed (and cleared) by
 `quoth--finalize-response'-driven tagging so the partial is stamped
 with `quoth-interrupted' exactly once and the flag never leaks into a
 later turn.")
-
 
 (defvar quoth-active-provider)
 (defvar quoth-active-provider-name)
@@ -1113,7 +1110,6 @@ buffer-local and never leaves via the network; only the hash is sent."
                       (substring (md5 (format "%s%s" (random) (current-time))) 0 8)
                       (substring (md5 (format "%s%s" (random) (current-time))) 0 8)))
   (setq-local quoth--session-id (quoth-xxh3-hash64 quoth--session-uuid)))
-
 
 (defun quoth--make-default-hyper-provider (&optional buf dir)
   "Return a hyper provider configured from the current settings.
@@ -2720,7 +2716,6 @@ interaction buffer.
   :lighter " Quoth"
   :group 'quoth
   :keymap quoth-minor-mode-map)
-
 
 (defvar savehist-additional-variables)
 ;; Persistence: register provider and model with savehist so they

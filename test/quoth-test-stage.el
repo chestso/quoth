@@ -102,7 +102,6 @@ spawns) with context discovery disabled and the prompt cache empty."
      (setq-local quoth-openai--cache-key nil)
      ,@body))
 
-
 ;;; 1. Cache hit: delivery is inline, no stage spawns
 
 (ert-deftest quoth-test/stage-cache-hit-delivers-inline ()
@@ -124,7 +123,6 @@ no git process."
       (should (= calls 1))
       (should-not stage)
       (should-not quoth-test--stage--git-commands)))))
-
 
 ;;; 2. Cache miss: the git stage delivers the assembled prompt
 
@@ -206,7 +204,6 @@ without waiting for git."
           (sleep-for 0.05)
           (should delivered)
           (should-not (process-live-p stage))))))))
-
 
 ;;; 3. The request handle: shape, activity, interrupt
 
@@ -297,7 +294,6 @@ curl transport, clearing the handle and the completion action."
                (should-not (quoth-provider-completion-action provider)))
            (quoth-provider-cleanup provider)))))))
 
-
 ;;; 4. Phase: preparing while staged, streaming once curl fires
 
 (ert-deftest quoth-test/stage-send-preparing-then-streaming ()
@@ -371,7 +367,6 @@ that went idle meanwhile (interrupted mid-stage) stays idle."
                (should (eq (plist-get quoth--phase :phase) 'idle))))))
       (quoth-test--cleanup))))
 
-
 ;;; 5. Tool-calls / usage read through the handle
 
 (ert-deftest quoth-test/stage-tool-calls-usage-read-handle ()
@@ -409,7 +404,6 @@ handle belongs reads as no request."
           (should-not (quoth-provider--usage provider curl)))
       (delete-process curl))))
 
-
 ;;; 6. Buffer init prefetches the staged prompt
 
 (ert-deftest quoth-test/stage-init-prefetches-system-prompt ()
@@ -424,7 +418,6 @@ then hits the prompt cache."
         (should (= calls 1))
         (setq calls 0)
         (quoth-test--cleanup)))))
-
 
 ;;; 7. The banned-primitive lint
 

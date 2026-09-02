@@ -650,7 +650,6 @@ The sentinel must not re-finalize after a deliberate interrupt."
     (quoth--openai-curl-sentinel proc "finished\n")
     (should-not finished)))
 
-
 ;;; 8. Sentinel error classification (ERROR-DESIGN A)
 
 (ert-deftest quoth-test/openai-sentinel-stream-closed-before-done ()

@@ -322,7 +322,6 @@ files are found."
    "User context"
    "The following is personal content added by the user that they'd like you to follow no matter what project you're working in."))
 
-
 ;;; System prompt construction: full assembly and cache.
 
 (defvar-local quoth-openai--cached-system-prompt nil

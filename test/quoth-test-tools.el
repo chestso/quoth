@@ -773,7 +773,6 @@ A block with only a session id renders the session, empty input
             (should-not (string-match-p "```text\nProcess" content))))
       (quoth-test--cleanup))))
 
-
 (ert-deftest quoth-test/tool-block-multiline-cmd-is-fenced ()
   "A multiline cmd renders as a fenced block, not a broken inline span.
 CommonMark inline code is single-line; a multiline cmd must be fenced
@@ -968,7 +967,6 @@ Absence renders absence: no `numbers', `offset', or `limit' clause."
             (should-not (string-match-p "limit" content))))
       (quoth-test--cleanup))))
 
-
 ;;; 8. Fence escaping: protect against nested fences in tool output
 
 (ert-deftest quoth-test/fence-str-empty-output ()
@@ -1010,7 +1008,6 @@ Absence renders absence: no `numbers', `offset', or `limit' clause."
             (should (string-match-p "````text\n" content))
             (should (string-match-p "````\n$" content))))
       (quoth-test--cleanup))))
-
 
 ;;; 9. read_file / write_file execution
 

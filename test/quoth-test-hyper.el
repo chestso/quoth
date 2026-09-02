@@ -608,7 +608,6 @@ Content-Type: text/event-stream
   (dolist (chunk chunks)
     (quoth--openai-curl-filter proc chunk)))
 
-
 ;;; `quoth-hyper--resolve-token' supports string, function, and nil
 ;;; tokens; the default `quoth-hyper-token' function reads from
 ;;; `auth-source' (like gptel).
@@ -2038,7 +2037,6 @@ is killed, its curl aborted, and the handle replaced."
         (when (process-live-p old-stage) (delete-process old-stage))
         (when (process-live-p old-curl) (delete-process old-curl))
         (quoth-provider-cleanup provider)))))
-
 
 ;;; 92d. SSE parser: usage capture
 

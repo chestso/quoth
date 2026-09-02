@@ -353,7 +353,6 @@ as a hint when available."
       (setq quoth-active-provider-name choice)
       (message "Provider: %s" choice))))
 
-
 (defun quoth--select-refresh-catalog (&rest _)
   "Force-refresh the model catalog cache and redraw the menu.
 The refreshed descriptions (model prices, reasoning levels) recompute
