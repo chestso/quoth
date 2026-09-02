@@ -1,16 +1,16 @@
 #!/bin/sh
 # Run quoth tests: byte-compile + ERT suite.
 #
-# By default the wire-integration tests (tagged :integration) are skipped so
-# the everyday suite stays fast and needs no external server processes.  Pass
-# "wire" (make test-wire) to include them too.
+# "unit" (the default) skips the wire-integration tests (tagged :integration)
+# so the everyday suite stays fast and needs no external server processes.
+# "wire" (make test-wire) runs byte-compile plus ONLY the :integration tests.
 set -e
 cd "$(dirname "$0")/.."
 
 MODE="${1:-unit}"
 case "$MODE" in
 unit) selector="(not (tag :integration))" ;;
-wire) selector="t" ;;
+wire) selector="(tag :integration)" ;;
 *)
 	echo "usage: $0 [unit|wire]" >&2
 	exit 2

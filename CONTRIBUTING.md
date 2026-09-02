@@ -44,7 +44,7 @@ After making changes:
 
 ```sh
 make check      # version gate + tests (byte-compile + ERT)
-make test-wire  # full suite including the :integration wire tests
+make test-wire  # wire (:integration) tests only
 make format     # format Elisp, Markdown, Shell, Python
 ```
 
@@ -65,9 +65,8 @@ changes before you push.
   `quoth-test-hyper.el`, `quoth-test-openai.el`, `quoth-test-tools.el`, ...).
   Harness helpers (`quoth-test--with-hyper-server`) travel
   with their topic file.
-- New behavior gets a test; the suite runs 400+ tests. Default `make test`
-  (~440 tests, skipping `:integration`) is fast; `make test-wire` adds the
-  live-server tests (454 total).
+- New behavior gets a test. Default `make test` (skipping `:integration`)
+  is fast; `make test-wire` runs only the live-server tests.
 
 ## Code Style
 
