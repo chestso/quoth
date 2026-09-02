@@ -10,7 +10,7 @@ all: check
 help:
 	@echo "quoth developer targets"
 	@echo "  make test                     run byte-compile + ERT suite (skips :integration wire tests)"
-	@echo "  make test-wire                byte-compile + full ERT suite incl. :integration wire tests"
+	@echo "  make test-wire                byte-compile + only the :integration wire tests"
 	@echo "  make check                    version gate + tests"
 	@echo "  make format                   format Elisp / Markdown / Shell / Python"
 	@echo "  make version                  print the ;;; Version: header"

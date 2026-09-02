@@ -32,11 +32,14 @@
 ;; Transient-based model selector for quoth.  Provides a popup menu
 ;; (C-c c m) for choosing a model from the active provider's catalog,
 ;; toggling thinking/reasoning attributes, and showing model prices.
-;; The selector layer owns the UI; it applies choices through the
-;; provider generics (`quoth-provider--models',
-;; `quoth-provider--apply-model') and sets per-session attributes in
+;; The selector layer owns the UI; it reads the catalog through the
+;; protocol's global cache (`quoth-provider-models-cached' — never a
+;; fetch), applies choices through the provider generic
+;; `quoth-provider--apply-model', and sets per-session attributes in
 ;; buffer-local variables (`quoth--session-thinking',
-;; `quoth--session-reasoning-effort').
+;; `quoth--session-reasoning-effort').  The `g' suffix force-refreshes
+;; the cache; the menu redraws when a background refresh lands
+;; (`quoth-provider-models-hook').
 
 ;;; Code:
 
@@ -123,10 +126,13 @@ by the caller."
       quoth-openai-default-model))
 
 (defun quoth--select-effective-model-entry ()
-  "Return the model plist for the effective model, or nil."
+  "Return the model plist for the effective model, or nil.
+Reads the catalog from the protocol's global cache; a cold cache
+returns nil (the menu's `g' suffix or the buffer-init prefetch warms
+it)."
   (let* ((models (and quoth-active-provider
                       (quoth-provider-p quoth-active-provider)
-                      (quoth-provider--models quoth-active-provider)))
+                      (quoth-provider-models-cached quoth-active-provider)))
          (current (quoth--select-current-model)))
     (and models current
          (quoth--select-current-model-entry models current))))
@@ -190,11 +196,15 @@ sending one re-enables the reasoning trace."
       (mapconcat (lambda (row) (apply #'format fmt row)) all "\n")))))
 
 (defun quoth--select-model-picker (&rest _)
-  "Prompt for a model from the active provider's catalog."
+  "Prompt for a model from the active provider's catalog.
+Reads the catalog from the protocol's global cache; a cold cache
+offers the static fallback while a background refresh runs, and the
+message notes it."
   (interactive)
   (let* ((models (and quoth-active-provider
 		      (quoth-provider-p quoth-active-provider)
-		      (quoth-provider--models quoth-active-provider)))
+		      (quoth-provider-models-cached quoth-active-provider)))
+	 (cold (null models))
 	 (choices (if models
 		      (quoth--model-choices models)
 		    (list (cons quoth-openai-default-model
@@ -219,6 +229,9 @@ sending one re-enables the reasoning trace."
 	 quoth-active-provider
 	 (list :id choice))))
     (run-hooks 'quoth-after-model-change-hook)
+    (when cold
+      (quoth-provider-models-refresh quoth-active-provider)
+      (message "fetching model catalog..."))
     (message "Model: %s"
 	     (or (and (not (string= choice "default")) choice)
 		 quoth-openai-default-model))))
@@ -310,7 +323,7 @@ as a hint when available."
   (quoth--select-in-origin
    (let* ((models  (and quoth-active-provider
                         (quoth-provider-p quoth-active-provider)
-                        (quoth-provider--models quoth-active-provider)))
+                        (quoth-provider-models-cached quoth-active-provider)))
           (current (quoth--select-current-model))
           (prices  (and models current
                         (quoth--select-model-detail models current))))
@@ -329,6 +342,18 @@ as a hint when available."
       (message "Provider: %s" choice))))
 
 
+(defun quoth--select-refresh-catalog (&rest _)
+  "Force-refresh the model catalog cache and redraw the menu.
+The refreshed descriptions (model prices, reasoning levels) recompute
+on the next draw; a landing refresh runs
+`quoth-provider-models-hook', which also triggers a redraw when the
+menu is visible."
+  (interactive)
+  (when (and quoth-active-provider
+             (quoth-provider-p quoth-active-provider))
+    (quoth-provider-models-refresh quoth-active-provider 'force)
+    (message "refreshing model catalog...")))
+
 (transient-define-prefix quoth-select-model-menu ()
                          "Model and attribute selector for Quoth."
                          [("p" quoth--select-provider-switch
@@ -343,7 +368,9 @@ as a hint when available."
                            :transient t :if quoth--select-has-reasoning-levels-p)]
                          [(" " :info* #'quoth--select-info-reasoning-matrix :format "%d"
                            :if quoth--select-can-reason-p)]
-                         [("d" quoth--select-defaults-apply
+                         [("g" quoth--select-refresh-catalog
+                           :description "refresh model catalog" :transient t)
+                          ("d" quoth--select-defaults-apply
                            :description "use provider defaults" :transient t)
                           ("q" transient-quit-one :description "quit")])
 

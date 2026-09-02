@@ -31,10 +31,13 @@
 ;; Local `web_search' tool implementation for quoth.el: queries a
 ;; local SearXNG instance over HTTP and returns normalized results in
 ;; the Codex-style prose convention (`Process exited with code N' +
-;; `Output:').  The tool is a thin synchronous wrapper: it fetches JSON
-;; via `url-retrieve-synchronously', normalizes it into a markdown list
-;; of results (each carrying engine + score for the model to weigh
-;; relevance), and deduplicates by URL keeping the highest score.
+;; `Output:').  The entry reports to ON-DONE once (as every registry
+;; entry does) and never blocks: the JSON fetch rides the asynchronous
+;; `url-retrieve' with a timeout timer, and the retrieval callback
+;; normalizes the finished payload into a markdown list of results
+;; (each carrying engine + score for the model to weigh relevance),
+;; deduplicating by URL keeping the highest score.  The cancel thunk
+;; deletes the retrieval process and its timer.
 ;;
 ;; Gating: the search request itself is the probe.  The first call
 ;; determines connectivity and caches the result in a buffer-local
@@ -59,8 +62,8 @@
             nil t))))
 
 (declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
-(declare-function quoth-exec--error "quoth-tools" (message tool-call))
 (declare-function quoth-exec--format-result "quoth-tools" (output exit-code))
+(declare-function quoth-openai-tool-error-result "quoth-openai" (message))
 (declare-function quoth-exec--truncate-output "quoth-tools" (output))
 
 (defgroup quoth-searxng nil
@@ -223,57 +226,163 @@ Limits to MAX results after deduplication."
       (when items
         (format "Suggestions: %s" (mapconcat #'identity items ", "))))))
 
-(defun quoth-searxng--exec (tool-call)
-  "Execute TOOL-CALL as `web_search' and return (RESULT . EXIT).
-Validates the `query' arg, checks the cached health state, fetches
-JSON from SearXNG, normalizes it, and returns the prose result.
-Errors yield an error result with exit code -1."
+(defun quoth-searxng--finish (state on-done health result)
+  "Deliver RESULT to ON-DONE for the search tracked by STATE, once.
+HEALTH is the state the outcome leaves in the owner buffer's
+`quoth-searxng--healthy' cache (the search request is the probe).
+STATE's :done flag makes the delivery exactly-once, so a retrieval
+racing the timeout timer (or a cancelled wait) reports only the first
+outcome.  Returns non-nil when the delivery happened."
+  (unless (plist-get state :done)
+    (plist-put state :done t)
+    (when (buffer-live-p (plist-get state :owner))
+      (with-current-buffer (plist-get state :owner)
+        (setq quoth-searxng--healthy health)))
+    (funcall on-done result)
+    t))
+
+(defun quoth-searxng--stop (state)
+  "Stop the search tracked by STATE without marking it delivered.
+Cancels the timeout timer, deletes the retrieval process (a deleted
+retrieval makes `url-retrieve' run the callback with a non-response
+buffer, which the delivery flag then ignores), and kills the response
+buffer."
+  (let ((timer (plist-get state :timer)))
+    (when (timerp timer)
+      (cancel-timer timer)
+      (plist-put state :timer nil)))
+  (let ((proc (plist-get state :proc)))
+    (when (and proc (processp proc) (process-live-p proc))
+      (delete-process proc)))
+  (let ((buf (plist-get state :buf)))
+    (when (and (bufferp buf) (buffer-live-p buf))
+      (kill-buffer buf))))
+
+(defun quoth-searxng--response-p (buf)
+  "Return non-nil when BUF is a live buffer holding an HTTP response.
+A deleted retrieval runs the callback with whatever buffer is
+current; only a response buffer carries the `HTTP/' status-line
+prefix."
+  (and (bufferp buf)
+       (buffer-live-p buf)
+       (string-match-p
+        "\\`HTTP/" (buffer-substring-no-properties
+                    (point-min)
+                    (min 6 (point-max))))))
+
+(defun quoth-searxng--result (state buf max)
+  "Return (HEALTH . RESULT) for the response in BUF.
+HEALTH is the health state the outcome caches; RESULT is the
+(RESULT . EXIT) pair delivered to the round.  An unreachable server,
+an empty body, or malformed JSON yields an error result with
+`unreachable'; a good payload yields the normalized prose result
+with `t'."
+  (cond
+   ((not (with-current-buffer buf (quoth-searxng--response-p buf)))
+    (plist-put state :buf nil)
+    (cons 'unreachable
+          (quoth-openai-tool-error-result
+           "SearXNG is unreachable (empty response)")))
+   ((or (not (quoth-searxng--http-ok-p buf))
+        (string-empty-p
+         (or (quoth-searxng--response-body buf) "")))
+    (cons 'unreachable
+          (quoth-openai-tool-error-result
+           (format "SearXNG is unreachable (HTTP %s)"
+                   (with-current-buffer buf
+                     (buffer-substring-no-properties
+                      (point-min) (line-end-position)))))))
+   (t
+    (let ((obj (quoth-json-read (quoth-searxng--response-body buf))))
+      (if (not obj)
+          (cons 'unreachable
+                (quoth-openai-tool-error-result
+                 "SearXNG returned malformed JSON"))
+        (plist-put state :buf buf)
+        (cons t
+              (cons (quoth-exec--format-result
+                     (quoth-searxng--normalize obj max) 0)
+                    0)))))))
+
+(defun quoth-searxng--callback (state on-done max)
+  "Return the `url-retrieve' callback for the search tracked by STATE.
+ON-DONE is the entry's reporter; MAX is the resolved result cap.  The
+callback runs with the retrieval buffer current and receives the
+retrieval STATUS; the finished payload is normalized and delivered
+once through `quoth-searxng--finish'."
+  (lambda (_status)
+    (let ((buf (current-buffer)))
+      (let ((outcome (quoth-searxng--result state buf max)))
+        (when (quoth-searxng--finish state on-done
+                                     (car outcome) (cdr outcome))
+          (quoth-searxng--stop state))))))
+
+(defun quoth-searxng--search (url args on-done)
+  "Fetch URL asynchronously, reporting to ON-DONE once with the result.
+ARGS carries the resolved max-results and the owner buffer.  Arms a
+`quoth-searxng-timeout' timer that deletes the retrieval and delivers
+an error result.  Returns the cancel thunk (delete the retrieval
+process and its timer); a cancelled wait delivers nothing."
+  (let* ((state (list :done nil
+                      :owner (current-buffer)
+                      :timer nil :proc nil :buf nil))
+         (max (quoth-searxng--max-results args))
+         (timer nil))
+    (plist-put state :proc
+               (url-retrieve url (quoth-searxng--callback state on-done max)
+                             nil t))
+    (setq timer
+          (run-at-time
+           quoth-searxng-timeout nil
+           (lambda ()
+             (plist-put state :timer nil)
+             (quoth-searxng--stop state)
+             (plist-put state :buf nil)
+             (quoth-searxng--finish
+              state on-done 'unreachable
+              (quoth-openai-tool-error-result
+               (format "SearXNG request timed out after %ss"
+                       quoth-searxng-timeout))))))
+    (plist-put state :timer timer)
+    (lambda ()
+      ;; Abandon the wait: stop the retrieval and mark the search
+      ;; delivered so a late callback cannot report.
+      (quoth-searxng--stop state)
+      (plist-put state :done t))))
+
+(defun quoth-searxng--exec (tool-call on-done)
+  "Execute TOOL-CALL as `web_search', reporting to ON-DONE.
+Validates the `query' arg, checks the cached health state, then
+fetches JSON from SearXNG asynchronously (`url-retrieve' plus a
+`quoth-searxng-timeout' timer) and delivers the normalized prose
+result as (RESULT . EXIT-OR-NIL) to ON-DONE, exactly once.  Errors and
+timeouts deliver an error result with exit code -1.  Returns the
+cancel thunk (delete the retrieval process and its timer), or nil for
+the immediate validation paths."
   (let ((args (quoth-openai-tool-call-args tool-call)))
     (cond
      ((not (bound-and-true-p quoth-searxng-enabled))
-      (quoth-exec--error "Web search is disabled" tool-call))
+      (funcall on-done (quoth-openai-tool-error-result
+                        "Web search is disabled"))
+      nil)
      ((not (quoth-searxng--query args))
-      (quoth-exec--error "Missing query" tool-call))
+      (funcall on-done (quoth-openai-tool-error-result "Missing query"))
+      nil)
      ((eq quoth-searxng--healthy 'unreachable)
-      (quoth-exec--error
-       "SearXNG is unreachable (cached); check the local server"
-       tool-call))
+      (funcall on-done
+               (quoth-openai-tool-error-result
+                "SearXNG is unreachable (cached); check the local server"))
+      nil)
      (t
       (condition-case err
-          (let* ((query (quoth-searxng--query args))
-                 (url (quoth-searxng--build-url query args))
-                 (max (quoth-searxng--max-results args))
-                 (buf (url-retrieve-synchronously
-                       url t t quoth-searxng-timeout)))
-            (if (or (null buf)
-                    (not (quoth-searxng--http-ok-p buf))
-                    (string-empty-p
-                     (or (quoth-searxng--response-body buf) "")))
-                (progn
-                  (setq-local quoth-searxng--healthy 'unreachable)
-                  (quoth-exec--error
-                   (format "SearXNG is unreachable (HTTP %s)"
-                           (with-current-buffer buf
-                             (buffer-substring-no-properties
-                              (point-min) (line-end-position))))
-                   tool-call))
-              (let ((body (quoth-searxng--response-body buf)))
-                (let ((obj (quoth-json-read body)))
-                  (if (not obj)
-                      (progn
-                        (setq-local quoth-searxng--healthy 'unreachable)
-                        (quoth-exec--error
-                         "SearXNG returned malformed JSON"
-                         tool-call))
-                    (setq-local quoth-searxng--healthy t)
-                    (let* ((normalized (quoth-searxng--normalize obj max))
-                           (text (quoth-exec--format-result normalized 0)))
-                      (setf (quoth-openai-tool-call-result tool-call) text
-                            (quoth-openai-tool-call-exit tool-call) 0)
-                      (cons text 0)))))))
+          (quoth-searxng--search
+           (quoth-searxng--build-url (quoth-searxng--query args) args)
+           args on-done)
         (error
          (setq-local quoth-searxng--healthy 'unreachable)
-         (quoth-exec--error (error-message-string err) tool-call)))))))
+         (funcall on-done (quoth-openai-tool-error-result
+                           (error-message-string err)))
+         nil))))))
 
 ;;; Register the tool into the protocol registry.
 

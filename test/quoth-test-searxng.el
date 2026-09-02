@@ -20,19 +20,21 @@
 
 ;;; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 ;;; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-;;; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+;;; THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 ;;; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 ;;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 ;;; SOFTWARE.
 
 ;;; Commentary:
 ;;; Tests for the `web_search' tool against a local SearXNG instance
-;;; (`quoth-searxng.el').  The tool fetches JSON over HTTP via
-;;; `url-retrieve-synchronously', normalizes it into the Codex-style
-;;; prose result convention, and gates on a cached health probe so a
-;;; dead server is reported once rather than hammered on every tool
-;;; round.  Unit tests mock the URL transport with `cl-letf'; the wire
+;;; (`quoth-searxng.el').  The entry fetches JSON over HTTP with the
+;;; asynchronous `url-retrieve' (a retrieval callback plus a timeout
+;;; timer), normalizes it into the Codex-style prose result
+;;; convention, and gates on a cached health probe so a dead server is
+;;; reported once rather than hammered on every tool round.  Unit tests
+;;; mock the URL transport with `cl-letf' (delivering the fake
+;;; response synchronously through the real callback path); the wire
 ;;; test drives a real dummy SearXNG server (`searxng-server.py').
 
 ;;; Code:
@@ -61,21 +63,20 @@
 (defvar quoth-test--root)
 (declare-function quoth-test--cleanup "quoth-test" ())
 (declare-function quoth-test--read-hyper-capture "quoth-test-hyper" (file))
-(declare-function quoth-searxng--exec "quoth-searxng" (tool-call))
+(declare-function quoth-test--wait-until "quoth-test-process" (pred &optional timeout))
+(declare-function quoth-searxng--exec "quoth-searxng" (tool-call on-done))
 
 (defvar quoth-test--last-url nil
-  "URL passed to the faked `url-retrieve-synchronously'.")
+  "URL passed to the faked `url-retrieve'.")
 
-;;; Test transport: a fake `url-retrieve-synchronously' that records its
-;;; URL and returns a buffer whose contents the test controls.  The
-;;; buffer must look like a real HTTP response (status line + headers +
-;;; body) because the tool parses the status code from it.
+;;; Test transport: a fake `url-retrieve' that records its URL and
+;;; delivers a buffer whose contents the test controls, synchronously,
+;;; through the callback the entry passed.  The buffer must look like a
+;;; real HTTP response (status line + headers + body) because the tool
+;;; parses the status code from it.
 
 (defun quoth-test--http-response-buffer (status body)
-  "Return a buffer holding an HTTP response with STATUS and BODY.
-The buffer is not killed when this function returns (unlike
-`with-temp-buffer'), so the executor can read it after the fake
-`url-retrieve-synchronously' call."
+  "Return a buffer holding an HTTP response with STATUS and BODY."
   (let ((buf (generate-new-buffer " *quoth-searxng-test*")))
     (with-current-buffer buf
       (insert (format "HTTP/1.1 %s\r\n" status))
@@ -85,21 +86,30 @@ The buffer is not killed when this function returns (unlike
     buf))
 
 (defun quoth-test--with-fake-url (status body fn)
-  "Call FN with `url-retrieve-synchronously' faked to return STATUS/BODY.
-The fake records the requested URL in `quoth-test--last-url'."
+  "Call FN with `url-retrieve' faked to deliver STATUS/BODY.
+The fake records the requested URL in `quoth-test--last-url' and calls
+the entry's callback synchronously with the response buffer current,
+mimicking a completed retrieval."
   (let ((quoth-test--last-url nil))
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
-               (lambda (url &rest _args)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (url callback &rest _args)
                  (setq quoth-test--last-url url)
-                 (quoth-test--http-response-buffer status body))))
+                 (with-current-buffer
+                     (quoth-test--http-response-buffer status body)
+                   (funcall callback 'ok)))))
       (funcall fn))))
 
 (defun quoth-test--searxng-call (args-json)
-  "Execute a `web_search' tool call with ARGS-JSON, returning (RESULT . EXIT)."
-  (let ((call (quoth-make-openai-tool-call :id "call_searxng" :name "web_search")))
+  "Execute a `web_search' tool call with ARGS-JSON, returning (RESULT . EXIT).
+Runs the entry with the mocked transport (a synchronous retrieval), so
+the single delivery is available inline."
+  (let ((call (quoth-make-openai-tool-call :id "call_searxng" :name "web_search"))
+        (results nil))
     (setf (quoth-openai-tool-call-args call)
           (quoth-openai-parse-tool-args args-json))
-    (quoth-searxng--exec call)))
+    (quoth-searxng--exec call (lambda (result) (push result results)))
+    (should (equal (length results) 1))
+    (car results)))
 
 ;;; 1. Registration
 
@@ -208,7 +218,7 @@ relevance, and the whole payload is wrapped in the prose convention."
 ;;; 3. Error paths
 
 (ert-deftest quoth-test/searxng-http-error ()
-  "A non-200 response should yield an error result with exit code -1."
+  "A non-2xx response should deliver an error result with exit code -1."
   (quoth-test--with-fake-url
    "500 Internal Server Error" "oops"
    (lambda ()
@@ -218,7 +228,7 @@ relevance, and the whole payload is wrapped in the prose convention."
        (should (string-match-p "500" (car result)))))))
 
 (ert-deftest quoth-test/searxng-malformed-json ()
-  "A non-JSON body should yield an error result."
+  "A non-JSON body should deliver an error result."
   (quoth-test--with-fake-url
    "200 OK" "<html>not json</html>"
    (lambda ()
@@ -226,10 +236,33 @@ relevance, and the whole payload is wrapped in the prose convention."
        (should (string-match-p "Process exited with code -1" (car result)))
        (should (= (cdr result) -1))))))
 
+(ert-deftest quoth-test/searxng-retrieval-failure-delivers-error ()
+  "A retrieval that fails (a dead process's empty buffer) delivers an error."
+  (let ((call (quoth-make-openai-tool-call :id "call_searxng"
+                                           :name "web_search"))
+        (results nil))
+    (setf (quoth-openai-tool-call-args call)
+          (quoth-openai-parse-tool-args "{\"query\":\"x\"}"))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 ;; A deleted retrieval calls back with whatever buffer
+                 ;; is current — not an HTTP response.
+                 (with-current-buffer (generate-new-buffer " *dead*")
+                   (funcall callback 'connection-failed))
+                 (make-pipe-process :name "searxng-test-dead"
+                                    :noquery t))))
+      (should (functionp (quoth-searxng--exec
+                          call (lambda (result) (push result results)))))
+      (should (equal (length results) 1))
+      (should (string-match-p "Process exited with code -1"
+                              (caar results)))
+      (should (string-match-p "unreachable" (caar results)))
+      (should (= (cdar results) -1)))))
+
 (ert-deftest quoth-test/searxng-missing-query-errors ()
   "A missing or empty `query' should error without hitting the network."
   (let ((hit nil))
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+    (cl-letf (((symbol-function 'url-retrieve)
                (lambda (&rest _args) (setq hit t) nil)))
       (dolist (json '("{}" "{\"query\":\"\"}" "{\"query\":\"  \"}"))
         (let ((result (quoth-test--searxng-call json)))
@@ -237,7 +270,106 @@ relevance, and the whole payload is wrapped in the prose convention."
           (should (= (cdr result) -1))))
       (should-not hit))))
 
-;;; 4. Cached health-probe gating
+;;; 4. Async delivery, timeout, and cancel
+
+(ert-deftest quoth-test/searxng-search-delivers-asynchronously ()
+  "A live search returns a cancel thunk and delivers via the callback.
+The on-done fires once, from the retrieval callback, with the
+normalized prose result; a cancelled wait delivers nothing."
+  (let ((results nil)
+        (cb nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq cb callback)
+                 (make-pipe-process :name "searxng-test-async"
+                                    :noquery t))))
+      (let ((call (quoth-make-openai-tool-call :id "call_searxng"
+                                               :name "web_search")))
+        (setf (quoth-openai-tool-call-args call)
+              (quoth-openai-parse-tool-args "{\"query\":\"emacs\"}"))
+        (let ((cancel (quoth-searxng--exec
+                       call (lambda (result) (push result results)))))
+          (should (functionp cancel))
+          ;; Nothing delivered before the retrieval completes.
+          (should-not results)
+          (funcall cancel)
+          ;; Late retrieval delivers nothing to a cancelled wait.
+          (with-current-buffer
+              (quoth-test--http-response-buffer
+               "200 OK" (json-encode '((results . []))))
+            (funcall cb 'ok))
+          (should-not results)
+          ;; Clean up the timer the cancel left armed.
+          (funcall cancel))))))
+
+(ert-deftest quoth-test/searxng-cancel-deletes-retrieval ()
+  "The cancel thunk deletes the retrieval process and its timer.
+A cancelled search delivers nothing."
+  (let ((results nil)
+        (retrieval (make-pipe-process :name "searxng-test-cancel"
+                                      :noquery t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-retrieve)
+                   (lambda (_url _callback &rest _args) retrieval)))
+          (let ((call (quoth-make-openai-tool-call :id "call_searxng"
+                                                   :name "web_search")))
+            (setf (quoth-openai-tool-call-args call)
+                  (quoth-openai-parse-tool-args "{\"query\":\"emacs\"}"))
+            (let ((cancel (quoth-searxng--exec
+                           call (lambda (result) (push result results)))))
+              (funcall cancel)
+              (should-not (process-live-p retrieval))
+              (should-not results))))
+      (when (process-live-p retrieval) (delete-process retrieval)))))
+
+(ert-deftest quoth-test/searxng-timeout-delivers-error-and-kills-retrieval ()
+  "A retrieval outliving `quoth-searxng-timeout' delivers an error result.
+The timeout deletes the retrieval process and reports `unreachable'."
+  (let ((results nil)
+        (retrieval (make-pipe-process :name "searxng-test-timeout"
+                                      :noquery t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-retrieve)
+                   (lambda (_url _callback &rest _args) retrieval)))
+          (let ((call (quoth-make-openai-tool-call :id "call_searxng"
+                                                   :name "web_search"))
+                (quoth-searxng-timeout 0.05))
+            (setf (quoth-openai-tool-call-args call)
+                  (quoth-openai-parse-tool-args "{\"query\":\"emacs\"}"))
+            (should (functionp (quoth-searxng--exec
+                                call (lambda (result)
+                                       (push result results)))))
+            (should (quoth-test--wait-until (lambda () results)))
+            (should (= (cdar results) -1))
+            (should (string-match-p "timed out" (caar results)))
+            (should-not (process-live-p retrieval))
+            (should (eq quoth-searxng--healthy 'unreachable))))
+      (when (process-live-p retrieval) (delete-process retrieval)))))
+
+(ert-deftest quoth-test/searxng-late-retrieval-after-timeout-noops ()
+  "A retrieval completing after the timeout delivered delivers nothing."
+  (let ((results nil)
+        (cb nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq cb callback)
+                 'fake-proc))
+              ((symbol-function 'delete-process) #'ignore))
+      (let ((call (quoth-make-openai-tool-call :id "call_searxng"
+                                               :name "web_search"))
+            (quoth-searxng-timeout 0.05))
+        (setf (quoth-openai-tool-call-args call)
+              (quoth-openai-parse-tool-args "{\"query\":\"emacs\"}"))
+        (quoth-searxng--exec call (lambda (result) (push result results)))
+        (should (quoth-test--wait-until (lambda () results)))
+        (let ((delivered (length results)))
+          (with-current-buffer
+              (quoth-test--http-response-buffer
+               "200 OK" (json-encode '((results . []))))
+            (funcall cb 'ok))
+          (should (= (length results) delivered)))))))
+
+;;; 5. Cached health-probe gating
 ;;;
 ;;; The search request itself is the probe: the first call determines
 ;;; connectivity and caches it.  A healthy state (`t') skips re-probing
@@ -249,11 +381,15 @@ relevance, and the whole payload is wrapped in the prose convention."
   "An unknown health state performs the search and caches healthy."
   (let ((quoth-searxng--healthy nil)
         (requests 0))
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
-               (lambda (_url &rest _args)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
                  (setq requests (1+ requests))
-                 (quoth-test--http-response-buffer
-                  "200 OK" (json-encode '((results . [])))))))
+                 (with-current-buffer
+                     (quoth-test--http-response-buffer
+                      "200 OK" (json-encode '((results . []))))
+                   (funcall callback 'ok))
+                 (make-pipe-process :name "searxng-test-healthy"
+                                    :noquery t))))
       (let ((result (quoth-test--searxng-call "{\"query\":\"x\"}")))
         (should (= requests 1))
         (should (eq quoth-searxng--healthy t))
@@ -263,11 +399,15 @@ relevance, and the whole payload is wrapped in the prose convention."
   "A cached healthy state performs only the search, one request per call."
   (let ((quoth-searxng--healthy t)
         (requests 0))
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
-               (lambda (_url &rest _args)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
                  (setq requests (1+ requests))
-                 (quoth-test--http-response-buffer
-                  "200 OK" (json-encode '((results . [])))))))
+                 (with-current-buffer
+                     (quoth-test--http-response-buffer
+                      "200 OK" (json-encode '((results . []))))
+                   (funcall callback 'ok))
+                 (make-pipe-process :name "searxng-test-healthy"
+                                    :noquery t))))
       (quoth-test--searxng-call "{\"query\":\"x\"}")
       (quoth-test--searxng-call "{\"query\":\"y\"}")
       (should (= requests 2))
@@ -277,11 +417,15 @@ relevance, and the whole payload is wrapped in the prose convention."
   "A failed search caches `unreachable' and later calls make no request."
   (let ((quoth-searxng--healthy nil)
         (requests 0))
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
-               (lambda (_url &rest _args)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
                  (setq requests (1+ requests))
-                 (quoth-test--http-response-buffer
-                  "500 Internal Server Error" "boom"))))
+                 (with-current-buffer
+                     (quoth-test--http-response-buffer
+                      "500 Internal Server Error" "boom")
+                   (funcall callback 'ok))
+                 (make-pipe-process :name "searxng-test-unreach"
+                                    :noquery t))))
       (let ((result (quoth-test--searxng-call "{\"query\":\"x\"}")))
         (should (eq quoth-searxng--healthy 'unreachable))
         (should (string-match-p "unreachable" (car result)))
@@ -291,7 +435,7 @@ relevance, and the whole payload is wrapped in the prose convention."
         (should (string-match-p "unreachable" (car result)))
         (should (= (cdr result) -1))))))
 
-;;; 5. Wire test against a real dummy SearXNG server
+;;; 6. Wire test against a real dummy SearXNG server
 
 (defun quoth-test--searxng-server-program ()
   "Return path to the dummy SearXNG server script."
@@ -337,11 +481,22 @@ captured a GET with the query." :tags '(:integration)
   (quoth-test--with-searxng-server
    (lambda (base)
      (let ((quoth-searxng-base-url base)
-           (quoth-searxng--healthy nil))
-       (let ((result (quoth-test--searxng-call "{\"query\":\"wire test\"}")))
-         (should (string-match-p "Process exited with code 0" (car result)))
-         (should (string-match-p "Wire Result" (car result)))
-         (should (= (cdr result) 0)))))))
+           (quoth-searxng--healthy nil)
+           (results nil))
+       (let ((call (quoth-make-openai-tool-call :id "call_searxng"
+                                                :name "web_search")))
+         (setf (quoth-openai-tool-call-args call)
+               (quoth-openai-parse-tool-args "{\"query\":\"wire test\"}"))
+         (let ((cancel (quoth-searxng--exec
+                        call (lambda (result) (push result results)))))
+           (unwind-protect
+               (progn
+                 (should (quoth-test--wait-until (lambda () results) 10))
+                 (should (string-match-p "Process exited with code 0"
+                                         (caar results)))
+                 (should (string-match-p "Wire Result" (caar results)))
+                 (should (= (cdar results) 0)))
+             (when (functionp cancel) (funcall cancel)))))))))
 
 (provide 'quoth-test-searxng)
 ;;; quoth-test-searxng.el ends here

@@ -125,11 +125,12 @@ of calling the core directly, avoiding a load-time dependency on
   buffer
   completion-action
   working-directory
-  ;; The live transport process (e.g. curl) returned by the provider's
-  ;; `quoth-provider-send-prompt'.  Owned by the provider; the core
-  ;; reads activity through `quoth-provider-active-p' and kills it via
-  ;; `quoth-provider-interrupt'/`quoth-provider-cleanup'.
-  (transport-process nil)
+  ;; The request handle covering both stages of a send: the staged
+  ;; system-prompt process (:stage-process, the async git stage) and
+  ;; the curl transport (:curl), plus a done flag.  Owned by the
+  ;; provider; the core reads activity through `quoth-provider-active-p'
+  ;; and aborts via `quoth-provider-interrupt'/`quoth-provider-cleanup'.
+  (request nil)
   ;; Application count: the number of pipeline applications (runnable,
   ;; inflight, blocked) this provider accounts for.  The core reads it
   ;; via stream progress; a value of 0 means the provider is idle.
@@ -167,18 +168,6 @@ Kill any live transport process, clear the transport slot, and clear
 (cl-defgeneric quoth-provider-grant-permission (provider permission-id action)
   "Respond to a permission request on PROVIDER identified by PERMISSION-ID.
 ACTION is `allow', `allow-session', or `deny'.")
-
-(cl-defgeneric quoth-provider--tool-results (provider tool-calls)
-  "Build the tool-result messages and display blocks for TOOL-CALLS.
-PROVIDER is the provider instance.  TOOL-CALLS is a vector of
-tool-call alists from the SSE stream, accumulated by
-`quoth--hyper-sse-merge-tool-calls'.  Returns a list
-\(ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS) where ASSISTANT-MSG is
-the assistant message carrying `tool_calls', TOOL-RESULT-MSGS is a
-list of `role: \"tool\"' messages, and TOOL-BLOCKS is a list of plists
-\(:name :id :args-json :result :exit) for `quoth--tool-block-insert'."
-  (ignore provider tool-calls)
-  nil)
 
 (cl-defgeneric quoth-provider--tool-calls (provider process)
   "Return the accumulated tool-calls vector from PROVIDER's PROCESS, or nil.
@@ -223,15 +212,104 @@ on new prompt / clear."
   (ignore provider process)
   nil)
 
-(cl-defgeneric quoth-provider--models (provider)
-  "Return a list of model plists for PROVIDER's catalog, or nil on failure.
-Each plist has keys: :id, :name, :context-window, :default-max-tokens,
-:cost-in, :cost-out, :cost-in-cached, :cost-out-cached, :can-reason,
-:reasoning-levels, :default-reasoning-effort, :supports-attachments.
-Fetches live (sync) when the provider supports it; nil signals the
-caller to fall back to a static list."
+(cl-defgeneric quoth-provider--models-key (provider)
+  "Return the cache key for PROVIDER's model catalog.
+The key identifies the catalog source across buffers; the default
+derives it from the provider's :type slot.  Providers whose catalog
+depends on configuration (e.g. the gateway base URL) override this."
   (ignore provider)
   nil)
+
+(cl-defgeneric quoth-provider--models-async (provider on-done)
+  "Fetch PROVIDER's model catalog, delivering it to ON-DONE once.
+The delivered value is a list of model plists (keys: :id, :name,
+:context-window, :default-max-tokens, :cost-in, :cost-out,
+:cost-in-cached, :cost-out-cached, :can-reason, :reasoning-levels,
+:default-reasoning-effort, :supports-attachments), or nil on failure.
+Providers that have no catalog deliver nil without fetching.  Returns
+a cancel thunk or nil.  The cache layer (`quoth-provider-models-refresh')
+is the intended caller; UI code reads through the cache."
+  (ignore provider)
+  (funcall on-done nil)
+  nil)
+
+(defcustom quoth-provider-models-ttl 600
+  "Seconds a catalog cache entry stays fresh.
+A read past the TTL returns the stale entry immediately and kicks a
+background refresh (stale-while-revalidate)."
+  :type 'integer
+  :group 'quoth)
+
+(defcustom quoth-provider-models-prefetch t
+  "Non-nil prefetches the model catalog when a chat buffer initializes.
+Keeps the selector (C-c c m) warm for the first open."
+  :type 'boolean
+  :group 'quoth)
+
+(defvar quoth-provider-models-hook nil
+  "Hook run after a model-catalog refresh lands.
+Runs with no args, in whatever buffer was current at delivery; subscribers
+refresh buffer-local UI (e.g. the transient's model info) and guard on
+buffer liveness themselves.")
+
+(defvar quoth-provider--models-cache (make-hash-table :test 'equal)
+  "Global catalog cache, keyed by `quoth-provider--models-key'.
+Entries are (MODELS . FETCHED-AT) with FETCHED-AT an epoch float;
+the cache is shared across buffers of the same provider and catalog
+source.")
+
+(defvar quoth-provider--models-inflight (make-hash-table :test 'equal)
+  "In-flight catalog fetches, keyed by `quoth-provider--models-key'.
+Values are the ON-DONE fan-out list for the pending fetch; one fetch
+runs per key regardless of how many refreshes requested it.")
+
+(defun quoth-provider-models-cached (provider)
+  "Return PROVIDER's cached catalog, or nil when never fetched.
+A fresh entry (inside `quoth-provider-models-ttl') returns directly.
+A stale entry returns immediately and kicks exactly one background
+refresh (stale-while-revalidate); a nil (never fetched) entry returns
+nil — the caller decides whether to refresh or fall back to a static
+list."
+  (let* ((key (quoth-provider--models-key provider))
+         (entry (and key (gethash key quoth-provider--models-cache))))
+    (when entry
+      (when (and quoth-provider-models-ttl
+                 (> (- (float-time) (cdr entry))
+                    quoth-provider-models-ttl))
+        (quoth-provider-models-refresh provider))
+      (car entry))))
+
+(defun quoth-provider-models-refresh (provider &optional force)
+  "Refresh the cached catalog for PROVIDER asynchronously.
+Deduplicated: one fetch runs per key while another is in flight; FORCE
+non-nil refetches even when the cached entry is fresh.  A successful
+fetch writes the cache (stamping the fetch time) and runs
+`quoth-provider-models-hook'; a failed fetch (nil delivery) keeps the
+existing cache entry.  Returns non-nil when a fetch was started."
+  (let ((key (quoth-provider--models-key provider)))
+    (when key
+      (unless (or (gethash key quoth-provider--models-inflight)
+                  (and (not force)
+                       (let ((entry (gethash key quoth-provider--models-cache)))
+                         (and entry
+                              (<= (- (float-time) (cdr entry))
+                                  quoth-provider-models-ttl)))))
+        (progn
+          (puthash key
+                   (lambda (models)
+                     (remhash key quoth-provider--models-inflight)
+                     (when models
+                       (puthash key (cons models (float-time))
+                                quoth-provider--models-cache)
+                       (run-hooks 'quoth-provider-models-hook)))
+                   quoth-provider--models-inflight)
+          (quoth-provider--models-async
+           provider
+           (lambda (models)
+             (let ((fan (gethash key quoth-provider--models-inflight)))
+               (when fan
+                 (funcall fan models)))))
+          t)))))
 
 (cl-defgeneric quoth-provider--apply-model (provider model-entry)
   "Apply MODEL-ENTRY (a plist from `quoth-provider--models') to PROVIDER.

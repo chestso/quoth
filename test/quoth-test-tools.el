@@ -73,6 +73,26 @@
   (let ((shell-path (or shell shell-file-name)))
     (format "```%s" (quoth--shell-language shell-path))))
 
+(defun quoth-test--capture ()
+  "Return (REPORT . RESULTS) for capturing on-done deliveries.
+REPORT is the ON-DONE function the entry under test receives; RESULTS
+returns the delivered (RESULT . EXIT-OR-NIL) values, oldest first."
+  (let ((results nil))
+    (cons (lambda (result) (push result results))
+          (lambda () (nreverse results)))))
+
+(declare-function quoth-test--wait-until "quoth-test-process" (pred &optional timeout))
+
+(defun quoth-test--sync-result (fn call)
+  "Run entry FN on CALL synchronously, returning its (RESULT . EXIT).
+Immediate entries deliver inline, so the first (only) delivery is the
+result.  Fails the test when nothing was delivered."
+  (let ((capture (quoth-test--capture)))
+    (funcall fn call (car capture))
+    (let ((results (funcall (cdr capture))))
+      (should (equal (length results) 1))
+      (car results))))
+
 ;;; 1. Tool registry and dispatch
 
 (ert-deftest quoth-test/tool-registry-has-exec-command ()
@@ -86,42 +106,80 @@
                  #'quoth-write-stdin--exec)))
 
 (ert-deftest quoth-test/tool-unknown-name-errors-without-process ()
-  "An unknown tool name should yield an error result and spawn nothing."
-  (let ((spawned nil))
+  "An unknown tool name delivers an error result and spawns nothing."
+  (let ((spawned nil)
+        (capture (quoth-test--capture)))
     (cl-letf (((symbol-function 'make-process)
                (lambda (&rest _args) (setq spawned t) nil)))
       (let* ((call (quoth-test--tool-call "nope" "{}"))
-             (result (quoth-openai-execute-tool call)))
+             (cancel (quoth-openai-execute-tool call (car capture))))
         (should-not spawned)
-        (should (string-match-p "Process exited with code -1" (car result)))
-        (should (= (cdr result) -1))))))
+        (should-not cancel)
+        (should (equal (funcall (cdr capture))
+                       (list (cons "Process exited with code -1\nOutput:\nunknown tool \"nope\""
+                                   -1))))))))
 
-(ert-deftest quoth-test/tool-execute-returns-result-and-exit ()
-  "`quoth-openai-execute-tool' returns a result and exit code.
-It returns (RESULT-TEXT . EXIT-CODE) and fills the call's slots."
-  (let* ((call (quoth-test--tool-call "exec_command" "{\"cmd\":\"echo hi\"}"))
-         (result (quoth-openai-execute-tool call)))
-    (should (stringp (car result)))
-    (should (integerp (cdr result)))
-    (should (string= (quoth-openai-tool-call-result call) (car result)))
-    (should (= (quoth-openai-tool-call-exit call) (cdr result)))))
+(ert-deftest quoth-test/tool-dispatch-delivers-exactly-once ()
+  "A duplicate on-done delivery reports only the first result.
+`quoth-openai-execute-tool' wraps the entry's on-done with an
+exactly-once guard, so a window/sentinel race cannot double-report."
+  (let ((capture (quoth-test--capture))
+        (deliveries 0))
+    (let ((quoth-openai-tool-registry
+           (list (cons "testtool"
+                       (lambda (_call on-done)
+                         (cl-incf deliveries)
+                         (funcall on-done (cons "first" 0))
+                         ;; The racing second delivery (window vs sentinel).
+                         (funcall on-done (cons "second" 0))
+                         nil)))))
+      (let ((call (quoth-test--tool-call "testtool" "{}")))
+        (should-not (quoth-openai-execute-tool call (car capture))))
+      (should (= deliveries 1))
+      (should (equal (funcall (cdr capture)) (list (cons "first" 0)))))))
 
 (ert-deftest quoth-test/tool-dispatch-logs-call ()
   "The dispatch boundary logs every tool call under the `tool' category.
-Executors return (RESULT . EXIT); `quoth-openai-execute-tool' owns the
-debug log, so a tool is never expected to log
-itself."
+The dispatch wrapper owns the debug log — the call at dispatch and the
+result at completion — so an entry is never expected to log itself."
   (unwind-protect
       (let ((quoth-debug-mode t))
+        (when (get-buffer "*quoth-debug*")
+          (kill-buffer "*quoth-debug*"))
         (should-not (get-buffer "*quoth-debug*"))
         (let* ((call (quoth-test--tool-call "exec_command" "{\"cmd\":\"echo hi\"}"))
-               (result (quoth-openai-execute-tool call)))
-          (should (integerp (cdr result)))
+               (capture (quoth-test--capture)))
+          (cl-letf (((symbol-function 'quoth-exec-command--exec)
+                     (lambda (_call on-done)
+                       (funcall on-done (cons "Process exited with code 0\nOutput:\nhi" 0))
+                       nil)))
+            (should-not (quoth-openai-execute-tool call (car capture))))
+          (should (equal (funcall (cdr capture))
+                         (list (cons "Process exited with code 0\nOutput:\nhi" 0))))
           (with-current-buffer "*quoth-debug*"
             (goto-char (point-min))
+            ;; The dispatch log line carries the name and args.
             (should (search-forward "tool: exec_command" nil t))
-            (should (search-forward "echo hi" nil t)))))
+            (should (search-forward "echo hi" nil t))
+            ;; The completion log line carries the exit and output.
+            (should (search-forward "exit=0" nil t)))))
     (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/tool-immediate-entry-returns-nil-cancel ()
+  "An immediate entry (read_file) reports inline and returns no cancel."
+  (let ((target (make-temp-file "quoth-read" nil nil "inline result\n")))
+    (unwind-protect
+        (let* ((call (quoth-test--tool-call
+                      "read_file"
+                      (format "{\"path\":%S}" target)))
+               (capture (quoth-test--capture)))
+          (should-not (quoth-openai-execute-tool call (car capture)))
+          (let ((results (funcall (cdr capture))))
+            (should (= (length results) 1))
+            (should (= (cdar results) 0))
+            (should (string-match-p "Process exited with code 0" (caar results)))
+            (should (string-match-p "inline result" (caar results)))))
+      (ignore-errors (delete-file target)))))
 
 ;;; 2. Argument parsing
 
@@ -145,43 +203,53 @@ itself."
 ;;; 3. exec_command execution
 
 (ert-deftest quoth-test/exec-command-captures-output ()
-  "`quoth-exec-command--exec' should capture combined stdout and exit 0."
+  "`exec_command' reports captured stdout and exit 0 through on-done."
   (let* ((call (quoth-test--tool-call "exec_command" "{\"cmd\":\"echo hello\"}"))
-         (result (quoth-exec-command--exec call)))
-    (should (string-match-p "hello" (car result)))
-    (should (string-match-p "Process exited with code 0" (car result)))
-    (should (string-match-p "Output:" (car result)))
-    (should (= (cdr result) 0))))
+         (capture (quoth-test--capture)))
+    (should (functionp (quoth-exec-command--exec call (car capture))))
+    (should (quoth-test--wait-until (lambda () (funcall (cdr capture)))))
+    (let ((result (car (funcall (cdr capture)))))
+      (should (string-match-p "hello" (car result)))
+      (should (string-match-p "Process exited with code 0" (car result)))
+      (should (string-match-p "Output:" (car result)))
+      (should (= (cdr result) 0)))))
 
 (ert-deftest quoth-test/exec-command-nonzero-exit ()
-  "A command that exits non-zero should report its exit code in prose."
+  "A command that exits non-zero reports its exit code in prose."
   (let* ((call (quoth-test--tool-call "exec_command" "{\"cmd\":\"exit 3\"}"))
-         (result (quoth-exec-command--exec call)))
-    (should (string-match-p "Process exited with code 3" (car result)))
-    (should (= (cdr result) 3))))
+         (capture (quoth-test--capture)))
+    (quoth-exec-command--exec call (car capture))
+    (should (quoth-test--wait-until (lambda () (funcall (cdr capture)))))
+    (let ((result (car (funcall (cdr capture)))))
+      (should (string-match-p "Process exited with code 3" (car result)))
+      (should (= (cdr result) 3)))))
 
 (ert-deftest quoth-test/exec-command-missing-cmd-errors ()
-  "A missing or empty `cmd' should error without spawning."
+  "A missing or empty `cmd' delivers an error result without spawning."
   (let ((spawned nil))
     (cl-letf (((symbol-function 'make-process)
                (lambda (&rest _args) (setq spawned t) nil)))
       (dolist (json '("{}" "{\"cmd\":\"\"}" "{\"cmd\":\"  \"}"))
         (let* ((call (quoth-test--tool-call "exec_command" json))
-               (result (quoth-exec-command--exec call)))
-          (should (string-match-p "Process exited with code -1" (car result)))
-          (should (= (cdr result) -1))))
+               (capture (quoth-test--capture)))
+          (should-not (quoth-exec-command--exec call (car capture)))
+          (let ((result (car (funcall (cdr capture)))))
+            (should (string-match-p "Process exited with code -1" (car result)))
+            (should (= (cdr result) -1)))))
       (should-not spawned))))
 
 (ert-deftest quoth-test/exec-command-malformed-args-errors ()
-  "Malformed args JSON should error without spawning."
+  "Malformed args JSON delivers an error result without spawning."
   (let ((spawned nil))
     (cl-letf (((symbol-function 'make-process)
                (lambda (&rest _args) (setq spawned t) nil)))
       (let* ((call (quoth-test--tool-call "exec_command" "not json"))
-             (result (quoth-exec-command--exec call)))
-        (should (string-match-p "Process exited with code -1" (car result)))
-        (should (= (cdr result) -1)))
-      (should-not spawned))))
+             (capture (quoth-test--capture)))
+        (should-not (quoth-exec-command--exec call (car capture)))
+        (let ((result (car (funcall (cdr capture)))))
+          (should (string-match-p "Process exited with code -1" (car result)))
+          (should (= (cdr result) -1)))
+        (should-not spawned)))))
 
 (ert-deftest quoth-test/exec-command-login-rejected-by-default ()
   "A `login' request is rejected when not allowed by config."
@@ -191,10 +259,12 @@ itself."
       (let* ((call (quoth-test--tool-call
                     "exec_command"
                     "{\"cmd\":\"echo hi\",\"login\":true}"))
-             (result (quoth-exec-command--exec call)))
-        (should (string-match-p "login shell is disabled" (car result)))
-        (should (= (cdr result) -1)))
-      (should-not spawned))))
+             (capture (quoth-test--capture)))
+        (should-not (quoth-exec-command--exec call (car capture)))
+        (let ((result (car (funcall (cdr capture)))))
+          (should (string-match-p "login shell is disabled" (car result)))
+          (should (= (cdr result) -1)))
+        (should-not spawned)))))
 
 (ert-deftest quoth-test/exec-command-login-allowed-when-enabled ()
   "A `login' request is honored when `quoth-tool-allow-login-shell' is t."
@@ -202,18 +272,24 @@ itself."
     (let* ((call (quoth-test--tool-call
                   "exec_command"
                   "{\"cmd\":\"echo hi\",\"login\":true}"))
-           (result (quoth-exec-command--exec call)))
-      (should (string-match-p "hi" (car result)))
-      (should (= (cdr result) 0)))))
+           (capture (quoth-test--capture)))
+      (quoth-exec-command--exec call (car capture))
+      (should (quoth-test--wait-until (lambda () (funcall (cdr capture)))))
+      (let ((result (car (funcall (cdr capture)))))
+        (should (string-match-p "hi" (car result)))
+        (should (= (cdr result) 0))))))
 
 (ert-deftest quoth-test/exec-command-shell-parameter ()
   "A requested shell binary is used to run the command."
   (let* ((call (quoth-test--tool-call
                 "exec_command"
                 "{\"cmd\":\"echo fromsh\",\"shell\":\"/bin/sh\"}"))
-         (result (quoth-exec-command--exec call)))
-    (should (string-match-p "fromsh" (car result)))
-    (should (= (cdr result) 0))))
+         (capture (quoth-test--capture)))
+    (quoth-exec-command--exec call (car capture))
+    (should (quoth-test--wait-until (lambda () (funcall (cdr capture)))))
+    (let ((result (car (funcall (cdr capture)))))
+      (should (string-match-p "fromsh" (car result)))
+      (should (= (cdr result) 0)))))
 
 (ert-deftest quoth-test/exec-command-uses-workdir ()
   "The command runs with the resolved working directory."
@@ -223,25 +299,56 @@ itself."
                       "exec_command"
                       (format "{\"cmd\":\"pwd\",\"workdir\":%S}"
                               wd)))
-               (result (quoth-exec-command--exec call)))
-          (should (string-match-p (regexp-quote wd) (car result))))
+               (capture (quoth-test--capture)))
+          (quoth-exec-command--exec call (car capture))
+          (should (quoth-test--wait-until (lambda () (funcall (cdr capture)))))
+          (should (string-match-p (regexp-quote wd)
+                                  (caar (funcall (cdr capture))))))
       (ignore-errors (delete-directory wd t)))))
 
 (ert-deftest quoth-test/exec-command-short-yield-reports-session ()
-  "A still-running command yields a session id and no exit code."
-  (let ((call (quoth-test--tool-call
-               "exec_command"
-               "{\"cmd\":\"sleep 5\",\"yield_time_ms\":200}"))
-        session-id)
-    (let ((result (quoth-exec-command--exec call)))
-      (should (stringp (car result)))
+  "A still-running command reports a session id and no exit code."
+  (let* ((call (quoth-test--tool-call
+                "exec_command"
+                "{\"cmd\":\"sleep 5\"}"))
+         (quoth-process-yield-ms 10)
+         (capture (quoth-test--capture))
+         (session-id nil))
+    (quoth-exec-command--exec call (car capture))
+    (should (quoth-test--wait-until (lambda () (funcall (cdr capture)))))
+    (let ((result (car (funcall (cdr capture)))))
       (should (string-match "Process running with session ID \\([0-9]+\\)"
                             (car result)))
-      (setq session-id (string-to-number
-                        (match-string 1 (car result))))
+      (setq session-id (string-to-number (match-string 1 (car result))))
       (should (null (cdr result))))
     (should (gethash session-id quoth-process--sessions))
     (quoth-process--kill (quoth-process--find session-id))))
+
+(ert-deftest quoth-test/exec-command-cancel-abandons-without-killing ()
+  "The cancel thunk abandons the wait but leaves the session running.
+After cancelling, no further report arrives even when the process
+finishes; the session stays registered for a later `write_stdin'."
+  (let* ((call (quoth-test--tool-call
+                "exec_command"
+                "{\"cmd\":\"sleep 5\"}"))
+         (quoth-process-yield-ms 10)
+         (capture (quoth-test--capture))
+         (cancel (quoth-exec-command--exec call (car capture)))
+         (session-id nil))
+    (should (functionp cancel))
+    (setq session-id (hash-table-keys quoth-process--sessions))
+    (funcall cancel)
+    ;; The cancel detached the exit handler and cancelled the window:
+    ;; one pump drains the fired window (already cancelled) and any
+    ;; pending schedule hop, and nothing reports.
+    (quoth-test--pump)
+    (should-not (funcall (cdr capture)))
+    (should (quoth-process--find (car session-id)))
+    ;; The session survives the cancel: its process is still live.
+    (should (process-live-p
+             (quoth-process-session-process
+              (quoth-process--find (car session-id)))))
+    (quoth-process--kill (quoth-process--find (car session-id)))))
 
 ;;; 4. write_stdin execution
 
@@ -249,32 +356,81 @@ itself."
   "Test that \"exec_command\" and \"write_stdin\" drive the process to completion."
   (let* ((start (quoth-test--tool-call
                  "exec_command"
-                 "{\"cmd\":\"read line; echo got:$line\",\"yield_time_ms\":200}"))
-         (start-result (quoth-exec-command--exec start))
-         session-id)
-    (should (string-match "Process running with session ID \\([0-9]+\\)"
-                          (car start-result)))
-    (setq session-id (string-to-number (match-string 1 (car start-result))))
+                 "{\"cmd\":\"read line; echo got:$line\"}"))
+         (quoth-process-yield-ms 10)
+         (start-capture (quoth-test--capture))
+         (session-id nil))
+    (quoth-exec-command--exec start (car start-capture))
+    (should (quoth-test--wait-until (lambda () (funcall (cdr start-capture)))))
+    (let ((start-result (car (funcall (cdr start-capture)))))
+      (should (string-match "Process running with session ID \\([0-9]+\\)"
+                            (car start-result)))
+      (setq session-id (string-to-number (match-string 1 (car start-result)))))
     (let* ((write (quoth-test--tool-call
                    "write_stdin"
                    (format "{\"session_id\":%d,\"input\":\"hello\\n\"}"
                            session-id)))
-           (write-result (quoth-write-stdin--exec write)))
-      (should (string-match-p "got:hello" (car write-result)))
-      (should (string-match-p "Process exited with code 0" (car write-result)))
-      (should (= (cdr write-result) 0)))
-    (should-not (gethash session-id quoth-process--sessions))))
+           (write-capture (quoth-test--capture)))
+      (quoth-write-stdin--exec write (car write-capture))
+      (should (quoth-test--wait-until (lambda () (funcall (cdr write-capture)))))
+      (let ((write-result (car (funcall (cdr write-capture)))))
+        (should (string-match-p "got:hello" (car write-result)))
+        (should (string-match-p "Process exited with code 0" (car write-result)))
+        (should (= (cdr write-result) 0)))
+      (should-not (gethash session-id quoth-process--sessions)))))
 
 (ert-deftest quoth-test/write-stdin-unknown-session-errors ()
-  "An unknown session id yields an error result without spawning."
+  "An unknown session id delivers an error result without spawning."
   (let ((spawned nil))
     (cl-letf (((symbol-function 'make-process)
                (lambda (&rest _args) (setq spawned t) nil)))
       (let* ((call (quoth-test--tool-call "write_stdin" "{\"session_id\":9999}"))
-             (result (quoth-write-stdin--exec call)))
-        (should (string-match-p "Process exited with code -1" (car result)))
-        (should (= (cdr result) -1)))
-      (should-not spawned))))
+             (capture (quoth-test--capture)))
+        (should-not (quoth-write-stdin--exec call (car capture)))
+        (let ((result (car (funcall (cdr capture)))))
+          (should (string-match-p "Process exited with code -1" (car result)))
+          (should (= (cdr result) -1)))
+        (should-not spawned)))))
+
+(ert-deftest quoth-test/write-stdin-polls-self-exited-session ()
+  "A write to a self-exited background session reports its final output.
+The session outlived its wait (the running report detached it); the
+poll delivers the exit chunk and code without waiting, and the
+session is deregistered."
+  (let* ((start (quoth-test--tool-call
+                 "exec_command"
+                 "{\"cmd\":\"read line; echo done\"}"))
+         (quoth-process-yield-ms 10)
+         (start-capture (quoth-test--capture))
+         (session-id nil))
+    (quoth-exec-command--exec start (car start-capture))
+    (should (quoth-test--wait-until (lambda () (funcall (cdr start-capture)))))
+    (let ((start-result (car (funcall (cdr start-capture)))))
+      (should (string-match "Process running with session ID \\([0-9]+\\)"
+                            (car start-result)))
+      (setq session-id (string-to-number (match-string 1 (car start-result)))))
+    ;; Close the session's stdin so the background session exits on its
+    ;; own; it stays registered (the running report detached its wait).
+    ;; Event-wait for the real exit rather than racing a sleep.
+    (process-send-string
+     (quoth-process-session-process (quoth-process--find session-id))
+     "\n")
+    (should (quoth-test--wait-until
+             (lambda ()
+               (let ((session (quoth-process--find session-id)))
+                 (and session
+                      (not (process-live-p
+                            (quoth-process-session-process session))))))))
+    (let* ((write (quoth-test--tool-call "write_stdin"
+                                         (format "{\"session_id\":%d}"
+                                                 session-id)))
+           (write-capture (quoth-test--capture)))
+      (should-not (quoth-write-stdin--exec write (car write-capture)))
+      (let ((result (car (funcall (cdr write-capture)))))
+        (should (string-match-p "Process exited with code 0" (car result)))
+        (should (string-match-p "done" (car result)))
+        (should (= (cdr result) 0)))
+      (should-not (gethash session-id quoth-process--sessions)))))
 
 ;;; 5. Result prose formatting
 
@@ -797,7 +953,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                       "write_file"
                       (quoth-test--args-json
                        :path target :content "hello\nworld\n")))
-               (result (quoth-write-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
           (should (string-match-p "Process exited with code 0" (car result)))
           (should (= (cdr result) 0))
           (should (file-exists-p target))
@@ -818,7 +974,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                       "write_file"
                       (quoth-test--args-json
                        :path target :content content)))
-               (result (quoth-write-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
           (should (= (cdr result) 0))
           (with-temp-buffer
             ;; Force no newline translation on insert so we read raw bytes.
@@ -837,7 +993,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                       "write_file"
                       (quoth-test--args-json
                        :path "rel.txt" :content "x" :workdir dir)))
-               (result (quoth-write-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
           (should (= (cdr result) 0))
           (should (file-exists-p (expand-file-name "rel.txt" dir))))
       (ignore-errors (delete-directory dir t)))))
@@ -851,7 +1007,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                       "write_file"
                       (quoth-test--args-json
                        :path target :content "nested")))
-               (result (quoth-write-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
           (should (= (cdr result) 0))
           (should (file-exists-p target)))
       (ignore-errors (delete-directory dir t)))))
@@ -866,7 +1022,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                       "write_file"
                       (quoth-test--args-json
                        :path target :content "new" :overwrite :json-false)))
-               (result (quoth-write-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
           (should (string-match-p "Process exited with code -1" (car result)))
           (should (= (cdr result) -1))
           ;; Existing content is untouched.
@@ -887,7 +1043,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                       "write_file"
                       (quoth-test--args-json
                        :path target :content "new")))
-               (result (quoth-write-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
           (should (= (cdr result) 0))
           (with-temp-buffer
             (insert-file-contents target)
@@ -905,7 +1061,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                       "write_file"
                       (quoth-test--args-json
                        :path target :content "data")))
-               (result (quoth-write-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
           (should (= (cdr result) 0))
           ;; No leftover atomic-write temp file remains.
           (should-not (directory-files dir nil "\\.tmp\\'"))
@@ -921,7 +1077,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
         (dolist (json (list (quoth-test--args-json :content "x" :workdir dir)
                             (quoth-test--args-json :path "" :content "x")))
           (let* ((call (quoth-test--tool-call "write_file" json))
-                 (result (quoth-write-file--exec call)))
+                 (result (quoth-test--sync-result #'quoth-write-file--exec call)))
             (should (string-match-p "Process exited with code -1" (car result)))
             (should (= (cdr result) -1))))
       (ignore-errors (delete-directory dir t)))))
@@ -935,7 +1091,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                (call (quoth-test--tool-call
                       "read_file"
                       (quoth-test--args-json :path target)))
-               (result (quoth-read-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
           (should (string-match-p "Process exited with code 0" (car result)))
           (should (= (cdr result) 0))
           (should (string-match-p "some\ncontent\n" (car result))))
@@ -950,7 +1106,7 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                (call (quoth-test--tool-call
                       "read_file"
                       (quoth-test--args-json :path target)))
-               (result (quoth-read-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
           (should (= (cdr result) 0))
           (should (string-match-p "a\r\nb\r\n" (car result))))
       (ignore-errors (delete-directory dir t)))))
@@ -971,7 +1127,7 @@ in a proper multibyte result string."
                (call (quoth-test--tool-call
                       "read_file"
                       (quoth-test--args-json :path target)))
-               (result (quoth-read-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
           (should (= (cdr result) 0))
           ;; The multi-byte sequences on disk (C3 A9 for é, E2 80 94 for
           ;; the em dash) decode to the single chars U+00E9 and U+2014.
@@ -987,7 +1143,7 @@ in a proper multibyte result string."
                (call (quoth-test--tool-call
                       "read_file"
                       (quoth-test--args-json :path "rel.txt" :workdir dir)))
-               (result (quoth-read-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
           (should (= (cdr result) 0))
           (should (string-match-p "hi" (car result))))
       (ignore-errors (delete-directory dir t)))))
@@ -1000,7 +1156,7 @@ in a proper multibyte result string."
                (call (quoth-test--tool-call
                       "read_file"
                       (quoth-test--args-json :path target)))
-               (result (quoth-read-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
           (should (string-match-p "Process exited with code -1" (car result)))
           (should (= (cdr result) -1)))
       (ignore-errors (delete-directory dir t)))))
@@ -1016,7 +1172,7 @@ in a proper multibyte result string."
                (call (quoth-test--tool-call
                       "read_file"
                       (quoth-test--args-json :path target)))
-               (result (quoth-read-file--exec call)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
           (should (= (cdr result) 0))
           (should (string-match-p "omitted" (car result))))
       (ignore-errors (delete-directory dir t)))))
