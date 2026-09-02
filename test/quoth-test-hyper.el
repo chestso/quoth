@@ -58,6 +58,7 @@
 (defvar quoth-test--root)
 (declare-function quoth-test--fresh-buffer "quoth-test" ())
 (declare-function quoth-test--cleanup "quoth-test" ())
+(declare-function quoth-test--wait-until "quoth-test-process" (pred &optional timeout))
 
 (defvar quoth-test--captured-completion nil
   "Capture slot for `quoth-test/hyper-send-injects-completion'.")
@@ -1758,14 +1759,20 @@ own (those live in quoth-openai.el)."
 ;;; C6. Model catalog: fetch, choices, and interactive selection
 
 (ert-deftest quoth-test/hyper-fetch-models-parses-catalog ()
-  "`quoth-hyper--fetch-models' parses the /provider catalog into an alist.
+  "`quoth-hyper--fetch-models-async' parses the /provider catalog.
 The dummy server's catalog has three models; the first must carry the
 id, name, context window, and reasoning flag." :tags '(:integration)
-  (let ((fetched (cons 'unset nil)))
+  (let ((fetched (cons 'unset nil))
+        (done nil))
     (let ((result (quoth-test--with-hyper-server
                    'ok-stream
                    (lambda (base)
-                     (setq fetched (quoth-hyper--fetch-models base "tok"))))))
+                     (quoth-hyper--fetch-models-async
+                      base "tok"
+                      (lambda (catalog)
+                        (setq fetched catalog done t)))
+                     ;; The sentinel delivers on the schedule hop.
+                     (quoth-test--wait-until (lambda () done))))))
       (should (consp fetched))
       (should-not (eq (car fetched) 'unset))
       (let* ((catalog (car fetched))
@@ -1791,8 +1798,13 @@ id, name, context window, and reasoning flag." :tags '(:integration)
         (should (string= (nth 1 (car requests)) "/provider"))))))
 
 (ert-deftest quoth-test/hyper-fetch-models-nil-on-failure ()
-  "`quoth-hyper--fetch-models' returns nil when the gateway is unreachable."
-  (should (null (quoth-hyper--fetch-models "http://127.0.0.1:1" "tok"))))
+  "`quoth-hyper--fetch-models-async' delivers nil when unreachable."
+  (let ((delivered nil))
+    (should (processp (quoth-hyper--fetch-models-async
+                       "http://127.0.0.1:1" "tok"
+                       (lambda (catalog) (push catalog delivered)))))
+    (should (quoth-test--wait-until (lambda () delivered)))
+    (should (equal delivered '(nil)))))
 
 (ert-deftest quoth-test/select-model-sets-provider-and-global ()
   "`quoth-select-model' updates the provider slot, `quoth-model', and header.
@@ -1808,6 +1820,18 @@ it to the current buffer and the global default." :tags '(:integration)
                              (setf (quoth-hyper-provider-base-url
                                     quoth-active-provider)
                                    base)
+                             ;; Warm the cache through the real async
+                             ;; fetch before the cold-cache picker path.
+                             (setq quoth-provider--models-cache
+                                   (make-hash-table :test 'equal)
+                                   quoth-provider--models-inflight
+                                   (make-hash-table :test 'equal))
+                             (quoth-provider-models-refresh
+                              quoth-active-provider 'force)
+                             (quoth-test--wait-until
+                              (lambda ()
+                                (quoth-provider-models-cached
+                                 quoth-active-provider)))
                              (cl-letf (((symbol-function 'completing-read)
                                         (lambda (&rest _) "qwen3.7-plus")))
                                (quoth-select-model))))))
@@ -1836,6 +1860,14 @@ it to the current buffer and the global default." :tags '(:integration)
              (lambda (base)
                (setf (quoth-hyper-provider-base-url quoth-active-provider)
                      base)
+               (setq quoth-provider--models-cache
+                     (make-hash-table :test 'equal)
+                     quoth-provider--models-inflight
+                     (make-hash-table :test 'equal))
+               (quoth-provider-models-refresh quoth-active-provider 'force)
+               (quoth-test--wait-until
+                (lambda ()
+                  (quoth-provider-models-cached quoth-active-provider)))
                (cl-letf (((symbol-function 'completing-read)
                           (lambda (&rest _) "default")))
                  (quoth-select-model))))
@@ -1849,8 +1881,10 @@ it to the current buffer and the global default." :tags '(:integration)
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (cl-letf (((symbol-function 'quoth-provider--models)
+            (cl-letf (((symbol-function 'quoth-provider-models-cached)
                        (lambda (&rest _) nil))
+                      ((symbol-function 'quoth-provider-models-refresh)
+                       #'ignore)
                       ((symbol-function 'completing-read)
                        (lambda (_prompt coll &rest _)
                          (should (assoc quoth-openai-default-model coll))

@@ -378,7 +378,8 @@ Buffer-local.")
 (declare-function quoth-openai-tool-call-exit "quoth-openai" (tool-call))
 (declare-function quoth--openai-alist-get "quoth-openai" (key alist))
 (declare-function quoth-process--shell-type "quoth-process" (shell-path))
-(declare-function quoth-hyper--fetch-models "quoth-hyper-provider" (base-url &optional token))
+(declare-function quoth-provider-models-cached "quoth-provider" (provider))
+(declare-function quoth-provider-models-refresh "quoth-provider" (provider &optional force))
 (declare-function quoth-provider-transport-process "quoth-provider" (provider))
 
 (declare-function quoth-select-model-menu "quoth-select" ())
@@ -1190,7 +1191,14 @@ the name is not found."
                    buf default-directory))
       ;; Mark initialized only after mode setup so the flag is not wiped
       ;; by the parent mode (which calls kill-all-local-variables).
-      (setq-local quoth--initialized t))))
+      (setq-local quoth--initialized t)
+      ;; Prefetch the model catalog so the selector (C-c c m) is warm.
+      ;; Guarded: a failed prefetch must never block buffer creation.
+      (ignore-errors
+        (when (and quoth-provider-models-prefetch
+                   quoth-active-provider
+                   (quoth-provider-p quoth-active-provider))
+          (quoth-provider-models-refresh quoth-active-provider))))))
 
 (defun quoth--append-as-user-input (buf formatted)
   "Insert FORMATTED content into BUF as user input.
@@ -2578,17 +2586,19 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
 
 (defun quoth-select-model ()
   "Select a model from the active provider's catalog.
-Fetches the live model catalog via `quoth-provider--models' (sync)
-and prompts for a choice; picking a model applies it through
+Reads the catalog from the protocol's global cache; on a cold cache
+offers the static fallback list while a refresh runs in the
+background (the refresh message notes it, and the cache warming lands
+on `quoth-provider-models-hook').  Picking a model applies it through
 `quoth-provider--apply-model' (which sets the provider's model slot)
 and also sets the global `quoth-model' so future buffers use the
 choice.  Choosing the `default' entry clears the selection back to the
-provider default.  When the catalog fetch fails, offers a small
-fallback list so selection still works offline."
+provider default."
   (interactive)
   (let* ((models (and quoth-active-provider
                       (quoth-provider-p quoth-active-provider)
-                      (quoth-provider--models quoth-active-provider)))
+                      (quoth-provider-models-cached quoth-active-provider)))
+         (cold (null models))
          (choices (if models
                       (mapcar (lambda (m)
                                 (cons (plist-get m :id)
@@ -2616,6 +2626,9 @@ fallback list so selection still works offline."
          quoth-active-provider
          (list :id choice))))
     (quoth--update-header-line)
+    (when cold
+      (quoth-provider-models-refresh quoth-active-provider)
+      (message "fetching model catalog..."))
     (message "Model: %s"
              (or (and (not (string= choice "default")) choice)
                  quoth-openai-default-model))))

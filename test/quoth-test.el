@@ -97,20 +97,39 @@ on post-hop state run without waiting."
               (lambda (fn) (funcall fn) nil)))
      ,@body))
 
+(defvar quoth-provider--models-cache)
+(defvar quoth-provider--models-inflight)
+
+(defun quoth-test--with-models-cache (fn)
+  "Run FN with the global models cache and in-flight table empty.
+Installs fresh tables and restores the originals on exit, so catalog
+tests stay isolated."
+  (let ((cache quoth-provider--models-cache)
+        (inflight quoth-provider--models-inflight))
+    (setq quoth-provider--models-cache (make-hash-table :test 'equal)
+          quoth-provider--models-inflight (make-hash-table :test 'equal))
+    (unwind-protect
+        (funcall fn)
+      (setq quoth-provider--models-cache cache
+            quoth-provider--models-inflight inflight))))
+
 (defun quoth-test--buffer-name ()
   "Return the deterministic quoth buffer name for `quoth-test--root'."
   (let ((quoth--root-buffer-alist nil))
     (quoth--buffer-name-for-root quoth-test--root)))
 
-(defun quoth-test--fresh-buffer ()
+(defun quoth-test--fresh-buffer (&optional prefetch)
   "Create a fresh quoth test buffer and return it.
 The buffer is bound to `quoth-test--root' and deterministically named.
-Initializes with the default hyper provider."
+Initializes with the default hyper provider.  PREFETCH non-nil keeps
+the buffer-init catalog prefetch enabled (default: suppressed so the
+fast suite stays hermetic)."
   (let ((name (quoth-test--buffer-name)))
     (when (get-buffer name)
       (kill-buffer name))
     (cl-letf (((symbol-function 'project-current) (lambda (&optional _dir) nil)))
-      (let ((default-directory quoth-test--root))
+      (let ((default-directory quoth-test--root)
+            (quoth-provider-models-prefetch (and prefetch t)))
         (quoth)))
     (get-buffer (quoth-test--buffer-name))))
 
@@ -134,8 +153,9 @@ Initializes with the default hyper provider."
                  "quoth-test-json" "quoth-test-openai" "quoth-test-hyper"
                  "quoth-test-reasoning" "quoth-test-stream"
                  "quoth-test-xxh3" "quoth-test-tools"
-                 "quoth-test-process" "quoth-test-round"
-                 "quoth-test-searxng" "quoth-test-select"))
+                 "quoth-test-catalog" "quoth-test-process"
+                 "quoth-test-round" "quoth-test-searxng"
+                 "quoth-test-select"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")

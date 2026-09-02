@@ -83,9 +83,12 @@
 ;;; 102. Provider generics: models + apply-model
 
 (ert-deftest quoth-test/provider-models-generic-default-is-nil ()
-  "The base `quoth-provider--models' returns nil for a bare provider."
-  (let ((provider (make-quoth-provider)))
-    (should (null (quoth-provider--models provider)))))
+  "The base `quoth-provider--models-async' delivers nil for a bare provider."
+  (let ((provider (make-quoth-provider))
+        (delivered nil))
+    (should (null (quoth-provider--models-async
+                   provider (lambda (models) (push models delivered)))))
+    (should (equal delivered '(nil)))))
 
 (ert-deftest quoth-test/provider-apply-model-generic-default-is-nil ()
   "The base `quoth-provider--apply-model' returns nil for a bare provider."
@@ -93,41 +96,46 @@
     (should (null (quoth-provider--apply-model provider '(:id "x"))))))
 
 (ert-deftest quoth-test/hyper-provider-models-normalizes-plist ()
-  "`quoth-provider--models' on hyper returns structured plists from the catalog."
+  "`quoth-provider--models-async' on hyper delivers structured plists."
   (let ((provider (quoth-make-hyper-provider
                    :buffer (current-buffer)
                    :working-directory default-directory
-                   :base-url "http://127.0.0.1:1")))
-    (cl-letf (((symbol-function 'quoth-hyper--fetch-models)
-               (lambda (&rest _)
-                 (cons '((default_large_model_id . "qwen3.7-plus"))
-                       (vector
-                        (list (cons "id" "deepseek-v4-flash-0731")
-                              (cons "name" "DeepSeek V4 Flash")
-                              (cons "cost_per_1m_in" 0.1)
-                              (cons "cost_per_1m_out" 0.3)
-                              (cons "cost_per_1m_in_cached" 0.0)
-                              (cons "cost_per_1m_out_cached" 0.0)
-                              (cons "context_window" 131072)
-                              (cons "default_max_tokens" 8192)
-                              (cons "can_reason" t)
-                              (cons "reasoning_levels"
-                                    (vector "low" "medium" "high"))
-                              (cons "default_reasoning_effort" "high")
-                              (cons "supports_attachments" t))
-                        (list (cons "id" "mini-no-reason")
-                              (cons "name" "Mini No Reason")
-                              (cons "cost_per_1m_in" 0.05)
-                              (cons "cost_per_1m_out" 0.1)
-                              (cons "cost_per_1m_in_cached" 0.0)
-                              (cons "cost_per_1m_out_cached" 0.0)
-                              (cons "context_window" 32768)
-                              (cons "default_max_tokens" 4096)
-                              (cons "can_reason" :json-false)
-                              (cons "reasoning_levels" (vector))
-                              (cons "default_reasoning_effort" nil)
-                              (cons "supports_attachments" :json-false)))))))
-      (let ((models (quoth-provider--models provider)))
+                   :base-url "http://127.0.0.1:1"))
+        (delivered nil))
+    (cl-letf (((symbol-function 'quoth-hyper--fetch-models-async)
+               (lambda (_base _token on-done)
+                 (funcall on-done
+                          (cons '((default_large_model_id . "qwen3.7-plus"))
+                                (vector
+                                 (list (cons "id" "deepseek-v4-flash-0731")
+                                       (cons "name" "DeepSeek V4 Flash")
+                                       (cons "cost_per_1m_in" 0.1)
+                                       (cons "cost_per_1m_out" 0.3)
+                                       (cons "cost_per_1m_in_cached" 0.0)
+                                       (cons "cost_per_1m_out_cached" 0.0)
+                                       (cons "context_window" 131072)
+                                       (cons "default_max_tokens" 8192)
+                                       (cons "can_reason" t)
+                                       (cons "reasoning_levels"
+                                             (vector "low" "medium" "high"))
+                                       (cons "default_reasoning_effort" "high")
+                                       (cons "supports_attachments" t))
+                                 (list (cons "id" "mini-no-reason")
+                                       (cons "name" "Mini No Reason")
+                                       (cons "cost_per_1m_in" 0.05)
+                                       (cons "cost_per_1m_out" 0.1)
+                                       (cons "cost_per_1m_in_cached" 0.0)
+                                       (cons "cost_per_1m_out_cached" 0.0)
+                                       (cons "context_window" 32768)
+                                       (cons "default_max_tokens" 4096)
+                                       (cons "can_reason" :json-false)
+                                       (cons "reasoning_levels" (vector))
+                                       (cons "default_reasoning_effort" nil)
+                                       (cons "supports_attachments"
+                                             :json-false))))))))
+      (quoth-provider--models-async
+       provider (lambda (models) (push models delivered)))
+      (let ((models (car delivered)))
         (should (= (length models) 2))
         (let ((m1 (car models)))
           (should (string= (plist-get m1 :id) "deepseek-v4-flash-0731"))
@@ -139,7 +147,8 @@
           (should (= (plist-get m1 :cost-in-cached) 0.0))
           (should (= (plist-get m1 :cost-out-cached) 0.0))
           (should (eq (plist-get m1 :can-reason) t))
-          (should (equal (plist-get m1 :reasoning-levels) '("low" "medium" "high")))
+          (should (equal (plist-get m1 :reasoning-levels)
+                         '("low" "medium" "high")))
           (should (string= (plist-get m1 :default-reasoning-effort) "high"))
           (should (eq (plist-get m1 :supports-attachments) t)))
         (let ((m2 (cadr models)))
@@ -156,14 +165,18 @@
     (should (string= (quoth-hyper-provider-model provider) "qwen3.7-plus"))))
 
 (ert-deftest quoth-test/hyper-provider-models-nil-on-fetch-failure ()
-  "`quoth-provider--models' returns nil when the catalog fetch fails."
+  "`quoth-provider--models-async' delivers nil when the fetch fails."
   (let ((provider (quoth-make-hyper-provider
                    :buffer (current-buffer)
                    :working-directory default-directory
-                   :base-url "http://127.0.0.1:1")))
-    (cl-letf (((symbol-function 'quoth-hyper--fetch-models)
-               (lambda (&rest _) nil)))
-      (should (null (quoth-provider--models provider))))))
+                   :base-url "http://127.0.0.1:1"))
+        (delivered nil))
+    (cl-letf (((symbol-function 'quoth-hyper--fetch-models-async)
+               (lambda (_base _token on-done)
+                 (funcall on-done nil))))
+      (quoth-provider--models-async
+       provider (lambda (models) (push models delivered)))
+      (should (equal delivered '(nil))))))
 
 ;;; 103. Session attributes: buffer-local, no globals
 
@@ -226,11 +239,13 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (cl-letf (((symbol-function 'quoth-provider--models)
+            (cl-letf (((symbol-function 'quoth-provider-models-cached)
                        (lambda (&rest _)
                          (list '(:id "qwen3.7-plus" :name "Qwen" :can-reason t
                                      :reasoning-levels ("low" "medium" "high" "max")
                                      :default-reasoning-effort "max"))))
+                      ((symbol-function 'quoth-provider-models-refresh)
+                       #'ignore)
                       ((symbol-function 'completing-read)
                        (lambda (&rest _) "qwen3.7-plus")))
               (quoth-select-model))
@@ -246,8 +261,10 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             (setf (quoth-hyper-provider-model quoth-active-provider) "qwen3.7-plus")
-            (cl-letf (((symbol-function 'quoth-provider--models)
+            (cl-letf (((symbol-function 'quoth-provider-models-cached)
                        (lambda (&rest _) nil))
+                      ((symbol-function 'quoth-provider-models-refresh)
+                       #'ignore)
                       ((symbol-function 'completing-read)
                        (lambda (&rest _) "default")))
               (quoth-select-model))
@@ -261,8 +278,10 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (cl-letf (((symbol-function 'quoth-provider--models)
+            (cl-letf (((symbol-function 'quoth-provider-models-cached)
                        (lambda (&rest _) nil))
+                      ((symbol-function 'quoth-provider-models-refresh)
+                       #'ignore)
                       ((symbol-function 'completing-read)
                        (lambda (_prompt coll &rest _)
                          (should (assoc quoth-openai-default-model coll))
@@ -379,7 +398,7 @@ are registered with `savehist-additional-variables'."
             (transient--original-buffer (current-buffer)))
 	(cl-letf (((symbol-function 'quoth-provider-p)
 		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-provider--models)
+		  ((symbol-function 'quoth-provider-models-cached)
 		   (lambda (&rest _)
 		     (list '(:id "m" :can-reason t
 				 :reasoning-levels ("low" "high")))))
@@ -396,7 +415,7 @@ are registered with `savehist-additional-variables'."
             (transient--original-buffer (current-buffer)))
 	(cl-letf (((symbol-function 'quoth-provider-p)
 		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-provider--models)
+		  ((symbol-function 'quoth-provider-models-cached)
 		   (lambda (&rest _)
 		     (list '(:id "m" :can-reason nil
 				 :reasoning-levels nil))))
@@ -413,7 +432,7 @@ are registered with `savehist-additional-variables'."
             (transient--original-buffer (current-buffer)))
 	(cl-letf (((symbol-function 'quoth-provider-p)
 		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-provider--models)
+		  ((symbol-function 'quoth-provider-models-cached)
 		   (lambda (&rest _)
 		     (list '(:id "m" :can-reason t
 				 :reasoning-levels ("low" "high")))))
@@ -430,7 +449,7 @@ are registered with `savehist-additional-variables'."
             (transient--original-buffer (current-buffer)))
 	(cl-letf (((symbol-function 'quoth-provider-p)
 		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-provider--models)
+		  ((symbol-function 'quoth-provider-models-cached)
 		   (lambda (&rest _)
 		     (list '(:id "m" :can-reason t
 				 :reasoning-levels nil))))

@@ -115,8 +115,10 @@ All provider interaction goes through a provider protocol (the
 `cl-defgeneric` methods `quoth-provider-send-prompt`,
 `quoth-provider-interrupt`, `quoth-provider-active-p`,
 `quoth-provider-cleanup`, `quoth-provider-grant-permission`,
-`quoth-provider-model`, and the internal `quoth-provider--models`,
-`quoth-provider--apply-model`, and `quoth-provider--tool-calls`
+`quoth-provider-model`, and the internal
+`quoth-provider--models-async` + `quoth-provider--models-key`
+(the async catalog fetch and its cache key — see the catalog cache
+below), `quoth-provider--apply-model`, and `quoth-provider--tool-calls`
 (reading the SSE stream's accumulated tool calls off the finished
 transport). The protocol and
 the shared `quoth-provider` base struct live in `quoth-provider.el`;
@@ -124,6 +126,22 @@ each concrete provider is a dedicated, buffer-unaware file:
 
 - `quoth-hyper-provider.el` — the default implementation: direct HTTP
   to the Charm Hyper gateway (see below).
+
+### Model catalog cache
+
+The protocol module owns a **global** catalog cache:
+`quoth-provider--models-cache`, keyed by
+`quoth-provider--models-key` (provider type + resolved base URL for
+hyper), shared across buffers of the same provider. All UI reads go
+through `quoth-provider-models-cached` (never a fetch); a fresh entry
+(inside `quoth-provider-models-ttl`, default 600 s) returns directly,
+a stale entry returns immediately and kicks exactly one background
+refresh (stale-while-revalidate, deduplicated in flight), and a
+successful refresh runs `quoth-provider-models-hook`. Refreshes ride
+the async `quoth-provider--models-async` generic; a failed fetch keeps
+the cached entry. The selector's `g` suffix force-refreshes, buffer
+initialization prefetches (`quoth-provider-models-prefetch`), and
+`quoth-select-model` falls back to the static list on a cold cache.
 
 The shared `quoth-provider` base struct has slots `buffer`,
 `completion-action`, `working-directory`, `transport-process` (the live
