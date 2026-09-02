@@ -49,11 +49,15 @@
 
 (require 'cl-lib)
 (require 'json)
-(require 'quoth-json)
 (require 'subr-x)
 (require 'url-util)
+
+;;; Prefer `require'; fall back to loading the siblings from this
+;;; file's own directory so both flycheck and package-installed loads
+;;; work.  The order follows the dependency graph: `quoth-json' first,
+;;; then `quoth-openai' and `quoth-tools'.
 (eval-and-compile
-  (dolist (dep '("quoth-openai" "quoth-tools"))
+  (dolist (dep '("quoth-json" "quoth-openai" "quoth-tools"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -271,12 +275,12 @@ prefix."
                     (min 6 (point-max))))))
 
 (defun quoth-searxng--result (state buf max)
-  "Return (HEALTH . RESULT) for the response in BUF.
+  "Return (HEALTH . RESULT) for the response in BUF tracked by STATE.
 HEALTH is the health state the outcome caches; RESULT is the
-(RESULT . EXIT) pair delivered to the round.  An unreachable server,
+\(RESULT . EXIT) pair delivered to the round.  An unreachable server,
 an empty body, or malformed JSON yields an error result with
 `unreachable'; a good payload yields the normalized prose result
-with `t'."
+with t."
   (cond
    ((not (with-current-buffer buf (quoth-searxng--response-p buf)))
     (plist-put state :buf nil)

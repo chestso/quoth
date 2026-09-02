@@ -156,8 +156,8 @@ disallowed.  Returns nil otherwise."
          shell)))
 
 (defun quoth-exec--abandon (session timer)
-  "Return the cancel thunk for a live process wait.
-Cancels the armed window timer and detaches the session's exit
+  "Return the cancel thunk for the live process wait on SESSION.
+TIMER is the armed window timer.  Cancels it and detaches the session's exit
 handler, so the abandoned wait reports no more.  The session itself
 keeps running: its id was already reported to the model in the block
 text, so a later prompt can `write_stdin' to it; sessions are reaped
@@ -363,7 +363,7 @@ offending argument."
   (let ((raw (plist-get args :mode)))
     (when raw
       (unless (and (integerp raw) (>= raw 0) (<= raw 4095))
-        (error "mode must be a decimal integer 0-4095 (POSIX permission bits; 420 = 0644, 493 = 0755), got %S"
+        (error "Mode must be a decimal integer 0-4095 (POSIX permission bits; 420 = 0644, 493 = 0755), got %S"
                raw))
       raw)))
 
@@ -490,7 +490,7 @@ not a byte image)."
     (apply #'concat (nreverse out))))
 
 (defun quoth-file--bol (text line)
-  "Return the byte index where line LINE (1-based) starts in TEXT.
+  "Return the byte index where line LINE (1-based) begins in TEXT.
 Interior empty lines count as lines, matching `quoth-file--lines'.
 For a LINE one past the last line start the return value is (length
 TEXT): callers use it as the exclusive slice end after the final
@@ -606,9 +606,9 @@ with a message naming the offending argument."
   (let ((off (plist-get args :offset))
         (lim (plist-get args :limit)))
     (unless (or (null off) (and (integerp off) (> off 0)))
-      (error "offset must be a positive integer, got %S" off))
+      (error "Offset must be a positive integer, got %S" off))
     (unless (or (null lim) (and (integerp lim) (> lim 0)))
-      (error "limit must be a positive integer, got %S" lim))
+      (error "Limit must be a positive integer, got %S" lim))
     (cons (or off 1) lim)))
 
 (defun quoth-read-file--render (text lines start end numbered-p)
@@ -633,8 +633,9 @@ selects the rendering:
 
 (defun quoth-read-file--marker (dropped first-dropped last-dropped)
   "Return the truncation marker for DROPPED lines, or \"\".
-The marker names the dropped line range (its numbers are true file
-line numbers, so the range doubles as the file's tail extent), the
+LAST-DROPPED is the final dropped line number.  The marker names
+the dropped line range (its numbers are true file line numbers, so
+the range doubles as the file's tail extent), the
 dropped count, and FIRST-DROPPED as the exact `offset' that fetches
 the lost lines.  The same shape serves windowed and full-file reads:
 the range is never wrong, and the resume offset always names an
@@ -702,7 +703,7 @@ immediately.  An immediate tool: returns nil (no cancel thunk)."
                 nil)
                (t
                 (when (> offset line-count)
-                  (error "offset %d is past the last line (%d)"
+                  (error "Offset %d is past the last line (%d)"
                          offset line-count))
                 (let* (;; window-end doubles as the exclusive end
                        ;; index into LINES: line N lives at index

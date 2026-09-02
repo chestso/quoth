@@ -41,10 +41,21 @@
 
 (require 'cl-lib)
 (require 'json)
-(require 'quoth-json)
 (require 'subr-x)
 (require 'auth-source)
-(require 'quoth-provider)
+
+;;; Prefer `require'; fall back to loading the siblings from this
+;;; file's own directory so both flycheck and package-installed loads
+;;; work.  The order follows the dependency graph: `quoth-json' first,
+;;; then `quoth-provider' (the protocol it implements).
+(eval-and-compile
+  (dolist (dep '("quoth-json" "quoth-provider"))
+    (unless (require (intern dep) nil t)
+      (load (expand-file-name
+             (concat dep ".el")
+             (file-name-directory
+              (or buffer-file-name load-file-name default-directory)))
+            nil t))))
 
 (defcustom quoth-openai-timeout 300
   "Seconds to wait for an OpenAI-compatible request before giving up."
@@ -372,7 +383,7 @@ are local bounded work and stay synchronous."
 (defun quoth-openai--make-stage-sentinel (finish)
   "Return the git stage sentinel closing over FINISH.
 FINISH receives the parsed git section (or nil).  A timed-out stage
-(the process deleted by the timeout) delivers nothing: the timeout
+\(the process deleted by the timeout) delivers nothing: the timeout
 delivered already."
   (lambda (proc _event)
     (when (not (process-live-p proc))
@@ -599,7 +610,7 @@ extracts none).  CONTINUATION, when non-nil, is a list of message
 alists (user, assistant with `tool_calls', `role: \"tool\"') that
 replace the user message; used by the tool loop to send follow-up
 requests with tool results.  Both inputs are message alists, never
-(ROLE . TEXT) conses.  When `quoth-tools-enabled' is non-nil (the
+\(ROLE . TEXT) conses.  When `quoth-tools-enabled' is non-nil (the
 default), the request announces the `bash' tool and
 `tool_choice: \"auto\"'."
   (let* ((model (or model quoth-openai-default-model))

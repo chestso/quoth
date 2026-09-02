@@ -45,8 +45,19 @@
 
 (require 'cl-lib)
 (require 'transient)
-(require 'quoth-provider)   ; session slots, active-provider, model generic, change hook
-(require 'quoth-openai)     ; quoth-model, quoth-openai-default-model
+
+;;; Prefer `require'; fall back to loading the siblings from this
+;;; file's own directory so both flycheck and package-installed loads
+;;; work.  The order follows the dependency graph: `quoth-provider'
+;;; first, then `quoth-openai'.
+(eval-and-compile
+  (dolist (dep '("quoth-provider" "quoth-openai"))
+    (unless (require (intern dep) nil t)
+      (load (expand-file-name
+             (concat dep ".el")
+             (file-name-directory
+              (or buffer-file-name load-file-name default-directory)))
+            nil t))))
 
 (defvar transient--original-buffer)
 
@@ -102,6 +113,7 @@ VALUE is one of t (on), :json-false (off), or nil (unset)."
 
 (defun quoth--select-model-detail (models model-id)
   "Return a pricing/context string for the model with :id MODEL-ID, or nil.
+MODELS is the model list (plists) to look the id up in.
 Only context window and per-token costs appear; the model id is shown
 by the caller."
   (let ((m (quoth--select-current-model-entry models model-id)))
@@ -155,7 +167,7 @@ it)."
   "Return the reasoning outcome cell for THINKING with EFFORT-P.
 THINKING is `off', `on', or `unset'; EFFORT-P is non-nil when a
 `reasoning_effort' would be sent.  Behavior is provider specific
-(validated on the hyper provider with `deepseek-v4-pro-0813'):
+\(validated on the hyper provider with `deepseek-v4-pro-0813'):
 `thinking: false' suppresses reasoning when sent alone, but sending
 `reasoning_effort' alongside re-enables the reasoning trace."
   (pcase thinking

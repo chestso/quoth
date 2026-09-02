@@ -296,11 +296,11 @@ exit report.  Returns the timer."
   "Write INPUT to SESSION's stdin without waiting.
 A trailing literal `\\x04' marker closes the session's stdin: the text
 before it is sent, then EOF is delivered — `process-send-eof' over a
-pipe, a line-discipline EOF over a PTY (a flush C-d first when the
+pipe, a line-discipline EOF over a PTY (a flush `C-d' first when the
 body leaves a partial line pending, so the EOF lands on the empty
 line; the flush delivers the partial line byte-faithfully, no added
 newline).  Over a pipe there is no line discipline: the byte-level
-close is the only EOF, and no C-d travels as data.  The marker
+close is the only EOF, and no `C-d' travels as data.  The marker
 must be the last four characters of INPUT; the caller rejects interior
 occurrences.  A session whose stdin was closed accepts no further
 writes: return nil without sending.  Returns non-nil when something

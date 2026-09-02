@@ -130,11 +130,11 @@ yields nil; the failure is debug-logged so the cache keeps its entry."
   (condition-case err
       (progn
         (when (string-empty-p (string-trim raw))
-          (error "empty catalog response"))
+          (error "Empty catalog response"))
         (let* ((catalog (quoth-json-read (string-trim raw)))
                (models (quoth--openai-alist-get "models" catalog)))
           (unless models
-            (error "catalog has no models key"))
+            (error "Catalog has no models key"))
           (cons catalog models)))
     (error
      (quoth--debug-log
@@ -144,8 +144,8 @@ yields nil; the failure is debug-logged so the cache keeps its entry."
 
 (defun quoth-hyper--catalog-sentinel (proc _event)
   "Sentinel for the catalog curl process PROC.
-Drains output already received but not yet dispatched to the filter
-(the single permitted zero-timeout poll pattern), parses the
+Drain output already received but not yet dispatched to the filter
+\(the single permitted zero-timeout poll pattern), parses the
 accumulated body, and delivers the catalog (or nil on failure) to the
 process's :quoth-catalog-callback via the `quoth--schedule' hop."
   ;; Drain the tail before reading the accumulated body.
@@ -162,7 +162,7 @@ BASE-URL is the hyper gateway base (e.g. `https://hyper.charm.land/v1');
 the catalog lives at `BASE-URL/provider' (HYPER-API.md section 5).
 TOKEN is resolved via `quoth-hyper--resolve-token' and sent as a
 bearer header when present.  ON-DONE receives the cons
-(CATALOG-ALIST . MODELS-VECTOR) — CATALOG-ALIST the parsed top-level
+\(CATALOG-ALIST . MODELS-VECTOR) — CATALOG-ALIST the parsed top-level
 JSON (with the `models' key), MODELS-VECTOR the `models' array — or nil
 when the fetch fails (network error, non-200, or unparseable body).
 Never logs the token; failures are debug-logged and swallowed so the
@@ -460,7 +460,7 @@ Keys: :id, :name, :context-window, :default-max-tokens, :cost-in,
           :supports-attachments     (eq (funcall get "supports_attachments") t))))
 
 (cl-defmethod quoth-provider--models-key ((provider quoth-hyper-provider))
-  "The hyper catalog key: the provider type and the resolved base URL."
+  "The hyper catalog key: the PROVIDER type and the resolved base URL."
   (cons 'hyper
         (or (quoth-hyper-provider-base-url provider)
             (getenv "HYPER_URL")
@@ -468,7 +468,7 @@ Keys: :id, :name, :context-window, :default-max-tokens, :cost-in,
 
 (cl-defmethod quoth-provider--models-async ((provider quoth-hyper-provider)
                                             on-done)
-  "Fetch the hyper model catalog and deliver the normalized plists.
+  "Fetch the hyper model catalog for PROVIDER and deliver the normalized plists.
 The raw catalog fetch rides `quoth-hyper--fetch-models-async'; each
 entry normalizes through `quoth-hyper--normalize-model'.  ON-DONE
 receives the model list, or nil when the fetch fails.  Returns the
