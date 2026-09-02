@@ -153,44 +153,93 @@ later turn.")
 (declare-function quoth-provider-application-count "quoth-provider" (provider))
 (declare-function quoth-provider-model "quoth-provider" (provider))
 
-;;; Stream state (idle/active/done/error), progress, and the error pane.
-;;; Buffer-local; these track the lifecycle of one prompt-response cycle.
+;;; The phase machine is defined early (it underpins every later state
+;;; writer); it calls into the provider protocol and the process handler,
+;;; so declare those ahead of the shared require block below.
+(declare-function quoth-provider-cleanup "quoth-provider" (provider &rest _))
+(declare-function quoth-process--cleanup-buffer "quoth-process" (owner))
 
-(defvar-local quoth--stream-state nil
-  "Stream state plist: (:status STATUS :error ERR :count N).
-STATUS is `idle', `active', `done', or `error'.  ERR is the error
-message when STATUS is `error', and COUNT is the application count,
-meaning the runnable pipeline, inflight, and blocked applications.
-Buffer-local.")
+;;; The phase machine: the single source of truth for what the current
+;;; turn is doing.  Buffer-local; transitions happen only in event
+;;; handlers (commands, process filters/sentinels via the 0-timer hop,
+;;; timers) through the single writer `quoth--phase-set`.
 
-(defun quoth--stream-transition (status &optional count error)
-  "Move the stream state to STATUS with optional COUNT and ERROR.
-Records the transition in `quoth--stream-state'."
-  (setq-local quoth--stream-state
-              (list :status status
-                    :error error
-                    :count (or count
-                               (plist-get quoth--stream-state :count)
-                               1))))
+(defvar quoth-phase-change-hook nil
+  "Hook run after each phase transition (`quoth--phase-set').
+Functions are called with the new phase symbol, with the chat buffer
+current, so subscribers refresh buffer-local UI (e.g. the header line)
+without depending on `quoth.el'.")
+
+(defvar-local quoth--phase '(:phase idle :round 0 :error nil)
+  "Phase plist: (:phase PHASE :round N :error MSG).
+PHASE is `idle' (the only resting state), `preparing' (a staged send in
+flight), `streaming' (an SSE response stream is live), or `tools' (a
+tool round is executing; N is the 1-based round number).  ERROR carries
+the last error message for `quoth--stream-progress' consumers.
+Written only by `quoth--phase-set'.  Buffer-local.")
+
+(defvar-local quoth--round-timers nil
+  "Timers armed by the live tool round (window waits, completion hops).
+Cancelled as a group by interrupt, clear, and buffer kill.  Buffer-local.")
+
+(defun quoth--phase-set (phase &rest keys)
+  "Move the phase machine to PHASE, applying plist KEYS (:round, :error).
+The single writer of `quoth--phase'.  Unspecified keys carry over from
+the prior state; a move to `idle' clears both :round and :error.  Runs
+`quoth-phase-change-hook' with the new PHASE and the chat buffer current."
+  (let ((round (or (plist-get keys :round)
+                   (if (eq phase 'idle) 0
+                     (plist-get quoth--phase :round))))
+        (error (or (plist-get keys :error)
+                   (if (eq phase 'idle) nil
+                     (plist-get quoth--phase :error)))))
+    (setq-local quoth--phase
+                (list :phase phase :round (or round 0) :error error)))
+  (run-hook-with-args 'quoth-phase-change-hook phase))
+
+(defun quoth--busy-p ()
+  "Return non-nil when the current turn is still in flight.
+True in every phase but `idle'; `quoth-send-input' and `quoth-interrupt'
+key on this state, not on transport process liveness."
+  (not (eq (plist-get quoth--phase :phase) 'idle)))
+
+(defun quoth--schedule (fn)
+  "Defer FN to the next event turn (a zero-timeout timer).
+The hop that keeps buffer surgery and follow-up sends off process
+filter/sentinel stacks: callbacks that mutate the buffer or fire
+follow-up requests must run through here.  Returns the timer."
+  (run-at-time 0 nil fn))
+
+(defun quoth--cancel-round-timers ()
+  "Cancel every timer armed by the live tool round."
+  (dolist (timer quoth--round-timers)
+    (when (timerp timer)
+      (cancel-timer timer)))
+  (setq-local quoth--round-timers nil))
+
+(defun quoth--cleanup-on-kill ()
+  "Clean up a chat buffer's asynchronous resources on kill.
+Aborts the in-flight request, cancels round timers, and kills the PTY
+sessions this buffer owns; installed on `kill-buffer-hook' by
+`quoth--init-buffer'."
+  (quoth--cancel-round-timers)
+  (when (and quoth-active-provider
+             (quoth-provider-p quoth-active-provider))
+    (quoth-provider-cleanup quoth-active-provider))
+  (quoth-process--cleanup-buffer (current-buffer)))
 
 (defun quoth--stream-progress ()
-  "Return the stream state plist (status, error, applications).
-Reads `quoth--stream-state', defaulting to a fresh `idle' state with one
-application when the buffer never sent anything.  Exposes `:applications'
-as the runnable-pipeline/inflight/blocked count for UI consumers."
-  (let* ((state (or quoth--stream-state
-                    (list :status 'idle :error nil :count 1)))
-         (count (or (plist-get state :count)
-                    (when (and quoth-active-provider
-                               (quoth-provider-p quoth-active-provider))
-                      (quoth-provider-application-count quoth-active-provider))
-                    1)))
-    (plist-put (copy-sequence state) :applications count)))
+  "Return the turn state for UI consumers: (:status :error :round).
+STATUS is the phase (`idle', `preparing', `streaming', `tools'), ERROR
+the last error message, and ROUND the live tool round (0 outside one)."
+  (list :status (plist-get quoth--phase :phase)
+        :error (plist-get quoth--phase :error)
+        :round (plist-get quoth--phase :round)))
 
 (defun quoth--stream-clear ()
-  "Reset the stream state to a fresh `idle' state."
-  (setq-local quoth--stream-state
-              (list :status 'idle :error nil :count 1)))
+  "Reset the phase machine to a fresh `idle' state."
+  (quoth--cancel-round-timers)
+  (quoth--phase-set 'idle))
 
 (defun quoth--insert-system-note (text &rest args)
   "Insert a system note with TEXT as real buffer text.
@@ -231,7 +280,7 @@ pane (`> **Error:** …') tagged `quoth-region-type' = `system', carrying
 the structured detail in `quoth-system-detail'.  The unified finalizer
 (which follows via the done-callback) stamps `quoth-interrupted' =
 `error' on the partial."
-  (quoth--stream-transition 'error nil message)
+  (quoth--phase-set (plist-get quoth--phase :phase) :error message)
   (setq-local quoth--pending-interrupt 'error)
   (quoth--insert-system-note
    (format "> **Error:** %s" message)
@@ -325,6 +374,7 @@ Buffer-local.")
 (declare-function quoth-process--shell-type "quoth-process" (shell-path))
 (declare-function quoth-hyper--fetch-models "quoth-hyper-provider" (base-url &optional token))
 (declare-function quoth-provider-transport-process "quoth-provider" (provider))
+
 (declare-function quoth-select-model-menu "quoth-select" ())
 
 ;;; Buffer naming
@@ -434,6 +484,10 @@ interrupting, clearing, and session management.
 ;; on `quoth.el'.  This is a global hook (the function is a no-op
 ;; outside a chat buffer).
 (add-hook 'quoth-after-model-change-hook #'quoth--update-header-line)
+;; The phase machine refreshes the header line on every event-driven
+;; transition (not only on user commands, which drive post-command-hook).
+(add-hook 'quoth-phase-change-hook
+          (lambda (&rest _) (quoth--update-header-line)))
 
 ;;; Internal helpers
 
@@ -1105,6 +1159,7 @@ the name is not found."
       (setq-local quoth--input-ring nil)
       (setq-local quoth--input-ring-index 0)
       (setq-local quoth--tool-loop-count 0)
+      (add-hook 'kill-buffer-hook #'quoth--cleanup-on-kill nil t)
       (quoth-chat-mode 1)
       (quoth--install-font-lock-guard t)
       (quoth--update-header-line)
@@ -1581,7 +1636,8 @@ completion.  Runs in the quoth buffer, which owns all response text."
   (setq-local quoth--tool-loop-count 0)
   (quoth--input-ring-write)
   (quoth--update-header-line)
-  (setq-local buffer-undo-list nil))
+  (setq-local buffer-undo-list nil)
+  (quoth--phase-set 'idle))
 
 (defvar-local quoth--usage-acc nil
   "Accumulated usage plist for the current session, or nil.
@@ -1688,7 +1744,7 @@ provider's completion action invokes this."
                        (quoth-provider-transport-process quoth-active-provider))))
              (and (vectorp tcs) (> (length tcs) 0))))
       (quoth--tool-loop)
-    (quoth--stream-transition 'done 1)
+    (quoth--phase-set 'idle)
     (let ((response-start (when (markerp quoth--response-start)
                             (marker-position quoth--response-start)))
           (prompt-id quoth--prompt-id)
@@ -1710,7 +1766,7 @@ come back, finalize via `quoth--close-response'."
   (if (>= quoth--tool-loop-count quoth-tool-loop-max)
       (progn
         (setq-local quoth--tool-loop-count 0)
-        (quoth--stream-transition 'done 1)
+        (quoth--phase-set 'idle)
         (let ((response-start (when (markerp quoth--response-start)
                                 (marker-position quoth--response-start)))
               (prompt-id quoth--prompt-id)
@@ -1726,6 +1782,7 @@ come back, finalize via `quoth--close-response'."
            (prompt-id quoth--prompt-id)
            (buf (current-buffer)))
       (setq-local quoth--tool-loop-count (1+ quoth--tool-loop-count))
+      (quoth--phase-set 'tools :round quoth--tool-loop-count)
       ;; Insert tool blocks before the response-start marker so they
       ;; appear as part of the current response.
       (dolist (block blocks)
@@ -1752,7 +1809,7 @@ come back, finalize via `quoth--close-response'."
         ;; Clear the old transport and set up for the follow-up.
         (setf (quoth-provider-transport-process quoth-active-provider) nil)
         (setq-local quoth--response-start (point-marker))
-        (quoth--stream-transition 'active 2)
+        (quoth--phase-set 'streaming)
         (let ((real-proc (quoth-provider-send-prompt
                           quoth-active-provider ""
                           :session-id quoth--session
@@ -1810,7 +1867,7 @@ Injects completion/delta/error callbacks as the provider's completion
 action so providers signal stream events without touching buffers.  Runs in
 the quoth buffer, which owns all streamed output."
   (let ((buf (current-buffer)))
-    (quoth--stream-transition 'active 2)
+    (quoth--phase-set 'streaming)
     (let ((real-proc (quoth-provider-send-prompt
                       quoth-active-provider prompt
                       :session-id quoth--session
@@ -2149,9 +2206,7 @@ for wire resume.  Returns the end position of the inserted block."
 (defun quoth-send-input ()
   "Send the current prompt to the provider."
   (interactive)
-  (when (and quoth-active-provider
-             (quoth-provider-p quoth-active-provider)
-             (quoth-provider-active-p quoth-active-provider))
+  (when (quoth--busy-p)
     (user-error "Quoth is still running; interrupt with C-c c i"))
   (let* ((input-start (or (when (and quoth--input-start-marker
                                      (markerp quoth--input-start-marker))
@@ -2193,23 +2248,21 @@ then closes the partial through the same `quoth--close-response' path as
 normal completion and server failure (the unified finalizer).  The
 partial is stamped `quoth-interrupted' = `user'."
   (interactive)
-  (let ((active (and quoth-active-provider
-                     (quoth-provider-p quoth-active-provider)
-                     (quoth-provider-active-p quoth-active-provider))))
-    (if (not active)
-        (message "No quoth process running")
-      (quoth-provider-interrupt quoth-active-provider)
-      (setq-local quoth--pending-interrupt 'user)
-      ;; The user-interrupt system note records the cut-off turn.
-      (quoth--insert-system-note
-       "> **Interrupted.**"
-       :kind 'user
-       :hint "The turn was cut off by the user.")
-      (let ((response-start (when (markerp quoth--response-start)
-                              (marker-position quoth--response-start)))
-            (prompt-id quoth--prompt-id))
-        (quoth--close-response response-start prompt-id 'user))
-      (message "Quoth process interrupted"))))
+  (if (not (quoth--busy-p))
+      (message "No quoth turn in flight")
+    (quoth--cancel-round-timers)
+    (quoth-provider-interrupt quoth-active-provider)
+    (setq-local quoth--pending-interrupt 'user)
+    ;; The user-interrupt system note records the cut-off turn.
+    (quoth--insert-system-note
+     "> **Interrupted.**"
+     :kind 'user
+     :hint "The turn was cut off by the user.")
+    (let ((response-start (when (markerp quoth--response-start)
+                            (marker-position quoth--response-start)))
+          (prompt-id quoth--prompt-id))
+      (quoth--close-response response-start prompt-id 'user))
+    (message "Quoth process interrupted")))
 
 (defun quoth-clear-buffer ()
   "Clear the Quoth buffer output and start a fresh session.

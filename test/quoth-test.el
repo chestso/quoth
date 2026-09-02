@@ -120,7 +120,7 @@ Initializes with the default hyper provider."
 ;;; Load the topic test files the same way: `require' first, then
 ;;; fall back to this directory so flycheck and direct loads work.
 (eval-and-compile
-  (dolist (dep '("quoth-test-buffer" "quoth-test-commands"
+  (dolist (dep '("quoth-test-buffer" "quoth-test-commands" "quoth-test-phase"
                  "quoth-test-json" "quoth-test-openai" "quoth-test-hyper"
                  "quoth-test-reasoning" "quoth-test-stream"
                  "quoth-test-xxh3" "quoth-test-tools"

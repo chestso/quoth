@@ -614,6 +614,7 @@ All text from the first reasoning char to the last has
                   (setf (quoth-provider-transport-process
                          quoth-active-provider)
                         proc)
+                  (quoth--phase-set 'streaming)
                   (cl-letf (((symbol-function 'quoth-openai-abort)
                              (lambda (_p) nil)))
                     (quoth-interrupt)))
@@ -664,6 +665,7 @@ All text from the first reasoning char to the last has
                   (setf (quoth-provider-transport-process
                          quoth-active-provider)
                         proc)
+                  (quoth--phase-set 'streaming)
                   (cl-letf (((symbol-function 'quoth-openai-abort)
                              (lambda (_p) nil)))
                     (quoth-interrupt)))

@@ -247,23 +247,19 @@ A blank line below it, and a blank line above it when it follows a response."
 
 ;;; 4. Input locking
 
-(ert-deftest quoth-test/send-input-errors-when-process-running ()
-  "`quoth-send-input' should signal an error when the provider is active.
-The guard reports provider activity through the protocol."
+(ert-deftest quoth-test/send-input-errors-when-busy ()
+  "`quoth-send-input' signals a user error while the turn is busy.
+The guard reads the phase machine: any non-idle phase rejects the send."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
           (goto-char (point-max))
           (insert "test prompt")
-          (setf (quoth-provider-transport-process quoth-active-provider)
-                (make-process
-                 :name "quoth-test-fake"
-                 :buffer buf
-                 :command '("sleep" "30")
-                 :connection-type 'pipe
-                 :noquery t))
-          (should-error (call-interactively #'quoth-send-input))
-          (quoth-provider-cleanup quoth-active-provider)))
+          (dolist (phase '(preparing streaming tools))
+            (quoth--phase-set phase)
+            (should-error (call-interactively #'quoth-send-input)
+                          :type 'user-error))
+          (quoth--phase-set 'idle)))
     (quoth-test--cleanup)))
 
 ;;; 5. Prompt echoing
@@ -479,6 +475,7 @@ prompt: the user separator lands at point-max."
                   (make-pipe-process :name "quoth-test-interrupt-id"
                                      :noquery t :coding 'binary
                                      :filter #'ignore :sentinel #'ignore))
+            (quoth--phase-set 'streaming)
             (cl-letf (((symbol-function 'quoth-openai-abort) #'ignore))
               (quoth-interrupt))
             (should (stringp quoth--prompt-id))

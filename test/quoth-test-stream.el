@@ -71,12 +71,12 @@ Returns the completion action the send loop injected."
     captured-completion))
 
 (ert-deftest quoth-test/stream-progress-idle-before-send ()
-  "Stream state is idle before any prompt is sent, with one application."
+  "The phase is idle before any prompt is sent."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
         (let ((state (quoth--stream-progress)))
           (should (eq (plist-get state :status) 'idle))
-          (should (= (plist-get state :applications) 1))))
+          (should (= (plist-get state :round) 0))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/stream-progress-active-after-send ()
@@ -87,8 +87,7 @@ Returns the completion action the send loop injected."
         (let ((buf (quoth-test--buffer-name)))
           (with-current-buffer buf
             (let ((state (quoth--stream-progress)))
-              (should (eq (plist-get state :status) 'active))
-              (should (= (plist-get state :applications) 2))))))
+              (should (eq (plist-get state :status) 'streaming))))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/stream-progress-done-after-finalize ()
@@ -99,8 +98,8 @@ Returns the completion action the send loop injected."
           (with-current-buffer buf
             (funcall completion)
             (let ((state (quoth--stream-progress)))
-              (should (eq (plist-get state :status) 'done))
-              (should (= (plist-get state :applications) 1))))))
+              (should (eq (plist-get state :status) 'idle))
+              (should (null (plist-get state :error)))))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/stream-record-error-tags-system-pane ()
@@ -109,9 +108,9 @@ The pane is a blockquote tagged `system' (never `response'), carrying a
 `help-echo' and a `quoth-system-detail' plist with `:kind' `error'."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
+        (quoth--phase-set 'streaming)
         (quoth--record-error "Boom")
         (let ((state (quoth--stream-progress)))
-          (should (eq (plist-get state :status) 'error))
           (should (string= (plist-get state :error) "Boom")))
         (save-excursion
           (goto-char (point-min))
@@ -143,6 +142,7 @@ Clear sweeps any `quoth-overlay'-tagged overlay, including the system
 pane; the text beneath is deleted by clear-buffer's full wipe."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
+        (quoth--phase-set 'streaming)
         (quoth--record-error "Boom")
         (should (cl-some (lambda (o) (overlay-get o 'quoth-overlay))
                          (overlays-in (point-min) (point-max))))
@@ -169,6 +169,7 @@ with a `user'-kind detail; the partial is tagged `response' with
                   (make-pipe-process :name "quoth-test-int-note"
                                      :noquery t :coding 'binary
                                      :filter #'ignore :sentinel #'ignore))
+            (quoth--phase-set 'streaming)
             (cl-letf (((symbol-function 'quoth-openai-abort) #'ignore))
               (quoth-interrupt))
             ;; The note is a `system' region reading `> **Interrupted.**'.
@@ -256,6 +257,7 @@ fresh input separator — no separate continue step."
             (insert "partial answer")
             (setq-local quoth--response-start (copy-marker resp-start)))
           ;; Failure surfaces: pane + pending-interrupt = error.
+          (quoth--phase-set 'streaming)
           (quoth--record-error "stream closed before [DONE]")
           (should (eq quoth--pending-interrupt 'error))
           ;; The unified finalizer closes the partial.
@@ -341,8 +343,7 @@ to done."
          ;; Complete the stream through the injected continuation.
          (funcall completion)
          (let ((state (quoth--stream-progress)))
-           (should (eq (plist-get state :status) 'done))
-           (should (= (plist-get state :applications) 1)))
+           (should (eq (plist-get state :status) 'idle)))
          ;; A fresh prompt was inserted.
          (goto-char (point-max))
          (should (search-backward "---" nil t))))
