@@ -244,8 +244,10 @@ the last error message, and ROUND the live tool round (0 outside one)."
 
 (defun quoth--insert-system-note (text &rest args)
   "Insert a system note with TEXT as real buffer text.
-TEXT is the full blockquote (a `>' prefix on each line keeps a multi-line
-note one markdown block).  The inserted text is tagged
+ARGS is a plist: KIND (`user' or `error') selects the overlay face,
+HINT supplies the `help-echo'.  TEXT is the full blockquote (a `>'
+prefix on each line keeps a multi-line note one markdown block).  The
+inserted text is tagged
 `quoth-region-type' = `system' at insert time, so it can never be swept
 into a `response' tag by `quoth--tag-response-region'.  A display-only
 overlay carries KIND (`user' or `error'), the `help-echo', and the
@@ -279,7 +281,7 @@ Marks the stream `error', flags the in-flight turn as an `error'
 interruption via `quoth--pending-interrupt', and inserts a blockquote
 pane (`> **Error:** …') tagged `quoth-region-type' = `system', carrying
 the structured detail in `quoth-system-detail'.  The unified finalizer
-(which follows via the done-callback) stamps `quoth-interrupted' =
+\(which follows via the done-callback) stamps `quoth-interrupted' =
 `error' on the partial."
   (quoth--phase-set (plist-get quoth--phase :phase) :error message)
   (setq-local quoth--pending-interrupt 'error)
@@ -581,7 +583,7 @@ Only logs when `quoth-debug-mode' is non-nil."
 (defun quoth--header-model ()
   "Return the effective model name for the header line, or nil.
 Reads the provider's model via the `quoth-provider-model' generic
-(derived from `quoth-model' at buffer init); falls back to
+\(derived from `quoth-model' at buffer init); falls back to
 `quoth-openai-default-model' when the provider reports none."
   (or (and quoth-active-provider
            (quoth-provider-p quoth-active-provider)
@@ -908,7 +910,7 @@ Returns nil when PROMPT-ID is the first prompt, or when
                 (if round-msgs
                     (setq exchange (append exchange round-msgs))
                   (let ((resp-text (quoth-get-response-text id)))
-                    (when resp-text
+                    (when (and resp-text (> (length resp-text) 0))
                       (setq exchange
                             (append exchange
                                     (list (list (cons 'role "assistant")
@@ -952,7 +954,7 @@ keeps the provider buffer-free."
 (defun quoth--tool-block-raw-result (start end)
   "Return the raw tool result for the tool block spanning START..END.
 The nested `tool-output' span is the wire `role: \"tool\"' content;
-fall back to the trimmed block text for legacy blocks without it."
+fall back to the trimmed block text when the span is absent."
   (let ((raw-pos (text-property-any start end 'quoth-region-type 'tool-output)))
     (string-trim
      (buffer-substring-no-properties
@@ -965,8 +967,8 @@ fall back to the trimmed block text for legacy blocks without it."
 (defun quoth--tool-call-alist (plist)
   "Return the wire element for `quoth-tool-call' PLIST, or nil.
 The element is the `tool_calls' field.  PLIST carries :id :name
-:args-json; a missing id or name yields nil so a legacy block degrades
-to a bare tool message."
+:args-json; a missing id or name yields nil, and the buffer->wire
+walk skips a block whose plist yields nil."
   (when (and (stringp (plist-get plist :id))
              (stringp (plist-get plist :name)))
     (list (cons 'id (plist-get plist :id))
@@ -981,11 +983,12 @@ Walk the response region's `quoth-region-type' spans in order and
 reconstruct the OpenAI messages the model produced: `response' spans
 accumulate assistant content; each `tool' span contributes an assistant
 `tool_calls' message (carrying any accumulated leading content) followed
-by its `role: \"tool\"' result.  Contiguous `tool' spans share one
-assistant message (parallel invocation in a round).  Reasoning and the nested
-`tool-output' spans are skipped, and any `system' pane (transcript
-annotation) falls out of the default skip branch (anything not
-`response' or `tool').  START/END bound the walk, defaulting to
+by its `role: \"tool\"' result.  One tool call per assistant
+message preserves round boundaries (no merging of sequential rounds).
+Reasoning and the nested `tool-output' spans are skipped, and a `tool'
+span without reconstructable `quoth-tool-call' metadata is skipped too:
+the server pairs a tool result only with a matching assistant
+`tool_calls' declaration.  START/END bound the walk, defaulting to
 the whole response region for PROMPT-ID.  This is the single buffer->wire
 reconstruction used by both history replay and the live tool loop."
   (let* ((start (or start
@@ -1035,29 +1038,22 @@ reconstruction used by both history replay and the live tool loop."
                                    end)))
               (cond
                ;; A tool block: `quoth-tool-call' spans it contiguously, even
-               ;; though the nested `tool-output' span splits region-type.  A
-               ;; legacy block has `tool' type but no `quoth-tool-call' span.
-               ((or call-plist (eq type 'tool))
-                (if (quoth--tool-call-alist call-plist)
-                    ;; One tool call per assistant message, preserving round
-                    ;; boundaries (no merging of sequential rounds).
-                    (progn
-                      (setq calls
-                            (list (list (quoth--tool-call-alist call-plist)
-                                        (plist-get call-plist :id)
-                                        (quoth--tool-block-raw-result pos call-end))))
-                      (flush-tools))
-                  ;; Legacy or metadata-less block: emit a bare tool message
-                  ;; only when it carries real result text.
-                  (let ((raw (quoth--tool-block-raw-result pos call-end)))
-                    (when (> (length raw) 0)
-                      (flush-tools)
-                      (setq messages
-                            (append messages
-                                    (list (list (cons 'role "tool")
-                                                (cons 'tool_call_id "unknown")
-                                                (cons 'content raw))))))))
-                (setq pos (if call-plist call-end region-end)))
+               ;; though the nested `tool-output' span splits region-type.
+               ((and call-plist (quoth--tool-call-alist call-plist))
+                ;; One tool call per assistant message, preserving round
+                ;; boundaries (no merging of sequential rounds).
+                (setq calls
+                      (list (list (quoth--tool-call-alist call-plist)
+                                  (plist-get call-plist :id)
+                                  (quoth--tool-block-raw-result pos call-end)))
+                      pos call-end)
+                (flush-tools))
+               ;; A `tool'-typed span without reconstructable wire metadata
+               ;; (missing id or name): the server can pair a tool result
+               ;; only with a matching assistant `tool_calls' declaration,
+               ;; so skip it and resume at the next span.
+               ((eq type 'tool)
+                (setq pos (min region-end call-end)))
                ;; Assistant content span.
                ((eq type 'response)
                 (let ((run-end (min region-end call-end)))
@@ -1763,8 +1759,8 @@ between the transport finish and the hop already closed the turn."
 
 (defvar-local quoth--round nil
   "Per-call state for the live tool round, or nil.
-A plist (:pending COUNT :calls STATES); each state is a plist
-(:call :name :id :args-json :call-plist :prompt-id :done :cancel
+A plist \(:pending COUNT :calls STATES); each state is a plist
+\(:call :name :id :args-json :call-plist :prompt-id :done :cancel
 :status-start :status-end).  Written by the round orchestrator; cleared
 when the
 round completes, is abandoned, or the turn closes.  Buffer-local.")
@@ -1911,7 +1907,7 @@ round is gone (the turn was interrupted, cleared, or closed)."
         (setq-local quoth--round quoth--round)))))
 
 (defun quoth--round-followup ()
-  "Send the follow-up request once the round's calls have all completed.
+  "Send the follow-up request once every call of the round has completed.
 Composes the continuation from the buffer's tagged regions (the wire
 `assistant tool_calls' / `role: tool' pairs are rebuilt by
 `quoth--tool-rounds' — every block is filled by now), clears the old
@@ -2340,12 +2336,9 @@ for wire resume.  Returns the end position of the inserted block."
       (put-text-property start end 'quoth-response-to prompt-id)
       ;; Tag the whole block (including the closing fence) so the
       ;; wire-reconstruction walk in `quoth--tool-rounds' treats it as
-      ;; one call span.  A trailing fence char left without the call
-      ;; property is itself `tool'-typed and, having no metadata, makes
-      ;; the walker fall into the legacy branch, whose raw-result bound
-      ;; (the next `quoth-tool-call' change) extends to the end of the
-      ;; response and swallows every following turn as a bare `tool'
-      ;; message with `tool_call_id: unknown'.
+      ;; one call span: it reads the block through the next
+      ;; `quoth-tool-call' property change, so a fence char left
+      ;; without the call property would split the span.
       (put-text-property start end 'quoth-tool-call
                          (list :id id
                                :name name

@@ -311,9 +311,10 @@ Tool calls replay in the OpenAI function-calling shape: an assistant
 `role: "tool"` result message with the matching `tool_call_id`. Only
 the raw result text — Codex prose convention, `Process exited with
 code N`/`Output:` — and the stored call id travel, never the rendered
-tool block. Buffers created before the nested `tool-output` region
-existed fall back to the bare `(tool . text)` turn with a legacy
-`tool_call_id: "unknown"`.
+tool block. A `tool`-tagged span without reconstructable
+`quoth-tool-call` metadata contributes nothing: the server pairs a
+tool result only with a matching assistant `tool_calls` declaration,
+so a call without its id cannot be replayed.
 
 Each buffer also owns an opaque session UUID (rotated by `C-c c k`),
 whose XXH3-64 hash is sent as the `x-session-id` /

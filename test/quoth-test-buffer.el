@@ -1818,9 +1818,11 @@ property, and the tool result pairs with the same id."
               (should (equal (quoth-test--msg-role (nth 3 msgs)) "assistant"))
               (should (string= (quoth-test--msg-content (nth 3 msgs)) "Listing done"))))))))
 
-(ert-deftest quoth-test/history-turns-legacy-tool-fallback ()
-  "Test that a tool block without metadata falls back to a bare message.
-The message has `tool_call_id: unknown' so legacy buffers still replay."
+(ert-deftest quoth-test/history-turns-skips-metadataless-tool-span ()
+  "A `tool'-typed span without `quoth-tool-call' metadata is skipped.
+It contributes no message: the server can pair a `role: \"tool\"' result
+only with a matching assistant `tool_calls' declaration, and a bare
+message with no call id has none."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1845,11 +1847,11 @@ The message has `tool_call_id: unknown' so legacy buffers still replay."
           (setq-local quoth--prompt-id (quoth--generate-id))
           (quoth--insert-input-separator)
           (let* ((msgs (quoth--history-turns quoth--prompt-id))
-                 (tool-msg (cl-find "tool" msgs :key #'quoth-test--msg-role :test #'string=)))
-            (should (= (length msgs) 2))
-            (should tool-msg)
-            (should (string= (cdr (assoc 'tool_call_id tool-msg)) "unknown"))
-            (should (stringp (quoth-test--msg-content tool-msg))))))
+                 (roles (mapcar #'quoth-test--msg-role msgs)))
+            ;; Only the user message survives; the tool span is skipped.
+            (should (equal roles '("user")))
+            (should-not (cl-find "tool" msgs
+                                 :key #'quoth-test--msg-role :test #'string=)))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/history-turns-includes-multiple-exchanges ()
@@ -2019,14 +2021,10 @@ R2-CONTENT.  Returns the completed prompt's ID."
     prompt-id))
 
 (ert-deftest quoth-test/tool-rounds-no-spurious-unknown-tool ()
-  "Test that a multi-round tool exchange emits no spurious tool message.
-It must not emit a bare `tool' message with `tool_call_id: unknown'
-between rounds.
-
-The trailing closing fence of a tool block is `tool'-typed but had no
-`quoth-tool-call' property, so the reconstruction walker fell into the
-legacy branch and swallowed the following round's reasoning + content
-as a bogus tool result."
+  "Test that a multi-round tool exchange emits one message per round.
+Each round contributes exactly its assistant `tool_calls' + `tool'
+pair and nothing between rounds; every tool message carries a real
+call id from the block's `quoth-tool-call' property."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
