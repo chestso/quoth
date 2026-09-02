@@ -284,8 +284,9 @@ as a file local variable is planned but not yet implemented.
 ### Tool calls
 
 When `quoth-tools-enabled` is non-nil (default), the model may call a
-tool. There are four tools, all implemented in `quoth-tools.el`. Two wrap
-the `quoth-process.el` session handler:
+tool. There are five tools: two process-backed ones in `quoth-tools.el`
+wrapping the `quoth-process.el` session handler, two immediate file
+tools in `quoth-tools.el`, and `web_search` in `quoth-searxng.el`:
 
 - `exec_command` — starts a command in a new PTY session and arms a
   running-report window for the requested duration (default
@@ -310,6 +311,12 @@ Two do byte-exact file I/O (no process involved):
   stays `\r\n`), errors on non-UTF-8 content, and truncates
   over-long results to `quoth-tool-max-output` without trimming
   trailing newlines.
+- `web_search` — queries the local SearXNG instance (`quoth-searxng.el`)
+  asynchronously: `url-retrieve` plus a `quoth-searxng-timeout` timer
+  that deletes the retrieval and delivers an error result; the cancel
+  thunk deletes the process and its timer. The search request doubles
+  as the health probe cached in `quoth-searxng--healthy`; an
+  `unreachable` cache short-circuits with no HTTP request.
 
 The tool block is rendered in the buffer as valid markdown:
 
