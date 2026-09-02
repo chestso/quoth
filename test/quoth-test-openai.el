@@ -35,6 +35,13 @@
 (require 'ert)
 (require 'cl-lib)
 
+;;; Shared harness helpers live in `quoth-test.el', loaded at runtime by
+;;; the test runner; declare them here so byte-compiling this file in
+;;; isolation produces no warnings.
+(defvar quoth-test--root)
+(declare-function quoth-test--with-immediate-schedule "quoth-test" (&rest body))
+(declare-function quoth-test--wait-until "quoth-test-process" (pred &optional timeout))
+
 ;;; flycheck byte-compiles this file in isolation, and its batch child's
 ;;; `load-path' excludes the package root and test dir.  Prefer
 ;;; `require'; fall back to loading each dep from this file's directory
@@ -214,7 +221,8 @@ Uses the quoth.el repo root (always a git repo during tests)."
          (file-name-directory
           (or buffer-file-name load-file-name
               (expand-file-name "quoth-openai.el" default-directory)))))
-    (let ((env (quoth-openai--build-env-block)))
+    (let ((env (quoth-openai--build-env-block
+                "Current branch: master\nStatus: clean\nRecent commits:\nabc def")))
       (should (string-match-p "<env>" env))
       (should (string-match-p "Is directory a git repo: yes" env))
       (should (string-match-p "Current branch:" env))
@@ -334,38 +342,71 @@ Uses the quoth.el repo root so AGENTS.md is discovered."
     (should-not mods)))
 
 (ert-deftest quoth-test/openai-cache-hit-same-key ()
-  "Second call with same key returns cached string without rebuild."
+  "A second call with the same key delivers the cached prompt without
+rebuilding (the on-ready return equals the cached string)."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
-                         (expand-file-name "quoth-openai.el" default-directory)))))
+                         (expand-file-name "quoth-openai.el" default-directory))))
+         (delivered nil))
     (setq-local default-directory repo-root)
+    (setq-local quoth-openai-context-paths nil)
     (setq-local quoth-openai-global-context-paths nil)
     (setq-local quoth-openai--cached-system-prompt nil)
     (setq-local quoth-openai--cache-key nil)
-    (let ((first (quoth-openai--build-system-prompt))
-          (second (quoth-openai--build-system-prompt)))
-      (should (string= first second))
-      (should (string= first quoth-openai--cached-system-prompt)))))
+    (unwind-protect
+        (progn
+          (quoth-openai--system-prompt-async
+           (current-buffer)
+           (lambda (prompt) (setq delivered prompt)))
+          ;; Pump the real git stage (the repo root is a git repo).
+          (should (quoth-test--wait-until (lambda () delivered)))
+          (should (string= delivered quoth-openai--cached-system-prompt))
+          ;; Second call with the same key: inline cache hit, same string.
+          (let ((first delivered))
+            (setq delivered nil)
+            (quoth-openai--system-prompt-async
+             (current-buffer)
+             (lambda (prompt) (setq delivered prompt)))
+            (should (string= first delivered)))))))
 
 (ert-deftest quoth-test/openai-cache-miss-on-working-dir-change ()
-  "Changing default-directory triggers rebuild."
+  "Changing default-directory invalidates the cache: the next call
+rebuilds and delivers a different prompt."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
-                         (expand-file-name "quoth-openai.el" default-directory)))))
+                         (expand-file-name "quoth-openai.el" default-directory))))
+         (delivered nil))
     (setq-local default-directory repo-root)
+    (setq-local quoth-openai-context-paths nil)
     (setq-local quoth-openai-global-context-paths nil)
     (setq-local quoth-openai--cached-system-prompt nil)
     (setq-local quoth-openai--cache-key nil)
-    (let ((first (quoth-openai--build-system-prompt)))
-      (setq-local default-directory "/tmp/")
-      (setq-local quoth-openai-context-paths nil)
-      (let ((second (quoth-openai--build-system-prompt)))
-        (should-not (string= first second))))))
+    (unwind-protect
+        (progn
+          (quoth-openai--system-prompt-async
+           (current-buffer)
+           (lambda (prompt) (setq delivered prompt)))
+          ;; Pump the real git stage (the repo root is a git repo).
+          (should (quoth-test--wait-until (lambda () delivered)))
+          (let ((first delivered))
+            ;; Non-git dir: the gitless prompt has no stage, but still
+            ;; delivers on the schedule hop; flatten it.
+            (setq-local default-directory "/tmp/")
+            (setq-local quoth-openai-context-paths nil)
+            (setq delivered nil)
+            (quoth-test--with-immediate-schedule
+             (quoth-openai--system-prompt-async
+              (current-buffer)
+              (lambda (prompt) (setq delivered prompt))))
+            (should (stringp delivered))
+            (should-not (string= first delivered)))))))
 
 (ert-deftest quoth-test/openai-cache-miss-on-modtime-change ()
-  "Modifying a context file triggers rebuild."
+  "Modifying a context file invalidates the cache: the next call
+rebuilds and delivers the new content."
   (let* ((tmp-dir (make-temp-file "quoth-test-" t))
-         (ctx-file (expand-file-name "AGENTS.md" tmp-dir)))
+         (ctx-file (expand-file-name "AGENTS.md" tmp-dir))
+         (delivered nil))
     (setq-local default-directory (file-name-as-directory tmp-dir))
     (setq-local quoth-openai-context-paths (list "AGENTS.md"))
     (setq-local quoth-openai-global-context-paths nil)
@@ -374,13 +415,21 @@ Uses the quoth.el repo root so AGENTS.md is discovered."
     (unwind-protect
         (progn
           (write-region "version 1" nil ctx-file)
-          (let ((first (quoth-openai--build-system-prompt)))
-            (should (string-match-p "version 1" first))
-            ;; Touch the file with new content + new modtime.
-            (write-region "version 2" nil ctx-file)
-            (let ((second (quoth-openai--build-system-prompt)))
-              (should (string-match-p "version 2" second))
-              (should-not (string= first second)))))
+          (quoth-test--with-immediate-schedule
+           (quoth-openai--system-prompt-async
+            (current-buffer)
+            (lambda (prompt) (setq delivered prompt))))
+          (should (string-match-p "version 1" delivered))
+          ;; Touch the file with new content + new modtime.
+          (write-region "version 2" nil ctx-file)
+          (setq delivered nil)
+          (quoth-test--with-immediate-schedule
+           (quoth-openai--system-prompt-async
+            (current-buffer)
+            (lambda (prompt) (setq delivered prompt))))
+          (should (string-match-p "version 2" delivered))
+          (should (string= delivered
+                           quoth-openai--cached-system-prompt)))
       (delete-directory tmp-dir t))))
 
 ;;; 8. SSE parser

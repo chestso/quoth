@@ -611,7 +611,7 @@ All text from the first reasoning char to the last has
                               (quoth-make-hyper-provider
                                :buffer (current-buffer)
                                :working-directory default-directory))
-                  (setf (quoth-provider-transport-process
+                  (setf (quoth-provider-request
                          quoth-active-provider)
                         proc)
                   (quoth--phase-set 'streaming)
@@ -662,7 +662,7 @@ All text from the first reasoning char to the last has
                               (quoth-make-hyper-provider
                                :buffer (current-buffer)
                                :working-directory default-directory))
-                  (setf (quoth-provider-transport-process
+                  (setf (quoth-provider-request
                          quoth-active-provider)
                         proc)
                   (quoth--phase-set 'streaming)

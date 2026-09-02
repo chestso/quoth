@@ -77,7 +77,7 @@ server-failure panes so the two interruption kinds read differently."
 ;;; `quoth--continue', `quoth--session-uuid', `quoth--session-id', and
 ;;; `quoth--response-start' are the shared buffer-local state; providers
 ;;; must not touch them.  The provider owns its transport process in
-;;; `quoth-provider-transport-process' — the buffer side never touches a
+;;; `quoth-provider-request' — the buffer side never touches a
 ;;; process directly.
 
 (defcustom quoth-reasoning-preview-lines 10
@@ -380,7 +380,8 @@ Buffer-local.")
 (declare-function quoth-process--shell-type "quoth-process" (shell-path))
 (declare-function quoth-provider-models-cached "quoth-provider" (provider))
 (declare-function quoth-provider-models-refresh "quoth-provider" (provider &optional force))
-(declare-function quoth-provider-transport-process "quoth-provider" (provider))
+(declare-function quoth-openai--system-prompt-async "quoth-openai" (buf on-ready))
+(declare-function quoth-provider-request "quoth-provider" (provider))
 
 (declare-function quoth-select-model-menu "quoth-select" ())
 
@@ -1192,13 +1193,16 @@ the name is not found."
       ;; Mark initialized only after mode setup so the flag is not wiped
       ;; by the parent mode (which calls kill-all-local-variables).
       (setq-local quoth--initialized t)
-      ;; Prefetch the model catalog so the selector (C-c c m) is warm.
+      ;; Prefetch the model catalog so the selector (C-c c m) is warm,
+      ;; and the staged system prompt so the first send is a cache hit.
       ;; Guarded: a failed prefetch must never block buffer creation.
       (ignore-errors
         (when (and quoth-provider-models-prefetch
                    quoth-active-provider
                    (quoth-provider-p quoth-active-provider))
-          (quoth-provider-models-refresh quoth-active-provider))))))
+          (quoth-provider-models-refresh quoth-active-provider)))
+      (ignore-errors
+        (quoth-openai--system-prompt-async buf #'ignore)))))
 
 (defun quoth--append-as-user-input (buf formatted)
   "Insert FORMATTED content into BUF as user input.
@@ -1687,7 +1691,7 @@ verbatim; otherwise sum into the accumulator."
   (when (and quoth-active-provider (quoth-provider-p quoth-active-provider))
     (let ((u (quoth-provider--usage
               quoth-active-provider
-              (quoth-provider-transport-process quoth-active-provider))))
+              (quoth-provider-request quoth-active-provider))))
       (when u
         (if (plist-get u :accumulated)
             (setq-local quoth--usage-acc
@@ -1778,7 +1782,7 @@ stack."
            (< quoth--tool-loop-count quoth-tool-loop-max)
            (let ((tcs (quoth-provider--tool-calls
                        quoth-active-provider
-                       (quoth-provider-transport-process quoth-active-provider))))
+                       (quoth-provider-request quoth-active-provider))))
              (and (vectorp tcs) (> (length tcs) 0))))
       (let ((buf (current-buffer)))
         (setq-local quoth--tool-loop-count (1+ quoth--tool-loop-count))
@@ -1843,7 +1847,7 @@ asynchronously and fill their own block; the last one schedules the
 follow-up request.  When no usable call came back, closes the turn."
   (let* ((tool-calls (quoth-provider--tool-calls
                       quoth-active-provider
-                      (quoth-provider-transport-process quoth-active-provider)))
+                      (quoth-provider-request quoth-active-provider)))
          (states (quoth--round-call-states tool-calls))
          (buf (current-buffer)))
     (if (null states)
@@ -1925,7 +1929,7 @@ completion and this hop already closed the turn."
            (continuation (append (and user-msg (list user-msg))
                                  (quoth--tool-rounds prompt-id))))
       ;; Clear the old transport and set up for the follow-up.
-      (setf (quoth-provider-transport-process quoth-active-provider) nil)
+      (setf (quoth-provider-request quoth-active-provider) nil)
       (setq-local quoth--response-start (point-marker))
       (quoth--phase-set 'streaming)
       (let ((real-proc (quoth-provider-send-prompt
@@ -1948,8 +1952,10 @@ completion and this hop already closed the turn."
                         :buffer buf
                         :stderr (get-buffer-create "*quoth-errors*")
                         :continuation continuation)))
-        (when (and real-proc (processp real-proc))
-          (set-marker (process-mark real-proc) (point-max)))))))
+        (when (and real-proc (listp real-proc)
+                   (processp (plist-get real-proc :curl)))
+          (set-marker (process-mark (plist-get real-proc :curl))
+                      (point-max)))))))
 
 (defun quoth--round-cancel ()
   "Cancel every pending call of the live round without filling blocks.
@@ -2017,28 +2023,31 @@ Injects completion/delta/error callbacks as the provider's completion
 action so providers signal stream events without touching buffers.  Runs in
 the quoth buffer, which owns all streamed output."
   (let ((buf (current-buffer)))
-    (quoth--phase-set 'streaming)
-    (let ((real-proc (quoth-provider-send-prompt
-                      quoth-active-provider prompt
-                      :session-id quoth--session
-                      :session-uuid quoth--session-uuid
-                      :continue-p quoth--continue
-                      :completion (lambda ()
-                                    (quoth--schedule
-                                     (lambda ()
-                                       (quoth--finalize-if-live buf))))
-                      :on-delta (lambda (delta kind)
-                                  (when (buffer-live-p buf)
-                                    (with-current-buffer buf
-                                      (quoth--append-delta delta kind))))
-                      :on-error (lambda (message)
-                                  (when (buffer-live-p buf)
-                                    (with-current-buffer buf
-                                      (quoth--record-error message))))
-                      :buffer buf
-                      :stderr (get-buffer-create "*quoth-errors*"))))
-      (when (and real-proc (processp real-proc))
-        (set-marker (process-mark real-proc) (point-max)))
+    ;; `preparing' while the staged system prompt is in flight; the
+    ;; provider moves the phase to `streaming' once curl fires.
+    (quoth--phase-set 'preparing)
+    (let ((handle (quoth-provider-send-prompt
+                   quoth-active-provider prompt
+                   :session-id quoth--session
+                   :session-uuid quoth--session-uuid
+                   :continue-p quoth--continue
+                   :completion (lambda ()
+                                 (quoth--schedule
+                                  (lambda ()
+                                    (quoth--finalize-if-live buf))))
+                   :on-delta (lambda (delta kind)
+                               (when (buffer-live-p buf)
+                                 (with-current-buffer buf
+                                   (quoth--append-delta delta kind))))
+                   :on-error (lambda (message)
+                               (when (buffer-live-p buf)
+                                 (with-current-buffer buf
+                                   (quoth--record-error message))))
+                   :buffer buf
+                   :stderr (get-buffer-create "*quoth-errors*"))))
+      (when (and handle (listp handle)
+                 (processp (plist-get handle :curl)))
+        (set-marker (process-mark (plist-get handle :curl)) (point-max)))
       (setq-local quoth--continue t)
       (setq-local quoth--response-start (point-marker)))))
 

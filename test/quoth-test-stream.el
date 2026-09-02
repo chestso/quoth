@@ -60,12 +60,17 @@
 (defun quoth-test--send-capturing-completion ()
   "Send a prompt in a fresh buffer with `quoth-provider-send-prompt' mocked.
 Returns the completion action the send loop injected, with the
-0-timer hop flattened so calling it runs the finalizer inline."
+0-timer hop flattened so calling it runs the finalizer inline.
+The mock simulates the staged handoff: the phase moves to streaming
+when the (cache-hit) prompt delivers."
   (let ((captured-completion nil))
     (quoth-test--with-immediate-schedule
      (cl-letf (((symbol-function 'quoth-provider-send-prompt)
                 (lambda (_provider _prompt &rest args)
-                  (setq captured-completion (plist-get args :completion)))))
+                  (setq captured-completion (plist-get args :completion))
+                  (when (quoth--busy-p)
+                    (quoth--phase-set 'streaming))
+                  (list :stage-process nil :curl nil :done-p nil))))
        (with-current-buffer (quoth-test--fresh-buffer)
          (goto-char (point-max))
          (insert "test")
@@ -170,7 +175,7 @@ with a `user'-kind detail; the partial is tagged `response' with
             (setq-local quoth--response-start
                         (copy-marker (progn (goto-char (point-min))
                                             (forward-char 5) (point))))
-            (setf (quoth-provider-transport-process quoth-active-provider)
+            (setf (quoth-provider-request quoth-active-provider)
                   (make-pipe-process :name "quoth-test-int-note"
                                      :noquery t :coding 'binary
                                      :filter #'ignore :sentinel #'ignore))

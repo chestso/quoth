@@ -66,7 +66,7 @@ Context insertion does not touch the transport."
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
-            (setf (quoth-provider-transport-process quoth-active-provider)
+            (setf (quoth-provider-request quoth-active-provider)
                   (make-process
                    :name "quoth-test-fake"
                    :buffer buf
@@ -148,7 +148,7 @@ Context insertion does not touch the transport."
         (progn
           (quoth-test--fresh-buffer)
           (with-current-buffer (quoth-test--buffer-name)
-            (setf (quoth-provider-transport-process quoth-active-provider)
+            (setf (quoth-provider-request quoth-active-provider)
                   (make-process
                    :name "quoth-test-fake"
                    :buffer (current-buffer)

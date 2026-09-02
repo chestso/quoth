@@ -144,11 +144,11 @@ initialization prefetches (`quoth-provider-models-prefetch`), and
 `quoth-select-model` falls back to the static list on a cold cache.
 
 The shared `quoth-provider` base struct has slots `buffer`,
-`completion-action`, `working-directory`, `transport-process` (the live
-transport process owned by the provider, set by `send-prompt`),
-`application-count` (default 1), and `type`. The hyper provider
-subclasses it and adds its own slots (base URL, token, model,
-session-affinity hash, x-crush-id).
+`completion-action`, `working-directory`, `request` (the request
+handle owned by the provider, set by `send-prompt`; see the staged
+send below), `application-count` (default 1), and `type`. The hyper
+provider subclasses it and adds its own slots (base URL, token,
+model, session-affinity hash, x-crush-id).
 
 Process control is a provider responsibility, routed through the
 protocol: `quoth-send-input` consults `quoth-provider-active-p` for its
@@ -164,11 +164,35 @@ that sits between the provider (wire work) and the chat buffer (source
 of truth). It is the **single place that owns the buffer** and drives
 the lifecycle of one prompt → response cycle.
 
+### The staged send
+
+A send is two stages. First the **system-prompt stage**
+(`quoth-openai--system-prompt-async`): on a cache hit (working dir +
+context-file modtimes unchanged) the cached prompt delivers inline;
+on a miss one marker-delimited git process gathers the
+branch/status/commits sections and the assembled prompt is cached and
+delivered on the `quoth--schedule` hop. Git failure, a non-git
+directory, and a stage past `quoth-openai-git-timeout` all degrade to
+the gitless prompt — a send never blocks on git. Buffer
+initialization prefetches the stage so the first send is usually a
+cache hit.
+
+Second, the curl transport fires in the provider's on-ready, running
+in the chat buffer (the phase machine moves `preparing` →
+`streaming` there, guarded by `quoth--busy-p`). The provider's
+`send-prompt` returns a **request handle** — a plist
+`(:stage-process … :curl … :done-p …)` covering both stages — stored
+in the provider's `request` slot. `quoth-provider-active-p`,
+`quoth-provider-interrupt`, `quoth-provider-cleanup`, and the
+`quoth-provider--tool-calls` / `quoth-provider--usage` reads all go
+through the handle, so an interrupt or a mid-stage cleanup covers
+whichever stage is live.
+
 | Function                                              | Role                                                                                             |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `quoth--phase-set` / `quoth--busy-p`                  | The single writer of / reader for the phase machine (`idle`/`preparing`/`streaming`/`tools`)     |
 | `quoth--schedule`                                     | The 0-timer hop: buffer surgery and follow-up sends never run on a filter/sentinel stack         |
-| `quoth--send-prompt`                                  | Start a request, inject the callbacks, transition to `streaming`                                 |
+| `quoth--send-prompt`                                  | Start a staged request, inject the callbacks, enter `preparing`                                  |
 | `quoth--append-delta`                                 | Consume streamed `(delta kind)` chunks and insert them at point-max (the only buffer writer)     |
 | `quoth--finalize-response`                            | On completion (via the hop): accumulate usage, then arm the round dispatch or close the response |
 | `quoth--round-dispatch`                               | Insert placeholder blocks for every pending call, then run the registry entries                  |
@@ -562,5 +586,14 @@ Always run it before committing.
 - Test names: `quoth-test/<topic>` under `ert-deftest`; helpers
   `quoth-test--...`, traveling with their topic file.
 - Docstrings follow checkdoc conventions.
+- No blocking process/network primitives in the runtime sources
+  (`quoth.el` through `quoth-xxh3.el`): `url-retrieve-synchronously`,
+  `shell-command-to-string`, `call-process`, `process-wait`, `sleep-for`,
+  and `sit-for` as a wait are banned; `accept-process-output` appears
+  only as the zero-timeout drain poll (`quoth-process--collect-final`
+  and the stage/catalog sentinels). The lint test
+  `quoth-test/lint-no-blocking-primitives-in-runtime`
+  (test/quoth-test-stage.el) enforces this; tests and
+  `quoth-debug-tools.el` (user-invoked diagnostics) are exempt.
 - Pre-alpha: no backwards-compatibility constraint — change things
   breakingly when a cleaner design is clear.

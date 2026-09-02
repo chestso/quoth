@@ -112,6 +112,14 @@ Matches the Crush CLI's `head -20' cap."
   :type 'integer
   :group 'quoth-openai)
 
+(defcustom quoth-openai-git-timeout 10
+  "Seconds the async git stage may take before it is abandoned.
+A hung `git status' on a monorepo must not stall a chat send: past the
+timeout the stage is aborted and the prompt is delivered without the
+git section (git failure degrades the same way)."
+  :type 'number
+  :group 'quoth-openai)
+
 (defcustom quoth-openai-strip-leading-blank-lines t
   "Strip leading blank lines from streamed assistant content.
 Models may begin an answer with a run of newlines (for example, a blank
@@ -133,15 +141,17 @@ event payloads the debug log pretty-prints are small and unaffected."
   :group 'quoth-openai)
 
 (declare-function quoth--debug-log "quoth.el" (category message))
+(declare-function quoth--schedule "quoth.el" (fn))
 
 ;;; System prompt construction: <env> block with project context.
 
-(defun quoth-openai--build-env-block ()
-  "Build the <env> block for the system prompt.
-Includes working directory, git repo status, platform, date, and
-optionally git branch/status/commits when inside a git repository.
-Git status is a snapshot at build time and may be outdated by the
-time the model reads it."
+(defun quoth-openai--build-env-block (&optional git-section)
+  "Build the <env> block for the system prompt, with GIT-SECTION.
+Includes working directory, git repo status, platform, and date, plus
+the GIT-SECTION string (the pre-formatted branch/status/commits block
+from `quoth-openai--git-section') when inside a git repository.  Git
+status is a snapshot at build time and may be outdated by the time the
+model reads it."
   (let* ((dir (expand-file-name default-directory))
          (is-git (file-directory-p (expand-file-name ".git" dir)))
          (platform (symbol-name system-type))
@@ -151,50 +161,65 @@ time the model reads it."
                               (if is-git "yes" "no"))
                       (format "Platform: %s" platform)
                       (format "Today's date: %s" date))))
-    (when is-git
-      (let ((git-status (quoth-openai--git-status-string dir)))
-        (when git-status
-          (setq lines (append lines
-                              (list (format "\nGit status (snapshot at conversation start - may be outdated):\n%s"
-                                            git-status)))))))
+    (when (and is-git git-section)
+      (setq lines (append lines
+                          (list (format "\nGit status (snapshot at conversation start - may be outdated):\n%s"
+                                        git-section)))))
     (format "<env>\n%s\n</env>"
             (string-join lines "\n"))))
 
-(defun quoth-openai--git-status-string (dir)
-  "Return git status summary for DIR, or nil if git is unavailable.
-Runs three commands (matching the Crush CLI):
-`git branch --show-current', `git status --short | head -N',
-`git log --oneline -n N'.  Returns the concatenated output."
-  (let ((default-directory (file-name-as-directory dir)))
-    (condition-case nil
-        (let ((branch (quoth-openai--git-output "git branch --show-current"))
-              (status (quoth-openai--git-output
-                       (format "git status --short | head -%d"
-                               quoth-openai-git-status-limit)))
-              (commits (quoth-openai--git-output
-                        (format "git log --oneline -n %d"
-                                quoth-openai-git-commits))))
-          (string-join
-           (delq nil
-                 (list (and (not (string-empty-p branch))
-                            (format "Current branch: %s" branch))
-                       (if (string-empty-p status)
-                           "Status: clean"
-                         (format "Status:\n%s" status))
-                       (and (not (string-empty-p commits))
-                            (format "Recent commits:\n%s" commits))))
-           "\n"))
-      (error nil))))
+(defun quoth-openai--git-command ()
+  "Return the single git command string for the git stage.
+The three sections (branch, status, commits) run in one shell
+invocation separated by marker `echo'es, so one process covers the
+whole stage.  Runs in the buffer's `default-directory'."
+  (concat
+   "echo BRANCH_MARKER; git branch --show-current; "
+   "echo STATUS_MARKER; git status --short | head -"
+   (number-to-string quoth-openai-git-status-limit) "; "
+   "echo COMMITS_MARKER; git log --oneline -n "
+   (number-to-string quoth-openai-git-commits)))
 
-(defun quoth-openai--git-output (command)
-  "Run COMMAND in `default-directory' and return trimmed stdout.
-Returns an empty string when the command produces no output or
-fails (git unavailable, broken repo)."
-  (let ((out (string-trim
-              (shell-command-to-string command))))
-    out))
+(defun quoth-openai--git-section-from-output (raw)
+  "Build the git section from the marker-delimited RAW stage output.
+Returns nil when the output is empty (git failed or is unavailable),
+matching the non-git degrade.  Mirrors the three-command summary:
+current branch, status (clean or listed), recent commits."
+  (let ((out (string-trim raw)))
+    (unless (string-empty-p out)
+      (let* ((branch (quoth-openai--marker-section out "BRANCH_MARKER"
+                                                   "STATUS_MARKER"))
+             (status (quoth-openai--marker-section out "STATUS_MARKER"
+                                                   "COMMITS_MARKER"))
+             (commits (quoth-openai--marker-section out "COMMITS_MARKER"
+                                                    nil)))
+        (string-join
+         (delq nil
+               (list (and (not (string-empty-p branch))
+                          (format "Current branch: %s" branch))
+                     (if (string-empty-p status)
+                         "Status: clean"
+                       (format "Status:\n%s" status))
+                     (and (not (string-empty-p commits))
+                          (format "Recent commits:\n%s" commits))))
+         "\n")))))
 
-;;; System prompt construction: context file discovery.
+(defun quoth-openai--marker-section (raw start-marker &optional end-marker)
+  "Return the text between START-MARKER and END-MARKER in RAW.
+END-MARKER nil means to the end of RAW.  The marker lines themselves
+are excluded."
+  (let ((start (string-match (concat (regexp-quote start-marker)
+                                     "[^\n]*\n")
+                             raw)))
+    (when start
+      (let* ((begin (match-end 0))
+             (end (if end-marker
+                      (let ((e (string-match (concat (regexp-quote end-marker)
+                                                     "[^\n]*")
+                                             raw begin)))
+                        (or e (length raw)))
+                    (length raw))))
+        (string-trim (substring raw begin end))))))
 
 (defconst quoth-openai--default-context-paths
   '(".github/copilot-instructions.md"
@@ -295,12 +320,12 @@ files are found."
 (defvar-local quoth-openai--cache-key nil
   "Cache key: (working-dir . context-file-modtimes).")
 
-(defun quoth-openai--build-system-prompt-uncached ()
-  "Build the full system prompt with project context.
-Assembles base text + <env> block + <project_context> block +
-<user_preferences> block.  Called by `quoth-openai--build-system-prompt'
-on cache miss."
-  (let* ((env (quoth-openai--build-env-block))
+(defun quoth-openai--build-system-prompt-uncached (&optional git-section)
+  "Build the full system prompt with project context, with GIT-SECTION.
+Assembles base text + <env> block (carrying GIT-SECTION) +
+<project_context> block + <user_preferences> block.  Called by
+`quoth-openai--system-prompt-async' on cache miss."
+  (let* ((env (quoth-openai--build-env-block git-section))
          (project-files (quoth-openai--discover-context-files
                          quoth-openai-context-paths))
          (project-block (quoth-openai--build-project-context-block
@@ -331,21 +356,135 @@ MODTIME is from `file-attributes' (a list of integers)."
             (push (cons p modtime) result)))))
     (nreverse result)))
 
-(defun quoth-openai--build-system-prompt ()
-  "Build the system prompt, returning cached value on key match.
-Cache key is (working-dir . context-file-modtimes).  On match,
-returns the cached string without re-reading files or running git.
-On mismatch, rebuilds and caches."
-  (let* ((working-dir (expand-file-name default-directory))
-         (modtimes (quoth-openai--context-modtimes))
-         (key (cons working-dir modtimes)))
-    (if (and quoth-openai--cached-system-prompt
-             (equal quoth-openai--cache-key key))
-        quoth-openai--cached-system-prompt
-      (setq-local quoth-openai--cache-key key)
-      (setq-local quoth-openai--cached-system-prompt
-                  (quoth-openai--build-system-prompt-uncached)))))
+(defun quoth-openai--stage-prompt-key ()
+  "Return the system-prompt cache key for the current directory.
+The key is (working-dir . context-file-modtimes); context-file reads
+are local bounded work and stay synchronous."
+  (cons (expand-file-name default-directory)
+        (quoth-openai--context-modtimes)))
 
+(defun quoth-openai--stage-filter (proc string)
+  "Filter for the git stage PROC accumulating chunk STRING."
+  (process-put proc :quoth-stage-output
+               (concat (or (process-get proc :quoth-stage-output) "")
+                       string)))
+
+(defun quoth-openai--make-stage-sentinel (finish)
+  "Return the git stage sentinel closing over FINISH.
+FINISH receives the parsed git section (or nil).  A timed-out stage
+(the process deleted by the timeout) delivers nothing: the timeout
+delivered already."
+  (lambda (proc _event)
+    (when (not (process-live-p proc))
+      ;; Drain the tail before reading the accumulated output (the
+      ;; zero-timeout poll pattern).
+      (accept-process-output proc 0)
+      (funcall finish
+               (quoth-openai--git-section-from-output
+                (quoth-openai--stage-output proc))))))
+
+(defun quoth-openai--stage-output (proc)
+  "Return the accumulated output of the git stage PROC."
+  (or (process-get proc :quoth-stage-output) ""))
+
+(defun quoth-openai--system-prompt-stage (buf key on-ready)
+  "Run the async git stage for the prompt cached under KEY in BUF.
+Spawns one git process (the three sections marker-delimited), and on
+its exit delivers the assembled prompt (cached under KEY) to ON-READY
+via `quoth--schedule'.  A stage past `quoth-openai-git-timeout' is
+aborted and delivers without the git section, as does git failure or
+a non-git directory.  Returns the stage process (or nil on the
+non-git path, which delivers synchronously)."
+  (let* ((git-p (file-directory-p
+                 (expand-file-name ".git" (car key))))
+         (proc nil)
+         (timeout nil)
+         (aborted-p nil)
+         (finish
+          (lambda (git-section)
+            (let ((prompt (quoth-openai--assemble-stage-prompt
+                           git-section)))
+              (when (buffer-live-p buf)
+                (with-current-buffer buf
+                  (when (equal quoth-openai--cache-key key)
+                    (setq-local quoth-openai--cached-system-prompt
+                                prompt))))
+              (quoth--schedule (lambda () (funcall on-ready prompt)))))))
+    (if (not git-p)
+        (progn
+          ;; No git repo: the gitless prompt is the whole prompt.
+          (funcall finish nil)
+          nil)
+      (let ((sentinel
+             (quoth-openai--make-stage-sentinel
+              (lambda (git-section)
+                (unless aborted-p
+                  (cancel-timer timeout)
+                  (funcall finish git-section))))))
+        (setq proc
+              (make-process
+               :name "quoth-git-stage"
+               :buffer " *quoth-git-stage*"
+               :command (list shell-file-name shell-command-switch
+                              (quoth-openai--git-command))
+               :connection-type 'pipe
+               :noquery t
+               :filter #'quoth-openai--stage-filter
+               :sentinel sentinel))
+        ;; Expose the sentinel on the process (the tests drive the real
+        ;; filter + sentinel pipeline through it).
+        (process-put proc :quoth-stage-sentinel sentinel))
+      (setq timeout
+            (run-at-time
+             quoth-openai-git-timeout nil
+             (lambda ()
+               (when (process-live-p proc)
+                 (setq aborted-p t)
+                 (delete-process proc)
+                 (funcall finish nil)))))
+      proc)))
+
+(defun quoth-openai--assemble-stage-prompt (git-section)
+  "Return the full system prompt with GIT-SECTION spliced in.
+The gitless prompt was built synchronously at stage start; the section
+lands inside its <env> block, matching `quoth-openai--build-env-block'
+assembly.  A nil or empty GIT-SECTION keeps the gitless prompt."
+  (let ((base (quoth-openai--build-system-prompt-uncached nil)))
+    (if (or (null git-section) (string-empty-p git-section))
+        base
+      (let ((env-pos (string-match "</env>" base)))
+        (if (not env-pos)
+            base
+          (concat (substring base 0 env-pos)
+                  (format "\nGit status (snapshot at conversation start - may be outdated):\n%s\n"
+                          git-section)
+                  (substring base env-pos)))))))
+
+(defun quoth-openai--system-prompt-async (buf on-ready)
+  "Deliver the system prompt for BUF to ON-READY, asynchronously.
+Cache hit (the key — working dir + context modtimes — matches the
+cached prompt) delivers inline.  A miss runs the git section in one
+async process (marker-delimited) and delivers the assembled prompt on
+the `quoth--schedule' hop; git failure, absence, or a stage past
+`quoth-openai-git-timeout' delivers without the git section.  Returns
+the stage process, or nil on the cache-hit path."
+  (let ((key (with-current-buffer buf
+               (quoth-openai--stage-prompt-key))))
+    (if (and (with-current-buffer buf
+               quoth-openai--cached-system-prompt)
+             (equal (with-current-buffer buf quoth-openai--cache-key)
+                    key))
+        ;; Deliver inline; the return value stays nil (there is no
+        ;; stage process to report).
+        (progn
+          (funcall on-ready
+                   (with-current-buffer buf
+                     quoth-openai--cached-system-prompt))
+          nil)
+      (with-current-buffer buf
+        (setq-local quoth-openai--cache-key key)
+        (setq-local quoth-openai--cached-system-prompt nil))
+      (quoth-openai--system-prompt-stage buf key on-ready))))
 
 ;;; Tool protocol: the OpenAI function-calling shape the client speaks.
 
@@ -447,20 +586,25 @@ cancel thunk (abandon the wait), or nil for immediate tools."
   "Compose a chat-completions request alist for PROMPT.
 MODEL is the resolved model (the caller passes the provider's model
 slot, already derived from the shared `quoth-model' variable).  Falls
-back to `quoth-openai-default-model'.  HISTORY is a list of message
-alists (already reconstructed from the buffer by `quoth--history-for');
-they ride between the system prompt and the new user message.  With no
-history the body carries exactly system + user (`stream: t', no tools).
-History is disabled by the caller passing nil
-\(`quoth-hyper-history-limit 0 means the core extracts none).
-CONTINUATION, when non-nil, is a list of message alists (user,
-assistant with `tool_calls', `role: \"tool\"') that replace the user
-message; used by the tool loop to send follow-up requests with tool
-results.  Both inputs are message alists, never (ROLE . TEXT) conses.
-When `quoth-tools-enabled' is non-nil (the default), the request
-announces the `bash' tool and `tool_choice: \"auto\"'."
+back to `quoth-openai-default-model'.  The system prompt is the
+buffer's cached one (the staged send guarantees it is built before the
+request composes); falls back to `quoth-openai--build-system-prompt-uncached'
+when the cache is empty (a direct compose without a prior stage).
+HISTORY is a list of message alists (already reconstructed from the
+buffer by `quoth--history-for'); they ride between the system prompt
+and the new user message.  With no history the body carries exactly
+system + user (`stream: t', no tools).  History is disabled by the
+caller passing nil (`quoth-hyper-history-limit 0 means the core
+extracts none).  CONTINUATION, when non-nil, is a list of message
+alists (user, assistant with `tool_calls', `role: \"tool\"') that
+replace the user message; used by the tool loop to send follow-up
+requests with tool results.  Both inputs are message alists, never
+(ROLE . TEXT) conses.  When `quoth-tools-enabled' is non-nil (the
+default), the request announces the `bash' tool and
+`tool_choice: \"auto\"'."
   (let* ((model (or model quoth-openai-default-model))
-         (sys-prompt (quoth-openai--build-system-prompt))
+         (sys-prompt (or quoth-openai--cached-system-prompt
+                         (quoth-openai--build-system-prompt-uncached)))
          (user-content prompt)
          (messages
           (cond

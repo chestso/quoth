@@ -255,6 +255,9 @@ hypercredits with unit \"hc\"; `dollars' emits USD with unit \"$\"."
 (declare-function quoth--history-for "quoth.el" (buffer))
 (declare-function quoth--openai-alist-get "quoth-openai" (key alist))
 (declare-function quoth--schedule "quoth.el" (fn))
+(declare-function quoth--busy-p "quoth.el" ())
+(declare-function quoth--phase-set "quoth.el" (phase &rest keys))
+(declare-function quoth-openai--system-prompt-async "quoth-openai" (buf on-ready))
 
 (defun quoth-hyper--model-choices (catalog)
   "Return completion choices from CATALOG, an alist with a `models' key.
@@ -315,11 +318,7 @@ requests with tool results.  The provider never touches buffers itself."
   (ignore session-id continue-p stderr)
   ;; A previous in-flight request must not outlive this send.
   (quoth-provider-cleanup provider)
-  (let* ((history (and buffer
-                       (quoth--history-for buffer)))
-         (body (quoth-openai-compose-request
-                prompt (quoth-hyper-provider-model provider)
-                history continuation))
+  (let* ((stage-handle (list :stage-process nil :curl nil :done-p nil))
          (base-url (or (quoth-hyper-provider-base-url provider)
                        (getenv "HYPER_URL")
                        quoth-hyper-base-url))
@@ -328,78 +327,115 @@ requests with tool results.  The provider never touches buffers itself."
          (session-id (and quoth-hyper-session-cache-p session-uuid
                           (quoth-xxh3-hash64 session-uuid)))
          (x-crush-id (quoth-hyper--x-crush-id)))
+    ;; Stage the system prompt first (usually a cache hit); the curl
+    ;; fires once it lands.  The handle covers both stages.
     (setf (quoth-provider-completion-action provider) completion)
-    (setf (quoth-provider-transport-process provider)
-          (quoth-openai-request
-           base-url token body
-           (or on-delta #'ignore)
-           (or completion #'ignore)
-           (or on-error #'ignore)
-           session-id
-           x-crush-id))))
+    (setf (quoth-provider-request provider) stage-handle)
+    (setf (plist-get stage-handle :stage-process)
+          (quoth-openai--system-prompt-async
+           (quoth-provider-buffer provider)
+           (lambda (_prompt)
+             (when (bufferp buffer)
+               (with-current-buffer buffer
+                 (when (quoth--busy-p)
+                   (quoth--phase-set 'streaming))))
+             (let* ((history (and buffer
+                                  (quoth--history-for buffer)))
+                    (body (if (bufferp buffer)
+                              (with-current-buffer buffer
+                                (quoth-openai-compose-request
+                                 prompt (quoth-hyper-provider-model provider)
+                                 history continuation))
+                            (quoth-openai-compose-request
+                             prompt (quoth-hyper-provider-model provider)
+                             history continuation))))
+               (setf (plist-get stage-handle :curl)
+                     (quoth-openai-request
+                      base-url token body
+                      (or on-delta #'ignore)
+                      (or completion #'ignore)
+                      (or on-error #'ignore)
+                      session-id
+                      x-crush-id))))))
+
+    stage-handle))
 
 (cl-defmethod quoth-provider-interrupt ((provider quoth-hyper-provider))
   "Interrupt the hyper request for PROVIDER."
   (quoth-provider-cleanup provider))
 
 (cl-defmethod quoth-provider-active-p ((provider quoth-hyper-provider))
-  "Return non-nil while a hyper request is in flight for PROVIDER."
-  (let ((proc (quoth-provider-transport-process provider)))
-    (and (processp proc) (process-live-p proc))))
+  "Return non-nil while a hyper request is in flight for PROVIDER.
+Covers both stages: the async system-prompt process and the curl
+transport."
+  (let ((request (quoth-provider-request provider)))
+    (and (listp request)
+         (or (and (processp (plist-get request :stage-process))
+                  (process-live-p (plist-get request :stage-process)))
+             (and (processp (plist-get request :curl))
+                  (process-live-p (plist-get request :curl)))))))
 
 (cl-defmethod quoth-provider-cleanup ((provider quoth-hyper-provider))
   "Clean up any hyper request resources held by PROVIDER.
-Aborts the live curl transport (if any), clears the transport slot, and
-drops the injected completion action so a late sentinel cannot run it."
-  (let ((proc (quoth-provider-transport-process provider)))
-    (when (processp proc)
-      (quoth-openai-abort proc))
-    (setf (quoth-provider-transport-process provider) nil)
-    (setf (quoth-provider-completion-action provider) nil)))
+Aborts the live stages (the async system-prompt process and the curl
+transport), clears the request handle, and drops the injected
+completion action so a late sentinel cannot run it."
+  (let ((request (quoth-provider-request provider)))
+    (when (listp request)
+      (let ((stage (plist-get request :stage-process)))
+        (when (and (processp stage) (process-live-p stage))
+          (delete-process stage)))
+      (let ((curl (plist-get request :curl)))
+        (when (processp curl)
+          (quoth-openai-abort curl)))))
+  (setf (quoth-provider-request provider) nil)
+  (setf (quoth-provider-completion-action provider) nil))
 
 (cl-defmethod quoth-provider-grant-permission ((_provider quoth-hyper-provider) _permission-id _action)
   "No permissions are issued in phase 1."
   nil)
 
-(cl-defmethod quoth-provider--usage ((_provider quoth-hyper-provider) process)
+(cl-defmethod quoth-provider--usage ((_provider quoth-hyper-provider) handle)
   "Return one round's usage as a normalized plist, or nil.
-Reads the `usage' object the SSE parser stashed on PROCESS and
-normalizes it into the contract shape
+Reads the `usage' object the SSE parser stashed on the request
+HANDLE's curl process and normalizes it into the contract shape
 \(:input-tokens :output-tokens :cached-tokens :cost-unit :cost-value
 :accumulated).  Hyper reports usage per HTTP request only (no
 server-side session total), so :accumulated is nil and the core
 sums across rounds."
-  (when (processp process)
-    (let ((sse (process-get process :quoth-sse)))
-      (when sse
-        (let* ((u    (plist-get sse :usage))
-               (aget (lambda (k) (and u (quoth--openai-alist-get k u))))
-               (ptd  (funcall aget "prompt_tokens_details"))
-               (cost (funcall aget "cost"))
-               (cur  quoth-hyper-usage-currency))
-          (when u
-            (list :input-tokens  (or (funcall aget "prompt_tokens") 0)
-                  :output-tokens (or (funcall aget "completion_tokens") 0)
-                  :cached-tokens (or (and ptd
-                                          (quoth--openai-alist-get "cached_tokens" ptd))
-                                     0)
-                  :cost-unit      (if (eq cur 'dollars) "$" "hc")
-                  :cost-value     (if (eq cur 'dollars)
+  (let ((process (and (listp handle) (plist-get handle :curl))))
+    (when (processp process)
+      (let ((sse (process-get process :quoth-sse)))
+        (when sse
+          (let* ((u    (plist-get sse :usage))
+                 (aget (lambda (k) (and u (quoth--openai-alist-get k u))))
+                 (ptd  (funcall aget "prompt_tokens_details"))
+                 (cost (funcall aget "cost"))
+                 (cur  quoth-hyper-usage-currency))
+            (when u
+              (list :input-tokens  (or (funcall aget "prompt_tokens") 0)
+                    :output-tokens (or (funcall aget "completion_tokens") 0)
+                    :cached-tokens (or (and ptd
+                                            (quoth--openai-alist-get "cached_tokens" ptd))
+                                       0)
+                    :cost-unit      (if (eq cur 'dollars) "$" "hc")
+                    :cost-value     (if (eq cur 'dollars)
+                                        (or (and cost
+                                                 (quoth--openai-alist-get "usd" cost))
+                                            0)
                                       (or (and cost
-                                               (quoth--openai-alist-get "usd" cost))
-                                          0)
-                                    (or (and cost
-                                             (quoth--openai-alist-get "hypercredits" cost))
-                                        0))
-                  :accumulated     nil)))))))
+                                               (quoth--openai-alist-get "hypercredits" cost))
+                                          0))
+                    :accumulated     nil))))))))
 
-(cl-defmethod quoth-provider--tool-calls ((_provider quoth-hyper-provider) process)
-  "Return the tool-calls vector from the SSE state on PROCESS, or nil.
+(cl-defmethod quoth-provider--tool-calls ((_provider quoth-hyper-provider)
+                                          handle)
+  "Return the tool-calls vector from the request HANDLE's curl SSE state.
 The SSE parser accumulates `tool_calls' deltas into the state's
 `:tool-calls' slot.  Works on deleted processes (process properties
 persist until GC)."
-  (when (processp process)
-    (let ((sse (process-get process :quoth-sse)))
+  (when (processp (and (listp handle) (plist-get handle :curl)))
+    (let ((sse (process-get (plist-get handle :curl) :quoth-sse)))
       (and sse (plist-get sse :tool-calls)))))
 
 (defun quoth-hyper--normalize-model (m)

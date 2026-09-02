@@ -125,11 +125,12 @@ of calling the core directly, avoiding a load-time dependency on
   buffer
   completion-action
   working-directory
-  ;; The live transport process (e.g. curl) returned by the provider's
-  ;; `quoth-provider-send-prompt'.  Owned by the provider; the core
-  ;; reads activity through `quoth-provider-active-p' and kills it via
-  ;; `quoth-provider-interrupt'/`quoth-provider-cleanup'.
-  (transport-process nil)
+  ;; The request handle covering both stages of a send: the staged
+  ;; system-prompt process (:stage-process, the async git stage) and
+  ;; the curl transport (:curl), plus a done flag.  Owned by the
+  ;; provider; the core reads activity through `quoth-provider-active-p'
+  ;; and aborts via `quoth-provider-interrupt'/`quoth-provider-cleanup'.
+  (request nil)
   ;; Application count: the number of pipeline applications (runnable,
   ;; inflight, blocked) this provider accounts for.  The core reads it
   ;; via stream progress; a value of 0 means the provider is idle.

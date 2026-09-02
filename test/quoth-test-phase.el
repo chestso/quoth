@@ -142,15 +142,21 @@ The message is the existing user-error text."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/phase-send-sets-preparing-then-streaming ()
-  "A send moves the phase from idle to streaming once the transport fires.
-With the staged prompt a cache hit today (no async stage in Phase A),
-`quoth--send-prompt' transitions directly to streaming."
+  "A send enters `preparing' (the staged system prompt in flight) and
+moves to `streaming' once the stage delivers and the transport fires.
+The mocked provider stages synchronously, matching the real provider's
+on-ready handoff."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
         (goto-char (point-max))
         (insert "hello")
         (cl-letf (((symbol-function 'quoth-provider-send-prompt)
-                   (lambda (&rest _args) nil)))
+                   (lambda (_provider _prompt &rest _args)
+                     (should (eq (plist-get quoth--phase :phase)
+                                 'preparing))
+                     (when (quoth--busy-p)
+                       (quoth--phase-set 'streaming))
+                     (list :stage-process nil :curl nil :done-p nil))))
           (call-interactively #'quoth-send-input))
         (should (eq (plist-get quoth--phase :phase) 'streaming)))
     (quoth-test--cleanup)))
@@ -162,7 +168,10 @@ With the staged prompt a cache hit today (no async stage in Phase A),
         (goto-char (point-max))
         (insert "hi")
         (cl-letf (((symbol-function 'quoth-provider-send-prompt)
-                   (lambda (&rest _args) nil)))
+                   (lambda (_provider _prompt &rest _args)
+                     (when (quoth--busy-p)
+                       (quoth--phase-set 'streaming))
+                     (list :stage-process nil :curl nil :done-p nil))))
           (call-interactively #'quoth-send-input))
         (should (eq (plist-get quoth--phase :phase) 'streaming))
         (quoth--finalize-response)
@@ -177,7 +186,7 @@ With the staged prompt a cache hit today (no async stage in Phase A),
         (goto-char (point-max))
         (insert "partial")
         (setq-local quoth--response-start (copy-marker (point-min)))
-        (setf (quoth-provider-transport-process quoth-active-provider)
+        (setf (quoth-provider-request quoth-active-provider)
               (make-pipe-process :name "quoth-test-phase-int"
                                  :noquery t :coding 'binary
                                  :filter #'ignore :sentinel #'ignore))

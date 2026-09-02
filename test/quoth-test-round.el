@@ -85,8 +85,8 @@ synchronous.  THUNK runs in the chat buffer."
                                               :coding 'binary)))
             (process-put fake-proc :quoth-sse
                          (list :tool-calls tool-calls))
-            (setf (quoth-provider-transport-process quoth-active-provider)
-                  fake-proc)
+            (setf (quoth-provider-request quoth-active-provider)
+                  (list :stage-process nil :curl fake-proc :done-p t))
             (unwind-protect
                 (quoth-test--with-immediate-schedule
                  (let ((quoth-openai-tool-registry entries))

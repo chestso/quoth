@@ -358,19 +358,27 @@ prompt: the user separator lands at point-max."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/clear-buffer-cleans-provider-transport ()
-  "`quoth-clear-buffer' should clean up the active provider's transport."
+  "`quoth-clear-buffer' should clean up the active provider's request
+handle: the stage is killed, the curl aborted, and the slot cleared."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (setf (quoth-provider-transport-process quoth-active-provider)
-                (make-pipe-process :name "quoth-test-clear-transport"
-                                   :noquery t :coding 'binary
-                                   :filter #'ignore :sentinel #'ignore))
-          (let ((proc (quoth-provider-transport-process quoth-active-provider)))
+          (let ((stage (make-pipe-process :name "quoth-test-clear-stage"
+                                          :noquery t :coding 'binary
+                                          :filter #'ignore
+                                          :sentinel #'ignore))
+                (curl (make-pipe-process :name "quoth-test-clear-transport"
+                                         :noquery t :coding 'binary
+                                         :filter #'ignore
+                                         :sentinel #'ignore)))
+            (setf (quoth-provider-request quoth-active-provider)
+                  (list :stage-process stage :curl curl :done-p nil))
             (call-interactively #'quoth-clear-buffer)
-            (should-not (process-live-p proc))
-            (should-not (quoth-provider-transport-process quoth-active-provider)))))
-    (quoth-test--cleanup)))
+            (should-not (process-live-p stage))
+            (should-not (process-live-p curl))
+            (should-not (quoth-provider-request quoth-active-provider))))
+        (quoth-test--cleanup))))
+
 
 ;;; 9. Session UUID state: init, rotation, distinctness
 
@@ -471,7 +479,7 @@ prompt: the user separator lands at point-max."
             (goto-char (point-max))
             (newline)
             (setq-local quoth--response-start (point-marker))
-            (setf (quoth-provider-transport-process quoth-active-provider)
+            (setf (quoth-provider-request quoth-active-provider)
                   (make-pipe-process :name "quoth-test-interrupt-id"
                                      :noquery t :coding 'binary
                                      :filter #'ignore :sentinel #'ignore))
@@ -2360,7 +2368,8 @@ The the core sums :input-tokens, :output-tokens, :cached-tokens, and
                  (proc (make-pipe-process :name "fake" :noquery t))
                  (provider quoth-active-provider))
             (process-put proc :quoth-sse (list :usage usage-alist))
-            (setf (quoth-provider-transport-process provider) proc)
+            (setf (quoth-provider-request provider)
+                  (list :stage-process nil :curl proc :done-p t))
             (setq-local quoth--usage-acc nil)
             (quoth--accumulate-usage)
             (should (= (plist-get quoth--usage-acc :input-tokens) 60))
@@ -2387,7 +2396,8 @@ The the core sums :input-tokens, :output-tokens, :cached-tokens, and
           (let* ((provider quoth-active-provider)
                  (proc (make-pipe-process :name "fake2" :noquery t))
                  (orig-fn (symbol-function 'quoth-provider--usage)))
-            (setf (quoth-provider-transport-process provider) proc)
+            (setf (quoth-provider-request provider)
+                  (list :stage-process nil :curl proc :done-p t))
             (fset 'quoth-provider--usage
                   (lambda (_p _proc)
                     (list :input-tokens 999
@@ -2421,7 +2431,8 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
                  (proc (make-pipe-process :name "fake" :noquery t))
                  (provider quoth-active-provider))
             (process-put proc :quoth-sse (list :usage usage-alist))
-            (setf (quoth-provider-transport-process provider) proc)
+            (setf (quoth-provider-request provider)
+                  (list :stage-process nil :curl proc :done-p t))
             ;; First prompt accumulates.
             (setq-local quoth--prompt-id "p1")
             (quoth--accumulate-usage)
@@ -2452,7 +2463,8 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
                  (proc (make-pipe-process :name "fake" :noquery t))
                  (provider quoth-active-provider))
             (process-put proc :quoth-sse (list :usage usage-alist))
-            (setf (quoth-provider-transport-process provider) proc)
+            (setf (quoth-provider-request provider)
+                  (list :stage-process nil :curl proc :done-p t))
             (setq-local quoth--prompt-id "p1")
             (quoth--accumulate-usage)
             (process-put proc :quoth-sse

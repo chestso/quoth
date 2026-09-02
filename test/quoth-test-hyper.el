@@ -424,7 +424,10 @@ XXH3-64 hash."
   "The default setting passes a stable per-machine ID.
 Repeated sends resolve to the same value."
   (let ((captured nil))
-    (cl-letf (((symbol-function 'quoth-openai-request)
+    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+               (lambda (_buf on-ready)
+                 (funcall on-ready "STAGED PROMPT") nil))
+              ((symbol-function 'quoth-openai-request)
                (lambda (_base _tok _body _on _cb &optional _err _sess id)
                  (setq captured id)
                  (make-pipe-process :name "quoth-hyper-test-fake"
@@ -498,7 +501,10 @@ non-nil."
 (ert-deftest quoth-test/hyper-method-gates-session-id-on-defcustom ()
   "The session hash is computed only when the cache gate is on.\nWith the gate off, nil is passed for the session headers."
   (let ((captured-session nil))
-    (cl-letf (((symbol-function 'quoth-openai-request)
+    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+               (lambda (_buf on-ready)
+                 (funcall on-ready "STAGED PROMPT") nil))
+              ((symbol-function 'quoth-openai-request)
                (lambda (&rest args)
                  (setq captured-session (nth 6 args))
                  (make-pipe-process :name "quoth-hyper-test-fake"
@@ -519,7 +525,10 @@ non-nil."
   "Test that with the cache gate on, the method passes the XXH3-64 hash.
 The hash is of the session UUID as the cache-affinity session id."
   (let ((captured-session nil))
-    (cl-letf (((symbol-function 'quoth-openai-request)
+    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+               (lambda (_buf on-ready)
+                 (funcall on-ready "STAGED PROMPT") nil))
+              ((symbol-function 'quoth-openai-request)
                (lambda (&rest args)
                  (setq captured-session (nth 6 args))
                  (make-pipe-process :name "quoth-hyper-test-fake"
@@ -670,7 +679,10 @@ on stream completion instead of finalizing or touching buffers itself."
   (let ((quoth-test--captured-completion nil)
         (injected (lambda () (setq quoth-test--captured-completion 'called)))
         (base "http://127.0.0.1:1"))
-    (cl-letf (((symbol-function 'quoth-openai-request)
+    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+               (lambda (_buf on-ready)
+                 (funcall on-ready "STAGED PROMPT") nil))
+              ((symbol-function 'quoth-openai-request)
                (lambda (&rest args)
                  (setq quoth-test--captured-completion (nth 4 args))
                  (make-pipe-process :name "quoth-hyper-test-fake"
@@ -1905,34 +1917,54 @@ slot, and clear the provider's completion action."
   (let ((aborted nil)
         (provider (quoth-make-hyper-provider
                    :buffer (current-buffer)
-                   :working-directory default-directory)))
-    (setf (quoth-provider-transport-process provider)
-          (make-pipe-process :name "quoth-hyper-process-control"
-                             :noquery t :coding 'binary
-                             :filter #'ignore :sentinel #'ignore))
+                   :working-directory default-directory))
+        (curl (make-pipe-process :name "quoth-hyper-process-control"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (setf (quoth-provider-request provider)
+          (list :stage-process nil :curl curl :done-p nil))
     (setf (quoth-provider-completion-action provider) (lambda () 'done))
-    (cl-letf (((symbol-function 'quoth-openai-abort)
-               (lambda (proc)
-                 (setq aborted t)
-                 (process-put proc :quoth-finished t))))
-      (quoth-provider-interrupt provider)
-      (should aborted)
-      (should-not (quoth-provider-transport-process provider))
-      (should-not (quoth-provider-completion-action provider)))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'quoth-openai-abort)
+                   (lambda (proc)
+                     (setq aborted t)
+                     (process-put proc :quoth-finished t))))
+          (quoth-provider-interrupt provider)
+          (should aborted)
+          (should-not (quoth-provider-request provider))
+          (should-not (quoth-provider-completion-action provider)))
+      (when (process-live-p curl) (delete-process curl)))))
 
 (ert-deftest quoth-test/hyper-active-p-checks-transport ()
-  "Quoth-provider-active-p does transport liveness, not a buffer variable."
+  "Quoth-provider-active-p does handle liveness, not a buffer variable.
+True with only the stage process live, true with the curl live, nil
+when both are dead."
   (let ((provider (quoth-make-hyper-provider
                    :buffer (current-buffer)
-                   :working-directory default-directory)))
-    (should-not (quoth-provider-active-p provider))
-    (setf (quoth-provider-transport-process provider)
-          (make-pipe-process :name "quoth-hyper-active"
-                             :noquery t :coding 'binary
-                             :filter #'ignore :sentinel #'ignore))
-    (should (quoth-provider-active-p provider))
-    (delete-process (quoth-provider-transport-process provider))
-    (should-not (quoth-provider-active-p provider))))
+                   :working-directory default-directory))
+        (stage (make-pipe-process :name "quoth-hyper-active-stage"
+                                  :noquery t :coding 'binary
+                                  :filter #'ignore :sentinel #'ignore))
+        (curl (make-pipe-process :name "quoth-hyper-active-curl"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (unwind-protect
+        (progn
+          (should-not (quoth-provider-active-p provider))
+          ;; Stage live, curl not yet.
+          (setf (quoth-provider-request provider)
+                (list :stage-process stage :curl nil :done-p nil))
+          (should (quoth-provider-active-p provider))
+          ;; Stage dead, curl live.
+          (delete-process stage)
+          (should-not (quoth-provider-active-p provider))
+          (setf (quoth-provider-request provider)
+                (list :stage-process nil :curl curl :done-p nil))
+          (should (quoth-provider-active-p provider))
+          (delete-process curl)
+          (should-not (quoth-provider-active-p provider)))
+      (when (process-live-p stage) (delete-process stage))
+      (when (process-live-p curl) (delete-process curl)))))
 
 (ert-deftest quoth-test/hyper-cleanup-without-transport ()
   "Quoth-provider-cleanup only clears completion when there is no transport."
@@ -1946,43 +1978,66 @@ slot, and clear the provider's completion action."
     (should-not (quoth-provider-completion-action provider))))
 
 (ert-deftest quoth-test/hyper-send-provider-stores-transport ()
-  "Quoth-provider-send-prompt should put the transport into the struct."
-  (let ((provider (quoth-make-hyper-provider
-                   :buffer (current-buffer)
-                   :base-url "http://127.0.0.1:1"
-                   :token "tok")))
-    (cl-letf (((symbol-function 'quoth-openai-request)
-               (lambda (&rest _args)
-                 (make-pipe-process :name "quoth-hyper-transport"
-                                    :noquery t))))
-      (let ((proc (quoth-provider-send-prompt provider "hi")))
-        (should (processp proc))
-        (should (eq (quoth-provider-transport-process provider) proc))
-        (delete-process proc)))))
-
-(ert-deftest quoth-test/hyper-send-cleans-stale-transport ()
-  "Quoth-provider-send-prompt cleans a stale transport before starting.
-A previous failed request must not leak into the next send."
+  "A send returns the request handle and stores it in the provider
+slot; the curl transport lands in the handle once the staged prompt
+delivers."
   (let ((provider (quoth-make-hyper-provider
                    :buffer (current-buffer)
                    :base-url "http://127.0.0.1:1"
                    :token "tok"))
-        (aborted nil))
-    (setf (quoth-provider-transport-process provider)
-          (make-pipe-process :name "quoth-hyper-old"
-                             :noquery t :coding 'binary
-                             :filter #'ignore :sentinel #'ignore))
+        (curl (make-pipe-process :name "quoth-hyper-transport" :noquery t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+                   (lambda (_buf on-ready)
+                     (funcall on-ready "STAGED PROMPT") nil))
+                  ((symbol-function 'quoth-openai-request)
+                   (lambda (&rest _args) curl)))
+          (let ((handle (quoth-provider-send-prompt provider "hi")))
+            (should (listp handle))
+            (should (eq (quoth-provider-request provider) handle))
+            (should (eq (plist-get handle :curl) curl))))
+      (when (process-live-p curl) (delete-process curl))
+      (quoth-provider-cleanup provider))))
+
+(ert-deftest quoth-test/hyper-send-cleans-stale-transport ()
+  "Quoth-provider-send-prompt cleans a stale request before starting.
+A previous failed request must not leak into the next send: its stage
+is killed, its curl aborted, and the handle replaced."
+  (let ((provider (quoth-make-hyper-provider
+                   :buffer (current-buffer)
+                   :base-url "http://127.0.0.1:1"
+                   :token "tok"))
+        (aborted nil)
+        (old-stage (make-pipe-process :name "quoth-hyper-old-stage"
+                                      :noquery t :coding 'binary
+                                      :filter #'ignore :sentinel #'ignore))
+        (old-curl (make-pipe-process :name "quoth-hyper-old"
+                                     :noquery t :coding 'binary
+                                     :filter #'ignore :sentinel #'ignore))
+        (new-curl nil))
+    (setf (quoth-provider-request provider)
+          (list :stage-process old-stage :curl old-curl :done-p nil))
     (cl-letf* (((symbol-function 'quoth-openai-abort)
                 (lambda (_proc) (setq aborted t)))
+               ((symbol-function 'quoth-openai--system-prompt-async)
+                (lambda (_buf on-ready)
+                  (funcall on-ready "STAGED PROMPT") nil))
                ((symbol-function 'quoth-openai-request)
                 (lambda (&rest _args)
-                  (make-pipe-process :name "quoth-hyper-new"
-                                     :noquery t))))
-      (let ((proc (quoth-provider-send-prompt provider "hi")))
-        (should aborted)
-        (should (processp proc))
-        (should (eq (quoth-provider-transport-process provider) proc))
-        (delete-process proc)))))
+                  (setq new-curl (make-pipe-process :name "quoth-hyper-new"
+                                                    :noquery t)))))
+      (unwind-protect
+          (let ((handle (quoth-provider-send-prompt provider "hi")))
+            (should aborted)
+            (should (listp handle))
+            (should (eq (quoth-provider-request provider) handle))
+            (should-not (process-live-p old-stage))
+            (should (processp (plist-get handle :curl))))
+        (when (and new-curl (process-live-p new-curl))
+          (delete-process new-curl))
+        (when (process-live-p old-stage) (delete-process old-stage))
+        (when (process-live-p old-curl) (delete-process old-curl))
+        (quoth-provider-cleanup provider)))))
 
 
 ;;; 92d. SSE parser: usage capture
@@ -2053,7 +2108,9 @@ The provider returns :input-tokens, :output-tokens, :cost-unit,
                    :buffer (current-buffer)
                    :base-url "http://x" :token "t")))
     (process-put proc :quoth-sse (list :usage usage-alist))
-    (let ((result (quoth-provider--usage provider proc)))
+    (let ((result (quoth-provider--usage
+                   provider (list :stage-process nil :curl proc
+                                  :done-p t))))
       (should result)
       (should (= (plist-get result :input-tokens) 8846))
       (should (= (plist-get result :output-tokens) 311))
@@ -2078,7 +2135,9 @@ The provider returns :input-tokens, :output-tokens, :cost-unit,
                    :buffer (current-buffer)
                    :base-url "http://x" :token "t")))
     (process-put proc :quoth-sse (list :usage usage-alist))
-    (let ((result (quoth-provider--usage provider proc)))
+    (let ((result (quoth-provider--usage
+                   provider (list :stage-process nil :curl proc
+                                  :done-p t))))
       (should result)
       (should (= (plist-get result :input-tokens) 8923))
       (should (= (plist-get result :output-tokens) 68))
@@ -2100,7 +2159,9 @@ The provider returns :input-tokens, :output-tokens, :cost-unit,
                    :buffer (current-buffer)
                    :base-url "http://x" :token "t")))
     (process-put proc :quoth-sse (list :usage usage-alist))
-    (let ((result (quoth-provider--usage provider proc)))
+    (let ((result (quoth-provider--usage
+                   provider (list :stage-process nil :curl proc
+                                  :done-p t))))
       (should (string= (plist-get result :cost-unit) "$"))
       (should (= (plist-get result :cost-value) 0.013926)))
     (delete-process proc)))
@@ -2110,7 +2171,8 @@ The provider returns :input-tokens, :output-tokens, :cost-unit,
   (let* ((proc (make-pipe-process :name "fake" :noquery t))
          (provider (quoth-make-hyper-provider :buffer (current-buffer)
                                               :base-url "http://x" :token "t"))
-         (result (quoth-provider--usage provider proc)))
+         (result (quoth-provider--usage
+                  provider (list :stage-process nil :curl proc :done-p t))))
     (should-not result)
     (delete-process proc)))
 
@@ -2131,7 +2193,8 @@ header line shows the stats."
                          (quoth-test--hyper-completion (current-buffer)))))
               (unwind-protect
                   (progn
-                    (setf (quoth-provider-transport-process quoth-active-provider) proc)
+                    (setf (quoth-provider-request quoth-active-provider)
+                          (list :stage-process nil :curl proc :done-p t))
                     (quoth-test--stream-into-buffer
                      proc
                      "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n"

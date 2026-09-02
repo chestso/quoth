@@ -155,7 +155,7 @@ fast suite stays hermetic)."
                  "quoth-test-xxh3" "quoth-test-tools"
                  "quoth-test-catalog" "quoth-test-process"
                  "quoth-test-round" "quoth-test-searxng"
-                 "quoth-test-select"))
+                 "quoth-test-select" "quoth-test-stage"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
