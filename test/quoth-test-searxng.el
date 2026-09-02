@@ -333,7 +333,7 @@ The timeout deletes the retrieval process and reports `unreachable'."
                    (lambda (_url _callback &rest _args) retrieval)))
           (let ((call (quoth-make-openai-tool-call :id "call_searxng"
                                                    :name "web_search"))
-                (quoth-searxng-timeout 0.2))
+                (quoth-searxng-timeout 0.05))
             (setf (quoth-openai-tool-call-args call)
                   (quoth-openai-parse-tool-args "{\"query\":\"emacs\"}"))
             (should (functionp (quoth-searxng--exec
@@ -357,7 +357,7 @@ The timeout deletes the retrieval process and reports `unreachable'."
               ((symbol-function 'delete-process) #'ignore))
       (let ((call (quoth-make-openai-tool-call :id "call_searxng"
                                                :name "web_search"))
-            (quoth-searxng-timeout 0.2))
+            (quoth-searxng-timeout 0.05))
         (setf (quoth-openai-tool-call-args call)
               (quoth-openai-parse-tool-args "{\"query\":\"emacs\"}"))
         (quoth-searxng--exec call (lambda (result) (push result results)))

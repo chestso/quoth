@@ -78,6 +78,14 @@ event chain deterministically.  Returns PRED's final value."
       (accept-process-output nil 0.05))
     (funcall pred)))
 
+(defun quoth-test--pump ()
+  "Pump one event round: a single 50ms `accept-process-output'.
+Drains anything already pending (the `quoth--schedule' hop, a fired
+window timer, a deleted process's sentinel) so a negative assertion —
+nothing else delivers — holds after one pump without a wall-clock
+wait."
+  (accept-process-output nil 0.05))
+
 (defun quoth-test-process--reporter ()
   "Return (REPORT . DELIVERED) for capturing on-exit / window reports.
 REPORT is a function of one argument (the delivered value); DELIVERED
@@ -246,8 +254,9 @@ collect it, and the exit delivers nothing."
                    (lambda ()
                      (not (process-live-p
                            (quoth-process-session-process session))))))
-          ;; Let any (wrongly armed) delivery run.
-          (quoth-test--wait-until (lambda () nil) 0.2)
+          ;; Let any (wrongly armed) delivery run: one pump drains
+          ;; the schedule hop, and nothing reports.
+          (quoth-test--pump)
           (should-not (funcall (cdr report)))
           ;; Still registered for a later poll.
           (should (quoth-process--find (quoth-process-session-id session))))
@@ -269,7 +278,9 @@ fire a second delivery), and the session stays registered."
         (progn
           (setq session (quoth-process--start "sleep 5" nil owner
                                               nil nil (car exit-report)))
-          (setq timer (quoth-process--arm-window session 150 (car window-report)))
+          ;; A short window through the real arming path; `sleep 5'
+          ;; deterministically outlives it.
+          (setq timer (quoth-process--arm-window session 10 (car window-report)))
           (should (timerp timer))
           (should (quoth-test--wait-until
                    (lambda () (funcall (cdr window-report)))
@@ -301,35 +312,39 @@ liveness check, so the round reports exactly once."
           ;; Let the process exit and the sentinel deliver first.
           (should (quoth-test--wait-until
                    (lambda () (funcall (cdr exit-report)))))
-          (quoth-process--arm-window session 100 (car window-report))
-          (should-not (quoth-test--wait-until
-                       (lambda () (funcall (cdr window-report))) 0.5))
+          (quoth-process--arm-window session 10 (car window-report))
+          ;; The window fires with the process dead: one pump runs it,
+          ;; and it no-ops (the sentinel owns the exit report).
+          (quoth-test--pump)
+          (should (null (funcall (cdr window-report))))
           (should (= (length (funcall (cdr exit-report))) 1)))
       (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
 
 (ert-deftest quoth-test-process/window-cancel-detaches-exit-report ()
-  "A live session whose window timer is cancelled reports nothing on exit.
+  "A session whose window timer is cancelled reports nothing on exit.
 Cancelling the wait abandons it without killing the session; the
-detached exit handler delivers nothing when the process exits."
+detached exit handler delivers nothing when the process later ends.
+The session stays registered so a later `write_stdin' poll can
+collect the exit output."
   (let ((owner (quoth-test-process--owner))
         (window-report (quoth-test-process--reporter))
         (exit-report (quoth-test-process--reporter))
         (session nil))
     (unwind-protect
         (progn
-          (setq session (quoth-process--start "sleep 1" nil owner
+          (setq session (quoth-process--start "sleep 5" nil owner
                                               nil nil (car exit-report)))
-          (let ((timer (quoth-process--arm-window session 100
+          (let ((timer (quoth-process--arm-window session 10000
                                                   (car window-report))))
             (cancel-timer timer))
           ;; Abandon the wait: detach the exit handler.
           (setf (quoth-process-session-on-exit session) nil)
-          (should (quoth-test--wait-until
-                   (lambda ()
-                     (not (process-live-p
-                           (quoth-process-session-process session))))))
-          (quoth-test--wait-until (lambda () nil) 0.3)
+          ;; End the process (a session kill would deregister it, which
+          ;; this test must not do): the sentinel runs on the next pump
+          ;; and no-ops — the wait was abandoned, so nothing reports.
+          (delete-process (quoth-process-session-process session))
+          (quoth-test--pump)
           (should-not (funcall (cdr window-report)))
           (should-not (funcall (cdr exit-report)))
           ;; Still registered: a later poll can collect the output.
@@ -463,8 +478,10 @@ deleted process."
           (setq session (quoth-process--start "sleep 5" nil owner
                                               nil nil (car report)))
           (quoth-process--kill session)
-          (should-not (quoth-test--wait-until
-                       (lambda () (funcall (cdr report))) 0.5)))
+          ;; The kill deleted the process: one pump runs its sentinel,
+          ;; which no-ops for the killed (deregistered) session.
+          (quoth-test--pump)
+          (should-not (funcall (cdr report))))
       (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
 

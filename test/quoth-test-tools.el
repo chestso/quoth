@@ -310,7 +310,8 @@ result at completion — so an entry is never expected to log itself."
   "A still-running command reports a session id and no exit code."
   (let* ((call (quoth-test--tool-call
                 "exec_command"
-                "{\"cmd\":\"sleep 5\",\"yield_time_ms\":200}"))
+                "{\"cmd\":\"sleep 5\"}"))
+         (quoth-process-yield-ms 10)
          (capture (quoth-test--capture))
          (session-id nil))
     (quoth-exec-command--exec call (car capture))
@@ -329,24 +330,24 @@ After cancelling, no further report arrives even when the process
 finishes; the session stays registered for a later `write_stdin'."
   (let* ((call (quoth-test--tool-call
                 "exec_command"
-                "{\"cmd\":\"sleep 0.3\",\"yield_time_ms\":5000}"))
+                "{\"cmd\":\"sleep 5\"}"))
+         (quoth-process-yield-ms 10)
          (capture (quoth-test--capture))
          (cancel (quoth-exec-command--exec call (car capture)))
          (session-id nil))
     (should (functionp cancel))
     (setq session-id (hash-table-keys quoth-process--sessions))
     (funcall cancel)
-    ;; The session survives the cancel and nothing reports on exit.
-    (should (quoth-test--wait-until
-             (lambda ()
-               (let ((session (quoth-process--find
-                               (car (or session-id '(-1))))))
-                 (and session
-                      (not (process-live-p
-                            (quoth-process-session-process session))))))))
-    (should-not (quoth-test--wait-until
-                 (lambda () (funcall (cdr capture))) 0.3))
+    ;; The cancel detached the exit handler and cancelled the window:
+    ;; one pump drains the fired window (already cancelled) and any
+    ;; pending schedule hop, and nothing reports.
+    (quoth-test--pump)
+    (should-not (funcall (cdr capture)))
     (should (quoth-process--find (car session-id)))
+    ;; The session survives the cancel: its process is still live.
+    (should (process-live-p
+             (quoth-process-session-process
+              (quoth-process--find (car session-id)))))
     (quoth-process--kill (quoth-process--find (car session-id)))))
 
 ;;; 4. write_stdin execution
@@ -355,7 +356,8 @@ finishes; the session stays registered for a later `write_stdin'."
   "Test that \"exec_command\" and \"write_stdin\" drive the process to completion."
   (let* ((start (quoth-test--tool-call
                  "exec_command"
-                 "{\"cmd\":\"read line; echo got:$line\",\"yield_time_ms\":200}"))
+                 "{\"cmd\":\"read line; echo got:$line\"}"))
+         (quoth-process-yield-ms 10)
          (start-capture (quoth-test--capture))
          (session-id nil))
     (quoth-exec-command--exec start (car start-capture))
@@ -397,7 +399,8 @@ poll delivers the exit chunk and code without waiting, and the
 session is deregistered."
   (let* ((start (quoth-test--tool-call
                  "exec_command"
-                 "{\"cmd\":\"sleep 0.3; echo done\",\"yield_time_ms\":100}"))
+                 "{\"cmd\":\"read line; echo done\"}"))
+         (quoth-process-yield-ms 10)
          (start-capture (quoth-test--capture))
          (session-id nil))
     (quoth-exec-command--exec start (car start-capture))
@@ -406,14 +409,18 @@ session is deregistered."
       (should (string-match "Process running with session ID \\([0-9]+\\)"
                             (car start-result)))
       (setq session-id (string-to-number (match-string 1 (car start-result)))))
-    ;; Let the background session exit on its own; it stays registered.
+    ;; Close the session's stdin so the background session exits on its
+    ;; own; it stays registered (the running report detached its wait).
+    ;; Event-wait for the real exit rather than racing a sleep.
+    (process-send-string
+     (quoth-process-session-process (quoth-process--find session-id))
+     "\n")
     (should (quoth-test--wait-until
              (lambda ()
                (let ((session (quoth-process--find session-id)))
                  (and session
                       (not (process-live-p
-                            (quoth-process-session-process session))))))
-             3))
+                            (quoth-process-session-process session))))))))
     (let* ((write (quoth-test--tool-call "write_stdin"
                                          (format "{\"session_id\":%d}"
                                                  session-id)))
