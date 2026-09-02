@@ -2132,13 +2132,21 @@ when login is disallowed by config, so the header can render
   (let ((requested (plist-get args :login)))
     (and requested (not (eq requested :json-false)) t)))
 
+(defun quoth--tool-line-numbers-requested-p (args)
+  "Return non-nil when ARGS requests numbered read_file output.
+A pure display predicate mirroring `quoth-file--read-line-numbered-p':
+on when the arg is present and not JSON false, off otherwise."
+  (let ((raw (plist-get args :line_numbers)))
+    (and raw (not (eq raw :json-false)))))
+
 (defun quoth--tool-clauses (tool args)
   "Return the display clauses for TOOL and its ARGS plist.
 Return a plist `(:inline CLAUSES :blocks BLOCKS)' where CLAUSES is the
 ordered list of inline scalar clauses for the header line (yield,
-shell, login, session, max, categories, engines) and BLOCKS is the
-ordered list of `(:label LABEL :value VALUE :fence FENCE)' plists for
-argument values rendered below the header (ran, in, wrote, query).
+shell, login, session, mode, overwrite, numbers, offset, limit, max,
+categories, engines) and BLOCKS is the ordered list of
+`(:label LABEL :value VALUE :fence FENCE)' plists for argument values
+rendered below the header (ran, in, wrote, query).
 A non-nil `:fence' forces the value into a fenced code block even when
 it is single-line.  Every parameter renders, with execution-side
 defaults filled in when the model omitted them, so the display shows
@@ -2179,13 +2187,21 @@ what the tool actually ran."
         (push (list :label "content" :value (plist-get args :content)) blocks))
       (when (stringp (plist-get args :workdir))
         (push (list :label "in" :value (plist-get args :workdir)) blocks))
+      (when (integerp (plist-get args :mode))
+        (push (format "mode %o" (plist-get args :mode)) inline))
       (when (eq (plist-get args :overwrite) :json-false)
         (push "overwrite no" inline)))
      ((string= tool "read_file")
       (when (stringp (plist-get args :path))
         (push (list :label "path" :value (plist-get args :path)) blocks))
       (when (stringp (plist-get args :workdir))
-        (push (list :label "in" :value (plist-get args :workdir)) blocks)))
+        (push (list :label "in" :value (plist-get args :workdir)) blocks))
+      (when (quoth--tool-line-numbers-requested-p args)
+        (push "numbers yes" inline))
+      (when (integerp (plist-get args :offset))
+        (push (format "offset %d" (plist-get args :offset)) inline))
+      (when (integerp (plist-get args :limit))
+        (push (format "limit %d" (plist-get args :limit)) inline)))
      ((string= tool "web_search")
       (when (stringp (plist-get args :query))
         (push (list :label "query" :value (plist-get args :query)) blocks))

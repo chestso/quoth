@@ -294,19 +294,51 @@ exit report.  Returns the timer."
 
 (defun quoth-process--write-stdin (session input)
   "Write INPUT to SESSION's stdin without waiting.
-A literal `\\x04' run in INPUT is sent as a control-D (EOT) to close the
-session's stdin, matching the `write_stdin' tool description.  Returns
-non-nil when something was sent.  The caller attaches the wait's exit
+A trailing literal `\\x04' marker closes the session's stdin: the text
+before it is sent, then EOF is delivered — `process-send-eof' over a
+pipe, a line-discipline EOF over a PTY (a flush C-d first when the
+body leaves a partial line pending, so the EOF lands on the empty
+line; the flush delivers the partial line byte-faithfully, no added
+newline).  Over a pipe there is no line discipline: the byte-level
+close is the only EOF, and no C-d travels as data.  The marker
+must be the last four characters of INPUT; the caller rejects interior
+occurrences.  A session whose stdin was closed accepts no further
+writes: return nil without sending.  Returns non-nil when something
+was sent (text or the EOF).  The caller attaches the wait's exit
 handler (`quoth-process-session-on-exit') and arms its own read window
 \(`quoth-process--arm-window')."
-  (let ((proc (quoth-process-session-process session)))
+  (let* ((proc (quoth-process-session-process session))
+         (closed (and (processp proc)
+                      (process-get proc :quoth-stdin-closed)))
+         (eof-p (and (stringp input)
+                     (string-suffix-p "\\x04" input)))
+         (body (if eof-p (substring input 0 -4) input)))
     (when (and proc
                (process-live-p proc)
                (stringp input)
-               (> (length input) 0))
-      (process-send-string proc (replace-regexp-in-string
-                                 "\\\\x04" "\C-d" input t t))
-      t)))
+               (not closed))
+      (let ((sent nil))
+        (when (> (length body) 0)
+          (process-send-string proc body)
+          (setq sent t))
+        (when eof-p
+          (process-put proc :quoth-stdin-closed t)
+          ;; A PTY's line discipline interprets C-d: at an empty line
+          ;; it signals EOF, mid-line it merely flushes the pending
+          ;; partial line (delivered without a newline).  So flush a
+          ;; pending partial line with a manual C-d first -- it hands
+          ;; the child exactly the body bytes, no added newline --
+          ;; letting `process-send-eof' land its EOF on the empty
+          ;; line.  Over a pipe there is no line discipline and the
+          ;; flush byte would arrive as literal data, so only the
+          ;; close runs there.
+          (when (and (process-tty-name proc)
+                     (> (length body) 0)
+                     (not (string-suffix-p "\n" body)))
+            (process-send-string proc "\C-d"))
+          (process-send-eof proc)
+          (setq sent t))
+        sent))))
 
 (defun quoth-process--kill (session)
   "Stop SESSION's process, free its output buffer, and unregister it.

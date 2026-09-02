@@ -379,6 +379,35 @@ finishes; the session stays registered for a later `write_stdin'."
         (should (= (cdr write-result) 0)))
       (should-not (gethash session-id quoth-process--sessions)))))
 
+(ert-deftest quoth-test/write-stdin-interior-eot-errors ()
+  "An interior \\x04 delivers an error result and writes nothing.
+Only a trailing marker may close stdin; an interior one would be
+delivered as literal data after a truncated write."
+  (let* ((start (quoth-test--tool-call
+                 "exec_command"
+                 (quoth-test--args-json :cmd "sleep 30")))
+         (quoth-process-yield-ms 10)
+         (start-capture (quoth-test--capture))
+         (session-id nil))
+    (quoth-exec-command--exec start (car start-capture))
+    (should (quoth-test--wait-until (lambda () (funcall (cdr start-capture)))))
+    (let ((start-result (car (funcall (cdr start-capture)))))
+      (should (string-match "Process running with session ID \\([0-9]+\\)"
+                            (car start-result)))
+      (setq session-id (string-to-number (match-string 1 (car start-result)))))
+    (let* ((write (quoth-test--tool-call
+                   "write_stdin"
+                   (quoth-test--args-json :session_id session-id
+                                          :input "be\\x04fore")))
+           (write-capture (quoth-test--capture)))
+      (should-not (quoth-write-stdin--exec write (car write-capture)))
+      (let ((result (car (funcall (cdr write-capture)))))
+        (should (string-match-p "Process exited with code -1" (car result)))
+        (should (string-match-p "only at the end" (car result)))
+        (should (= (cdr result) -1))))
+    ;; Clean up: kill the session directly (no exit report armed).
+    (quoth-process--kill (quoth-process--find session-id))))
+
 (ert-deftest quoth-test/write-stdin-unknown-session-errors ()
   "An unknown session id delivers an error result without spawning."
   (let ((spawned nil))
@@ -878,6 +907,67 @@ extraction; argument blocks are display decoration."
             (should (string-match-p "path: /tmp/in.txt" content))))
       (quoth-test--cleanup))))
 
+(ert-deftest quoth-test/write-file-tool-block-renders-mode-and-overwrite ()
+  "A `write_file' block renders `mode' (octal) and `overwrite no'.
+Every schema arg renders: `mode' appears as an octal permission clause
+and `overwrite: false' as an `overwrite no' clause in the header."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (quoth--tool-block-insert
+           (list :name "write_file" :id "call_1"
+                 :args-json (concat "{\"path\":\"/tmp/out.txt\","
+                                    "\"content\":\"hi\","
+                                    "\"mode\":420,"
+                                    "\"overwrite\":false}")
+                 :result "ok"
+                 :exit 0)
+           quoth--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "mode 644" content))
+            (should (string-match-p "overwrite no" content))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/read-file-tool-block-renders-shape-args ()
+  "A `read_file' block renders `line_numbers', `offset', and `limit'.
+The shape args appear as header clauses (`numbers yes', `offset N',
+`limit N'); absent args render nothing rather than defaults."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (quoth--tool-block-insert
+           (list :name "read_file" :id "call_2"
+                 :args-json (concat "{\"path\":\"/tmp/in.txt\","
+                                    "\"line_numbers\":true,"
+                                    "\"offset\":41,"
+                                    "\"limit\":60}")
+                 :result "out"
+                 :exit 0)
+           quoth--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "numbers yes" content))
+            (should (string-match-p "offset 41" content))
+            (should (string-match-p "limit 60" content))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/read-file-tool-block-shape-args-absent ()
+  "A bare `read_file' block renders no shape clauses.
+Absence renders absence: no `numbers', `offset', or `limit' clause."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (quoth--tool-block-insert
+           (list :name "read_file" :id "call_2"
+                 :args-json "{\"path\":\"/tmp/in.txt\"}"
+                 :result "out"
+                 :exit 0)
+           quoth--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should-not (string-match-p "numbers" content))
+            (should-not (string-match-p "offset" content))
+            (should-not (string-match-p "limit" content))))
+      (quoth-test--cleanup))))
+
 
 ;;; 8. Fence escaping: protect against nested fences in tool output
 
@@ -1070,6 +1160,72 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
                          (list (file-name-nondirectory target)))))
       (ignore-errors (delete-directory dir t)))))
 
+(ert-deftest quoth-test/write-file-mode-applied ()
+  "A `mode' arg is applied to the fresh file after the atomic write.
+The temp sibling is created 0700 by `make-temp-file', so the chmod
+after the rename is what carries the requested bits."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "script.sh" dir))
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content "#!/bin/sh\n" :mode 493)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (equal (file-modes target) 493))) ; 0755
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-mode-applied-on-overwrite ()
+  "A `mode' arg is applied on the overwrite path too.
+An existing file written through the direct-write branch ends up with
+the requested bits."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "file.txt" dir))
+               (_ (write-region "old" nil target))
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content "new" :mode 420)))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (equal (file-modes target) 420))) ; 0644
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-mode-absent-leaves-default ()
+  "Without a `mode' arg the fresh file keeps the temp file's default
+bits (0600 from `make-temp-file'); nothing chmods."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "plain.txt" dir))
+               (call (quoth-test--tool-call
+                      "write_file"
+                      (quoth-test--args-json
+                       :path target :content "x")))
+               (result (quoth-test--sync-result #'quoth-write-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (equal (file-modes target) 384))) ; 0600
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/write-file-mode-invalid-errors ()
+  "A present-but-invalid `mode' delivers an error result and writes
+nothing: the validation fires before the write."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (dolist (bad (list -1 4096 "x"))
+          (let* ((target (expand-file-name "bad.txt" dir))
+                 (call (quoth-test--tool-call
+                        "write_file"
+                        (quoth-test--args-json
+                         :path target :content "x" :mode bad)))
+                 (result (quoth-test--sync-result #'quoth-write-file--exec call)))
+            (should (string-match-p "Process exited with code -1" (car result)))
+            (should (string-match-p "mode must be a decimal integer" (car result)))
+            (should (= (cdr result) -1))
+            (should-not (file-exists-p target))))
+      (ignore-errors (delete-directory dir t)))))
+
 (ert-deftest quoth-test/write-file-missing-path-errors ()
   "A missing or empty `path' yields an error result."
   (let ((dir (quoth-test--tmpdir)))
@@ -1162,20 +1318,331 @@ in a proper multibyte result string."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/read-file-truncates-large-content ()
-  "`read_file' caps output at `quoth-tool-max-output'."
+  "`read_file' caps at `quoth-tool-max-output' with a head-only marker.
+A one-line file too big for the budget emits no body, only the
+marker naming the dropped line and the resume offset."
   (let ((dir (quoth-test--tmpdir))
         (quoth-tool-max-output 100))
     (unwind-protect
         (let* ((target (expand-file-name "big.txt" dir))
-               (body (make-string 500 ?x))
+               (_ (write-region (make-string 500 ?x) nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          ;; The whole (only) line is dropped; the marker names its
+          ;; range, its count, and the offset that fetches it.
+          (should (string-suffix-p
+                   (concat "... lines 1-1 omitted (1 line). "
+                           "Use offset=1 to resume ...\n")
+                   (car result)))
+          ;; The result is exactly header + marker: the whole
+          ;; (only) line was dropped, nothing else was emitted.
+          (should (string= (car result)
+                           (concat "Process exited with code 0"
+                                   (char-to-string ?\n)
+                                   "Output:"
+                                   (char-to-string ?\n)
+                                   "... lines 1-1 omitted (1 line). "
+                                   "Use offset=1 to resume ..."
+                                   (char-to-string ?\n)))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-empty-file-no-marker ()
+  "An empty `read_file' returns the header and `Output:' line only."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "empty.txt" dir))
+               (_ (write-region "" nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          ;; Exactly the header, no body, no marker.
+          (should (string= (car result)
+                           (concat "Process exited with code 0"
+                                   (char-to-string ?\n)
+                                   "Output:"
+                                   (char-to-string ?\n)))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-line-numbers-off-bytes-exact ()
+  "Default (no `line_numbers') reads remain byte-exact."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "f.txt" dir))
+               (body (concat "some" (char-to-string ?\n)
+                             "content" (char-to-string ?\n)))
                (_ (write-region body nil target))
                (call (quoth-test--tool-call
                       "read_file"
                       (quoth-test--args-json :path target)))
                (result (quoth-test--sync-result #'quoth-read-file--exec call)))
           (should (= (cdr result) 0))
-          (should (string-match-p "omitted" (car result))))
+          (should (string-match-p (regexp-quote body) (car result))))
       (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-line-numbers-on-renders-cat-n ()
+  "`line_numbers: true' renders cat -n style (right-aligned 6 + TAB)."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n))
+        (tab (char-to-string ?\t)))
+    (unwind-protect
+        (let* ((target (expand-file-name "n.txt" dir))
+               (body (concat "some" lf "content" lf "third" lf))
+               (_ (write-region body nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json
+                       :path target :line_numbers t)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p (concat "     1" tab "some") (car result)))
+          (should (string-match-p (concat "     2" tab "content") (car result)))
+          (should (string-match-p (concat "     3" tab "third") (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-offset-window-slices-content ()
+  "A windowed numbered read returns the requested slice with true numbers.
+`offset' selects the first line; `limit' bounds the window; numbering
+starts at `offset' so references stay meaningful."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n))
+        (tab (char-to-string ?\t)))
+    (unwind-protect
+        (let* ((target (expand-file-name "off.txt" dir))
+               (_ (write-region (format "a%sb%sc%sd%s" lf lf lf lf)
+                                nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json
+                       :path target :line_numbers t :offset 2 :limit 2)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p (concat "     2" tab "b") (car result)))
+          (should (string-match-p (concat "     3" tab "c") (car result)))
+          ;; Lines outside the window carry no numbers and no content.
+          (should-not (string-match-p (concat "     1" tab "a") (car result)))
+          (should-not (string-match-p (concat "     4" tab "d") (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-offset-past-eof-errors ()
+  "An `offset' past EOF delivers an error result."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "short.txt" dir))
+               (_ (write-region (concat "a" (char-to-string ?\n)
+                                        "b" (char-to-string ?\n))
+                                nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target :offset 100)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) -1))
+          (should (string-match-p "Process exited with code -1" (car result)))
+          (should (string-match-p "offset" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-offset-negative-errors ()
+  "A non-positive `offset' delivers an error."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "f.txt" dir))
+               (_ (write-region "hi" nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target :offset 0)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) -1))
+          (should (string-match-p "positive integer" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-limit-zero-errors ()
+  "`limit: 0' delivers an error."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "f.txt" dir))
+               (_ (write-region "hi" nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target :limit 0)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) -1))
+          (should (string-match-p "positive integer" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-offset-plus-limit-clamps-to-eof ()
+  "`offset' + `limit' beyond EOF clamps silently to the last line."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n)))
+    (unwind-protect
+        (let* ((target (expand-file-name "f.txt" dir))
+               (_ (write-region (format "a%sb%sc%s" lf lf lf) nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json
+                       :path target :offset 2 :limit 999)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          ;; The window covers lines 2 and 3, not line 1.
+          (should (string-match-p (regexp-quote "b") (car result)))
+          (should (string-match-p (regexp-quote "c") (car result)))
+          (should-not (string-match-p
+                       (concat (regexp-quote "a") (regexp-quote lf))
+                       (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-offset-without-numbering-paginates ()
+  "An `offset'/`limit' window without `line_numbers' returns the raw slice."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n)))
+    (unwind-protect
+        (let* ((target (expand-file-name "f.txt" dir))
+               (_ (write-region (format "a%sb%sc%s" lf lf lf) nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target :offset 2 :limit 1)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          ;; Exactly line 2, no numbers.
+          (should (string= (car result)
+                           (concat "Process exited with code 0"
+                                   (char-to-string ?\n)
+                                   "Output:"
+                                   (char-to-string ?\n)
+                                   "b" (char-to-string ?\n)))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-no-trailing-newline-stays-exact ()
+  "An un-numbered read of a file without a final newline adds none.
+The byte-exact contract covers the file's true ending; the render
+slices the original text instead of re-joining split lines."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n)))
+    (unwind-protect
+        (let* ((target (expand-file-name "nonl.txt" dir))
+               (_ (write-region "alpha" nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path target)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string= (car result)
+                           (concat "Process exited with code 0" lf
+                                   "Output:" lf "alpha"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-blank-lines-numbered-true ()
+  "Interior blank lines are kept and numbered; numbering stays true.
+`cat -n' numbers an empty line like any other; dropping it would
+shift every following number."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n))
+        (tab (char-to-string ?\t)))
+    (unwind-protect
+        (let* ((target (expand-file-name "blanks.txt" dir))
+               (_ (write-region (concat "a" lf lf "b" lf) nil target))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json
+                       :path target :line_numbers t)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p (concat "     1" tab "a" lf) (car result)))
+          (should (string-match-p (concat "     2" tab lf) (car result)))
+          (should (string-match-p (concat "     3" tab "b" lf) (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-crlf-window-byte-exact ()
+  "A windowed un-numbered read returns CRLF bytes verbatim.
+The window slices the original text, so a `\r\n' on disk stays
+`\r\n' even inside an offset/limit window."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n))
+        (cr (char-to-string ?\r)))
+    (unwind-protect
+        (let* ((target (expand-file-name "crlf.txt" dir))
+               (_ (with-temp-buffer
+                    (set-buffer-multibyte nil)
+                    (insert (concat "a" cr lf "b" cr lf))
+                    (write-region (point-min) (point-max)
+                                  target nil 'silent)))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json
+                       :path target :offset 2 :limit 1)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string= (car result)
+                           (concat "Process exited with code 0" lf
+                                   "Output:" lf "b" cr lf))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-window-truncation-marked ()
+  "A windowed numbered read emits a resume-hint marker when capped.
+The marker names the truncated line count and the next offset."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n)))
+    (let ((quoth-tool-max-output 120))
+      (unwind-protect
+          (let* ((target (expand-file-name "big.txt" dir))
+                 (body (cl-loop for i from 1 to 50
+                                concat (format "%03d-%s%s" i
+                                               (make-string 10 ?x) lf)))
+                 (_ (write-region body nil target))
+                 (call (quoth-test--tool-call
+                        "read_file"
+                        (quoth-test--args-json
+                         :path target :line_numbers t :offset 1 :limit 50)))
+                 (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+            (should (= (cdr result) 0))
+            ;; The marker names the dropped range with true line
+            ;; numbers and the resume offset that fetches them.
+            (should (string-match-p
+                     (regexp-quote
+                      "... lines 4-50 omitted (47 lines). Use offset=4 to resume ...")
+                     (car result)))
+            (should (string-match-p "Use offset=" (car result)))
+            ;; The resume offset names an existing line (the first
+            ;; dropped one), never a line past the end of the file.
+            (should-not (string-match-p "Use offset=51" (car result)))
+            ;; Head-only: the marker is the last thing the model sees.
+            (should (string-suffix-p
+                     (concat "... lines 4-50 omitted (47 lines). "
+                             "Use offset=4 to resume ..." lf)
+                     (car result))))
+        (ignore-errors (delete-directory dir t))))))
+
+(ert-deftest quoth-test/read-file-head-only-no-tail ()
+  "Truncation is head-only: the tail line is never emitted.
+Two 50-byte lines against a 100-byte budget keep line 1 and mark
+line 2 as truncated; line 2's content must not appear anywhere."
+  (let ((dir (quoth-test--tmpdir))
+        (lf (char-to-string ?\n)))
+    (let ((quoth-tool-max-output 100))
+      (unwind-protect
+          (let* ((target (expand-file-name "tail.txt" dir))
+                 (line1 (make-string 50 ?x))
+                 (line2 (make-string 50 ?y))
+                 (_ (write-region (concat line1 lf line2 lf) nil target))
+                 (call (quoth-test--tool-call
+                        "read_file"
+                        (quoth-test--args-json :path target)))
+                 (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+            (should (= (cdr result) 0))
+            ;; Line 1 survives.
+            (should (string-match-p (regexp-quote line1) (car result)))
+            ;; The marker fires and names line 2 by range, count,
+            ;; and the resume offset.
+            (should (string-match-p
+                     (regexp-quote
+                      "... lines 2-2 omitted (1 line). Use offset=2 to resume ...")
+                     (car result)))
+            ;; Head-only: line 2's content never appears.
+            (should-not (string-match-p (regexp-quote line2) (car result))))
+        (ignore-errors (delete-directory dir t))))))
 
 (provide 'quoth-test-tools)
 ;;; quoth-test-tools.el ends here

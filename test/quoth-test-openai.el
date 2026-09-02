@@ -125,6 +125,44 @@ The default is non-nil, so `tool_choice' is `auto'."
     (should (member "read_file" names))
     (should (member "write_file" names))))
 
+(defun quoth-test--read-file-props ()
+  "Return the properties alist of the `read_file' schema entry."
+  (let* ((schema (quoth--openai-tool-schema))
+         (entry (cl-find-if
+                 (lambda (tool)
+                   (string= (cdr (assq 'name (cdr (assq 'function tool))))
+                            "read_file"))
+                 (append schema nil))))
+    (cdr (assq 'properties
+               (cdr (assq 'parameters
+                          (cdr (assq 'function entry))))))))
+
+(ert-deftest quoth-test/openai-schema-read-file-line-numbers-args ()
+  "The `read_file' schema advertises line_numbers, offset, and limit
+with types, and teaches the strip-before-write discipline."
+  (let ((props (quoth-test--read-file-props)))
+    (should (assq 'line_numbers props))
+    (should (equal (cdr (assq 'type (cdr (assq 'line_numbers props))))
+                   "boolean"))
+    (should (string-match-p "cat -n"
+                            (cdr (assq 'description
+                                       (cdr (assq 'line_numbers props))))))
+    (should (string-match-p "Strip the prefix"
+                            (cdr (assq 'description
+                                       (cdr (assq 'line_numbers props))))))
+    (should (assq 'offset props))
+    (should (equal (cdr (assq 'type (cdr (assq 'offset props))))
+                   "integer"))
+    (should (string-match-p "1-based"
+                            (cdr (assq 'description
+                                       (cdr (assq 'offset props))))))
+    (should (assq 'limit props))
+    (should (equal (cdr (assq 'type (cdr (assq 'limit props))))
+                   "integer"))
+    (should (string-match-p "Clamped silently to EOF"
+                            (cdr (assq 'description
+                                       (cdr (assq 'limit props))))))))
+
 (ert-deftest quoth-test/openai-compose-continuation-replaces-user ()
   "A non-nil CONTINUATION replaces the user message with follow-up msgs."
   (let ((msgs (alist-get 'messages

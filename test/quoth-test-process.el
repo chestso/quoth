@@ -376,6 +376,57 @@ window / exit reporting."
       (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
 
+(ert-deftest quoth-test-process/write-stdin-trailing-eot-closes-stdin ()
+  "A trailing \\x04 marker sends the body then delivers real EOF.
+`cat' under a PTY exits only when it reads EOF, so a completed exit
+report with the full body proves the stdin actually closed — via
+`process-send-eof', which works over both PTY and pipe connections."
+  (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "cat; echo RC=$?" nil owner))
+          (setf (quoth-process-session-on-exit session) (car report))
+          (should (quoth-process--write-stdin session "payload\\x04"))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (let ((delivered (funcall (cdr report))))
+            (should (= (length delivered) 1))
+            ;; The PTY echoes the payload back; cat copies it; the
+            ;; marker itself never travels as a byte.
+            (should (string-match-p "payload" (caar delivered)))
+            (should (string-match-p "RC=0" (caar delivered)))
+            (should (= (cdar delivered) 0))))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/write-stdin-closed-rejects-further-writes ()
+  "After \\x04 closes stdin, further writes are refused without sending.
+The EOF marker latches: a second write returns nil and delivers
+nothing, so the child's stdin stays closed."
+  (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "cat; echo RC=$?" nil owner))
+          (setf (quoth-process-session-on-exit session) (car report))
+          (should (quoth-process--write-stdin session "one\\x04"))
+          ;; Process still live right after EOF: the second write is
+          ;; refused (nil) while the process is still running.
+          (should-not (quoth-process--write-stdin session "two"))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (let ((delivered (funcall (cdr report))))
+            (should (= (length delivered) 1))
+            ;; 'two' never arrived: cat saw only 'one' before EOF.
+            (should (string-match-p "one" (caar delivered)))
+            (should-not (string-match-p "two" (caar delivered)))
+            (should (= (cdar delivered) 0))))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
 (ert-deftest quoth-test-process/write-stdin-dead-session-still-collects ()
   "A write to a self-exited background session reports its final output.
 The session stays registered after its wait was abandoned; the poll

@@ -341,8 +341,15 @@ ID N` plus the captured output while it is still live. Both deliver
   the session.
 - `write_stdin` — writes to a live session (identified by the session
   id echoed by `exec_command`) and arms the same read window for the
-  output produced since the last report. A session whose process
-  already exited reports its final output immediately.
+  output produced since the last report. A trailing `\x04` in the
+  `input` closes the session's stdin through `process-send-eof`, which
+  is connection-type-agnostic: a raw C-d byte is EOF only through a
+  PTY line discipline, so on pipe connections (MS-Windows, where
+  Emacs ignores `:connection-type` and uses pipes) the byte would
+  arrive as data and stdin would never close. An interior `\x04`
+  delivers an error result rather than a truncated write, and a
+  session whose stdin was closed accepts no further writes. A session
+  whose process already exited reports its final output immediately.
 
 Two do byte-exact file I/O (no process involved):
 
@@ -350,10 +357,38 @@ Two do byte-exact file I/O (no process involved):
   creating missing parent directories and replacing an existing file
   unless `overwrite` is false; fresh-file writes go through a temp
   file and atomic rename so no reader observes a half-written file.
+  A `mode` arg (decimal POSIX permission bits, 0–4095) is chmod'ed
+  onto the file after the write on both paths — the rename-based
+  fresh-file path needs it because the temp sibling is created 0600
+  regardless of umask; without `mode` a fresh file keeps those 0600
+  bits. An out-of-range or non-integer `mode` is an error result
+  delivered before anything is written. On MS-Windows the bits
+  degrade to the read-only attribute (the write never fails on
+  them); the cap matches Emacs's own `set-file-modes`, which uses
+  only the 12 low bits.
 - `read_file` — reads the file at `path` byte-exact (a `\r\n` on disk
-  stays `\r\n`), errors on non-UTF-8 content, and truncates
-  over-long results to `quoth-tool-max-output` without trimming
-  trailing newlines.
+  stays `\r\n`), errors on non-UTF-8 content, and emits its result
+  under the `quoth-tool-max-output` byte budget. Three optional args
+  shape the read: `line_numbers` (default off) prefixes each line
+  with its 1-based true line number in `cat -n` style — a fixed
+  6-char right-aligned width, then a tab — so models can refer to
+  lines by number and the user can cross-check in Emacs; `offset`
+  is a 1-based first line; `limit` is a max line count. `offset < 1`,
+  `offset > line_count`, and `limit <= 0` are error results;
+  `offset + limit > line_count` clamps silently to EOF. **The
+  budget is spent on whole rendered lines, head first**: when the
+  read exceeds it, only the head is emitted and a marker names the
+  dropped line range, the dropped count, and the `offset` that
+  fetches them (`… lines 7-90 omitted (84 lines). Use offset=7 to
+resume …`); the resume offset is the first dropped line, so it
+  always names an existing line. The byte-exact
+  read→edit→write_file round trip holds whenever `line_numbers`
+  is off (the default); the schema description of `line_numbers`
+  teaches the model to strip the prefix before passing content back
+  to `write_file`, because leaked prefixes permanently corrupt the
+  file (hermes-agent issue #19798). An empty file returns the
+  status header and `Output:` line only. Smaller slices go through
+  `offset`/`limit`.
 - `web_search` — queries the local SearXNG instance (`quoth-searxng.el`)
   asynchronously: `url-retrieve` plus a `quoth-searxng-timeout` timer
   that deletes the retrieval and delivers an error result; the cancel
@@ -383,7 +418,8 @@ quoth.el
 ```
 
 The header line carries the tool icon, name, and scalar clauses
-(yield, shell, login, session, max, etc.). Free-text argument values
+(yield, shell, login, session, mode, overwrite, numbers, offset,
+limit, max, categories, engines). Free-text argument values
 (cmd, workdir, input, query) are rendered below the header as
 `label: value` lines, or as fenced code blocks when they span multiple
 lines. The `exec_command` command (`ran`) is always fenced — single- or
