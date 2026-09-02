@@ -59,15 +59,17 @@
 
 (defun quoth-test--send-capturing-completion ()
   "Send a prompt in a fresh buffer with `quoth-provider-send-prompt' mocked.
-Returns the completion action the send loop injected."
+Returns the completion action the send loop injected, with the
+0-timer hop flattened so calling it runs the finalizer inline."
   (let ((captured-completion nil))
-    (cl-letf (((symbol-function 'quoth-provider-send-prompt)
-               (lambda (_provider _prompt &rest args)
-                 (setq captured-completion (plist-get args :completion)))))
-      (with-current-buffer (quoth-test--fresh-buffer)
-        (goto-char (point-max))
-        (insert "test")
-        (call-interactively #'quoth-send-input)))
+    (quoth-test--with-immediate-schedule
+     (cl-letf (((symbol-function 'quoth-provider-send-prompt)
+                (lambda (_provider _prompt &rest args)
+                  (setq captured-completion (plist-get args :completion)))))
+       (with-current-buffer (quoth-test--fresh-buffer)
+         (goto-char (point-max))
+         (insert "test")
+         (call-interactively #'quoth-send-input))))
     captured-completion))
 
 (ert-deftest quoth-test/stream-progress-idle-before-send ()
@@ -91,12 +93,15 @@ Returns the completion action the send loop injected."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/stream-progress-done-after-finalize ()
-  "The completion action marks the stream done with one application."
+  "The completion action finalizes and returns the phase to idle.
+The completion hops through `quoth--schedule'; with the hop flattened,
+calling the captured completion runs the finalizer inline."
   (unwind-protect
       (let ((completion (quoth-test--send-capturing-completion)))
         (let ((buf (quoth-test--buffer-name)))
           (with-current-buffer buf
-            (funcall completion)
+            (quoth-test--with-immediate-schedule
+             (funcall completion))
             (let ((state (quoth--stream-progress)))
               (should (eq (plist-get state :status) 'idle))
               (should (null (plist-get state :error)))))))
@@ -325,7 +330,8 @@ fake instead of spawning curl."
               ;; (the provider stores it there on send).
               (setq completion (quoth-provider-completion-action
                                 quoth-active-provider))
-              (funcall thunk fake completion))))
+              (quoth-test--with-immediate-schedule
+               (funcall thunk fake completion)))))
       (when (process-live-p fake)
         (delete-process fake))
       (quoth-test--cleanup))))

@@ -31,8 +31,8 @@
 ;; Local `web_search' tool implementation for quoth.el: queries a
 ;; local SearXNG instance over HTTP and returns normalized results in
 ;; the Codex-style prose convention (`Process exited with code N' +
-;; `Output:').  The tool is a thin synchronous wrapper: it fetches JSON
-;; via `url-retrieve-synchronously', normalizes it into a markdown list
+;; `Output:').  The entry reports to ON-DONE once (as every registry
+;; entry does); it fetches JSON, normalizes it into a markdown list
 ;; of results (each carrying engine + score for the model to weigh
 ;; relevance), and deduplicates by URL keeping the highest score.
 ;;
@@ -59,8 +59,8 @@
             nil t))))
 
 (declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
-(declare-function quoth-exec--error "quoth-tools" (message tool-call))
 (declare-function quoth-exec--format-result "quoth-tools" (output exit-code))
+(declare-function quoth-openai-tool-error-result "quoth-openai" (message))
 (declare-function quoth-exec--truncate-output "quoth-tools" (output))
 
 (defgroup quoth-searxng nil
@@ -223,21 +223,26 @@ Limits to MAX results after deduplication."
       (when items
         (format "Suggestions: %s" (mapconcat #'identity items ", "))))))
 
-(defun quoth-searxng--exec (tool-call)
-  "Execute TOOL-CALL as `web_search' and return (RESULT . EXIT).
+(defun quoth-searxng--exec (tool-call on-done)
+  "Execute TOOL-CALL as `web_search', reporting to ON-DONE.
 Validates the `query' arg, checks the cached health state, fetches
-JSON from SearXNG, normalizes it, and returns the prose result.
-Errors yield an error result with exit code -1."
+JSON from SearXNG, normalizes it, and delivers the prose result
+as (RESULT . EXIT-OR-NIL) to ON-DONE.  Errors deliver an error result
+with exit code -1.  Returns nil (no cancel thunk)."
   (let ((args (quoth-openai-tool-call-args tool-call)))
     (cond
      ((not (bound-and-true-p quoth-searxng-enabled))
-      (quoth-exec--error "Web search is disabled" tool-call))
+      (funcall on-done (quoth-openai-tool-error-result
+                        "Web search is disabled"))
+      nil)
      ((not (quoth-searxng--query args))
-      (quoth-exec--error "Missing query" tool-call))
+      (funcall on-done (quoth-openai-tool-error-result "Missing query"))
+      nil)
      ((eq quoth-searxng--healthy 'unreachable)
-      (quoth-exec--error
-       "SearXNG is unreachable (cached); check the local server"
-       tool-call))
+      (funcall on-done
+               (quoth-openai-tool-error-result
+                "SearXNG is unreachable (cached); check the local server"))
+      nil)
      (t
       (condition-case err
           (let* ((query (quoth-searxng--query args))
@@ -251,29 +256,32 @@ Errors yield an error result with exit code -1."
                      (or (quoth-searxng--response-body buf) "")))
                 (progn
                   (setq-local quoth-searxng--healthy 'unreachable)
-                  (quoth-exec--error
-                   (format "SearXNG is unreachable (HTTP %s)"
-                           (with-current-buffer buf
-                             (buffer-substring-no-properties
-                              (point-min) (line-end-position))))
-                   tool-call))
+                  (funcall on-done
+                           (quoth-openai-tool-error-result
+                            (format "SearXNG is unreachable (HTTP %s)"
+                                    (with-current-buffer buf
+                                      (buffer-substring-no-properties
+                                       (point-min) (line-end-position))))))
+                  nil)
               (let ((body (quoth-searxng--response-body buf)))
                 (let ((obj (quoth-json-read body)))
                   (if (not obj)
                       (progn
                         (setq-local quoth-searxng--healthy 'unreachable)
-                        (quoth-exec--error
-                         "SearXNG returned malformed JSON"
-                         tool-call))
+                        (funcall on-done
+                                 (quoth-openai-tool-error-result
+                                  "SearXNG returned malformed JSON"))
+                        nil)
                     (setq-local quoth-searxng--healthy t)
                     (let* ((normalized (quoth-searxng--normalize obj max))
                            (text (quoth-exec--format-result normalized 0)))
-                      (setf (quoth-openai-tool-call-result tool-call) text
-                            (quoth-openai-tool-call-exit tool-call) 0)
-                      (cons text 0)))))))
+                      (funcall on-done (cons text 0))
+                      nil))))))
         (error
          (setq-local quoth-searxng--healthy 'unreachable)
-         (quoth-exec--error (error-message-string err) tool-call)))))))
+         (funcall on-done (quoth-openai-tool-error-result
+                           (error-message-string err)))
+         nil))))))
 
 ;;; Register the tool into the protocol registry.
 

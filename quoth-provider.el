@@ -168,18 +168,6 @@ Kill any live transport process, clear the transport slot, and clear
   "Respond to a permission request on PROVIDER identified by PERMISSION-ID.
 ACTION is `allow', `allow-session', or `deny'.")
 
-(cl-defgeneric quoth-provider--tool-results (provider tool-calls)
-  "Build the tool-result messages and display blocks for TOOL-CALLS.
-PROVIDER is the provider instance.  TOOL-CALLS is a vector of
-tool-call alists from the SSE stream, accumulated by
-`quoth--hyper-sse-merge-tool-calls'.  Returns a list
-\(ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS) where ASSISTANT-MSG is
-the assistant message carrying `tool_calls', TOOL-RESULT-MSGS is a
-list of `role: \"tool\"' messages, and TOOL-BLOCKS is a list of plists
-\(:name :id :args-json :result :exit) for `quoth--tool-block-insert'."
-  (ignore provider tool-calls)
-  nil)
-
 (cl-defgeneric quoth-provider--tool-calls (provider process)
   "Return the accumulated tool-calls vector from PROVIDER's PROCESS, or nil.
 PROCESS is the transport process returned by `quoth-provider-send-prompt'.

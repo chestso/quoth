@@ -365,9 +365,13 @@ the request finalizes."
 
 (defvar quoth-openai-tool-registry
   (list)
-  "Alist mapping tool-call names to executer functions.
-An executer takes a `quoth-openai-tool-call' struct whose `args' slot
-holds the parsed argument plist and returns (RESULT-TEXT . EXIT-CODE).
+  "Alist mapping tool-call names to entry functions.
+An entry takes TOOL-CALL and ON-DONE: TOOL-CALL is a
+`quoth-openai-tool-call' struct whose `args' slot holds the parsed
+argument plist; ON-DONE receives the result (RESULT-TEXT .
+EXIT-OR-NIL) exactly once — inline for immediate tools, from a window
+timer or the session sentinel for process-backed ones.  The entry
+returns a cancel thunk (abandon the wait; nil for immediate tools).
 Local tool files (e.g. `quoth-tools.el') push their tools here at load
 time.")
 
@@ -405,25 +409,39 @@ message."
   (cons (format "Process exited with code -1\nOutput:\n%s" message)
         -1))
 
-(defun quoth-openai-execute-tool (tool-call)
-  "Execute TOOL-CALL and return (RESULT-TEXT . EXIT-CODE).
-Looks up the tool name in `quoth-openai-tool-registry'; an unknown
-tool yields an error result without spawning any process.  Logs the
-call name, args, result, and exit under the `tool' category; executors must not log themselves."
+(defun quoth-openai-execute-tool (tool-call on-done)
+  "Dispatch TOOL-CALL, delivering its result to ON-DONE exactly once.
+Looks up the tool name in `quoth-openai-tool-registry'; an unknown tool
+delivers an error result to ON-DONE without spawning any process.
+ON-DONE receives (RESULT-TEXT . EXIT-OR-NIL); the wrapper guards it
+exactly-once, so a delivery racing the entry's own reporting
+\(window timer vs. sentinel) reports only the first.  Logs the call
+name and args under the `tool' category at dispatch and the result at
+completion; entries must not log themselves.  Returns the entry's
+cancel thunk (abandon the wait), or nil for immediate tools."
   (let* ((name (quoth-openai-tool-call-name tool-call))
          (entry (assoc name quoth-openai-tool-registry))
-         (result (if entry
-                     (funcall (cdr entry) tool-call)
-                   (quoth-openai-tool-error-result
-                    (format "unknown tool %S" name)))))
+         (donep nil)
+         (report (lambda (result)
+                   (unless donep
+                     (setq donep t)
+                     (quoth--debug-log
+                      'tool
+                      (format "%s exit=%s output=%S"
+                              name
+                              (or (cdr result) "running")
+                              (substring (car result)
+                                         0 (min (length (car result)) 200))))
+                     (funcall on-done result)))))
     (quoth--debug-log
      'tool
-     (format "%s %S exit=%s output=%S"
-             name
-             (quoth-openai-tool-call-args tool-call)
-             (or (cdr result) "running")
-             (substring (car result) 0 (min (length (car result)) 200))))
-    result))
+     (format "%s %S" name (quoth-openai-tool-call-args tool-call)))
+    (if entry
+        (funcall (cdr entry) tool-call report)
+      (let ((result (quoth-openai-tool-error-result
+                     (format "unknown tool %S" name))))
+        (funcall report result)
+        nil))))
 
 (defun quoth-openai-compose-request (prompt model &optional history continuation)
   "Compose a chat-completions request alist for PROMPT.

@@ -95,11 +95,16 @@ The fake records the requested URL in `quoth-test--last-url'."
       (funcall fn))))
 
 (defun quoth-test--searxng-call (args-json)
-  "Execute a `web_search' tool call with ARGS-JSON, returning (RESULT . EXIT)."
-  (let ((call (quoth-make-openai-tool-call :id "call_searxng" :name "web_search")))
+  "Execute a `web_search' tool call with ARGS-JSON, returning (RESULT . EXIT).
+The entry reports to its on-done synchronously (an inline delivery),
+so the first capture is the result."
+  (let ((call (quoth-make-openai-tool-call :id "call_searxng" :name "web_search"))
+        (results nil))
     (setf (quoth-openai-tool-call-args call)
           (quoth-openai-parse-tool-args args-json))
-    (quoth-searxng--exec call)))
+    (quoth-searxng--exec call (lambda (result) (push result results)))
+    (should (equal (length results) 1))
+    (car results)))
 
 ;;; 1. Registration
 

@@ -78,7 +78,7 @@ quoth/                  # Package root
   quoth-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
   quoth-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over quoth-openai)
   quoth-select.el      # Transient model selector (UI only; depends on the protocol, not quoth.el)
-  quoth-process.el      # Process handler: PTY sessions, output buffering, yield, stdin, cleanup
+  quoth-process.el      # Process handler: PTY sessions, output buffering, exit/running reporting, stdin, cleanup
   quoth-tools.el        # Local tool implementations: exec_command, write_stdin, write_file, read_file
   quoth-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
   quoth-json.el        # JSON decode/encode abstraction: native C parser when available, json.el fallback
@@ -116,9 +116,9 @@ All provider interaction goes through a provider protocol (the
 `quoth-provider-interrupt`, `quoth-provider-active-p`,
 `quoth-provider-cleanup`, `quoth-provider-grant-permission`,
 `quoth-provider-model`, and the internal `quoth-provider--models`,
-`quoth-provider--apply-model`, `quoth-provider--tool-calls`, and
-`quoth-provider--tool-results` (the latter four used by the tool loop
-and the model selector). The protocol and
+`quoth-provider--apply-model`, and `quoth-provider--tool-calls`
+(reading the SSE stream's accumulated tool calls off the finished
+transport). The protocol and
 the shared `quoth-provider` base struct live in `quoth-provider.el`;
 each concrete provider is a dedicated, buffer-unaware file:
 
@@ -146,17 +146,23 @@ that sits between the provider (wire work) and the chat buffer (source
 of truth). It is the **single place that owns the buffer** and drives
 the lifecycle of one prompt → response cycle.
 
-| Function                                            | Role                                                                                            |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `quoth--send-prompt`                                | Start a request, inject the callbacks, transition to `active`                                   |
-| `quoth--append-delta`                               | Consume streamed `(delta kind)` chunks and insert them at point-max (the only buffer writer)    |
-| `quoth--finalize-response`                          | On completion: accumulate usage, then drive the tool loop or close the response                 |
-| `quoth--tool-loop`                                  | Execute tool calls, insert tool blocks, rebuild the continuation from the buffer, re-send       |
-| `quoth--close-response`                             | Tag the response region, insert a fresh `---` divider                                           |
-| `quoth--record-error`                               | On failure: set `quoth--pending-interrupt` = `error` and insert the `> **Error:**` system pane  |
-| `quoth--insert-system-note`                         | Shared `system`-region inserter (error pane / `> **Interrupted.**` note), tagged at insert time |
-| `quoth--tag-response-region`                        | Tag response (and reasoning) spans; stamp `quoth-interrupted`; skip `tool`/`reasoning`/`system` |
-| `quoth--stream-transition` / `-progress` / `-clear` | Own the `idle`/`active`/`done`/`error` state machine (buffer-local in `quoth.el`)               |
+| Function                                              | Role                                                                                             |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `quoth--phase-set` / `quoth--busy-p`                  | The single writer of / reader for the phase machine (`idle`/`preparing`/`streaming`/`tools`)     |
+| `quoth--schedule`                                     | The 0-timer hop: buffer surgery and follow-up sends never run on a filter/sentinel stack         |
+| `quoth--send-prompt`                                  | Start a request, inject the callbacks, transition to `streaming`                                 |
+| `quoth--append-delta`                                 | Consume streamed `(delta kind)` chunks and insert them at point-max (the only buffer writer)     |
+| `quoth--finalize-response`                            | On completion (via the hop): accumulate usage, then arm the round dispatch or close the response |
+| `quoth--round-dispatch`                               | Insert placeholder blocks for every pending call, then run the registry entries                  |
+| `quoth--round-complete`                               | Fill the completing call's block; the last completion schedules the follow-up                    |
+| `quoth--round-followup`                               | Rebuild the continuation from the buffer's tool rounds, clear the old transport, re-send         |
+| `quoth--round-abandon` / `--round-cancel`             | Interrupt/clear/kill: cancel pending waits, fill interrupted results, clear the round            |
+| `quoth--tool-block-placeholder` / `--tool-block-fill` | Render a pending tool block with a live status line and swap in the fenced result on completion  |
+| `quoth--close-response`                               | Tag the response region, insert a fresh `---` divider                                            |
+| `quoth--record-error`                                 | On failure: set `quoth--pending-interrupt` = `error` and insert the `> **Error:**` system pane   |
+| `quoth--insert-system-note`                           | Shared `system`-region inserter (error pane / `> **Interrupted.**` note), tagged at insert time  |
+| `quoth--tag-response-region`                          | Tag response (and reasoning) spans; stamp `quoth-interrupted`; skip `tool`/`reasoning`/`system`  |
+| `quoth--stream-progress` / `--stream-clear`           | Read the phase machine for UI consumers / reset it to a fresh `idle`                             |
 
 ### Why the boundary exists
 
@@ -281,13 +287,18 @@ When `quoth-tools-enabled` is non-nil (default), the model may call a
 tool. There are four tools, all implemented in `quoth-tools.el`. Two wrap
 the `quoth-process.el` session handler:
 
-- `exec_command` — starts a command in a new PTY session, yields for
-  the requested window (default `quoth-process-yield-ms`, clamped
-  250–30000 ms), and reports either `Process exited with code N` or
-  `Process running with session ID N` plus the captured output.
+- `exec_command` — starts a command in a new PTY session and arms a
+  running-report window for the requested duration (default
+  `quoth-process-yield-ms`, clamped 250–30000 ms): the session
+  sentinel reports `Process exited with code N` when the command
+  finishes; the window timer reports `Process running with session
+ID N` plus the captured output while it is still live. Both deliver
+  exactly once; a cancelled wait abandons the reports without killing
+  the session.
 - `write_stdin` — writes to a live session (identified by the session
-  id echoed by `exec_command`) and returns the output produced since
-  the last report.
+  id echoed by `exec_command`) and arms the same read window for the
+  output produced since the last report. A session whose process
+  already exited reports its final output immediately.
 
 Two do byte-exact file I/O (no process involved):
 
@@ -341,18 +352,41 @@ The tool _protocol_ — the `quoth-openai-tool-call` struct, the registry
 (`quoth-openai-tool-registry`), dispatch (`quoth-openai-execute-tool`),
 argument parsing, and the execution policy — lives in
 `quoth-openai.el`; `quoth-tools.el` only implements the concrete tools
-and registers them at load.
+and registers them at load. A registry entry takes a tool call and an
+`on-done` reporter, delivering `(RESULT . EXIT-OR-NIL)` exactly once —
+inline for immediate tools (`read_file`, `write_file`), from a window
+timer or the session sentinel for process-backed ones — and returns a
+cancel thunk (abandon the wait) or nil.
+
+The **round orchestrator** in `quoth.el` owns the event chain: on
+finalize with pending calls it moves the phase to `tools`, inserts a
+placeholder block (header, argument blocks, live `⏳ running…`
+status) for each call in the SSE vector's declared order, and runs the
+entries. Each completion hops through the 0-timer hop, fills its own
+block's status span with the fenced result (tagging the raw result
+`tool-output`), and decrements the round's pending count; the last
+completion rebuilds the wire continuation from the buffer
+(`quoth--tool-rounds`) and sends the follow-up. Interrupt mid-round
+cancels every pending wait and fills the still-pending blocks with the
+interrupted result so the buffer holds a valid wire `role: "tool"`
+content for every call the model already emitted.
 
 ### Process handler (quoth-process.el)
 
 General-purpose, model-neutral, buffer-unaware layer that owns PTY
 sessions. It handles spawning (with sanitized env: `PAGER=cat`,
-`GIT_PAGER=cat`, `TERM=dumb`), output buffering, yield/deadline
-draining, stdin writes, and cleanup. Sessions live in a global registry
-keyed by session id and are scoped per quoth buffer through the `owner`
-slot; `quoth-clear-buffer` runs `quoth-process--cleanup-buffer` to kill
-every session owned by the cleared buffer. `quoth-process-max-sessions`
-(default 128) caps concurrent sessions.
+`GIT_PAGER=cat`, `TERM=dumb`), output buffering, event-driven exit
+reports (a real process sentinel delivering `(CHUNK . EXIT-CODE)` on
+the `quoth--schedule` hop), one-shot running-report window timers
+(`quoth-process--arm-window`), non-blocking stdin writes, and cleanup.
+Sessions live in a global registry keyed by session id and are scoped
+per quoth buffer through the `owner` slot; `quoth-clear-buffer` runs
+`quoth-process--cleanup-buffer` to kill every session owned by the
+cleared buffer, and the buffer's `kill-buffer-hook` does the same on
+kill. A session whose wait was abandoned stays registered when its
+process exits on its own, so a later `write_stdin` poll still collects
+the final output. `quoth-process-max-sessions` (default 128) caps
+concurrent sessions.
 
 ### Current limitations
 

@@ -10,9 +10,9 @@
 
 ;;; Permission is hereby granted, free of charge, to any person obtaining a copy
 ;;; of this software and associated documentation files (the "Software"), to deal
-;;; in the Software without restriction, including without limitation the rights
-;;; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-;;; copies of the Software, and to permit persons to whom the Software is
+;;; in the Software without restriction, including without limitation the
+;;; rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+;;; sell copies of the Software, and to permit persons to whom the Software is
 ;;; furnished to do so, subject to the following conditions:
 
 ;;; The above copyright notice and this permission notice shall be included in all
@@ -20,15 +20,18 @@
 
 ;;; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 ;;; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-;;; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+;;; THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 ;;; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 ;;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 ;;; SOFTWARE.
 
 ;;; Commentary:
 ;;; Tests for `quoth-process.el': the session registry, PTY process
-;;; spawning, output collection, yield, stdin writes, and cleanup.
+;;; spawning, the event-driven exit/window reporting (sentinel +
+;;; one-shot window timers), stdin writes, and cleanup.  Exit reports
+;;; arrive through the sentinel; running reports through the window
+;;; timer; both deliver exactly once.
 
 ;;; Code:
 
@@ -63,6 +66,26 @@
   (when (buffer-live-p owner)
     (kill-buffer owner)))
 
+(defun quoth-test--wait-until (pred &optional timeout)
+  "Spin accepting process output until PRED is non-nil.
+TIMEOUT defaults to 5 seconds.  `accept-process-output' both pumps
+real children and lets pending zero-timeout timers (the
+`quoth--schedule' hop, window timers) run, so this drives the whole
+event chain deterministically.  Returns PRED's final value."
+  (let ((deadline (+ (float-time) (or timeout 5))))
+    (while (and (not (funcall pred))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.05))
+    (funcall pred)))
+
+(defun quoth-test-process--reporter ()
+  "Return (REPORT . DELIVERED) for capturing on-exit / window reports.
+REPORT is a function of one argument (the delivered value); DELIVERED
+returns the list of delivered values, most recent first."
+  (let ((delivered nil))
+    (cons (lambda (value) (push value delivered))
+          (lambda () (nreverse delivered)))))
+
 ;;; 1. Session registry
 
 (ert-deftest quoth-test-process/registry-starts-empty ()
@@ -80,8 +103,6 @@
         (progn
           (setq a (quoth-process--start "true" nil owner)
                 b (quoth-process--start "true" nil owner))
-          (quoth-process--collect a)
-          (quoth-process--collect b)
           (should (integerp (quoth-process-session-id a)))
           (should (integerp (quoth-process-session-id b)))
           (should-not (= (quoth-process-session-id a)
@@ -120,101 +141,278 @@
   (should (equal (quoth-process--shell-args "cmd" "dir" nil)
                  '("cmd" "/c" "dir"))))
 
-;;; 3. Output collection and yield
+;;; 3. Exit reporting: the sentinel
 
-(ert-deftest quoth-test-process/collect-returns-output-and-exit ()
-  "Collect returns output produced since the last report and the exit code."
+(ert-deftest quoth-test-process/sentinel-delivers-exit-once ()
+  "A started session reports (CHUNK . EXIT) through its on-exit handler.
+The exit report arrives exactly once, carries the full output and the
+exit code, and deregisters the session (a reported exit has no later
+use)."
   (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
         (session nil))
     (unwind-protect
         (progn
           (setq session (quoth-process--start
-                         "printf \"line1\nline2\""
-                         nil owner))
-          (let ((result (quoth-process--yield session 1000)))
-            (should (consp result))
-            (should (string-match-p "line1" (car result)))
-            (should (string-match-p "line2" (car result)))
-            (should (= (cdr result) 0))))
-      (when session (quoth-process--kill session))
+                         "printf \"line1\\nline2\""
+                         nil owner nil nil (car report)))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (let ((delivered (funcall (cdr report))))
+            (should (= (length delivered) 1))
+            (should (string-match-p "line1" (caar delivered)))
+            (should (string-match-p "line2" (caar delivered)))
+            (should (= (cdar delivered) 0)))
+          (should-not (quoth-process--find
+                       (quoth-process-session-id session))))
+      (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
 
-(ert-deftest quoth-test-process/yield-reports-session-for-running ()
-  "A still-running process yields a chunk with a nil exit code."
+(ert-deftest quoth-test-process/sentinel-delivers-nonzero-exit ()
+  "A failing command reports its real exit code."
   (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
         (session nil))
     (unwind-protect
         (progn
-          (setq session (quoth-process--start "sleep 10" nil owner))
-          (let ((result (quoth-process--yield session 200)))
-            (should (consp result))
-            (should (stringp (car result)))
-            (should (null (cdr result)))
-            (should (process-live-p (quoth-process-session-process session)))))
-      (when session (quoth-process--kill session))
+          (setq session (quoth-process--start "exit 3" nil owner
+                                              nil nil (car report)))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (should (= (cdar (funcall (cdr report))) 3)))
+      (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
 
-(ert-deftest quoth-test-process/collect-advances-last-report ()
-  "Yield only reports output produced since the previous yield.
-The first yield (deadline < gap) returns only the pre-gap output; the
-second (deadline > gap) catches the post-gap echo.  The gap is kept
-short to avoid sleeping through a full second."
+(ert-deftest quoth-test-process/sentinel-delivers-via-schedule-hop ()
+  "The exit report rides the `quoth--schedule' hop, not the sentinel stack.
+With the hop faked onto a queue, the on-exit handler runs only when
+the queue is drained."
   (let ((owner (quoth-test-process--owner))
+        (queue nil)
+        (report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'quoth--schedule)
+                     (lambda (fn) (push fn queue) nil)))
+            (setq session (quoth-process--start "echo hi" nil owner
+                                                nil nil (car report)))
+            (should (quoth-test--wait-until
+                     (lambda () queue)))
+            (should-not (funcall (cdr report)))
+            (dolist (fn (nreverse queue))
+              (funcall fn))
+            (setq queue nil))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (should (string-match-p "hi" (caar (funcall (cdr report))))))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/sentinel-collects-trailing-output ()
+  "Output produced right before exit is part of the exit chunk.
+The sentinel's zero-timeout poll drains output already received but
+not yet delivered, so a fast-exiting command's whole output arrives."
+  (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
         (session nil))
     (unwind-protect
         (progn
           (setq session (quoth-process--start
-                         "echo one; sleep 0.1; echo two"
-                         nil owner))
-          (let ((first (quoth-process--yield session 20)))
-            (should (consp first))
-            (should (null (cdr first)))
-            (should (string-match-p "one" (car first)))
-            (should-not (string-match-p "two" (car first)))
-            (let ((second (quoth-process--yield session 200)))
-              (should (consp second))
-              (should (= (cdr second) 0))
-              (should-not (string-match-p "one" (car second)))
-              (should (string-match-p "two" (car second))))))
-      (when session (quoth-process--kill session))
+                         "echo trailing-output-marker"
+                         nil owner nil nil (car report)))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (should (string-match-p
+                   "trailing-output-marker"
+                   (caar (funcall (cdr report))))))
+      (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/background-exit-keeps-session-registered ()
+  "A session whose wait was abandoned (no on-exit) stays registered.
+Its exit output stays unreported so a later `write_stdin' poll can
+collect it, and the exit delivers nothing."
+  (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "echo done" nil owner
+                                              nil nil (car report)))
+          ;; Abandon the wait before the process exits.
+          (setf (quoth-process-session-on-exit session) nil)
+          (should (quoth-test--wait-until
+                   (lambda ()
+                     (not (process-live-p
+                           (quoth-process-session-process session))))))
+          ;; Let any (wrongly armed) delivery run.
+          (quoth-test--wait-until (lambda () nil) 0.2)
+          (should-not (funcall (cdr report)))
+          ;; Still registered for a later poll.
+          (should (quoth-process--find (quoth-process-session-id session))))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+;;; 4. Running reports: the window timer
+
+(ert-deftest quoth-test-process/window-reports-running ()
+  "The window timer reports (CHUNK . nil) while the process is live.
+The on-exit handler is detached by the report (the sentinel will not
+fire a second delivery), and the session stays registered."
+  (let ((owner (quoth-test-process--owner))
+        (window-report (quoth-test-process--reporter))
+        (exit-report (quoth-test-process--reporter))
+        (session nil)
+        (timer nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "sleep 5" nil owner
+                                              nil nil (car exit-report)))
+          (setq timer (quoth-process--arm-window session 150 (car window-report)))
+          (should (timerp timer))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr window-report)))
+                   2))
+          (let ((delivered (funcall (cdr window-report))))
+            (should (= (length delivered) 1))
+            (should (stringp (caar delivered)))
+            (should (null (cdar delivered))))
+          ;; The wait is over: the exit handler is detached.
+          (should (null (quoth-process-session-on-exit session)))
+          ;; The session is still live and registered.
+          (should (process-live-p (quoth-process-session-process session)))
+          (should (quoth-process--find (quoth-process-session-id session))))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/window-noops-when-process-exited ()
+  "A window firing after the process exited delivers nothing.
+The sentinel owns the exit report; the window timer no-ops on the
+liveness check, so the round reports exactly once."
+  (let ((owner (quoth-test-process--owner))
+        (window-report (quoth-test-process--reporter))
+        (exit-report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "true" nil owner
+                                              nil nil (car exit-report)))
+          ;; Let the process exit and the sentinel deliver first.
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr exit-report)))))
+          (quoth-process--arm-window session 100 (car window-report))
+          (should-not (quoth-test--wait-until
+                       (lambda () (funcall (cdr window-report))) 0.5))
+          (should (= (length (funcall (cdr exit-report))) 1)))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/window-cancel-detaches-exit-report ()
+  "A live session whose window timer is cancelled reports nothing on exit.
+Cancelling the wait abandons it without killing the session; the
+detached exit handler delivers nothing when the process exits."
+  (let ((owner (quoth-test-process--owner))
+        (window-report (quoth-test-process--reporter))
+        (exit-report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "sleep 1" nil owner
+                                              nil nil (car exit-report)))
+          (let ((timer (quoth-process--arm-window session 100
+                                                  (car window-report))))
+            (cancel-timer timer))
+          ;; Abandon the wait: detach the exit handler.
+          (setf (quoth-process-session-on-exit session) nil)
+          (should (quoth-test--wait-until
+                   (lambda ()
+                     (not (process-live-p
+                           (quoth-process-session-process session))))))
+          (quoth-test--wait-until (lambda () nil) 0.3)
+          (should-not (funcall (cdr window-report)))
+          (should-not (funcall (cdr exit-report)))
+          ;; Still registered: a later poll can collect the output.
+          (should (quoth-process--find (quoth-process-session-id session))))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+;;; 5. Stdin writes
+
+(ert-deftest quoth-test-process/write-stdin-sends-without-waiting ()
+  "A stdin write delivers the string to a reading process immediately.
+The write returns without waiting; the reply arrives through the armed
+window / exit reporting."
+  (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "read line; echo got:$line"
+                                              nil owner))
+          (setf (quoth-process-session-on-exit session) (car report))
+          (should (quoth-process--write-stdin session "hello\n"))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (let ((delivered (funcall (cdr report))))
+            (should (= (length delivered) 1))
+            (should (string-match-p "got:hello" (caar delivered)))
+            (should (= (cdar delivered) 0))))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/write-stdin-dead-session-still-collects ()
+  "A write to a self-exited background session reports its final output.
+The session stays registered after its wait was abandoned; the poll
+collects the exit chunk and exit code without waiting."
+  (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "echo final" nil owner
+                                              nil nil (car report)))
+          (setf (quoth-process-session-on-exit session) nil)
+          (should (quoth-test--wait-until
+                   (lambda ()
+                     (not (process-live-p
+                           (quoth-process-session-process session))))))
+          ;; The caller-side dead-session poll: collect directly.
+          (let ((chunk (quoth-process--collect session))
+                (exit (process-exit-status
+                       (quoth-process-session-process session))))
+            (should (string-match-p "final" chunk))
+            (should (= exit 0))
+            (funcall (car report) (cons chunk exit))
+            (quoth-process--kill session)))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+;;; 6. Spawn environment
 
 (ert-deftest quoth-test-process/spawn-env-reaches-child ()
   "The sanitized environment (pagers off, TERM=dumb) reaches the child.
 The child process is spawned with the sanitized `process-environment'
 already in effect."
   (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
         (session nil))
     (unwind-protect
         (progn
           (setq session (quoth-process--start
                          "echo PAGER=[$PAGER] GIT_PAGER=[$GIT_PAGER] TERM=[$TERM]"
-                         nil owner))
-          (let ((output (car (quoth-process--yield session 2000))))
+                         nil owner nil nil (car report)))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (let ((output (caar (funcall (cdr report)))))
             (should (string-search "PAGER=[" output))
             (should-not (string-search "PAGER=[]" output))
             (should (string-search "GIT_PAGER=[cat]" output))
             (should (string-search "TERM=[dumb]" output))))
-      (when session (quoth-process--kill session))
+      (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
 
-;;; 4. Stdin writes
-
-(ert-deftest quoth-test-process/write-stdin-round-trip ()
-  "Writing stdin to a reading process returns its reply."
-  (let ((owner (quoth-test-process--owner))
-        (session nil))
-    (unwind-protect
-        (progn
-          (setq session (quoth-process--start "read line; echo got:$line"
-                                              nil owner))
-          (let ((result (quoth-process--write-stdin session "hello\n" 1000)))
-            (should (string-match-p "got:hello" (car result)))
-            (should (= (cdr result) 0))))
-      (when session (quoth-process--kill session))
-      (quoth-test-process--cleanup-owner owner))))
-
-;;; 5. Cleanup
+;;; 7. Cleanup
 
 (ert-deftest quoth-test-process/cleanup-buffer-kills-owned-sessions ()
   "Cleanup kills every session owned by a buffer."
@@ -250,6 +448,37 @@ already in effect."
             (quoth-process--kill session)
             (should-not (gethash id quoth-process--sessions))
             (should-not (process-live-p (quoth-process-session-process session)))))
+      (when session (quoth-process--kill session))
+      (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/kill-detaches-exit-report ()
+  "Killing a session delivers nothing to its exit handler.
+The kill detaches the handler before the sentinel can observe the
+deleted process."
+  (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "sleep 5" nil owner
+                                              nil nil (car report)))
+          (quoth-process--kill session)
+          (should-not (quoth-test--wait-until
+                       (lambda () (funcall (cdr report))) 0.5)))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/kill-frees-output-buffer ()
+  "Kill frees the session's output buffer."
+  (let ((owner (quoth-test-process--owner))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "sleep 30" nil owner))
+          (let ((buffer (quoth-process-session-output-buffer session)))
+            (should (buffer-live-p buffer))
+            (quoth-process--kill session)
+            (should-not (buffer-live-p buffer))))
       (when session (quoth-process--kill session))
       (quoth-test-process--cleanup-owner owner))))
 

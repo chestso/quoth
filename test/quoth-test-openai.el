@@ -488,15 +488,21 @@ Only the *leading* blank lines of an assistant turn are stripped."
   (should (listp quoth-openai-tool-registry)))
 
 (ert-deftest quoth-test/openai-tool-execute-dispatches ()
-  "`quoth-openai-execute-tool' dispatches to the registry executer.
-A stubbed tool registered in the protocol registry is invoked."
+  "`quoth-openai-execute-tool' dispatches to the registry entry.
+A stubbed tool registered in the protocol registry is invoked with the
+call and the wrapped on-done, and its delivery reaches the caller's
+on-done."
   (let ((quoth-openai-tool-registry
          (list (cons "testtool"
-                     (lambda (_call) (cons "stub-result" 0))))))
-    (let ((call (quoth-test-openai--tool-call "testtool"
-                                              "{\"command\":\"x\"}")))
-      (let ((result (quoth-openai-execute-tool call)))
-        (should (equal result (cons "stub-result" 0)))))))
+                     (lambda (_call on-done)
+                       (funcall on-done (cons "stub-result" 0))
+                       nil)))))
+    (let* ((call (quoth-test-openai--tool-call "testtool"
+                                               "{\"command\":\"x\"}"))
+           (delivered nil))
+      (should-not (quoth-openai-execute-tool
+                   call (lambda (result) (push result delivered))))
+      (should (equal delivered (list (cons "stub-result" 0)))))))
 
 (ert-deftest quoth-test/openai-parse-tool-args-valid ()
   "`quoth-openai-parse-tool-args' turns JSON into a keyword plist."

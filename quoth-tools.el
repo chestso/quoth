@@ -45,6 +45,10 @@
 ;; dispatch, arg parsing, and the execution policy) lives in
 ;; `quoth-openai.el'; this file implements the concrete tools and
 ;; registers them into `quoth-openai-tool-registry' at load time.
+;; Entries report to ON-DONE exactly once: `exec_command' and
+;; `write_stdin' through the event-driven session layer (window timer
+;; for running reports, sentinel for exit reports), `read_file' and
+;; `write_file' inline.
 
 ;;; Code:
 
@@ -92,12 +96,13 @@ request `login' on the tool call for it to take effect."
 
 (declare-function quoth-openai-tool-error-result "quoth-openai" (message))
 (declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
-(declare-function quoth-process--start "quoth-process" (command working-directory owner &optional shell login))
-(declare-function quoth-process--yield "quoth-process" (session yield-ms))
-(declare-function quoth-process--write-stdin "quoth-process" (session input yield-ms))
+(declare-function quoth-process--start "quoth-process" (command working-directory owner &optional shell login on-exit))
+(declare-function quoth-process--arm-window "quoth-process" (session ms callback))
+(declare-function quoth-process--write-stdin "quoth-process" (session input))
 (declare-function quoth-process--find "quoth-process" (id))
 (declare-function quoth-process--kill "quoth-process" (session))
 (declare-function quoth-process--cleanup-buffer "quoth-process" (owner))
+(declare-function quoth-process-session-on-exit "quoth-process" (session))
 
 (defvar quoth-tool--owner nil
   "Buffer owning sessions started by the current tool round.")
@@ -140,12 +145,18 @@ disallowed.  Returns nil otherwise."
          (not (string-empty-p (string-trim shell)))
          shell)))
 
-(defun quoth-exec--error (message tool-call)
-  "Store an error result on TOOL-CALL with MESSAGE and return the error pair."
-  (let ((result (quoth-openai-tool-error-result message)))
-    (setf (quoth-openai-tool-call-result tool-call) (car result)
-          (quoth-openai-tool-call-exit tool-call) (cdr result))
-    result))
+(defun quoth-exec--abandon (session timer)
+  "Return the cancel thunk for a live process wait.
+Cancels the armed window timer and detaches the session's exit
+handler, so the abandoned wait reports no more.  The session itself
+keeps running: its id was already reported to the model in the block
+text, so a later prompt can `write_stdin' to it; sessions are reaped
+by clear/kill."
+  (lambda ()
+    (when (timerp timer)
+      (cancel-timer timer))
+    (when (quoth-process-session-p session)
+      (setf (quoth-process-session-on-exit session) nil))))
 
 (defun quoth-exec--truncate-output (output)
   "Cap OUTPUT at `quoth-tool-max-output' chars, head/tail with an omission.
@@ -183,18 +194,23 @@ The status line carries the session id the model echoes into
    "Output:\n"
    (quoth-exec--truncate-output output)))
 
-(defun quoth-exec-command--exec (tool-call)
-  "Execute TOOL-CALL as `exec_command' and return (RESULT . EXIT-OR-NIL).
-Runs the parsed `cmd' arg in a new `quoth-process' session and yields
-for the resolved `yield_time_ms' (default `quoth-process-yield-ms').
-A finished command reports `Process exited with code N'; a still-running
-one reports `Process running with session ID N' with a nil exit slot.
-A missing/empty `cmd', a session-cap overflow, or a spawn failure yields
-an error result with exit code -1."
+(defun quoth-exec-command--exec (tool-call on-done)
+  "Execute TOOL-CALL as `exec_command', reporting to ON-DONE once.
+Runs the parsed `cmd' arg in a new `quoth-process' session and arms a
+running-report window for the resolved `yield_time_ms' (default
+`quoth-process-yield-ms').  ON-DONE receives (RESULT . EXIT-OR-NIL): a
+finished command reports `Process exited with code N' through the
+session sentinel; a still-running one reports `Process running with
+session ID N' through the window timer, with a nil exit.  A missing/empty
+`cmd', a session-cap overflow, or a spawn failure delivers an error
+result immediately.  Returns a cancel thunk that abandons the wait
+without killing the session."
   (let* ((args (quoth-openai-tool-call-args tool-call))
          (cmd (quoth-exec--cmd args)))
     (if (not cmd)
-        (quoth-exec--error "Missing cmd" tool-call)
+        (progn
+          (funcall on-done (quoth-openai-tool-error-result "Missing cmd"))
+          nil)
       (condition-case err
           (let* ((working-dir (or (plist-get args :workdir) default-directory))
                  (yield-ms (quoth-exec--yield-ms args quoth-process-yield-ms))
@@ -203,53 +219,85 @@ an error result with exit code -1."
                  (session (quoth-process--start
                            cmd working-dir
                            (or quoth-tool--owner (current-buffer))
-                           shell login)))
+                           shell login
+                           (lambda (result)
+                             (funcall on-done
+                                      (cons (quoth-exec--format-result
+                                             (car result) (cdr result))
+                                            (cdr result)))))))
             (if (not (quoth-process-session-p session))
                 ;; Spawn failed without signalling.
-                (quoth-exec--error "Failed to start command" tool-call)
-              (let* ((result (quoth-process--yield session yield-ms))
-                     (chunk (car result))
-                     (exit (cdr result))
-                     (id (quoth-process-session-id session)))
-                (if exit
-                    (let* ((text (quoth-exec--format-result chunk exit)))
-                      (setf (quoth-openai-tool-call-result tool-call) text
-                            (quoth-openai-tool-call-exit tool-call) exit)
-                      (quoth-process--kill session)
-                      (cons text exit))
-                  (let* ((text (quoth-exec--format-running chunk id)))
-                    (cons text nil))))))
-        (error (quoth-exec--error (error-message-string err) tool-call))))))
+                (progn
+                  (funcall on-done
+                           (quoth-openai-tool-error-result
+                            "Failed to start command"))
+                  nil)
+              (let ((timer
+                     (quoth-process--arm-window
+                      session yield-ms
+                      (lambda (result)
+                        (funcall on-done
+                                 (cons (quoth-exec--format-running
+                                        (car result)
+                                        (quoth-process-session-id session))
+                                       nil))))))
+                (quoth-exec--abandon session timer))))
+        (error
+         (funcall on-done (quoth-openai-tool-error-result
+                           (error-message-string err)))
+         nil)))))
 
-(defun quoth-write-stdin--exec (tool-call)
-  "Execute TOOL-CALL as `write_stdin' and return (RESULT . EXIT-OR-NIL).
+(defun quoth-write-stdin--exec (tool-call on-done)
+  "Execute TOOL-CALL as `write_stdin', reporting to ON-DONE once.
 Looks up the `session_id' arg, writes optional `input' to the session's
-stdin, and reports the output produced since the last report.  A live
-session reports `Process running with session ID N' (nil exit); a
-session that finished during the read reports `Process exited with code
-N' and is deregistered.  An unknown session id yields an error result."
-  (let ((args (quoth-openai-tool-call-args tool-call))
-        (session-id (plist-get (quoth-openai-tool-call-args tool-call)
-                               :session_id)))
-    (let ((session (and (integerp session-id)
-                        (quoth-process--find session-id))))
-      (if (not session)
-          (quoth-exec--error (format "unknown session id %S" session-id)
-                             tool-call)
-        (let* ((input (or (plist-get args :input) ""))
-               (yield-ms (quoth-exec--yield-ms args quoth-process-write-yield-ms))
-               (result (quoth-process--write-stdin session input yield-ms))
-               (chunk (car result))
-               (exit (cdr result))
-               (id (quoth-process-session-id session)))
-          (if exit
-              (let* ((text (quoth-exec--format-result chunk exit)))
-                (setf (quoth-openai-tool-call-result tool-call) text
-                      (quoth-openai-tool-call-exit tool-call) exit)
-                (quoth-process--kill session)
-                (cons text exit))
-            (let* ((text (quoth-exec--format-running chunk id)))
-              (cons text nil))))))))
+stdin, and arms a read window (default `quoth-process-write-yield-ms')
+for the output produced since the last report.  ON-DONE receives
+RESULT as (RESULT . EXIT-OR-NIL): a live session reports `Process running with
+session ID N' through the window timer; a session that finishes reports
+`Process exited with code N' through the sentinel and is deregistered.
+A session whose process already exited reports its final output
+immediately, without waiting.  An unknown session id delivers an error
+result.  Returns a cancel thunk that abandons the wait without killing
+the session."
+  (let* ((args (quoth-openai-tool-call-args tool-call))
+         (session-id (plist-get args :session_id))
+         (session (and (integerp session-id)
+                       (quoth-process--find session-id))))
+    (cond
+     ((not (quoth-process-session-p session))
+      (funcall on-done (quoth-openai-tool-error-result
+                        (format "unknown session id %S" session-id)))
+      nil)
+     ;; A background session whose process exited on its own reports
+     ;; its final output now, without arming a wait.
+     ((not (process-live-p (quoth-process-session-process session)))
+      (let* ((chunk (quoth-process--collect session))
+             (exit (process-exit-status
+                    (quoth-process-session-process session))))
+        (quoth-process--kill session)
+        (funcall on-done
+                 (cons (quoth-exec--format-result chunk exit) exit))
+        nil))
+     (t
+      (let ((yield-ms (quoth-exec--yield-ms args quoth-process-write-yield-ms)))
+        (setf (quoth-process-session-on-exit session)
+              (lambda (result)
+                (funcall on-done
+                         (cons (quoth-exec--format-result
+                                (car result) (cdr result))
+                               (cdr result)))))
+        (quoth-process--write-stdin
+         session (or (plist-get args :input) ""))
+        (let ((timer
+               (quoth-process--arm-window
+                session yield-ms
+                (lambda (result)
+                  (funcall on-done
+                           (cons (quoth-exec--format-running
+                                  (car result)
+                                  (quoth-process-session-id session))
+                                 nil))))))
+          (quoth-exec--abandon session timer)))))))
 
 ;;; 5. read_file and write_file
 
@@ -276,23 +324,27 @@ bytes as text.  This keeps the read byte-exact."
       (insert-file-contents path))
     (buffer-substring-no-properties (point-min) (point-max))))
 
-(defun quoth-write-file--exec (tool-call)
-  "Execute TOOL-CALL as `write_file' and return (RESULT . EXIT-OR-NIL).
+(defun quoth-write-file--exec (tool-call on-done)
+  "Execute TOOL-CALL as `write_file', reporting to ON-DONE inline.
 Writes the parsed `content' arg byte-exact to `path', creating missing
 parent directories and replacing an existing file unless `overwrite' is
 false.  Fresh-file writes go through a temp file + rename so a reader
 never observes a half-written file; overwriting an existing target
 falls back to a direct write (rename cannot replace an existing file on
-Windows).  A missing `path' or `content' yields an error result with
-exit code -1."
+Windows).  A missing `path' or `content' delivers an error result
+immediately.  An immediate tool: returns nil (no cancel thunk)."
   (let* ((args (quoth-openai-tool-call-args tool-call))
          (path (quoth-file--resolve-path args))
          (content (plist-get args :content)))
     (cond
      ((not path)
-      (quoth-exec--error "Missing or empty path" tool-call))
+      (funcall on-done (quoth-openai-tool-error-result
+                        "Missing or empty path"))
+      nil)
      ((not (stringp content))
-      (quoth-exec--error "Missing or empty content" tool-call))
+      (funcall on-done (quoth-openai-tool-error-result
+                        "Missing or empty content"))
+      nil)
      (t
       (condition-case err
           (let* ((overwrite (not (eq (plist-get args :overwrite) :json-false)))
@@ -329,10 +381,12 @@ exit code -1."
                       (ignore-errors (delete-file tmp)))))))
             (let ((text (quoth-exec--format-result
                          (format "Wrote %s" path) 0)))
-              (setf (quoth-openai-tool-call-result tool-call) text
-                    (quoth-openai-tool-call-exit tool-call) 0)
-              (cons text 0)))
-        (error (quoth-exec--error (error-message-string err) tool-call)))))))
+              (funcall on-done (cons text 0))
+              nil))
+        (error
+         (funcall on-done (quoth-openai-tool-error-result
+                           (error-message-string err)))
+         nil))))))
 
 (defun quoth-file--read-truncate (text)
   "Cap TEXT for a `read_file' result, preserving trailing content.
@@ -438,17 +492,21 @@ line endings: a `\\r\\n' on disk stays `\\r\\n' in the returned text."
     ;; of characters instead of writing into a fixed-length buffer.
     (apply #'string (nreverse chars))))
 
-(defun quoth-read-file--exec (tool-call)
-  "Execute TOOL-CALL as `read_file' and return (RESULT . EXIT-OR-NIL).
+(defun quoth-read-file--exec (tool-call on-done)
+  "Execute TOOL-CALL as `read_file', reporting to ON-DONE inline.
 Reads the file at `path' as UTF-8 text, preserving line endings
 byte-exact (a `\\r\\n' on disk stays `\\r\\n'), and reports it truncated
 to `quoth-tool-max-output' without trimming trailing newlines.  A
-missing or unreadable path, or content that is not valid UTF-8, yields
-an error result with exit code -1."
+missing or unreadable path, or content that is not valid UTF-8,
+delivers an error result immediately.  An immediate tool: returns nil
+(no cancel thunk)."
   (let* ((args (quoth-openai-tool-call-args tool-call))
          (path (quoth-file--resolve-path args)))
     (if (not path)
-        (quoth-exec--error "Missing or empty path" tool-call)
+        (progn
+          (funcall on-done (quoth-openai-tool-error-result
+                            "Missing or empty path"))
+          nil)
       (condition-case err
           (progn
             (unless (file-readable-p path)
@@ -459,10 +517,12 @@ an error result with exit code -1."
                                "Process exited with code 0\n"
                                "Output:\n"
                                out)))
-              (setf (quoth-openai-tool-call-result tool-call) formatted
-                    (quoth-openai-tool-call-exit tool-call) 0)
-              (cons formatted 0)))
-        (error (quoth-exec--error (error-message-string err) tool-call))))))
+              (funcall on-done (cons formatted 0))
+              nil))
+        (error
+         (funcall on-done (quoth-openai-tool-error-result
+                           (error-message-string err)))
+         nil)))))
 
 ;;; Register the tools into the protocol registry.
 

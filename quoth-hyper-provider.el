@@ -242,9 +242,6 @@ hypercredits with unit \"hc\"; `dollars' emits USD with unit \"$\"."
 (declare-function quoth--debug-log "quoth.el" (category message))
 (declare-function quoth-openai-abort "quoth-openai" (proc))
 (declare-function quoth--history-for "quoth.el" (buffer))
-(declare-function quoth-make-openai-tool-call "quoth-openai" (&rest args))
-(declare-function quoth-openai-execute-tool "quoth-openai" (tool-call))
-(declare-function quoth-openai-parse-tool-args "quoth-openai" (args-json))
 (declare-function quoth--openai-alist-get "quoth-openai" (key alist))
 
 (defun quoth-hyper--model-choices (catalog)
@@ -351,49 +348,6 @@ drops the injected completion action so a late sentinel cannot run it."
 (cl-defmethod quoth-provider-grant-permission ((_provider quoth-hyper-provider) _permission-id _action)
   "No permissions are issued in phase 1."
   nil)
-
-(cl-defmethod quoth-provider--tool-results ((_provider quoth-hyper-provider) tool-calls)
-  "Build the tool-result continuation messages and display blocks for TOOL-CALLS.
-Returns (ASSISTANT-MSG TOOL-RESULT-MSGS TOOL-BLOCKS)."
-  (let ((tcs-list nil)
-        (tool-msgs nil)
-        (blocks nil))
-    (when (vectorp tool-calls)
-      (dotimes (i (length tool-calls))
-        (let ((tc (aref tool-calls i)))
-          (when tc
-            (let ((id (quoth--openai-alist-get "id" tc))
-                  (fn (quoth--openai-alist-get "function" tc)))
-              (let ((name (and fn (quoth--openai-alist-get "name" fn)))
-                    (args (and fn (quoth--openai-alist-get "arguments" fn))))
-                (when (and id name)
-                  (let ((call (quoth-make-openai-tool-call :id id :name name)))
-                    (when args
-                      (setf (quoth-openai-tool-call-args call)
-                            (quoth-openai-parse-tool-args args)))
-                    (let ((result (quoth-openai-execute-tool call)))
-                      (push (list (cons 'id id)
-                                  (cons 'type "function")
-                                  (cons 'function
-                                        (list (cons 'name name)
-                                              (cons 'arguments
-                                                    (or args "")))))
-                            tcs-list)
-                      (push (list (cons 'role "tool")
-                                  (cons 'tool_call_id id)
-                                  (cons 'content (car result)))
-                            tool-msgs)
-                      (push (list :name name
-                                  :id id
-                                  :args-json (or args "")
-                                  :result (car result)
-                                  :exit (cdr result))
-                            blocks))))))))))
-    (list (list (cons 'role "assistant")
-                (cons 'content nil)
-                (cons 'tool_calls (vconcat (nreverse tcs-list))))
-          (nreverse tool-msgs)
-          (nreverse blocks))))
 
 (cl-defmethod quoth-provider--usage ((_provider quoth-hyper-provider) process)
   "Return one round's usage as a normalized plist, or nil.

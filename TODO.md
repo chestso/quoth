@@ -118,6 +118,7 @@ Direct HTTP streaming chat-completions against the Charm Hyper gateway. This is 
   - [x] Tool output fenced code blocks escape nested fences via longest-backtick-run detection
   - [x] Tools run without confirmation (yolo)
   - [x] Stateful sessions for tool calls via `quoth-process.el`: `exec_command` starts a PTY session and `write_stdin` feeds it, preserving cwd and environment within the session
+  - [x] Event-driven operation: the session layer reports exits through a sentinel and running output through one-shot window timers (never a blocking yield); the tool round is an event chain (placeholders with a live `⏳ running…` status filled on completion, exactly-once delivery, follow-up composed from the buffer), and buffer surgery never runs on a process filter/sentinel stack (0-timer hops through `quoth--schedule`)
   - [ ] Long-running command lifecycle: explicit session close/kill and idle-session reaping beyond `write_stdin`
 - [ ] OAuth device flow in Emacs ([HYPER-API.md §2](HYPER-API.md)): initiate/poll `/device/auth`, exchange at `/token/exchange` (rotating refresh tokens), persist tokens, re-authenticate on 401 (tokens currently come from `auth-source` via `quoth-hyper-token`)
 - [ ] Model catalog from `GET /v1/models` (public, no auth): confirm which Hyper endpoint serves the OpenAI-compatible public list; currently `quoth-select-model` fetches the authenticated `GET /v1/provider` catalog instead. Add reasoning-effort selection by model

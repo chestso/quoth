@@ -21,24 +21,34 @@
 
 ;;; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 ;;; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-;;; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+;;; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+;;; THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 ;;; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 ;;; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 ;;; SOFTWARE.
 
 ;;; Commentary:
 
-;; The general-purpose process handler for quoth.el.  Owns interactive process sessions: PTY spawning, output
-;; buffering, yield, stdin writes, and cleanup.  Model-neutral and
-;; buffer-unaware: it never reads the quoth buffer, the provider, or the
-;; OpenAI protocol.  The `exec_command' and `write_stdin' tools in
+;; The general-purpose process handler for quoth.el.  Owns interactive
+;; process sessions: PTY spawning, output buffering, event-driven exit
+;; and running-window reporting, stdin writes, and cleanup.  Model-neutral
+;; and buffer-unaware: it never reads the quoth buffer, the provider, or
+;; the OpenAI protocol.  The `exec_command' and `write_stdin' tools in
 ;; `quoth-tools.el' are thin wrappers over this layer.
+;;
+;; Every wait is an event: exit reports arrive through the process
+;; sentinel, running reports through a one-shot window timer, and both
+;; deliver exactly once.  A session whose wait was abandoned (no exit
+;; handler attached) stays registered when its process exits, so a
+;; later `write_stdin' poll can collect the final output — the same
+;; semantics as a session that never exited.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
+
+(declare-function quoth--schedule "quoth" (fn))
 
 (defgroup quoth-process nil
   "Interactive process sessions for quoth tool calls."
@@ -68,14 +78,18 @@ an exit code.  Effective range is 250-30000 (clamped)."
                (:copier nil))
   "A live command session managed by the process handler.
 The output buffer is append-only; LAST-REPORT is a character offset into
-it marking the start of the as-yet-unreported region."
+it marking the start of the as-yet-unreported region.  ON-EXIT is the
+exit-report handler attached to the live wait (nil once the wait is
+abandoned); WINDOW is the armed running-report timer, or nil."
   id
   owner
   process
   output-buffer
   command
   working-directory
-  last-report)
+  last-report
+  on-exit
+  window)
 
 (defvar quoth-process--sessions (make-hash-table :test 'eql)
   "Hash table mapping session ids to `quoth-process-session' structs.")
@@ -165,16 +179,20 @@ sanitized `process-environment'."
                      :command argv
                      :connection-type 'pty
                      :noquery t
-                     :sentinel #'ignore)))
+                     :sentinel #'quoth-process--sentinel)))
           (when (processp proc)
+            (process-put proc :quoth-session-id id)
             (cons proc output-buffer)))))))
 
-(defun quoth-process--start (command working-directory owner &optional shell login)
+(defun quoth-process--start (command working-directory owner &optional shell login on-exit)
   "Start COMMAND in WORKING-DIRECTORY owned by OWNER.
 COMMAND runs under SHELL (nil means `shell-file-name'); a non-nil LOGIN
 requests a login shell.  WORKING-DIRECTORY is resolved against
-`default-directory'.  OWNER is a buffer scoping cleanup.  Returns the
-session, or nil when the cap is hit or the spawn fails."
+`default-directory'.  OWNER is a buffer scoping cleanup.  ON-EXIT, when
+a function, receives the exit report \(CHUNK . EXIT-CODE) exactly once
+when the process finishes — delivered on the `quoth--schedule' hop, not
+the sentinel stack.  Returns the session, or nil when the cap is hit or
+the spawn fails."
   (when (>= (hash-table-count quoth-process--sessions)
             quoth-process-max-sessions)
     (error "quoth-process: Session cap of %d reached"
@@ -193,7 +211,9 @@ session, or nil when the cap is hit or the spawn fails."
                        :output-buffer output-buffer
                        :command command
                        :working-directory cwd
-                       :last-report (point-min))))
+                       :last-report (point-min)
+                       :on-exit on-exit)))
+        (process-put proc :quoth-session session)
         (quoth-process--register session)))))
 
 (defun quoth-process--collect (session)
@@ -207,56 +227,97 @@ Advances the session's last-report offset to the end of the buffer."
             (buffer-substring-no-properties start end)
           (setf (quoth-process-session-last-report session) end))))))
 
-(defun quoth-process--exit-code (session)
-  "Return SESSION's process exit code, or nil when still running."
+(defun quoth-process--collect-final (session)
+  "Drain output received but not yet delivered for SESSION.
+Runs a single zero-timeout `accept-process-output' poll — the one
+permitted blocking-primitive use in the runtime sources — so trailing
+PTY output already received by Emacs lands in the session's output
+buffer before the final chunk is collected.  Nothing is waited for."
   (let ((proc (quoth-process-session-process session)))
-    (when (and proc (not (process-live-p proc)))
-      (process-exit-status proc))))
+    (when (and (processp proc) (not (process-live-p proc)))
+      (accept-process-output proc 0))))
 
-(defun quoth-process--drain (session deadline)
-  "Accept output for SESSION until DEADLINE or process exit.
-Flushes a final batch after exit so the last chunk is delivered."
-  (let ((proc (quoth-process-session-process session)))
-    (while (and proc
-                (process-live-p proc)
-                (< (float-time) deadline))
-      (accept-process-output proc 0.05))
-    (when proc
-      (accept-process-output proc 0.05))
-    (not (and proc (process-live-p proc)))))
+(defun quoth-process--reap (session)
+  "Deregister SESSION and free its output buffer.
+The session's process has finished; a reported exit has no later use."
+  (quoth-process--unregister session)
+  (let ((buffer (quoth-process-session-output-buffer session)))
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer))))
 
-(defun quoth-process--yield (session yield-ms)
-  "Wait up to YIELD-MS for SESSION, returning (CHUNK . EXIT-OR-NIL).
-The chunk is the output produced since the last report (always returned,
-even while the process is still running).  EXIT-OR-NIL is the exit code
-once the process finished, or nil while it is still live; the caller
-reports a session id when it is nil."
-  (let ((deadline (+ (float-time) (/ (float yield-ms) 1000.0)))
-        (proc (quoth-process-session-process session)))
-    (quoth-process--drain session deadline)
-    (let ((chunk (quoth-process--collect session))
-          (exit (and proc
-                     (not (process-live-p proc))
-                     (process-exit-status proc))))
-      (cons chunk exit))))
+(defun quoth-process--sentinel (proc _event)
+  "Sentinel reporting PROC's exit for its session.
+Cancels the armed window timer (the sentinel owns exit reports), drains
+trailing output, and — while a wait is attached — collects the final
+chunk, detaches the handler, deregisters the session, and delivers
+\(CHUNK . EXIT-CODE) to the handler on the `quoth--schedule' hop.  With
+no wait attached the session stays registered: a later `write_stdin'
+poll still finds it and collects the exit output."
+  (let ((session (process-get proc :quoth-session)))
+    (when (and (quoth-process-session-p session)
+               ;; A killed session was already deregistered; its
+               ;; handler was detached by the kill.
+               (eq (quoth-process--find (quoth-process-session-id session))
+                   session))
+      (let ((timer (quoth-process-session-window session)))
+        (when (timerp timer)
+          (cancel-timer timer))
+        (setf (quoth-process-session-window session) nil))
+      (quoth-process--collect-final session)
+      (let ((on-exit (quoth-process-session-on-exit session)))
+        (when (functionp on-exit)
+          (let ((chunk (quoth-process--collect session))
+                (exit (process-exit-status proc)))
+            (setf (quoth-process-session-on-exit session) nil)
+            (quoth-process--reap session)
+            (quoth--schedule (lambda () (funcall on-exit (cons chunk exit))))))))))
 
-(defun quoth-process--write-stdin (session input yield-ms)
-  "Write INPUT to SESSION's stdin and read output for YIELD-MS.
+(defun quoth-process--arm-window (session ms callback)
+  "Arm a one-shot running-report window of MS milliseconds on SESSION.
+When the timer fires with the process still live, the output since the
+last report is collected and delivered as \(CHUNK . nil) to CALLBACK,
+the wait's exit handler is detached (the sentinel will not deliver a
+second report), and the session stays registered as a poll target.
+When the process already exited the timer no-ops: the sentinel owns the
+exit report.  Returns the timer."
+  (let ((timer
+         (run-at-time
+          (/ (float ms) 1000.0) nil
+          (lambda ()
+            (setf (quoth-process-session-window session) nil)
+            (when (process-live-p (quoth-process-session-process session))
+              (setf (quoth-process-session-on-exit session) nil)
+              (let ((chunk (quoth-process--collect session)))
+                (funcall callback (cons chunk nil))))))))
+    (setf (quoth-process-session-window session) timer)
+    timer))
+
+(defun quoth-process--write-stdin (session input)
+  "Write INPUT to SESSION's stdin without waiting.
 A literal `\\x04' run in INPUT is sent as a control-D (EOT) to close the
 session's stdin, matching the `write_stdin' tool description.  Returns
-\(CHUNK . EXIT-OR-NIL), or nil when the process is still running."
+non-nil when something was sent.  The caller attaches the wait's exit
+handler (`quoth-process-session-on-exit') and arms its own read window
+\(`quoth-process--arm-window')."
   (let ((proc (quoth-process-session-process session)))
     (when (and proc
                (process-live-p proc)
                (stringp input)
                (> (length input) 0))
       (process-send-string proc (replace-regexp-in-string
-                                 "\\\\x04" "\C-d" input t t)))
-    (quoth-process--yield session yield-ms)))
+                                 "\\\\x04" "\C-d" input t t))
+      t)))
 
 (defun quoth-process--kill (session)
-  "Stop SESSION's process, free its output buffer, and unregister it."
+  "Stop SESSION's process, free its output buffer, and unregister it.
+Detaches the exit handler and cancels the armed window first so the
+sentinel cannot deliver to a killed session."
   (when session
+    (setf (quoth-process-session-on-exit session) nil)
+    (let ((timer (quoth-process-session-window session)))
+      (when (timerp timer)
+        (cancel-timer timer))
+      (setf (quoth-process-session-window session) nil))
     (quoth-process--unregister session)
     (let ((proc (quoth-process-session-process session)))
       (when (and proc (process-live-p proc))

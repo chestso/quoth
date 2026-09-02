@@ -87,6 +87,16 @@ tests bind `default-directory' to `quoth-test--root' and spawn
 processes there, so the entry file must create it."
   (should (file-directory-p quoth-test--root)))
 
+(defmacro quoth-test--with-immediate-schedule (&rest body)
+  "Run BODY with `quoth--schedule' executing its function inline.
+Flattens the 0-timer hops (transport completion, round dispatch,
+per-call completion) for deterministic synchronous tests; assertions
+on post-hop state run without waiting."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'quoth--schedule)
+              (lambda (fn) (funcall fn) nil)))
+     ,@body))
+
 (defun quoth-test--buffer-name ()
   "Return the deterministic quoth buffer name for `quoth-test--root'."
   (let ((quoth--root-buffer-alist nil))
@@ -124,7 +134,8 @@ Initializes with the default hyper provider."
                  "quoth-test-json" "quoth-test-openai" "quoth-test-hyper"
                  "quoth-test-reasoning" "quoth-test-stream"
                  "quoth-test-xxh3" "quoth-test-tools"
-                 "quoth-test-process" "quoth-test-searxng" "quoth-test-select"))
+                 "quoth-test-process" "quoth-test-round"
+                 "quoth-test-searxng" "quoth-test-select"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")

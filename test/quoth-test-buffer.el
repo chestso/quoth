@@ -2275,8 +2275,9 @@ inherited stale tags (e.g. yank, undo) from the divider."
             (cl-letf (((symbol-function #'make-process)
                        (lambda (&rest _) fake-proc)))
               (quoth-send-input))
-            (funcall (quoth-provider-completion-action
-                      quoth-active-provider))
+            (quoth-test--with-immediate-schedule
+             (funcall (quoth-provider-completion-action
+                       quoth-active-provider)))
             (when (process-live-p fake-proc)
               (delete-process fake-proc)))
           ;; second-id is the new prompt (created by finalize).

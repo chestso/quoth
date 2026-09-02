@@ -223,6 +223,7 @@ Aborts the in-flight request, cancels round timers, and kills the PTY
 sessions this buffer owns; installed on `kill-buffer-hook' by
 `quoth--init-buffer'."
   (quoth--cancel-round-timers)
+  (quoth--round-cancel)
   (when (and quoth-active-provider
              (quoth-provider-p quoth-active-provider))
     (quoth-provider-cleanup quoth-active-provider))
@@ -368,9 +369,14 @@ Buffer-local.")
 (declare-function markdown-mode "markdown-mode" ())
 (declare-function quoth-xxh3-hash64 "quoth-xxh3" (input))
 (declare-function quoth-provider--tool-calls "quoth-provider" (provider process))
-(declare-function quoth-provider--tool-results "quoth-provider" (provider tool-calls))
 (declare-function quoth-process--cleanup-buffer "quoth-process" (owner))
 (declare-function quoth-openai-parse-tool-args "quoth-openai" (args-json))
+(declare-function quoth-openai-execute-tool "quoth-openai" (tool-call on-done))
+(declare-function quoth-make-openai-tool-call "quoth-openai" (&rest args))
+(declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
+(declare-function quoth-openai-tool-call-result "quoth-openai" (tool-call))
+(declare-function quoth-openai-tool-call-exit "quoth-openai" (tool-call))
+(declare-function quoth--openai-alist-get "quoth-openai" (key alist))
 (declare-function quoth-process--shell-type "quoth-process" (shell-path))
 (declare-function quoth-hyper--fetch-models "quoth-hyper-provider" (base-url &optional token))
 (declare-function quoth-provider-transport-process "quoth-provider" (provider))
@@ -1730,20 +1736,51 @@ model."
           (push (format "%d%%%%" pct) parts)))
       (mapconcat #'identity (nreverse parts) " "))))
 
+(defun quoth--finalize-if-live (buf)
+  "Run the unified finalizer in BUF when its turn is still in flight.
+The 0-timer hop target for transport completions: guards the buffer
+surviving the hop and the phase staying busy — an interrupt or clear
+between the transport finish and the hop already closed the turn."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (when (quoth--busy-p)
+        (quoth--finalize-response)))))
+
+(defvar-local quoth--tool-loop-count 0
+  "Number of tool-loop rounds executed for the current prompt.")
+
+(defvar-local quoth--round nil
+  "Per-call state for the live tool round, or nil.
+A plist (:pending COUNT :calls STATES); each state is a plist
+(:call :name :id :args-json :call-plist :prompt-id :done :cancel
+:status-start :status-end).  Written by the round orchestrator; cleared
+when the
+round completes, is abandoned, or the turn closes.  Buffer-local.")
+
 (defun quoth--finalize-response ()
   "Finalize the current response.
 Check for pending tool invocation from the SSE stream; when present,
-drive the tool loop (execute, insert blocks, send follow-up).
-Otherwise close the response and insert a fresh prompt.  The
-provider's completion action invokes this."
+move the phase to `tools' and schedule the round dispatch.  Otherwise
+close the response and insert a fresh prompt.  Runs on the 0-timer hop
+from the transport completion, never on a process filter/sentinel
+stack."
   (quoth--accumulate-usage)
   (if (and quoth-tools-enabled
            quoth-active-provider
+           (< quoth--tool-loop-count quoth-tool-loop-max)
            (let ((tcs (quoth-provider--tool-calls
                        quoth-active-provider
                        (quoth-provider-transport-process quoth-active-provider))))
              (and (vectorp tcs) (> (length tcs) 0))))
-      (quoth--tool-loop)
+      (let ((buf (current-buffer)))
+        (setq-local quoth--tool-loop-count (1+ quoth--tool-loop-count))
+        (quoth--phase-set 'tools :round quoth--tool-loop-count)
+        (quoth--schedule
+         (lambda ()
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (when (eq (plist-get quoth--phase :phase) 'tools)
+                 (quoth--round-dispatch)))))))
     (quoth--phase-set 'idle)
     (let ((response-start (when (markerp quoth--response-start)
                             (marker-position quoth--response-start)))
@@ -1752,86 +1789,191 @@ provider's completion action invokes this."
       (setq-local quoth--pending-interrupt nil)
       (quoth--close-response response-start prompt-id kind))))
 
-(defvar-local quoth--tool-loop-count 0
-  "Number of tool-loop rounds executed for the current prompt.")
+(defun quoth--round-call-states (tool-calls)
+  "Return the per-call state plists for the TOOL-CALLS vector.
+Entries lacking an id or a function name are dropped; each kept entry
+carries a `quoth-openai-tool-call' struct with the parsed args, the
+wire metadata, and the round's prompt id.  The order is the SSE
+vector's declared order."
+  (let ((states nil)
+        (prompt-id quoth--prompt-id))
+    (when (vectorp tool-calls)
+      (dotimes (i (length tool-calls))
+        (let* ((tc (aref tool-calls i))
+               (id (and tc (quoth--openai-alist-get "id" tc)))
+               (fn (and tc (quoth--openai-alist-get "function" tc)))
+               (name (and fn (quoth--openai-alist-get "name" fn)))
+               (args-json (and fn (quoth--openai-alist-get "arguments" fn))))
+          (when (and id name)
+            (let ((call (quoth-make-openai-tool-call :id id :name name)))
+              (when (stringp args-json)
+                (setf (quoth-openai-tool-call-args call)
+                      (quoth-openai-parse-tool-args args-json)))
+              (let ((call-plist (list :id id
+                                      :name name
+                                      :args-json (or args-json ""))))
+                (push (list :call call
+                            :name name
+                            :id id
+                            :args-json (or args-json "")
+                            :call-plist call-plist
+                            :prompt-id prompt-id
+                            :done nil
+                            :cancel nil
+                            :status-start nil
+                            :status-end nil)
+                      states)))))))
+    (nreverse states)))
 
-(defun quoth--tool-loop ()
-  "Execute pending tool invocations and send a follow-up request.
-Extracts tool invocations from the transport's SSE state, executes them
-via `quoth-provider--tool-results', inserts tool blocks into the
-buffer, then reconstructs the follow-up continuation from the buffer's
-tagged regions via `quoth--tool-rounds' (no in-memory cache).  Loop up
-to `quoth-tool-loop-max' rounds; when the cap is hit or no invocation
-come back, finalize via `quoth--close-response'."
-  (if (>= quoth--tool-loop-count quoth-tool-loop-max)
-      (progn
-        (setq-local quoth--tool-loop-count 0)
-        (quoth--phase-set 'idle)
-        (let ((response-start (when (markerp quoth--response-start)
-                                (marker-position quoth--response-start)))
-              (prompt-id quoth--prompt-id)
-              (kind quoth--pending-interrupt))
-          (setq-local quoth--pending-interrupt nil)
-          (quoth--close-response response-start prompt-id kind)))
-    (let* ((tool-calls (quoth-provider--tool-calls
-                        quoth-active-provider
-                        (quoth-provider-transport-process quoth-active-provider)))
-           (result (quoth-provider--tool-results
-                    quoth-active-provider tool-calls))
-           (blocks (nth 2 result))
-           (prompt-id quoth--prompt-id)
-           (buf (current-buffer)))
-      (setq-local quoth--tool-loop-count (1+ quoth--tool-loop-count))
-      (quoth--phase-set 'tools :round quoth--tool-loop-count)
-      ;; Insert tool blocks before the response-start marker so they
-      ;; appear as part of the current response.
-      (dolist (block blocks)
-        (quoth--tool-block-insert block prompt-id))
-      ;; Tag the response so far (streamed content + the just-inserted
-      ;; tool blocks), so `quoth--tool-rounds' can rebuild the wire
-      ;; continuation from the buffer alone.
+(defun quoth--round-dispatch ()
+  "Dispatch the live round: placeholders for every call, then run them.
+Reads the pending tool calls from the transport's SSE state, inserts a
+placeholder block for each in declared order, tags the response region
+so `quoth--tool-rounds' can rebuild the wire continuation from the
+buffer, then runs each call's registry entry.  Completions arrive
+asynchronously and fill their own block; the last one schedules the
+follow-up request.  When no usable call came back, closes the turn."
+  (let* ((tool-calls (quoth-provider--tool-calls
+                      quoth-active-provider
+                      (quoth-provider-transport-process quoth-active-provider)))
+         (states (quoth--round-call-states tool-calls))
+         (buf (current-buffer)))
+    (if (null states)
+        (quoth--finalize-response)
+      ;; Insert placeholders in declared order, then tag the response
+      ;; so far (streamed content + the just-inserted blocks).
+      (dolist (state states)
+        (let ((markers (quoth--tool-block-placeholder state)))
+          (plist-put state :status-start (car markers))
+          (plist-put state :status-end (cdr markers))))
       (let ((response-start (when (markerp quoth--response-start)
                               (marker-position quoth--response-start))))
         (quoth--tag-response-region response-start (point-max)
-                                    prompt-id quoth--pending-interrupt))
+                                    quoth--prompt-id quoth--pending-interrupt))
       (quoth--reasoning-reset)
-      ;; Reconstruct the continuation: the current prompt's user message
-      ;; followed by every assistant(tool_calls)/tool exchange so far,
-      ;; walking the whole response region for this prompt so prior rounds
-      ;; are included.
-      (let* ((user-msg (let ((text (quoth--user-turn-text prompt-id)))
-                         (and text
-                              (> (length text) 0)
-                              (list (cons 'role "user")
-                                    (cons 'content text)))))
-             (continuation (append (and user-msg (list user-msg))
-                                   (quoth--tool-rounds prompt-id))))
-        ;; Clear the old transport and set up for the follow-up.
-        (setf (quoth-provider-transport-process quoth-active-provider) nil)
-        (setq-local quoth--response-start (point-marker))
-        (quoth--phase-set 'streaming)
-        (let ((real-proc (quoth-provider-send-prompt
-                          quoth-active-provider ""
-                          :session-id quoth--session
-                          :session-uuid quoth--session-uuid
-                          :continue-p quoth--continue
-                          :completion (lambda ()
-                                        (when (buffer-live-p buf)
-                                          (with-current-buffer buf
-                                            (quoth--finalize-response))))
-                          :on-delta (lambda (delta kind)
-                                      (when (buffer-live-p buf)
-                                        (with-current-buffer buf
-                                          (quoth--append-delta delta kind))))
-                          :on-error (lambda (message)
-                                      (when (buffer-live-p buf)
-                                        (with-current-buffer buf
-                                          (quoth--record-error message))))
-                          :buffer buf
-                          :stderr (get-buffer-create "*quoth-errors*")
-                          :continuation continuation)))
-          (when (and real-proc (processp real-proc))
-            (set-marker (process-mark real-proc) (point-max))))))))
+      (setq-local quoth--round
+                  (list :pending (length states) :calls states))
+      ;; Run the calls; completions hop through `quoth--schedule', so
+      ;; inline (immediate tools) and timer deliveries follow the same
+      ;; path and the dispatch loop never reenters.
+      (dolist (state states)
+        (plist-put state
+                   :cancel
+                   (quoth-openai-execute-tool
+                    (plist-get state :call)
+                    (quoth--round-on-done buf state)))))))
+
+(defun quoth--round-on-done (buf state)
+  "Return the ON-DONE closure delivering STATE's result to the round.
+The delivery hops through `quoth--schedule' and enters BUF, so the
+fill and the pending-count bookkeeping run on a clean stack in the
+chat buffer."
+  (lambda (result)
+    (quoth--schedule
+     (lambda ()
+       (when (buffer-live-p buf)
+         (with-current-buffer buf
+           (quoth--round-complete state result)))))))
+
+(defun quoth--round-complete (state result)
+  "Handle one tool-call completion: RESULT is (TEXT . EXIT-OR-NIL).
+Fill STATE's placeholder block, record the result on its call struct,
+and decrement the round's pending count; the last completion clears
+the round and schedules the follow-up request.  Guards exactly-once
+per call (a racing window/sentinel delivery) and no-ops when the
+round is gone (the turn was interrupted, cleared, or closed)."
+  (when (and (plistp quoth--round)
+             (memq state (plist-get quoth--round :calls))
+             (not (plist-get state :done)))
+    (plist-put state :done t)
+    (let ((call (plist-get state :call)))
+      (setf (quoth-openai-tool-call-result call) (car result))
+      (setf (quoth-openai-tool-call-exit call) (cdr result)))
+    (quoth--tool-block-fill state (car result))
+    (let ((pending (1- (plist-get quoth--round :pending))))
+      (if (= pending 0)
+          (progn
+            (setq-local quoth--round nil)
+            (quoth--schedule #'quoth--round-followup))
+        (plist-put quoth--round :pending pending)
+        (setq-local quoth--round quoth--round)))))
+
+(defun quoth--round-followup ()
+  "Send the follow-up request once the round's calls have all completed.
+Composes the continuation from the buffer's tagged regions (the wire
+`assistant tool_calls' / `role: tool' pairs are rebuilt by
+`quoth--tool-rounds' — every block is filled by now), clears the old
+transport, and sends; the phase returns to `streaming' for the next
+round's response.  Guards the phase: an interrupt between the last
+completion and this hop already closed the turn."
+  (when (eq (plist-get quoth--phase :phase) 'tools)
+    (let* ((prompt-id quoth--prompt-id)
+           (buf (current-buffer))
+           (user-msg (let ((text (quoth--user-turn-text prompt-id)))
+                       (and text
+                            (> (length text) 0)
+                            (list (cons 'role "user")
+                                  (cons 'content text)))))
+           (continuation (append (and user-msg (list user-msg))
+                                 (quoth--tool-rounds prompt-id))))
+      ;; Clear the old transport and set up for the follow-up.
+      (setf (quoth-provider-transport-process quoth-active-provider) nil)
+      (setq-local quoth--response-start (point-marker))
+      (quoth--phase-set 'streaming)
+      (let ((real-proc (quoth-provider-send-prompt
+                        quoth-active-provider ""
+                        :session-id quoth--session
+                        :session-uuid quoth--session-uuid
+                        :continue-p quoth--continue
+                        :completion (lambda ()
+                                      (quoth--schedule
+                                       (lambda ()
+                                         (quoth--finalize-if-live buf))))
+                        :on-delta (lambda (delta kind)
+                                    (when (buffer-live-p buf)
+                                      (with-current-buffer buf
+                                        (quoth--append-delta delta kind))))
+                        :on-error (lambda (message)
+                                    (when (buffer-live-p buf)
+                                      (with-current-buffer buf
+                                        (quoth--record-error message))))
+                        :buffer buf
+                        :stderr (get-buffer-create "*quoth-errors*")
+                        :continuation continuation)))
+        (when (and real-proc (processp real-proc))
+          (set-marker (process-mark real-proc) (point-max)))))))
+
+(defun quoth--round-cancel ()
+  "Cancel every pending call of the live round without filling blocks.
+Runs each pending state's cancel thunk (abandon its wait) and clears
+the round state.  Used by clear and buffer kill."
+  (when (and (plistp quoth--round) (plist-get quoth--round :calls))
+    (dolist (state (plist-get quoth--round :calls))
+      (unless (plist-get state :done)
+        (let ((cancel (plist-get state :cancel)))
+          (when (functionp cancel)
+            (funcall cancel))))))
+  (setq-local quoth--round nil))
+
+(defun quoth--round-abandon ()
+  "Cancel every pending call of the live round and fill its block.
+Each pending cancel thunk abandons the wait; each pending block is
+filled with the interrupted result so the buffer — the source of
+truth — holds a valid wire `role: tool' content for every call the
+model already emitted.  Used by `quoth-interrupt'."
+  (when (and (plistp quoth--round) (plist-get quoth--round :calls))
+    (dolist (state (plist-get quoth--round :calls))
+      (unless (plist-get state :done)
+        (let ((cancel (plist-get state :cancel)))
+          (when (functionp cancel)
+            (funcall cancel)))
+        (let ((call (plist-get state :call)))
+          (setf (quoth-openai-tool-call-result call)
+                "Process exited with code -1\nOutput:\ninterrupted by user")
+          (setf (quoth-openai-tool-call-exit call) -1))
+        (quoth--tool-block-fill
+         state "Process exited with code -1\nOutput:\ninterrupted by user"))))
+  (setq-local quoth--round nil))
 
 ;;; Major mode commands
 
@@ -1874,9 +2016,9 @@ the quoth buffer, which owns all streamed output."
                       :session-uuid quoth--session-uuid
                       :continue-p quoth--continue
                       :completion (lambda ()
-                                    (when (buffer-live-p buf)
-                                      (with-current-buffer buf
-                                        (quoth--finalize-response))))
+                                    (quoth--schedule
+                                     (lambda ()
+                                       (quoth--finalize-if-live buf))))
                       :on-delta (lambda (delta kind)
                                   (when (buffer-live-p buf)
                                     (with-current-buffer buf
@@ -2203,6 +2345,143 @@ for wire resume.  Returns the end position of the inserted block."
         (put-text-property raw-start raw-end 'quoth-response-to prompt-id))
       end)))
 
+(defconst quoth--tool-status-running "\u23f3 running\u2026"
+  "Status line shown in a pending tool block while its call runs.
+Replaced by the fenced result block when the call completes.")
+
+(defun quoth--tool-block-placeholder (state)
+  "Insert a placeholder block for STATE, a round per-call plist.
+Renders the header line and argument blocks (the existing pure display
+helpers) plus the running status line, tagged `quoth-region-type' `tool'
+with `quoth-prompt-id' / `quoth-response-to' and the `quoth-tool-call'
+wire metadata, all at insert time.  Returns a (START . END) marker pair
+delimiting the status span; `quoth--tool-block-fill' replaces it with the
+result."
+  ;; When reasoning was streamed but no content delta ever arrived (the
+  ;; model went straight to tool calls), stop the reasoning region now
+  ;; so the block is visually separated and the reasoning bounds are
+  ;; correct.
+  (save-excursion (quoth--reasoning-stop))
+  (let* ((name (plist-get state :name))
+         (args-json (plist-get state :args-json))
+         (call-plist (plist-get state :call-plist))
+         (args (or (and (stringp args-json)
+                        (quoth-openai-parse-tool-args args-json))
+                   (list)))
+         (prompt-id (plist-get state :prompt-id))
+         (status quoth--tool-status-running)
+         ;; The header starts on its own line with one blank line of
+         ;; separation so the block stays valid markdown.
+         (prefix (unless (bobp)
+                   (let ((n 0))
+                     (save-excursion
+                       (goto-char (point-max))
+                       (while (and (> (point) (point-min))
+                                   (eq (char-before) ?\n))
+                         (backward-char)
+                         (setq n (1+ n))))
+                     (when (< n 2)
+                       (make-string (- 2 n) ?\n)))))
+         (header (quoth--tool-header-line name args))
+         (arg-blocks (quoth--tool-arg-blocks name args))
+         (body (concat header "\n\n"
+                       (if arg-blocks (concat arg-blocks "\n\n") "")
+                       status "\n\n"))
+         (block (concat prefix body))
+         (start (point-max)))
+    (quoth--insert-at-eof block)
+    (let* ((status-start (+ start (length prefix)
+                            (length header) 2
+                            (if arg-blocks (+ (length arg-blocks) 2) 0)))
+           (end (point-max)))
+      (put-text-property start end 'quoth-region-type 'tool)
+      (put-text-property start end 'quoth-prompt-id prompt-id)
+      (put-text-property start end 'quoth-response-to prompt-id)
+      (put-text-property start end 'quoth-tool-call call-plist)
+      (cons (copy-marker status-start t)
+            (copy-marker (+ status-start (length status)) nil)))))
+
+(defun quoth--tool-block-fill (state result)
+  "Fill STATE's pending block with RESULT (the wire tool content).
+Replaces the running status span with the fenced result block, tags the
+raw result span `quoth-region-type' `tool-output' (nested, carrying the
+block's prompt id), and keeps the `quoth-tool-call' property contiguous
+across the inserted text.  When the status markers no longer delimit a
+coherent span (the user edited or deleted the pending block), appends
+the completed block at point-max instead and debug-logs the fallback —
+tool results are never dropped, and the follow-up is still composed
+from the buffer."
+  (let* ((name (plist-get state :name))
+         (id (plist-get state :id))
+         (args-json (plist-get state :args-json))
+         (call-plist (plist-get state :call-plist))
+         (prompt-id (plist-get state :prompt-id))
+         (m-start (plist-get state :status-start))
+         (m-end (plist-get state :status-end))
+         (result (or result ""))
+         (raw (concat result (unless (string-suffix-p "\n" result) "\n")))
+         (fence (quoth--fence-str result))
+         (output-block (concat fence quoth--fence-lang "\n" raw fence)))
+    (if (and (markerp m-start) (markerp m-end)
+             (< (marker-position m-start) (marker-position m-end))
+             (get-text-property (marker-position m-start) 'quoth-tool-call))
+        (save-excursion
+          (let* ((fill-start (marker-position m-start))
+                 (fill-end (marker-position m-end))
+                 (fill-end-was-eob (= fill-end (point-max))))
+            (goto-char fill-start)
+            (delete-region fill-start fill-end)
+            (insert output-block)
+            (let ((insert-end (point)))
+              ;; Keep the block one contiguous call span: the wire walker
+              ;; treats any gap in `quoth-tool-call' as a block end.
+              (put-text-property fill-start insert-end
+                                 'quoth-region-type 'tool)
+              (put-text-property fill-start insert-end
+                                 'quoth-prompt-id prompt-id)
+              (put-text-property fill-start insert-end
+                                 'quoth-response-to prompt-id)
+              ;; Re-tag with the block's own plist object: a distinct
+              ;; object would split the `quoth-tool-call' run and the
+              ;; wire walker would emit a spurious second pair.
+              (put-text-property fill-start insert-end
+                                 'quoth-tool-call call-plist)
+              ;; Nested raw-result span: the wire `role: "tool"' content
+              ;; sits between the output fence's opening line and the
+              ;; closing fence.
+              (let ((raw-start (+ fill-start (length fence)
+                                  (length quoth--fence-lang) 1))
+                    (raw-end (+ fill-start (length fence)
+                                (length quoth--fence-lang) 1
+                                (length raw))))
+                (put-text-property raw-start raw-end
+                                   'quoth-region-type 'tool-output)
+                (put-text-property raw-start raw-end
+                                   'quoth-prompt-id prompt-id)
+                (put-text-property raw-start raw-end
+                                   'quoth-response-to prompt-id)))
+            ;; The status span carried the block's trailing blank line;
+            ;; restore it when the fill consumed the end of buffer.
+            (when (and fill-end-was-eob
+                       (not (= (point-max) fill-start)))
+              (goto-char (point-max))
+              (unless (bobp)
+                (let ((n 0))
+                  (while (and (> (point) (point-min))
+                              (eq (char-before) ?\n)
+                              (< n 2))
+                    (backward-char)
+                    (setq n (1+ n)))
+                  (when (< n 2)
+                    (insert (make-string (- 2 n) ?\n))))))))
+      (quoth--debug-log
+       'tool (format "pending block for %s lost its region; appending at point-max"
+                     name))
+      (quoth--tool-block-insert
+       (list :name name :id id :args-json args-json
+             :result result :exit nil)
+       prompt-id))))
+
 (defun quoth-send-input ()
   "Send the current prompt to the provider."
   (interactive)
@@ -2250,6 +2529,10 @@ partial is stamped `quoth-interrupted' = `user'."
   (interactive)
   (if (not (quoth--busy-p))
       (message "No quoth turn in flight")
+    ;; Cancel the live round first (abandon its waits, fill its pending
+    ;; blocks with the interrupted result) so no completion lands after
+    ;; the close.
+    (quoth--round-abandon)
     (quoth--cancel-round-timers)
     (quoth-provider-interrupt quoth-active-provider)
     (setq-local quoth--pending-interrupt 'user)
@@ -2275,6 +2558,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (setq-local quoth-openai--cached-system-prompt nil)
   (setq-local quoth-openai--cache-key nil)
   (quoth--init-session-uuid)
+  (quoth--round-cancel)
   (quoth--stream-clear)
   ;; Kill any in-flight provider transport before clearing.
   (when (and quoth-active-provider
