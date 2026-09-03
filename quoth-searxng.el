@@ -204,12 +204,11 @@ Limits to MAX results after deduplication."
                 (cdr (assq 'infoboxes obj))))
          (sugg (quoth-searxng--format-suggestions
                 (cdr (assq 'suggestions obj)))))
-    (concat
-     (if (string-empty-p blocks)
-         "no results"
-       blocks)
-     (when info (concat "\n\n" info))
-     (when sugg (concat "\n\n" sugg)))))
+    (let ((parts nil))
+      (dolist (part (list blocks info sugg))
+        (when (and part (not (string-empty-p part)))
+          (push part parts)))
+      (string-join (nreverse parts) "\n\n"))))
 
 (defun quoth-searxng--format-infoboxes (infoboxes)
   "Format INFOBOXES vector as Info: lines, or nil if empty."

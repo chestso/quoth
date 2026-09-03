@@ -476,6 +476,27 @@ session is deregistered."
     (should (string-match-p "Output:" result))
     (should-not (string-match-p "exited" result))))
 
+(ert-deftest quoth-test/output-section-nil-vs-empty-string ()
+  "`quoth-exec--output-section' distinguishes nothing-to-show (nil) from
+an empty body string: nil renders the structural `(empty)' marker; a
+string (even empty) renders the `Output:' line plus the body, as when
+a budget marker follows and the body itself was dropped."
+  (should (string= (quoth-exec--output-section nil)
+                   "Output: (empty)\n"))
+  (should (string= (quoth-exec--output-section "") "Output:\n"))
+  (should (string= (quoth-exec--output-section "x") "Output:\nx")))
+
+(ert-deftest quoth-test/result-format-empty-marks-emptiness-structurally ()
+  "An empty result reads `Output: (empty)' on the status line, never a
+body that could be mistaken for literal output."
+  (let* ((result (quoth-exec--format-result "" 0)))
+    (should (string= result "Process exited with code 0\nOutput: (empty)\n"))
+    (should-not (string-match-p "no output" result))
+    ;; Only trailing whitespace counts as empty; the body follows the
+    ;; `Output:' line when there is content.
+    (should (string= (quoth-exec--format-result "hi\n" 0)
+                     "Process exited with code 0\nOutput:\nhi"))))
+
 ;;; 6. Output truncation
 
 (ert-deftest quoth-test/truncate-output ()
@@ -488,7 +509,7 @@ session is deregistered."
          (truncated (quoth-exec--truncate-output body)))
     (should (string-match-p "omitted" truncated))
     (should (string-prefix-p (make-string 35 ?a) truncated)))
-  (should (string= (quoth-exec--truncate-output "") "no output")))
+  (should-not (quoth-exec--truncate-output "")))
 
 (ert-deftest quoth-test/truncate-output-preserves-leading-whitespace ()
   "Leading whitespace (indentation) is preserved in command output."
@@ -496,7 +517,7 @@ session is deregistered."
                    "  indented\nnext"))
   (should (string= (quoth-exec--truncate-output "\t\ttabbed")
                    "\t\ttabbed"))
-  (should (string= (quoth-exec--truncate-output "  \n") "no output")))
+  (should-not (quoth-exec--truncate-output "  \n")))
 
 ;;; 7. Tool-block buffer formatting
 
@@ -1632,7 +1653,7 @@ marker naming the dropped line and the resume offset."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/read-file-empty-file-no-marker ()
-  "An empty `read_file' returns the header and `Output:' line only."
+  "An empty `read_file' returns `Output: (empty)' on the status line."
   (let ((dir (quoth-test--tmpdir)))
     (unwind-protect
         (let* ((target (expand-file-name "empty.txt" dir))
@@ -1642,11 +1663,11 @@ marker naming the dropped line and the resume offset."
                       (quoth-test--args-json :path target)))
                (result (quoth-test--sync-result #'quoth-read-file--exec call)))
           (should (= (cdr result) 0))
-          ;; Exactly the header, no body, no marker.
+          ;; The status line carries the structural empty marker.
           (should (string= (car result)
                            (concat "Process exited with code 0"
                                    (char-to-string ?\n)
-                                   "Output:"
+                                   "Output: (empty)"
                                    (char-to-string ?\n)))))
       (ignore-errors (delete-directory dir t)))))
 

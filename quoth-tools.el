@@ -171,12 +171,13 @@ by clear/kill."
 (defun quoth-exec--truncate-output (output)
   "Cap OUTPUT at `quoth-tool-max-output' chars, head/tail with an omission.
 Leading whitespace is preserved so indented output (trees, diffs,
-markdown) renders correctly; only trailing whitespace is trimmed so an
-empty result reads as `no output' and the fence is always clean."
+markdown) renders correctly; only trailing whitespace is trimmed so
+an empty result reads as nil from here and the caller can mark it
+structurally."
   (let* ((text (string-trim-right output))
          (limit quoth-tool-max-output))
     (cond
-     ((string-empty-p text) "no output")
+     ((string-empty-p text) nil)
      ((<= (length text) limit) text)
      (t (let* ((head-len (floor (* limit 0.7)))
                (tail-len (- limit head-len))
@@ -186,14 +187,27 @@ empty result reads as `no output' and the fence is always clean."
                   omitted
                   (substring text (- (length text) tail-len))))))))
 
+(defun quoth-exec--output-section (text)
+  "Return the `Output:' section for body TEXT.
+The single rendering decision every tool result goes through.  nil
+means there is nothing to show at all and renders as the structural
+`Output: (empty)' marker on the status line - never as body text a
+reader could mistake for literal output.  A string (even empty)
+renders as `Output:' on its own line followed by the body: an empty
+string is a real body, as when a budget marker follows and the body
+itself was dropped.  New tools build results with this helper
+instead of hand-writing the `Output:' line."
+  (if text
+      (concat "Output:\n" text)
+    "Output: (empty)\n"))
+
 (defun quoth-exec--format-result (output exit-code)
   "Return the finished-result text for OUTPUT and EXIT-CODE.
-Uses Codex's prose convention: status line, then `Output:' and the
-chunk."
+Uses Codex's prose convention: status line, then the `Output:'
+section (`quoth-exec--output-section')."
   (concat
    (format "Process exited with code %s\n" exit-code)
-   "Output:\n"
-   (quoth-exec--truncate-output output)))
+   (quoth-exec--output-section (quoth-exec--truncate-output output))))
 
 (defun quoth-exec--format-running (output session-id)
   "Return the still-running result text for OUTPUT and SESSION-ID.
@@ -201,8 +215,7 @@ The status line carries the session id the model echoes into
 `write_stdin'."
   (concat
    (format "Process running with session ID %d\n" session-id)
-   "Output:\n"
-   (quoth-exec--truncate-output output)))
+   (quoth-exec--output-section (quoth-exec--truncate-output output))))
 
 (defun quoth-exec-command--exec (tool-call on-done)
   "Execute TOOL-CALL as `exec_command', reporting to ON-DONE once.
@@ -872,66 +885,80 @@ immediately.  An immediate tool: returns nil (no cancel thunk)."
                    (text (quoth-file--read-content path))
                    (lines (quoth-file--lines text))
                    (line-count (length lines))
-                   (header "Process exited with code 0\nOutput:\n")
-                   (header-len (length header)))
-              (cond
-               ;; Empty file: header only, no body, no marker.  Must
-               ;; short-circuit before the offset-past-EOF check,
-               ;; because offset 1 is trivially past an empty file.
-               ((= line-count 0)
-                (funcall on-done (cons header 0))
-                nil)
-               (t
-                (when (> offset line-count)
-                  (error "Offset %d is past the last line (%d)"
-                         offset line-count))
-                (let* (;; window-end doubles as the exclusive end
-                       ;; index into LINES: line N lives at index
-                       ;; N-1, so the slice (1- offset)..window-end
-                       ;; covers lines offset..window-end inclusive.
-                       (window-end (if limit
-                                       (min (+ offset limit -1)
-                                            line-count)
-                                     line-count))
-                       (windowed (vconcat
-                                  (cl-subseq lines
-                                             (1- offset)
-                                             window-end)))
-                       (window-size (length windowed))
-                       (keep 0)
-                       (consumed header-len)
-                       (fit-p t))
-                  ;; Spend the budget on whole rendered lines, head
-                  ;; first.  A blank line renders to one byte (its
-                  ;; LF) so files of blank lines still terminate.
-                  (while (and fit-p (< keep window-size))
-                    (let* ((line (aref windowed keep))
-                           (cost (if numbered-p
-                                     (length
-                                      (quoth-file--numbered-line
-                                       (+ offset keep) line))
-                                   ;; + 1 for the LF the render adds;
-                                   ;; a final line the file ends
-                                   ;; without is over-charged by that
-                                   ;; one byte (conservative).
-                                   (1+ (length line)))))
-                      (if (> (+ consumed cost) quoth-tool-max-output)
-                          (setq fit-p nil)
-                        (setq consumed (+ consumed cost))
-                        (setq keep (1+ keep)))))
-                  (let* ((body (quoth-read-file--render
-                                text lines offset (+ offset keep) numbered-p))
-                         (dropped (- window-size keep))
-                         (first-dropped (+ offset keep))
-                         (marker (quoth-read-file--marker
-                                  dropped
-                                  first-dropped
-                                  ;; window-end: the last line of the
-                                  ;; requested window, dropped or not.
-                                  window-end)))
-                    (funcall on-done
-                             (cons (concat header body marker) 0))
-                    nil))))))
+                   (status "Process exited with code 0\n")
+                   ;; The budget's fixed cost is the non-empty
+                   ;; `Output:' header, derived from the same
+                   ;; `output-section' helper that renders the result:
+                   ;; its section with a one-byte dummy body, minus
+                   ;; the dummy, plus the status line.  The empty-file
+                   ;; case below renders the `(empty)' marker instead
+                   ;; and never reaches the budget arithmetic.
+                   (header-len (+ (length status)
+                                  (1- (length
+                                       (quoth-exec--output-section "x"))))))
+              (if (= line-count 0)
+                  ;; Empty file: the `output-section' helper's
+                  ;; structural `(empty)' marker, no body, no marker.
+                  ;; Short-circuits before the offset-past-EOF check,
+                  ;; because offset 1 is trivially past an empty file.
+                  (funcall on-done
+                           (cons (concat status
+                                         (quoth-exec--output-section nil))
+                                 0))
+                (progn
+                  (when (> offset line-count)
+                    (error "Offset %d is past the last line (%d)"
+                           offset line-count))
+                  (let* (;; window-end doubles as the exclusive end
+                         ;; index into LINES: line N lives at index
+                         ;; N-1, so the slice (1- offset)..window-end
+                         ;; covers lines offset..window-end inclusive.
+                         (window-end (if limit
+                                         (min (+ offset limit -1)
+                                              line-count)
+                                       line-count))
+                         (windowed (vconcat
+                                    (cl-subseq lines
+                                               (1- offset)
+                                               window-end)))
+                         (window-size (length windowed))
+                         (keep 0)
+                         (consumed header-len)
+                         (fit-p t))
+                    ;; Spend the budget on whole rendered lines, head
+                    ;; first.  A blank line renders to one byte (its
+                    ;; LF) so files of blank lines still terminate.
+                    (while (and fit-p (< keep window-size))
+                      (let* ((line (aref windowed keep))
+                             (cost (if numbered-p
+                                       (length
+                                        (quoth-file--numbered-line
+                                         (+ offset keep) line))
+                                     ;; + 1 for the LF the render adds;
+                                     ;; a final line the file ends
+                                     ;; without is over-charged by that
+                                     ;; one byte (conservative).
+                                     (1+ (length line)))))
+                        (if (> (+ consumed cost) quoth-tool-max-output)
+                            (setq fit-p nil)
+                          (setq consumed (+ consumed cost))
+                          (setq keep (1+ keep)))))
+                    (let* ((body (quoth-read-file--render
+                                  text lines offset (+ offset keep) numbered-p))
+                           (dropped (- window-size keep))
+                           (first-dropped (+ offset keep))
+                           (marker (quoth-read-file--marker
+                                    dropped
+                                    first-dropped
+                                    ;; window-end: the last line of the
+                                    ;; requested window, dropped or not.
+                                    window-end)))
+                      (funcall on-done
+                               (cons (concat status
+                                             (quoth-exec--output-section body)
+                                             marker)
+                                     0))
+                      nil))))))
         (error
          (funcall on-done (quoth-openai-tool-error-result
                            (error-message-string err)))

@@ -386,8 +386,10 @@ resume …`); the resume offset is the first dropped line, so it
   is off (the default); the schema description of `line_numbers`
   teaches the model to strip the prefix before passing content back
   to `write_file`, because leaked prefixes permanently corrupt the
-  file (hermes-agent issue #19798). An empty file returns the
-  status header and `Output:` line only. Smaller slices go through
+  file (hermes-agent issue #19798). An empty file returns
+  `Output: (empty)` on the status line with no body — the same
+  structural emptiness marker every tool uses, so no fake body text
+  can be mistaken for file content. Smaller slices go through
   `offset`/`limit`.
 - `edit_file` — replaces one literal `old_string` span in the file
   at `path` with `new_string`, written verbatim through the shared
@@ -408,6 +410,17 @@ resume …`); the resume offset is the first dropped line, so it
   is involved, so there is no shell escaping to get wrong. The
   result reports the occurrence count, the match line numbers, and
   a `-`/`+` mini-diff of the changed span.
+- Every tool result renders its `Output:` section through
+  `quoth-exec--output-section`: nil (nothing to show) becomes the
+  structural `Output: (empty)` marker on the status line, and a
+  string — even empty, as when a line-budget marker follows a
+  dropped body — becomes `Output:` plus the body. The helper is the
+  single rendering decision, so a new tool adopts the convention by
+  building its result with it (or with `quoth-exec--format-result` /
+  `quoth-exec--format-running`, which route through it) rather than
+  hand-writing the `Output:` line. No result ever carries fake body
+  text like `no output` / `no results` that a reader could mistake
+  for literal tool output.
 - `web_search` — queries the local SearXNG instance (`quoth-searxng.el`)
   asynchronously: `url-retrieve` plus a `quoth-searxng-timeout` timer
   that deletes the retrieval and delivers an error result; the cancel

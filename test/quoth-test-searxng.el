@@ -207,12 +207,14 @@ relevance, and the whole payload is wrapped in the prose convention."
                                  (car result))))))))
 
 (ert-deftest quoth-test/searxng-empty-results ()
-  "An empty result set should report no results without erroring."
+  "An empty result set reports `Output: (empty)' without erroring, with
+no body text that could be mistaken for literal search output."
   (quoth-test--with-fake-url
    "200 OK" (json-encode '((results . [])))
    (lambda ()
      (let ((result (quoth-test--searxng-call "{\"query\":\"zzz\"}")))
-       (should (string-match-p "no results" (car result)))
+       (should (string= (car result)
+                        "Process exited with code 0\nOutput: (empty)\n"))
        (should (= (cdr result) 0))))))
 
 ;;; 3. Error paths
