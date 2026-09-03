@@ -457,16 +457,16 @@ collects the exit chunk and exit code without waiting."
 ;;; 6. Spawn environment
 
 (ert-deftest quoth-test-process/spawn-env-reaches-child ()
-  "The sanitized environment (pagers off, TERM=dumb) reaches the child.
-The child process is spawned with the sanitized `process-environment'
-already in effect."
+  "The sanitized environment (pagers off, NO_COLOR, TERM=dumb) reaches
+the child.  The child process is spawned with the sanitized
+`process-environment' already in effect."
   (let ((owner (quoth-test-process--owner))
         (report (quoth-test-process--reporter))
         (session nil))
     (unwind-protect
         (progn
           (setq session (quoth-process--start
-                         "echo PAGER=[$PAGER] GIT_PAGER=[$GIT_PAGER] TERM=[$TERM]"
+                         "echo PAGER=[$PAGER] GIT_PAGER=[$GIT_PAGER] NO_COLOR=[$NO_COLOR] TERM=[$TERM]"
                          nil owner nil nil (car report)))
           (should (quoth-test--wait-until
                    (lambda () (funcall (cdr report)))))
@@ -474,6 +474,7 @@ already in effect."
             (should (string-search "PAGER=[" output))
             (should-not (string-search "PAGER=[]" output))
             (should (string-search "GIT_PAGER=[cat]" output))
+            (should (string-search "NO_COLOR=[1]" output))
             (should (string-search "TERM=[dumb]" output))))
       (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
@@ -548,6 +549,128 @@ deleted process."
             (quoth-process--kill session)
             (should-not (buffer-live-p buffer))))
       (when session (quoth-process--kill session))
+      (quoth-test-process--cleanup-owner owner))))
+
+
+;;; 9. PTY output rendering
+
+(ert-deftest quoth-test-process/render-spinner-collapses-to-last-frame ()
+  "Carriage-returned spinner frames collapse to the final frame."
+  (should (equal (quoth-process--render "\u284b\r\u2859\r\u28b9\n")
+                 "\u28b9\n")))
+
+(ert-deftest quoth-test-process/render-carriage-return-keeps-tail ()
+  "A CR overwrite replaces only the re-written prefix; the tail stays."
+  (should (equal (quoth-process--render "abcdef\rXY\n") "XYcdef\n")))
+
+(ert-deftest quoth-test-process/render-backspace-counter ()
+  "Backspace-driven counters update in place."
+  (should (equal (quoth-process--render "10%\b\b\b20%\n") "20%\n")))
+
+(ert-deftest quoth-test-process/render-erase-line-redraw ()
+  "`ESC [ 2 K' erases the line, leaving only what follows."
+  (should (equal (quoth-process--render "\e[2Kdone\n") "done\n")))
+
+(ert-deftest quoth-test-process/render-sgr-color-stripped ()
+  "SGR color sequences are dropped; the visible text stays."
+  (should (equal (quoth-process--render "\e[32mok\e[0m\n") "ok\n")))
+
+(ert-deftest quoth-test-process/render-osc-dropped ()
+  "OSC title writes (BEL-terminated) are dropped entirely."
+  (should (equal (quoth-process--render "\e]0;title\aecho hi\n")
+                 "echo hi\n")))
+
+(ert-deftest quoth-test-process/render-osc-st-terminated ()
+  "OSC writes terminated by `ESC \\` are dropped too."
+  (should (equal (quoth-process--render "\e]0;t\e\\x\n") "x\n")))
+
+(ert-deftest quoth-test-process/render-crlf-renders-as-lf ()
+  "A CR before LF is a plain end-of-line artifact and renders away.
+CRLF output reads as plain LF lines to the model."
+  (should (equal (quoth-process--render "a\r\nb\r\n") "a\nb\n")))
+
+(ert-deftest quoth-test-process/render-plain-text-untouched ()
+  "Text without control bytes passes through unchanged, including
+newlines and multibyte characters."
+  (should (equal (quoth-process--render "plain\u4e2d text\nmore\n")
+                 "plain\u4e2d text\nmore\n")))
+
+(ert-deftest quoth-test-process/render-tabs-expand ()
+  "Tabs pad to the next 8-column stop."
+  (should (equal (quoth-process--render "a\tb\n") "a       b\n")))
+
+(ert-deftest quoth-test-process/render-cursor-moves ()
+  "CUF/CUB/CHA move the cursor within the line; CUP row 1 acts as CR."
+  (should (equal (quoth-process--render "ab\e[3Cz\n") "ab   z\n"))
+  (should (equal (quoth-process--render "abcde\e[2DX\n") "abcXe\n"))
+  (should (equal (quoth-process--render "\e[10Gend\n") "         end\n"))
+  (should (equal (quoth-process--render "x\e[1;5Hy\n") "xy\n")))
+
+(ert-deftest quoth-test-process/render-cup-deeper-row-drops ()
+  "A CUP to a row below the first collapses into this line (the
+one-line model); the cursor stays put."
+  (should (equal (quoth-process--render "x\e[2;5Hy\n") "xy\n")))
+
+(ert-deftest quoth-test-process/render-unterminated-csi-drops-line-rest ()
+  "A CSI sequence unterminated at end of chunk drops the rest of the
+line — a mid-frame artifact, and dropping it is the desired outcome."
+  (should (equal (quoth-process--render "ok\e[2") "ok")))
+
+(ert-deftest quoth-test-process/render-partial-trailing-line-kept ()
+  "A trailing partial line (no final newline) renders too; the chunk
+splitting on LF keeps its structure."
+  (should (equal (quoth-process--render "abc\rd") "dbc")))
+
+(ert-deftest quoth-test-process/render-chunk-split-on-line-boundary ()
+  "Splitting a chunk at a line boundary renders identically to the
+whole: rendering is per line, and the join preserves structure."
+  (let ((whole "resolving...\r100% done\nnext\n"))
+    (should (equal (quoth-process--render whole)
+                   (concat (quoth-process--render "resolving...\r100% done\n")
+                           (quoth-process--render "next\n"))))))
+
+(ert-deftest quoth-test-process/render-off-passthrough ()
+  "With `quoth-process-render-output' nil, collect returns raw bytes."
+  (let ((owner (quoth-test-process--owner))
+        (session nil))
+    (unwind-protect
+        (progn
+          ;; The toggle is checked at collect time, in the sentinel —
+          ;; so the binding must cover the whole wait, not just the
+          ;; start.
+          (let* ((report (quoth-test-process--reporter))
+                 (quoth-process-render-output nil))
+            (setq session (quoth-process--start "printf 'a\\rXY'"
+                                                nil owner nil nil (car report)))
+            (should (quoth-test--wait-until
+                     (lambda () (funcall (cdr report)))))
+            (should (equal (caar (funcall (cdr report))) "a\rXY")))
+          ;; On by default: the same command's raw bytes render.
+          (let ((report (quoth-test-process--reporter)))
+            (setq session (quoth-process--start "printf 'a\\rXY'"
+                                                nil owner nil nil (car report)))
+            (should (quoth-test--wait-until
+                     (lambda () (funcall (cdr report)))))
+            (should (equal (caar (funcall (cdr report))) "XY"))))
+      (quoth-process--kill session)
+      (quoth-test-process--cleanup-owner owner))))
+
+(ert-deftest quoth-test-process/render-real-process-round-trip ()
+  "A real PTY session's exit report carries rendered output: the CR
+overwrite and the erase-line sequence are applied, the raw frame
+history is not."
+  (let ((owner (quoth-test-process--owner))
+        (report (quoth-test-process--reporter))
+        (session nil))
+    (unwind-protect
+        (progn
+          (setq session (quoth-process--start "printf 'a\\rXY\\033[2Kdone'"
+                                              nil owner nil nil (car report)))
+          (should (quoth-test--wait-until
+                   (lambda () (funcall (cdr report)))))
+          (should (equal (caar (funcall (cdr report))) "XYdone"))
+          (should (equal (cdar (funcall (cdr report))) 0)))
+      (quoth-process--kill session)
       (quoth-test-process--cleanup-owner owner))))
 
 (provide 'quoth-test-process)

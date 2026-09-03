@@ -73,6 +73,14 @@ an exit code.  Effective range is 250-30000 (clamped)."
   :type 'integer
   :group 'quoth-process)
 
+(defcustom quoth-process-render-output t
+  "Whether session reports render PTY control bytes as a dumb terminal.
+Spinner frames joined by carriage returns, ANSI erase/color
+sequences, and other terminal animation collapse to the final
+visible text.  nil passes raw bytes through unchanged."
+  :type 'boolean
+  :group 'quoth-process)
+
 (cl-defstruct (quoth-process-session
                (:constructor quoth-process--make-session)
                (:copier nil))
@@ -156,6 +164,7 @@ set a dumb terminal so columnated tools degrade to plain output."
                 "GIT_PAGER=cat"
                 "GIT_TERMINAL_PROMPT=0"
                 "MANPAGER=cat"
+                "NO_COLOR=1"
                 "TERM=dumb")
           process-environment))
 
@@ -216,6 +225,143 @@ the spawn fails."
         (process-put proc :quoth-session session)
         (quoth-process--register session)))))
 
+(defun quoth-process--csi-params (line i)
+  "Parse a CSI sequence in LINE starting at index I (just past `ESC [').
+Return (FINAL-INDEX . PARAMS), where FINAL-INDEX is the index of the
+final byte and PARAMS lists the integer parameters in order (an
+omitted parameter reads as 0, per the VT spec's default of 1 for
+cursor ops handled by the caller).  Return nil when the sequence is
+unterminated at end of line."
+  (let* ((end (length line))
+         (j i)
+         (params nil)
+         (cur nil)
+         (final nil))
+    (while (and (< j end) (not final))
+      (let ((c (aref line j)))
+        (cond
+         ((and (>= c ?0) (<= c ?9))
+          (setq cur (+ (* (or cur 0) 10) (- c ?0))))
+         ((memq c '(?\; ?: ??)))      ; separators / sub-params: ignore
+         ((and (>= c #x40) (<= c #x7e)) ; the final byte
+          (push (or cur 0) params)
+          (setq final j))
+         (t (setq final -1))))        ; malformed: drop the rest
+      (setq j (1+ j)))
+    (when (and final (>= final 0))
+      (cons final (nreverse params)))))
+
+(defun quoth-process--render-line (line)
+  "Render one line of PTY output as a dumb terminal.
+LINE is a string without newlines; the return value is the final
+visible text after applying carriage returns, backspaces, tabs, and
+erase sequences, and dropping color/OSC/other control codes."
+  (let* ((end (length line))
+         (buf (make-vector 256 ?\s))
+         (len 0)          ; last column ever written + 1
+         (i 0)
+         (col 0))
+    (while (< i end)
+      (let ((c (aref line i)))
+        (cond
+         ;; Carriage return: cursor to column 0; the buffer keeps its
+         ;; bytes so later writes overwrite only the prefix.
+         ((eq c ?\r) (setq col 0))
+         ;; Backspace: one column left.
+         ((eq c ?\b) (setq col (max 0 (1- col))))
+         ;; Tab: pad to the next 8-column stop.
+         ((eq c ?\t)
+          (let ((next (* 8 (1+ (/ col 8)))))
+            (while (< col next)
+              (aset buf col ?\s)
+              (setq col (1+ col))
+              (when (> col len) (setq len col)))))
+         ((eq c ?\e)
+          (let ((n (1+ i)))
+            (cond
+             ;; CSI: ESC [ params final.
+             ((and (< n end) (eq (aref line n) ?\[))
+              (let ((parsed (quoth-process--csi-params line (1+ n))))
+                (cond
+                 ((not parsed) (setq i end)) ; unterminated: drop rest
+                 (t
+                  (let* ((j (car parsed))
+                         (params (cdr parsed))
+                         (p (or (nth 0 params) 1)))
+                    (pcase (aref line j)
+                      ;; EL: 0 cursor-to-end, 1 start-to-cursor,
+                      ;; 2 whole line.
+                      ((or ?K ?J)
+                       (let ((mode (or (nth 0 params) 0)))
+                         (cond
+                          ((zerop mode) (setq len (min len col)))
+                          ((= mode 1)
+                           ;; Keep LEN: spaces are real columns on a
+                           ;; screen; erase-then-draw redraws the gap.
+                           (dotimes (k col) (aset buf k ?\s)))
+                          (t (setq len 0)))))
+                      ;; CUF / CUB: cursor right / left by P.
+                      (?C (setq col (+ col p)))
+                      (?D (setq col (max 0 (- col p))))
+                      ;; CHA: cursor to column P.
+                      (?G (setq col (max 0 (1- p))))
+                      ;; CUP: row 1 is this line; deeper rows drop.
+                      ((or ?H ?f)
+                       (let ((row (or (nth 0 params) 1)))
+                         (when (<= row 1) (setq col (max 0 (1- (or (nth 1 params) 1)))))))
+                      ;; SGR and every other final: drop.
+                      (_ nil))
+                    (setq i j))))))
+             ;; OSC: ESC ] ... BEL or ESC \ ; dropped entirely.
+             ((and (< n end) (eq (aref line n) ?\]))
+              (let ((j (1+ n))
+                    (done nil))
+                (while (and (< j end) (not done))
+                  (cond
+                   ((eq (aref line j) ?\a) (setq done t))
+                   ((and (eq (aref line j) ?\e)
+                         (< (1+ j) end)
+                         (eq (aref line (1+ j)) ?\\))
+                    (setq done t)
+                    (setq j (1+ j)))
+                   (t (setq j (1+ j)))))
+                (when done (setq i j))))
+             ;; Other two-byte escapes (charset selection etc.):
+             ;; drop the introducer plus one byte.
+             ((< n end) (setq i n)))))
+         ;; Remaining C0 controls and DEL: dropped.
+         ((or (< c 32) (eq c 127)))
+         ;; Printable: store at the cursor, tracking the extent.
+         (t
+          (when (>= col (length buf))
+            (let ((b2 buf))
+              (setq buf (make-vector (* 2 col) ?\s))
+              (dotimes (k (length b2)) (aset buf k (aref b2 k)))))
+          (aset buf col c)
+          (setq col (1+ col))
+          (when (> col len) (setq len col)))))
+      (setq i (1+ i)))
+    (concat (seq-subseq buf 0 len))))
+
+(defun quoth-process--render (text)
+  "Render PTY output TEXT as a dumb terminal.
+Each newline-delimited line collapses to its final visible text:
+spinner frames joined by carriage returns reduce to the last frame,
+and ANSI erase/color sequences, OSC writes, and other control codes
+are applied or dropped.  Lines without control bytes pass through
+untouched, and a trailing partial line is preserved as-is."
+  (if (not (string-match-p "[\r\b\t\e]" text))
+      text
+    (let ((lines (split-string text "\n")))
+      (string-join
+       (mapcar
+        (lambda (line)
+          (if (string-match-p "[\r\b\t\e]" line)
+              (quoth-process--render-line line)
+            line))
+        lines)
+       "\n"))))
+
 (defun quoth-process--collect (session)
   "Return output produced since SESSION's last report.
 Advances the session's last-report offset to the end of the buffer."
@@ -224,7 +370,10 @@ Advances the session's last-report offset to the end of the buffer."
     (with-current-buffer buffer
       (let ((end (point-max)))
         (prog1
-            (buffer-substring-no-properties start end)
+            (if quoth-process-render-output
+                (quoth-process--render
+                 (buffer-substring-no-properties start end))
+              (buffer-substring-no-properties start end))
           (setf (quoth-process-session-last-report session) end))))))
 
 (defun quoth-process--collect-final (session)

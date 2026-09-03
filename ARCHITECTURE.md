@@ -461,7 +461,11 @@ content for every call the model already emitted.
 
 General-purpose, model-neutral, buffer-unaware layer that owns PTY
 sessions. It handles spawning (with sanitized env: `PAGER=cat`,
-`GIT_PAGER=cat`, `TERM=dumb`), output buffering, event-driven exit
+`GIT_PAGER=cat`, `NO_COLOR=1`, `TERM=dumb`), output buffering,
+dumb-terminal rendering of collected chunks (`quoth-process--render`
+collapses spinner frames joined by carriage returns, applies ANSI
+erase sequences, and drops color/OSC codes, governed by the
+`quoth-process-render-output` toggle), event-driven exit
 reports (a real process sentinel delivering `(CHUNK . EXIT-CODE)` on
 the `quoth--schedule` hop), one-shot running-report window timers
 (`quoth-process--arm-window`), non-blocking stdin writes, and cleanup.
