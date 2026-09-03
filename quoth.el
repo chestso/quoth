@@ -616,13 +616,13 @@ The region type at point; the right-most cluster."
 (defun quoth--update-header-line ()
   "Update the header line from its model, usage, and buffer clusters.
 Each cluster is built by a dedicated segment function; non-nil segments
-are joined by ` | ' so related info stays adjacent."
+are joined by two spaces so related info stays adjacent."
   (let ((segments (delq nil
                         (list (quoth--header-model-segment)
                               (quoth--header-usage-segment)
                               (quoth--header-buffer-segment)))))
     (setq header-line-format
-          (list (propertize (mapconcat #'identity segments " | ")
+          (list (propertize (mapconcat #'identity segments "  ")
                             'face 'bold)))))
 
 (defun quoth--lang-from-extension (filename)

@@ -627,7 +627,7 @@ Both the current model and the region type at point appear."
             (goto-char (1- (point)))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string= h "(my-model | user)")))))
+              (should (string= h "(my-model  user)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-dash-for-nil-region ()
@@ -639,7 +639,7 @@ Both the current model and the region type at point appear."
             (goto-char (point-max))
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string= h "(my-model | -)")))))
+              (should (string= h "(my-model  -)")))))
       (quoth-test--cleanup))))
 
 ;;; 19. Input separator has prompt-id property
@@ -2485,7 +2485,7 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
             (setq-local quoth--usage-acc nil)
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
-              (should (string= h "(my-model | -)")))))
+              (should (string= h "(my-model  -)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-usage-after-accumulation ()
@@ -2508,7 +2508,7 @@ INPUT tokens only."
               ;; `%%' is the mode-line escape for a literal `%' (the raw
               ;; header-line-format string stores the escaped form).
               (should (string= h
-                               "(my-model | \u21918.9k \u219368 hc0.043 93%% | -)")))))
+                               "(my-model  \u21918.9k \u219368 hc0.043 93%%  -)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-dollars-when-currency-dollars ()
@@ -2526,7 +2526,7 @@ INPUT tokens only."
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
               (should (string= h
-                               "(my-model | \u21918.8k \u2193311 $0.0139 0%% | -)")))))
+                               "(my-model  \u21918.8k \u2193311 $0.0139 0%%  -)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-cache-percent-divides-input-only ()
@@ -2562,7 +2562,7 @@ The input-based percentage is 50%."
             (quoth--update-header-line)
             (let ((h (format "%s" header-line-format)))
               (should (string= h
-                               "(my-model | \u2191100 \u219320 hc0.010 | -)")))))
+                               "(my-model  \u2191100 \u219320 hc0.010  -)")))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/group-number-compact-formats ()
