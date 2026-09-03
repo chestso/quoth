@@ -79,7 +79,7 @@ quoth/                  # Package root
   quoth-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over quoth-openai)
   quoth-select.el      # Transient model selector (UI only; depends on the protocol, not quoth.el)
   quoth-process.el      # Process handler: PTY sessions, output buffering, exit/running reporting, stdin, cleanup
-  quoth-tools.el        # Local tool implementations: exec_command, write_stdin, write_file, read_file
+  quoth-tools.el        # Local tool implementations: exec_command, write_stdin, write_file, read_file, edit_file
   quoth-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
   quoth-json.el        # JSON decode/encode abstraction: native C parser when available, json.el fallback
   quoth-debug-tools.el  # On-demand debug commands (region dump, history reconstruction; not loaded by default)
@@ -389,6 +389,25 @@ resume …`); the resume offset is the first dropped line, so it
   file (hermes-agent issue #19798). An empty file returns the
   status header and `Output:` line only. Smaller slices go through
   `offset`/`limit`.
+- `edit_file` — replaces one literal `old_string` span in the file
+  at `path` with `new_string`, written verbatim through the shared
+  write choke point (`quoth-file--write-text`, the same
+  `utf-8-unix` byte-exact write `write_file` uses), so the round
+  trip from an un-numbered `read_file` is byte-exact and CRLF files
+  keep their CRs. Matching is literal `cl-search` over the whole
+  file text — never per-line, never regexp — so multiline spans are
+  first-class and embedded newlines are plain characters; on a CRLF
+  file the match is CR-sensitive and a normalized `old_string`
+  fails loudly, leaving the file untouched. `old_string` must occur
+  exactly once unless `replace_all` is true; zero occurrences and
+  ambiguous matches are error results naming the match lines, so a
+  stale model copy fails instead of clobbering the file. An empty
+  `new_string` deletes the span (a missing one is an error —
+  absence is not rejection); `old_string` = `new_string` is a
+  no-op error. The JSON string is the only quoting layer: no shell
+  is involved, so there is no shell escaping to get wrong. The
+  result reports the occurrence count, the match line numbers, and
+  a `-`/`+` mini-diff of the changed span.
 - `web_search` — queries the local SearXNG instance (`quoth-searxng.el`)
   asynchronously: `url-retrieve` plus a `quoth-searxng-timeout` timer
   that deletes the retrieval and delivers an error result; the cancel
@@ -440,7 +459,8 @@ argument parsing, and the execution policy — lives in
 `quoth-openai.el`; `quoth-tools.el` only implements the concrete tools
 and registers them at load. A registry entry takes a tool call and an
 `on-done` reporter, delivering `(RESULT . EXIT-OR-NIL)` exactly once —
-inline for immediate tools (`read_file`, `write_file`), from a window
+inline for immediate tools (`read_file`, `write_file`,
+`edit_file`), from a window
 timer or the session sentinel for process-backed ones — and returns a
 cancel thunk (abandon the wait) or nil.
 

@@ -2085,6 +2085,7 @@ SHELL-PATH is a shell binary path or name (nil means
     ("write_stdin" . "⌨️")
     ("write_file" . "✍️")
     ("read_file" . "📖")
+    ("edit_file" . "✂️")
     ("web_search" . "🔍"))
   "Alist mapping tool names to the emoji icon for their buffer header.")
 
@@ -2139,10 +2140,11 @@ on when the arg is present and not JSON false, off otherwise."
   "Return the display clauses for TOOL and its ARGS plist.
 Return a plist `(:inline CLAUSES :blocks BLOCKS)' where CLAUSES is the
 ordered list of inline scalar clauses for the header line (yield,
-shell, login, session, mode, overwrite, numbers, offset, limit, max,
-categories, engines) and BLOCKS is the ordered list of
+shell, login, session, mode, overwrite, numbers, offset, limit,
+replace_all, max, categories, engines) and BLOCKS is the ordered list of
 `(:label LABEL :value VALUE :fence FENCE)' plists for argument values
-rendered below the header (ran, in, wrote, query).
+rendered below the header (ran, in, wrote, query, old_string,
+new_string).
 A non-nil `:fence' forces the value into a fenced code block even when
 it is single-line.  Every parameter renders, with execution-side
 defaults filled in when the model omitted them, so the display shows
@@ -2198,6 +2200,22 @@ what the tool actually ran."
         (push (format "offset %d" (plist-get args :offset)) inline))
       (when (integerp (plist-get args :limit))
         (push (format "limit %d" (plist-get args :limit)) inline)))
+     ((string= tool "edit_file")
+      (when (stringp (plist-get args :path))
+        (push (list :label "path" :value (plist-get args :path)) blocks))
+      (when (stringp (plist-get args :workdir))
+        (push (list :label "in" :value (plist-get args :workdir)) blocks))
+      (when (stringp (plist-get args :old_string))
+        (push (list :label "old_string" :value (plist-get args :old_string)
+                    :fence t)
+              blocks))
+      (when (stringp (plist-get args :new_string))
+        (push (list :label "new_string" :value (plist-get args :new_string)
+                    :fence t)
+              blocks))
+      (when (and (plist-get args :replace_all)
+                 (not (eq (plist-get args :replace_all) :json-false)))
+        (push "replace_all yes" inline)))
      ((string= tool "web_search")
       (when (stringp (plist-get args :query))
         (push (list :label "query" :value (plist-get args :query)) blocks))

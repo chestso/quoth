@@ -906,6 +906,32 @@ extraction; argument blocks are display decoration."
             (should (string-match-p "path: /tmp/in.txt" content))))
       (quoth-test--cleanup))))
 
+(ert-deftest quoth-test/edit-file-tool-block-renders-fenced-spans ()
+  "An `edit_file' block renders path, fenced old/new spans, and the
+`replace_all' clause when requested."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (quoth--tool-block-insert
+           (list :name "edit_file" :id "call_1"
+                 :args-json (concat "{\"path\":\"/tmp/in.txt\","
+                                    "\"old_string\":\"old text\","
+                                    "\"new_string\":\"new text\\nline two\","
+                                    "\"replace_all\":true}")
+                 :result "ok"
+                 :exit 0)
+           quoth--prompt-id)
+          (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "\\*\\*✂️ edit_file\\*\\*" content))
+            (should (string-match-p "replace_all yes" content))
+            (should (string-match-p "path: /tmp/in.txt" content))
+            ;; Single-line spans are always fenced.
+            (should (string-match-p "old_string:\n\n```text\nold text" content))
+            ;; Multiline replacement renders as a fenced block.
+            (should (string-match-p
+                     "new_string:\n\n```text\nnew text\nline two" content))))
+      (quoth-test--cleanup))))
+
 (ert-deftest quoth-test/write-file-tool-block-renders-mode-and-overwrite ()
   "A `write_file' block renders `mode' (octal) and `overwrite no'.
 Every schema arg renders: `mode' appears as an octal permission clause
@@ -1025,6 +1051,265 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
   "The registry should map \"read_file\" to `quoth-read-file--exec'."
   (should (equal (cdr (assoc "read_file" quoth-openai-tool-registry))
                  #'quoth-read-file--exec)))
+
+(ert-deftest quoth-test/tool-registry-has-edit-file ()
+  "The registry should map \"edit_file\" to `quoth-edit-file--exec'."
+  (should (equal (cdr (assoc "edit_file" quoth-openai-tool-registry))
+                 #'quoth-edit-file--exec)))
+
+(ert-deftest quoth-test/edit-file-replaces-unique-occurrence ()
+  "`edit_file' replaces the one matched span and reports exit 0."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "one.txt" dir))
+               (_ (write-region "alpha\nbeta\ngamma\n" nil target))
+               (call (quoth-test--tool-call
+                      "edit_file"
+                      (quoth-test--args-json
+                       :path target :old_string "beta" :new_string "BETA")))
+               (result (quoth-test--sync-result
+                        #'quoth-edit-file--exec call)))
+          (should (string-match-p "Process exited with code 0" (car result)))
+          (should (= (cdr result) 0))
+          (with-temp-buffer
+            (insert-file-contents target)
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "alpha\nBETA\ngamma\n")))
+          ;; The result names the file, the count, and the match line.
+          (should (string-match-p "replaced 1 occurrence" (car result)))
+          (should (string-match-p "line 2" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-multiline-span ()
+  "A multiline `old_string' replaces the whole block."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "multi.txt" dir))
+               (_ (write-region "start\nmid1\nmid2\nend\n" nil target))
+               (call (quoth-test--tool-call
+                      "edit_file"
+                      (quoth-test--args-json
+                       :path target
+                       :old_string "mid1\nmid2"
+                       :new_string "single")))
+               (result (quoth-test--sync-result
+                        #'quoth-edit-file--exec call)))
+          (should (= (cdr result) 0))
+          (with-temp-buffer
+            (insert-file-contents target)
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "start\nsingle\nend\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-preserves-crlf-around-span ()
+  "A CRLF file keeps its CRs outside the replaced span."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "crlf.txt" dir))
+               (_ (write-region "one\r\ntwo\r\nthree\r\n" nil target))
+               (call (quoth-test--tool-call
+                      "edit_file"
+                      (quoth-test--args-json
+                       :path target :old_string "two" :new_string "2")))
+               (result (quoth-test--sync-result
+                        #'quoth-edit-file--exec call)))
+          (should (= (cdr result) 0))
+          (with-temp-buffer
+            (let ((coding-system-for-read 'binary))
+              (insert-file-contents target))
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "one\r\n2\r\nthree\r\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-crlf-span-crosses-line-ending ()
+  "An edit spanning a CRLF line ending keeps the CR bytes it is given."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "crlf2.txt" dir))
+               (_ (write-region "one\r\ntwo\r\n" nil target))
+               (call (quoth-test--tool-call
+                      "edit_file"
+                      (quoth-test--args-json
+                       :path target
+                       :old_string "one\r\ntwo"
+                       :new_string "1\r\n2")))
+               (result (quoth-test--sync-result
+                        #'quoth-edit-file--exec call)))
+          (should (= (cdr result) 0))
+          (with-temp-buffer
+            (let ((coding-system-for-read 'binary))
+              (insert-file-contents target))
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "1\r\n2\r\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-cr-normalized-old-string-fails ()
+  "On a CRLF file an `old_string' with CRs normalized away fails to match
+and leaves the file untouched."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "crlf3.txt" dir))
+               (_ (write-region "one\r\ntwo\r\n" nil target))
+               (call (quoth-test--tool-call
+                      "edit_file"
+                      (quoth-test--args-json
+                       :path target
+                       :old_string "one\ntwo"
+                       :new_string "x")))
+               (result (quoth-test--sync-result
+                        #'quoth-edit-file--exec call)))
+          (should (= (cdr result) -1))
+          (should (string-match-p "old_string not found" (car result)))
+          (with-temp-buffer
+            (let ((coding-system-for-read 'binary))
+              (insert-file-contents target))
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "one\r\ntwo\r\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-not-found-and-ambiguous ()
+  "Zero matches and multiple matches are error results; the ambiguous
+error names every match line."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "amb.txt" dir))
+               (_ (write-region "a\nneedle\nb\nneedle\nc\nneedle\n"
+                                nil target)))
+          (let ((result
+                 (quoth-test--sync-result
+                  #'quoth-edit-file--exec
+                  (quoth-test--tool-call
+                   "edit_file"
+                   (quoth-test--args-json
+                    :path target :old_string "missing" :new_string "x")))))
+            (should (= (cdr result) -1))
+            (should (string-match-p "old_string not found" (car result))))
+          (let ((result
+                 (quoth-test--sync-result
+                  #'quoth-edit-file--exec
+                  (quoth-test--tool-call
+                   "edit_file"
+                   (quoth-test--args-json
+                    :path target :old_string "needle" :new_string "x")))))
+            (should (= (cdr result) -1))
+            (should (string-match-p "occurs 3 times" (car result)))
+            (should (string-match-p "lines 2, 4, 6" (car result))))
+          ;; The file is untouched by both errors.
+          (with-temp-buffer
+            (insert-file-contents target)
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "a\nneedle\nb\nneedle\nc\nneedle\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-replace-all-replaces-every-site ()
+  "`replace_all' replaces every occurrence and reports the count."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "all.txt" dir))
+               (_ (write-region "x foo\ny foo\nz\n" nil target))
+               (call (quoth-test--tool-call
+                      "edit_file"
+                      (quoth-test--args-json
+                       :path target :old_string "foo" :new_string "bar"
+                       :replace_all t)))
+               (result (quoth-test--sync-result
+                        #'quoth-edit-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p "replaced 2 occurrences" (car result)))
+          (with-temp-buffer
+            (insert-file-contents target)
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "x bar\ny bar\nz\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-empty-new-string-deletes ()
+  "An empty `new_string' deletes the matched span."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((target (expand-file-name "del.txt" dir))
+               (_ (write-region "keep\ngone\nkeep\n" nil target))
+               (call (quoth-test--tool-call
+                      "edit_file"
+                      (quoth-test--args-json
+                       :path target :old_string "gone\n" :new_string "")))
+               (result (quoth-test--sync-result
+                        #'quoth-edit-file--exec call)))
+          (should (= (cdr result) 0))
+          (with-temp-buffer
+            (insert-file-contents target)
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "keep\nkeep\n"))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-validation-errors ()
+  "Missing/empty `old_string', missing `new_string', no-op edit, and a
+missing file deliver error results."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let ((call-fn
+               (lambda (&rest args)
+                 (quoth-test--sync-result
+                  #'quoth-edit-file--exec
+                  (quoth-test--tool-call
+                   "edit_file" (apply #'quoth-test--args-json args))))))
+          ;; Missing old_string.
+          (let ((result (apply call-fn (list :path "/tmp/x"
+                                             :new_string "y"))))
+            (should (= (cdr result) -1))
+            (should (string-match-p "Missing old_string" (car result))))
+          ;; Empty old_string.
+          (let ((result (apply call-fn (list :path "/tmp/x"
+                                             :old_string ""
+                                             :new_string "y"))))
+            (should (= (cdr result) -1))
+            (should (string-match-p "old_string is empty" (car result))))
+          ;; Missing new_string: absence is not rejection.
+          (let ((result (apply call-fn (list :path "/tmp/x"
+                                             :old_string "a"))))
+            (should (= (cdr result) -1))
+            (should (string-match-p "Missing new_string" (car result))))
+          ;; No-op edit.
+          (let ((result (apply call-fn (list :path "/tmp/x"
+                                             :old_string "a"
+                                             :new_string "a"))))
+            (should (= (cdr result) -1))
+            (should (string-match-p "no-op edit" (car result))))
+          ;; Missing file.
+          (let ((result (apply call-fn
+                               (list :path (expand-file-name
+                                            "nope.txt" dir)
+                                     :old_string "a" :new_string "b"))))
+            (should (= (cdr result) -1))
+            (should (string-match-p "Cannot read" (car result)))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/edit-file-relative-path-uses-workdir ()
+  "A relative `path' resolves against `workdir'."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((_ (write-region "a\nb\n" nil (expand-file-name "rel.txt" dir)))
+               (call (quoth-test--tool-call
+                      "edit_file"
+                      (quoth-test--args-json
+                       :path "rel.txt" :workdir dir
+                       :old_string "a" :new_string "A")))
+               (result (quoth-test--sync-result
+                        #'quoth-edit-file--exec call)))
+          (should (= (cdr result) 0))
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name "rel.txt" dir))
+            (should (string= (buffer-substring-no-properties (point-min)
+                                                             (point-max))
+                             "A\nb\n"))))
+      (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/tool-registry-has-write-file ()
   "The registry should map \"write_file\" to `quoth-write-file--exec'."

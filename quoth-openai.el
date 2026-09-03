@@ -654,8 +654,9 @@ default), the request announces the `bash' tool and
 
 (defun quoth--openai-tool-schema ()
   "Return the tool schema vector for all registered tools.
-Includes `exec_command', `write_stdin', `write_file', `read_file', and
-`web_search' (when `quoth-searxng-enabled' is non-nil)."
+Includes `exec_command', `write_stdin', `write_file', `read_file',
+`edit_file', and `web_search' (when `quoth-searxng-enabled' is
+non-nil)."
   (let ((exec-props
          `((cmd . ((type . "string")
                    (description . "Shell command to execute")))
@@ -696,6 +697,17 @@ Includes `exec_command', `write_stdin', `write_file', `read_file', and
                       (description . "1-based first line to return. The output's line numbers start at offset, not 1, so references stay meaningful. An offset past the last line is an error; the output otherwise reuses the file's true line numbers.")))
            (limit . ((type . "integer")
                      (description . "Maximum lines returned. Clamped silently to EOF; 0 or negative is an error. Pairs with offset to paginate a file cheaply when only a slice is needed.")))))
+        (edit-file-props
+         `((path . ((type . "string")
+                    (description . "Target path, absolute or relative to workdir; tilde is expanded. The file must already exist.")))
+           (old_string . ((type . "string")
+                          (description . "The exact text to replace, matched byte-exact against the whole file (not per line, so embedded newlines are literal). Must occur exactly once unless replace_all is true. Copy it from an un-numbered read_file - a leaked cat -n prefix makes the match fail. On a CRLF file the match is CR-sensitive: the old_string must carry the same \\r bytes read_file returned.")))
+           (new_string . ((type . "string")
+                          (description . "The replacement text, written verbatim (multiline is fine). An empty string deletes the matched text.")))
+           (workdir . ((type . "string")
+                       (description . "Base directory for a relative path (defaults to the buffer's project root).")))
+           (replace_all . ((type . "boolean")
+                           (description . "When true, replace every occurrence of old_string. Defaults to false: exactly one occurrence is required.")))))
         (search-props
          `((query . ((type . "string")
                      (description . "Search query")))
@@ -728,7 +740,13 @@ Includes `exec_command', `write_stdin', `write_file', `read_file', and
                                  (description . "Read a file's text and return its content (or a window of it) under a byte cap. Un-numbered reads are byte-exact (a CRLF on disk stays a CRLF) and suited to read->edit->write_file round trips. Set line_numbers to prefix each line with its 1-based number in cat -n style when you need to refer to lines by number. Use offset and limit to paginate cheaply. Errors on missing/unreadable paths and non-UTF-8 content.")
                                  (parameters . ((type . "object")
                                                 (properties . ,read-file-props)
-                                                (required . ["path"]))))))]))
+                                                (required . ["path"]))))))
+                   ((type . "function")
+                    (function . ((name . "edit_file")
+                                 (description . "Replace one exact text span in a file with new text, byte-exact and verbatim - no shell escaping involved. old_string must match the file exactly and occur once (or set replace_all); read the file with read_file (line_numbers off) first and copy the text. Errors name the match lines so a stale copy fails loudly instead of corrupting the file. Multiline spans and CRLF files are supported (the match is CR-sensitive on CRLF files).")
+                                 (parameters . ((type . "object")
+                                                (properties . ,edit-file-props)
+                                                (required . ["path" "old_string" "new_string"]))))))]))
       (when (bound-and-true-p quoth-searxng-enabled)
         (setq tools
               (vconcat tools

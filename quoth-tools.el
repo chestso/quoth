@@ -367,6 +367,23 @@ offending argument."
                raw))
       raw)))
 
+(defun quoth-file--write-text (path content)
+  "Write CONTENT byte-exact to the existing file at PATH.
+The shared write choke point for `write_file' and `edit_file':
+`utf-8-unix' pins the write coding so the write stays byte-exact for
+text.  CONTENT is a multibyte string (decoded from JSON, or spliced
+from `quoth-file--read-content') whose line endings are preserved
+byte-exact; a `\\r\\n' on disk is a CR and an LF character in that
+string.  Writing under the `unix' EOL is the identity: `\\n' -> LF
+and `\\r' is left untouched, so a byte-exact round trip survives.
+A bare `utf-8' or a platform-default EOL could translate `\\n' to
+`\\r\\n' (or vice versa) and corrupt the file.  PATH must already
+exist: rename-file cannot replace an existing file on all platforms,
+so the write is direct; atomicity is a bonus here, not the
+requirement byte-exactness is."
+  (let ((coding-system-for-write 'utf-8-unix))
+    (write-region content nil path)))
+
 (defun quoth-write-file--exec (tool-call on-done)
   "Execute TOOL-CALL as `write_file', reporting to ON-DONE inline.
 Writes the parsed `content' arg byte-exact to `path', creating missing
@@ -399,23 +416,12 @@ thunk)."
               (error "File exists: %s" path))
             ;; Create parent directories, ignoring failure when present.
             (make-directory dir t)
-            ;; `utf-8-unix' pins the write coding so the write stays
-            ;; byte-exact for text.  Content always arrives as a multibyte
-            ;; string (decoded from JSON) whose line endings were preserved
-            ;; by `quoth-file--read-content'; a `\r\n' on disk is a CR and
-            ;; an LF character in that string.  Writing under the `unix'
-            ;; EOL is the identity: `\n' -> LF and `\r' is left untouched,
-            ;; so a byte-exact round trip survives.  A bare `utf-8' or a
-            ;; platform-default EOL could translate `\n' to `\r\n' (or
-            ;; vice versa) and corrupt the file.
-            (let ((coding-system-for-write 'utf-8-unix))
-              (if (file-exists-p path)
-                  ;; Overwrite: rename-file cannot replace on all
-                  ;; platforms, so write directly.  Atomicity is a bonus
-                  ;; here, not the requirement byte-exactness is.
-                  (write-region content nil path)
-                ;; Fresh file: write a temp sibling, then atomically
-                ;; rename it into place.
+            (if (file-exists-p path)
+                (quoth-file--write-text path content)
+              ;; Fresh file: write a temp sibling, then atomically
+              ;; rename it into place.  `utf-8-unix' applies to the temp
+              ;; write too, so the renamed file is byte-exact.
+              (let ((coding-system-for-write 'utf-8-unix))
                 (let ((tmp (make-temp-file
                             (concat (file-name-directory path)
                                     (file-name-nondirectory path) ".tmp"))))
@@ -434,6 +440,181 @@ thunk)."
                          (format "Wrote %s" path) 0)))
               (funcall on-done (cons text 0))
               nil))
+        (error
+         (funcall on-done (quoth-openai-tool-error-result
+                           (error-message-string err)))
+         nil))))))
+
+;;; 5b. edit_file
+
+;; `edit_file' splices text: the model supplies an `old_string' that
+;; must match the file byte-exact and a `new_string' written verbatim.
+;; The JSON string is the only quoting layer — no shell, so no shell
+;; escaping.  Matching is literal over the whole file text (never
+;; per-line, never regexp), so multiline spans are first-class: an
+;; embedded newline in `old_string' is just another character, and on
+;; a CRLF file the match is CR-sensitive (a normalized `\n' fails
+;; loudly, leaving the file untouched — the same safety property the
+;; unique-match requirement gives).
+
+(defun quoth-edit-file--find-all (text needle)
+  "Return the 0-based start indices of every literal NEEDLE in TEXT.
+Empty NEEDLE returns nil: an empty search string matches everywhere
+and means nothing."
+  (when (> (length needle) 0)
+    (let ((hits nil)
+          (i 0))
+      (while (< i (length text))
+        (let ((hit (cl-search needle text :start2 i)))
+          (if hit
+              (progn
+                (push hit hits)
+                (setq i (+ hit (length needle))))
+            (setq i (length text)))))
+      (nreverse hits))))
+
+(defun quoth-edit-file--line-at (text pos)
+  "Return the 1-based line number of the 0-based offset POS in TEXT.
+Lines split on LF only (the `quoth-file--lines' convention), so a
+CRLF file's CR stays glued to its content line."
+  (1+ (cl-count ?\n (substring text 0 pos))))
+
+(defun quoth-edit-file--replace-all (text old new)
+  "Return TEXT with every literal OLD replaced by NEW, and the count."
+  (let ((hits (quoth-edit-file--find-all text old)))
+    (cons (if hits
+              (let ((parts nil)
+                    (prev 0))
+                (dolist (hit hits)
+                  (push (substring text prev hit) parts)
+                  (push new parts)
+                  (setq prev (+ hit (length old))))
+                (push (substring text prev) parts)
+                (apply #'concat (nreverse parts)))
+            text)
+          (length hits))))
+
+(defun quoth-edit-file--context-diff (old new)
+  "Return a mini-diff of the replaced span OLD -> NEW.
+`-'-prefixed lines for the old span, `+'-prefixed lines for the new
+one; the match line numbers live in the status line above it.  The
+span is short by construction (one `old_string'), so no truncation
+here; the caller's output budget applies to the whole result."
+  (let* ((split (lambda (s)
+                  (if (string-empty-p s)
+                      nil
+                    (split-string
+                     (if (string-suffix-p "\n" s)
+                         (substring s 0 -1)
+                       s)
+                     "\n"))))
+         (old-lines (funcall split old))
+         (new-lines (funcall split new))
+         (body (concat
+                (mapconcat (lambda (l) (concat "-" l))
+                           old-lines "\n")
+                (unless (or (null old-lines) (null new-lines)) "\n")
+                (mapconcat (lambda (l) (concat "+" l))
+                           new-lines "\n"))))
+    (if (string-empty-p body)
+        "(empty)"
+      body)))
+
+(defun quoth-edit-file--exec (tool-call on-done)
+  "Execute TOOL-CALL as `edit_file', reporting to ON-DONE inline.
+Replaces one literal `old_string' occurrence in the file at `path'
+with `new_string', written verbatim through the shared write choke
+point (`quoth-file--write-text'), so the round trip from an
+un-numbered `read_file' is byte-exact and CRLF files keep their CRs.
+Multiline spans are first-class: matching runs over the whole file
+text, never per line, so embedded newlines are literal characters.
+`old_string' must occur exactly once unless `replace_all' is true;
+zero occurrences and ambiguous matches are error results naming the
+match lines, so a stale copy fails loudly instead of clobbering the
+file.  `new_string' may be empty (deletion); a missing `new_string'
+is an error — absence is not rejection.  A missing path, an empty or
+absent `old_string', a no-op edit (`old_string' = `new_string'), an
+unwritable target, or non-UTF-8 content delivers an error result
+immediately.  An immediate tool: returns nil (no cancel thunk)."
+  (let* ((args (quoth-openai-tool-call-args tool-call))
+         (path (quoth-file--resolve-path args))
+         (old (plist-get args :old_string))
+         (new (plist-get args :new_string)))
+    (cond
+     ((not path)
+      (funcall on-done (quoth-openai-tool-error-result
+                        "Missing or empty path"))
+      nil)
+     ((not (stringp old))
+      (funcall on-done (quoth-openai-tool-error-result
+                        "Missing old_string"))
+      nil)
+     ((string-empty-p old)
+      (funcall on-done (quoth-openai-tool-error-result
+                        "old_string is empty: an empty search string \
+matches everywhere and means nothing"))
+      nil)
+     ((not (stringp new))
+      (funcall on-done (quoth-openai-tool-error-result
+                        "Missing new_string (use an empty string to \
+delete the matched text)"))
+      nil)
+     ((string= old new)
+      (funcall on-done (quoth-openai-tool-error-result
+                        (format "old_string and new_string are \
+identical (no-op edit)")))
+      nil)
+     (t
+      (condition-case err
+          (progn
+            (unless (file-readable-p path)
+              (error "Cannot read %s" path))
+            (unless (file-writable-p path)
+              (error "Cannot write %s" path))
+            (let* ((text (quoth-file--read-content path))
+                   (hits (quoth-edit-file--find-all text old))
+                   (replace-all (and (plist-get args :replace_all)
+                                     (not (eq (plist-get args :replace_all)
+                                              :json-false)))))
+              (cond
+               ((null hits)
+                (let ((first-line
+                       (or (car (split-string old "\n" t)) "")))
+                  (error "old_string not found in %s (starts %S); \
+read the file fresh before editing"
+                         path (substring first-line 0
+                                         (min (length first-line) 60)))))
+               ((and (> (length hits) 1) (not replace-all))
+                (error "old_string occurs %d times (lines %s); \
+include surrounding lines to make it unique, or set replace_all"
+                       (length hits)
+                       (mapconcat
+                        (lambda (i)
+                          (number-to-string
+                           (quoth-edit-file--line-at text i)))
+                        hits ", ")))
+               (t
+                (let* ((spliced (quoth-edit-file--replace-all
+                                 text old new))
+                       (count (cdr spliced)))
+                  (quoth-file--write-text path (car spliced))
+                  (funcall
+                   on-done
+                   (cons
+                    (quoth-exec--format-result
+                     (format
+                      "Edited %s: replaced %d occurrence%s at line%s %s\n%s"
+                      path count (if (= count 1) "" "s")
+                      (if (= count 1) "" "s")
+                      (mapconcat
+                       (lambda (i)
+                         (number-to-string
+                          (quoth-edit-file--line-at text i)))
+                       hits ", ")
+                      (quoth-edit-file--context-diff old new))
+                     0)
+                    0))
+                  nil)))))
         (error
          (funcall on-done (quoth-openai-tool-error-result
                            (error-message-string err)))
@@ -765,6 +946,8 @@ immediately.  An immediate tool: returns nil (no cancel thunk)."
 (push (cons "write_file" #'quoth-write-file--exec)
       quoth-openai-tool-registry)
 (push (cons "read_file" #'quoth-read-file--exec)
+      quoth-openai-tool-registry)
+(push (cons "edit_file" #'quoth-edit-file--exec)
       quoth-openai-tool-registry)
 
 (provide 'quoth-tools)

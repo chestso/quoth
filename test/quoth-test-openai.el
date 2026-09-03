@@ -107,7 +107,8 @@ The default is non-nil, so `tool_choice' is `auto'."
         (should (member "exec_command" names))
         (should (member "write_stdin" names))
         (should (member "write_file" names))
-        (should (member "read_file" names))))))
+        (should (member "read_file" names))
+        (should (member "edit_file" names))))))
 
 (ert-deftest quoth-test/openai-compose-no-tools-when-disabled ()
   "With `quoth-tools-enabled' nil the body has no `tools' or `tool_choice'."
@@ -123,7 +124,45 @@ The default is non-nil, so `tool_choice' is `auto'."
                           (cdr (assq 'name (cdr (assq 'function tool)))))
                         (append schema nil))))
     (should (member "read_file" names))
-    (should (member "write_file" names))))
+    (should (member "write_file" names))
+    (should (member "edit_file" names))))
+
+(defun quoth-test--edit-file-props ()
+  "Return the properties alist of the `edit_file' schema entry."
+  (let* ((schema (quoth--openai-tool-schema))
+         (entry (cl-find-if
+                 (lambda (tool)
+                   (string= (cdr (assq 'name (cdr (assq 'function tool))))
+                            "edit_file"))
+                 (append schema nil))))
+    (cdr (assq 'properties
+               (cdr (assq 'parameters
+                          (cdr (assq 'function entry))))))))
+
+(ert-deftest quoth-test/openai-schema-edit-file-args ()
+  "The `edit_file' schema advertises old_string, new_string,
+replace_all, and workdir with the unique-match and CR-sensitivity
+teaching in the descriptions."
+  (let ((props (quoth-test--edit-file-props)))
+    (should (assq 'old_string props))
+    (should (equal (cdr (assq 'type (cdr (assq 'old_string props))))
+                   "string"))
+    (should (string-match-p "exactly once"
+                            (cdr (assq 'description
+                                       (cdr (assq 'old_string props))))))
+    (should (string-match-p "CR-sensitive"
+                            (cdr (assq 'description
+                                       (cdr (assq 'old_string props))))))
+    (should (assq 'new_string props))
+    (should (equal (cdr (assq 'type (cdr (assq 'new_string props))))
+                   "string"))
+    (should (string-match-p "empty string deletes"
+                            (cdr (assq 'description
+                                       (cdr (assq 'new_string props))))))
+    (should (assq 'replace_all props))
+    (should (equal (cdr (assq 'type (cdr (assq 'replace_all props))))
+                   "boolean"))
+    (should (assq 'workdir props))))
 
 (defun quoth-test--read-file-props ()
   "Return the properties alist of the `read_file' schema entry."
