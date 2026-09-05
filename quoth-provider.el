@@ -241,7 +241,7 @@ background refresh (stale-while-revalidate)."
 
 (defcustom quoth-provider-models-prefetch t
   "Non-nil prefetches the model catalog when a chat buffer initializes.
-Keeps the selector (C-c c m) warm for the first open."
+Keeps the selector (C-c \" m) warm for the first open."
   :type 'boolean
   :group 'quoth)
 

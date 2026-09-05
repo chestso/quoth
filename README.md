@@ -35,7 +35,6 @@ Both carry version tags (`v0.9.0`). A plain clone gets the latest commit, or pin
 (use-package quoth
   :vc (:url "https://github.com/chestso/quoth.git"
         :branch "v0.9.0")            ; omit :branch for latest
-  :bind ("C-c c" . quoth)
   :hook (prog-mode . quoth-minor-mode))
 ```
 
@@ -45,7 +44,6 @@ Both carry version tags (`v0.9.0`). A plain clone gets the latest commit, or pin
 (use-package quoth
   :straight (quoth :type git :host github :repo "chestso/quoth"
                    :branch "v0.9.0")   ; omit :branch for latest
-  :bind ("C-c c" . quoth)
   :hook (prog-mode . quoth-minor-mode))
 ```
 
@@ -60,7 +58,6 @@ Then load with `load-path`:
 ```elisp
 (use-package quoth
   :load-path "/path/to/quoth"
-  :bind ("C-c c" . quoth)
   :hook (prog-mode . quoth-minor-mode))
 ```
 
@@ -143,22 +140,22 @@ live in [ARCHITECTURE.md](ARCHITECTURE.md).
 ### Quoth buffer (chat mode)
 
 - `M-x quoth` — open the quoth interaction buffer for the current project (or directory); each project gets its own buffer, named after the project root (e.g. `*quoth:quoth*`)
-- Type a prompt and press `C-c c s` (or `C-return` in graphical Emacs and in terminals that report it, e.g. portty/xterm) to send it to the active provider; `RET` (or `C-j`) inserts a newline for multiline prompts
+- Type a prompt and press `C-c " s` (or `C-return` in graphical Emacs and in terminals that report it, e.g. portty/xterm) to send it to the active provider; `RET` (or `C-j`) inserts a newline for multiline prompts
 - `M-p` / `M-n` — navigate input history (previous/next input)
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point; otherwise normal TAB
-- `C-c c m` — open the model selector (choose a model; toggle thinking, set reasoning effort, or reset to provider defaults)
-- `C-c c i` — interrupt the running quoth process
-- `C-c c k` — clear the quoth buffer (also starts a fresh session and rotates the session UUID)
-- `C-c c r` — expand/collapse the reasoning fold at point
-- `C-c c a` — attach an image file to the prompt (see [Image Attachments](#image-attachments))
-- `C-c c t` — toggle the image link at point between attachment and plain markdown
+- `C-c " m` — open the model selector (choose a model; toggle thinking, set reasoning effort, or reset to provider defaults)
+- `C-c " i` — interrupt the running quoth process
+- `C-c " k` — clear the quoth buffer (also starts a fresh session and rotates the session UUID)
+- `C-c " r` — expand/collapse the reasoning fold at point
+- `C-c " a` — attach an image file to the prompt (see [Image Attachments](#image-attachments))
+- `C-c " t` — toggle the image link at point between attachment and plain markdown
 
 ### Per-Project Buffers
 
 Each project (or directory, when not in a project) is bound to its own quoth buffer:
 
 - Buffer names are derived from the project root, e.g. `*quoth:myproject*`. When two distinct roots share a basename, a numeric suffix keeps them separate: `*quoth:myproject(2)*`.
-- `M-x quoth` and the `quoth-minor-mode` commands (`C-c C-s`, `C-c C-b`, `C-c C-p`, `C-c C-c`) always target the buffer for the current buffer's project or directory, so context and prompts never leak between projects.
+- `M-x quoth` and the `quoth-minor-mode` commands (`C-c " f`, `C-c " b`, `C-c " p`, `C-c " "`) always target the buffer for the current buffer's project or directory, so context and prompts never leak between projects.
 - Follow-up prompts in a project's buffer continue that project's session (session continuity via the provider's session id); the input history ring is also per project buffer.
 
 ### Source buffers (minor mode)
@@ -177,19 +174,58 @@ Or enable it automatically in programming modes:
 
 Keybindings (active when `quoth-minor-mode` is enabled):
 
-- `C-c C-c` — open/switch to the quoth buffer
-- `C-c C-s` — insert the active region as a markdown fenced code block with a context header
-- `C-c C-b` — insert the entire buffer as a markdown fenced code block
-- `C-c C-p` — insert the buffer's file path as context
-- `C-c C-i` — attach the buffer's image file to the prompt (see [Image Attachments](#image-attachments))
+- `C-c " "` — open/switch to the quoth buffer
+- `C-c " f` — insert the active region as a markdown fenced code block with a context header
+- `C-c " b` — insert the entire buffer as a markdown fenced code block
+- `C-c " p` — insert the buffer's file path as context
+- `C-c " a` — attach the buffer's image file to the prompt (see [Image Attachments](#image-attachments))
+
+### Customizing the keybindings
+
+Both modes share the `C-c "` prefix, the punctuation space the Emacs
+key-binding conventions allocate to minor modes (it is unbound in
+text-mode, markdown-mode, and the common programming modes). The
+command letters live in two keymap variables, one per mode:
+
+- `quoth-chat-command-map` — chat-buffer commands (`s` send, `i`
+  interrupt, `k` clear, `r` reasoning fold, `m` model selector, `a`
+  attach image, `t` toggle image link)
+- `quoth-minor-command-map` — source-buffer commands (`f` selection,
+  `b` buffer, `p` file path, `a` attach image, `"` open the quoth
+  buffer)
+
+Each mode map hangs its command map under the prefix, so moving the
+whole prefix is one re-parenting pair per mode. To use `C-c q`
+everywhere instead, put this in your init after quoth loads:
+
+```elisp
+(with-eval-after-load 'quoth
+  ;; Chat buffer: C-c q s, C-c q i, ...
+  (define-key quoth-chat-mode-map (kbd "C-c q") quoth-chat-command-map)
+  (define-key quoth-chat-mode-map (kbd "C-c \"") nil)
+  ;; Source buffers: C-c q f, C-c q b, ... and C-c q q opens the buffer.
+  (define-key quoth-minor-mode-map (kbd "C-c q") quoth-minor-command-map)
+  (define-key quoth-minor-mode-map (kbd "C-c \"") nil))
+```
+
+Rebinding works live, including in buffers where the modes are already
+active. Single keys can be rebound the usual way, e.g.:
+
+```elisp
+(define-key quoth-chat-command-map (kbd "S") #'quoth-send-input)
+```
+
+One caveat: org-mode binds `C-c " a` and `C-c " g` for table plotting,
+so pick a different prefix if you enable `quoth-minor-mode` in org
+buffers.
 
 ## Inserting Context
 
 Insert context from a source buffer with:
 
-- `C-c C-s` (`quoth-insert-selection`) — the active region
-- `C-c C-b` (`quoth-insert-buffer`) — the entire buffer
-- `C-c C-p` (`quoth-insert-filepath`) — the file path as a link; with a
+- `C-c " f` (`quoth-insert-selection`) — the active region
+- `C-c " b` (`quoth-insert-buffer`) — the entire buffer
+- `C-c " p` (`quoth-insert-filepath`) — the file path as a link; with a
   prefix arg the same link is inserted as plain text without wire
   attachment
 
@@ -198,7 +234,7 @@ Inserted content is formatted as a markdown fenced code block with a
 project root); `quoth-insert-filepath` inserts a `[relpath](relpath)`
 link instead. It is appended as plain user input, so it is sent as part
 of the prompt — there is no separate attachment tracking. Image files
-are the exception: `C-c C-p` on an image buffer inserts the
+are the exception: `C-c " p` on an image buffer inserts the
 [Image Attachments](#image-attachments) link instead of the plain
 path link.
 
@@ -207,11 +243,11 @@ path link.
 Attach an image (PNG, JPEG, GIF, or WebP — by extension or magic
 bytes) to a prompt and the model sees the pixels:
 
-- `C-c c a` (`quoth-attach-image`) in the chat buffer, or
-  `C-c C-i` in a source buffer visiting the image — picks a file,
+- `C-c " a` (`quoth-attach-image`) in the chat buffer, or
+  `C-c " a` in a source buffer visiting the image — picks a file,
   inserts a `![name](path)` link as user input, and marks it for wire
   attachment.
-- `C-c c t` (`quoth-toggle-image-attach`) on a link flips it between
+- `C-c " t` (`quoth-toggle-image-attach`) on a link flips it between
   attachment (the model sees the image) and plain markdown (the model
   reads the path as text). The buffer looks identical either way;
   only the wire behavior changes.
@@ -226,7 +262,7 @@ note naming the cap; an unreadable file degrades to a text
 placeholder the same way. When the model catalog positively knows the
 active model cannot see images (e.g. the deepseek and llama families),
 attaching still inserts the link and a warning note — the image is
-sent but ignored; switch to a vision model with `C-c c m`.
+sent but ignored; switch to a vision model with `C-c " m`.
 
 The model can look at images it finds on its own: an image-aware
 `read_file` returns the same `![name](path)` link as its result, and
@@ -257,7 +293,7 @@ final answer.
 
 ### Model selection and persistence
 
-`C-c c m` opens a transient selector: pick a model from the active
+`C-c " m` opens a transient selector: pick a model from the active
 provider's catalog, toggle thinking on/off, set a reasoning-effort
 level, or use `d` to reset the per-session attributes to the provider
 defaults. The catalog is fetched live from the provider, so prices and

@@ -458,16 +458,18 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
     (define-key map (kbd "a") #'quoth-attach-image)
     (define-key map (kbd "t") #'quoth-toggle-image-attach)
     map)
-  "Keymap under `C-c c' for quoth chat-buffer commands.")
+  "Letter-only keymap for `quoth-chat-mode' commands.
+It hangs under the `C-c \"' prefix in `quoth-chat-mode-map'; rebind or
+re-parent it there to move the whole chat prefix.")
 
 (defvar quoth-chat-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "TAB") #'quoth--reasoning-tab)
     ;; `C-return' is the main send binding in graphical Emacs and on
     ;; terminals that report modifyOtherKeys/kitty CSI-u (e.g. portty).
-    ;; `C-c c s' remains the portable send binding.
+    ;; `C-c \" s' remains the portable send binding.
     (define-key map (kbd "<C-return>") #'quoth-send-input)
-    (define-key map (kbd "C-c c") quoth-chat-command-map)
+    (define-key map (kbd "C-c \"") quoth-chat-command-map)
     (define-key map (kbd "M-p") #'quoth--input-previous)
     (define-key map (kbd "M-n") #'quoth--input-next)
     map)
@@ -1091,7 +1093,7 @@ block)."
             nil)
     (quoth--insert-system-note
      (format "> **%s attached, but the current model (%s) cannot see images.**
-Switch with C-c c m."
+Switch with C-c \" m."
              name (or (quoth--image-model-name) "the active model"))
      :kind 'error
      :hint "The image will be sent but the model will ignore it.")))
@@ -1142,7 +1144,7 @@ attachment; it is sent as a text placeholder." name)
 The attached image(s) will be sent but ignored."
                  (or (quoth--image-model-name) "the active model"))
          :kind 'user
-         :hint "Switch to a vision model with C-c c m."))
+         :hint "Switch to a vision model with C-c \" m."))
       content)))
 
 (defun quoth--insert-image-link (file &optional attach)
@@ -1586,7 +1588,7 @@ the name is not found."
       ;; Mark initialized only after mode setup so the flag is not wiped
       ;; by the parent mode (which calls kill-all-local-variables).
       (setq-local quoth--initialized t)
-      ;; Prefetch the model catalog so the selector (C-c c m) is warm,
+      ;; Prefetch the model catalog so the selector (C-c \" m) is warm,
       ;; and the staged system prompt so the first send is a cache hit.
       ;; Guarded: a failed prefetch must never block buffer creation.
       (ignore-errors
@@ -2962,7 +2964,7 @@ from the buffer."
   "Send the current prompt to the provider."
   (interactive)
   (when (quoth--busy-p)
-    (user-error "Quoth is still running; interrupt with C-c c i"))
+    (user-error "Quoth is still running; interrupt with C-c \" i"))
   (let* ((input-start (or (when (and quoth--input-start-marker
                                      (markerp quoth--input-start-marker))
                             (marker-position quoth--input-start-marker))
@@ -3163,13 +3165,21 @@ Creates a buffer if none exists, switches to it, and prepares it for input."
 
 ;;; Minor mode
 
+(defvar quoth-minor-command-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "f") #'quoth-insert-selection)
+    (define-key map (kbd "b") #'quoth-insert-buffer)
+    (define-key map (kbd "p") #'quoth-insert-filepath)
+    (define-key map (kbd "a") #'quoth-attach-image)
+    (define-key map (kbd "\"") #'quoth)
+    map)
+  "Letter-only keymap for `quoth-minor-mode' commands.
+It hangs under the `C-c \"' prefix in `quoth-minor-mode-map'; rebind or
+re-parent it there to move the whole source-buffer prefix.")
+
 (defvar quoth-minor-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-s") #'quoth-insert-selection)
-    (define-key map (kbd "C-c C-b") #'quoth-insert-buffer)
-    (define-key map (kbd "C-c C-p") #'quoth-insert-filepath)
-    (define-key map (kbd "C-c C-i") #'quoth-attach-image)
-    (define-key map (kbd "C-c C-c") #'quoth)
+    (define-key map (kbd "C-c \"") quoth-minor-command-map)
     map)
   "Keymap for `quoth-minor-mode'.")
 
@@ -3177,9 +3187,12 @@ Creates a buffer if none exists, switches to it, and prepares it for input."
 (define-minor-mode quoth-minor-mode
   "Minor mode for sending buffer content to the quoth provider.
 
-When enabled, provides keybindings under the `C-c C-' prefix for
+When enabled, provides keybindings under the `C-c \"' prefix for
 sending selections, whole buffers, and file paths to the Quoth
-interaction buffer.
+interaction buffer.  The prefix lives in the minor-mode punctuation
+space of the Emacs key-binding conventions; move it by re-parenting
+`quoth-minor-command-map' under a different key in
+`quoth-minor-mode-map'.
 
 \\{quoth-minor-mode-map}"
   :lighter " Quoth"

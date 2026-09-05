@@ -92,13 +92,20 @@ Context insertion does not touch the transport."
   (should (fboundp 'quoth-minor-mode)))
 
 (ert-deftest quoth-test/minor-mode-keymap-has-bindings ()
-  "Quoth-minor-mode-map should have the expected keybindings."
-  (let ((map (symbol-value 'quoth-minor-mode-map)))
+  "Quoth-minor-mode-map should have the expected keybindings.
+The command letters live in `quoth-minor-command-map', hung under the
+`C-c \"' prefix; a sparse keymap binds nothing else, so major-mode
+sequences (markdown-mode's `C-c C-*' bindings among them) are never
+shadowed."
+  (let ((map (symbol-value 'quoth-minor-mode-map))
+        (cmd (symbol-value 'quoth-minor-command-map)))
     (should (keymapp map))
-    (should (eq (lookup-key map (kbd "C-c C-s")) #'quoth-insert-selection))
-    (should (eq (lookup-key map (kbd "C-c C-b")) #'quoth-insert-buffer))
-    (should (eq (lookup-key map (kbd "C-c C-p")) #'quoth-insert-filepath))
-    (should (eq (lookup-key map (kbd "C-c C-c")) #'quoth))))
+    (should (eq (lookup-key map (kbd "C-c \"")) cmd))
+    (should (eq (lookup-key cmd (kbd "f")) #'quoth-insert-selection))
+    (should (eq (lookup-key cmd (kbd "b")) #'quoth-insert-buffer))
+    (should (eq (lookup-key cmd (kbd "p")) #'quoth-insert-filepath))
+    (should (eq (lookup-key cmd (kbd "a")) #'quoth-attach-image))
+    (should (eq (lookup-key cmd (kbd "\"")) #'quoth))))
 
 (ert-deftest quoth-test/minor-mode-toggle ()
   "Quoth-minor-mode should toggle on and off in a source buffer."
@@ -219,7 +226,7 @@ Context insertion does not touch the transport."
           (forward-word)
           (quoth-minor-mode 1)
           ;; Verify the keybinding resolves to the right command
-          (let ((binding (key-binding (kbd "C-c C-s"))))
+          (let ((binding (key-binding (kbd "C-c \" f"))))
             (should (eq binding #'quoth-insert-selection)))
           ;; Call the command directly
           (call-interactively #'quoth-insert-selection)
@@ -432,31 +439,31 @@ It sets quoth-region-type 'user."
 
 (ert-deftest quoth-test/chat-mode-has-keymap ()
   "Quoth-chat-mode-map should have the expected keybindings.
-All commands live under the `C-c c' prefix so they do not conflict
-with markdown-mode's `C-c C-*' bindings."
+All chat commands live in `quoth-chat-command-map', hung under the
+`C-c \"' prefix; the mode map also binds the fold TAB, the send keys,
+and the input history keys."
   (let ((map (symbol-value 'quoth-chat-mode-map))
         (cmd (symbol-value 'quoth-chat-command-map)))
     (should (keymapp map))
-    (should (eq (lookup-key map (kbd "C-c c")) cmd))
+    (should (eq (lookup-key map (kbd "C-c \"")) cmd))
     (should (eq (lookup-key cmd (kbd "s")) #'quoth-send-input))
     (should (eq (lookup-key cmd (kbd "i")) #'quoth-interrupt))
     (should (eq (lookup-key cmd (kbd "k")) #'quoth-clear-buffer))
-    ;; markdown-mode's C-c C-* bindings must not be shadowed.
-    (should-not (lookup-key map (kbd "C-c C-c")))
-    (should-not (lookup-key map (kbd "C-c C-k")))
-    (should-not (lookup-key map (kbd "C-c C-s")))
-    (should-not (lookup-key map (kbd "C-c C-i")))
+    (should (eq (lookup-key cmd (kbd "r")) #'quoth-reasoning-toggle))
+    (should (eq (lookup-key cmd (kbd "m")) #'quoth-select-model-menu))
+    (should (eq (lookup-key cmd (kbd "a")) #'quoth-attach-image))
+    (should (eq (lookup-key cmd (kbd "t")) #'quoth-toggle-image-attach))
     (should (eq (lookup-key map (kbd "TAB")) #'quoth--reasoning-tab))
     (should (eq (lookup-key map (kbd "<C-return>")) #'quoth-send-input))
     (should (eq (lookup-key map (kbd "M-p")) #'quoth--input-previous))
     (should (eq (lookup-key map (kbd "M-n")) #'quoth--input-next))))
 
-(ert-deftest quoth-test/chat-mode-c-c-c-s-sends-input ()
-  "`C-c c s' in a quoth buffer should resolve to quoth-send-input."
+(ert-deftest quoth-test/chat-mode-c-c-quote-s-sends-input ()
+  "`C-c \" s' in a quoth buffer should resolve to quoth-send-input."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
-          (should (eq (key-binding (kbd "C-c c s")) #'quoth-send-input))))
+          (should (eq (key-binding (kbd "C-c \" s")) #'quoth-send-input))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/chat-mode-does-not-add-after-change-hook ()

@@ -75,7 +75,7 @@ them, and new code must too.
    the buffer is the record of what was sent and what came back, a
    silent retry would falsify that record, and re-issuing a failed
    tool-loop request could repeat `exec_command` side effects. Sending
-   again is always the user's explicit act (`C-c c s`), rebuilding the
+   again is always the user's explicit act (`C-c " s`), rebuilding the
    request from the buffer — edits included.
 
 ## Project Layout
@@ -112,7 +112,7 @@ and `subr-x`; `quoth-hyper-provider.el` requires `quoth-provider` +
 leaves) and refreshes the UI through `quoth-after-model-change-hook`
 rather than calling core functions — it never requires `quoth.el`;
 `quoth.el` requires all of them (including `quoth-select`, for the
-`C-c c m` keybinding). Stream state, buffer rendering,
+`C-c " m` keybinding). Stream state, buffer rendering,
 and error handling (`quoth--append-delta`, `quoth--record-error`,
 `quoth--stream-transition`, `quoth--debug-log`) all live in
 `quoth.el` — the providers call them through buffer-local process
@@ -312,7 +312,7 @@ tagged regions is folded into each request's messages array as
 `[system, prior-user, prior-assistant, prior-tool, ..., current-user]` (tool
 rounds interleave as assistant `tool_calls` + `role: "tool"` result pairs).
 Set `quoth-hyper-history-limit` to `0` for stateless per-prompt requests.
-Because the buffer is the source of truth, `C-c c k` (clear) starts a
+Because the buffer is the source of truth, `C-c " k` (clear) starts a
 fresh conversation naturally.
 
 Tool calls replay in the OpenAI function-calling shape: an assistant
@@ -325,7 +325,7 @@ tool block. A `tool`-tagged span without reconstructable
 tool result only with a matching assistant `tool_calls` declaration,
 so a call without its id cannot be replayed.
 
-Each buffer also owns an opaque session UUID (rotated by `C-c c k`),
+Each buffer also owns an opaque session UUID (rotated by `C-c " k`),
 whose XXH3-64 hash is sent as the `x-session-id` /
 `x-session-affinity` headers on every hyper request, enabling
 server-side prefix/token caching (HYPER-API.md §3.1). The raw UUID

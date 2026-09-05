@@ -1914,7 +1914,7 @@ it to the current buffer and the global default." :tags '(:integration)
 ;;; 94. Hyper provider: process control
 
 (ert-deftest quoth-test/hyper-interrupt-calls-cleanup ()
-  "C-c c i path delegates to provider cleanup, not a raw interrupt-process.
+  "C-c \" i path delegates to provider cleanup, not a raw interrupt-process.
 With a live transport slot, cleanup must abort the transport, clear the
 slot, and clear the provider's completion action."
   (let ((aborted nil)

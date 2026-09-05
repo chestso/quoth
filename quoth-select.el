@@ -30,7 +30,7 @@
 ;;; Commentary:
 
 ;; Transient-based model selector for quoth.  Provides a popup menu
-;; (C-c c m) for choosing a model from the active provider's catalog,
+;; (C-c \" m) for choosing a model from the active provider's catalog,
 ;; toggling thinking/reasoning attributes, and showing model prices.
 ;; The selector layer owns the UI; it reads the catalog through the
 ;; protocol's global cache (`quoth-provider-models-cached' — never a
