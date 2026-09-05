@@ -69,6 +69,15 @@ them, and new code must too.
    sessions owned by `quoth-process.el`, scoped per quoth buffer and
    capped at `quoth-process-max-sessions`.
 
+9. **No automatic retry.** A failed request surfaces its error in the
+   buffer (`> **Error:** …` system pane; non-2xx as `HTTP <code> from
+<url>`) and stops. Quoth never re-sends a failed request on its own:
+   the buffer is the record of what was sent and what came back, a
+   silent retry would falsify that record, and re-issuing a failed
+   tool-loop request could repeat `exec_command` side effects. Sending
+   again is always the user's explicit act (`C-c c s`), rebuilding the
+   request from the buffer — edits included.
+
 ## Project Layout
 
 ```
