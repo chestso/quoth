@@ -277,16 +277,16 @@ the prompt ID or clobber existing state."
               (setq-local buffer-file-name "/test/file.el")
               (quoth-insert-selection (point-min) (point-max)))
             (goto-char (point-min))
-            (should (search-forward "Attachment:" nil t))
+            (should (search-forward "Source " nil t))
             (let ((region-type (get-text-property (match-beginning 0) 'quoth-region-type)))
               (should (eq region-type 'user)))))
       (quoth-test--cleanup))))
 
-;;; 37. Attachment formatting: markdown fenced blocks
+;;; 37. Source formatting: markdown fenced blocks
 
 (ert-deftest quoth-test/format-selection-emits-fenced-block ()
   "`quoth--format-selection' emits a markdown fenced code block.
-The block carries an Attachment header line."
+The block carries a Source header line."
   (let ((buf (quoth-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
@@ -294,7 +294,7 @@ The block carries an Attachment header line."
             (insert "line one\nline two\n")
             (let ((formatted (quoth--format-selection "src/file.el" "src/file.el"
                                                       (point-min) (1- (point-max)))))
-              (should (string-match-p "\\*\\*Attachment: src/file.el (lines 1-2)\\*\\*" formatted))
+              (should (string-match-p "\\*\\*Source src/file.el (lines 1-2)\\*\\*" formatted))
               (should (string-match-p "```emacs-lisp" formatted))
               (should (string-match-p "```" formatted)))))
       (quoth-test--cleanup))))
@@ -317,7 +317,7 @@ and a ````` longer run
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/format-selection-uses-relative-path ()
-  "Attachment paths use the pre-resolved relative path as-is."
+  "Source paths use the pre-resolved relative path as-is."
   (let ((buf (quoth-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
@@ -336,7 +336,7 @@ and a ````` longer run
             (should (string-match-p "(no file)" formatted))))
       (quoth-test--cleanup))))
 
-;;; 37b. Attachment language from extension
+;;; 37b. Source language from extension
 
 (ert-deftest quoth-test/lang-from-extension ()
   "Quoth--lang-from-extension should map extensions to markdown languages."
@@ -409,7 +409,7 @@ It sets quoth-region-type 'user."
               (setq-local buffer-file-name "/test/file.el")
               (quoth-insert-selection (point-min) (point-max)))
             (goto-char (point-min))
-            (should (search-forward "Attachment:" nil t))
+            (should (search-forward "Source " nil t))
             ;; No quoth overlays from attachment insertion
             (should-not (cl-some (lambda (ov) (overlay-get ov 'quoth-overlay))
                                  (overlays-in (point-min) (point-max))))))

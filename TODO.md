@@ -4,11 +4,11 @@
 
 Quoth is a GNU Emacs package for **direct provider interaction**: chatting with AI models over HTTP from an Emacs buffer, without a separate CLI binary. The provider talks to the [Charm Hyper gateway](HYPER-API.md) via streaming chat completions.
 
-It operates in two ways:
+It works like this:
 
-1. **Dedicated chat buffer**: A buffer that sends structured prompts to the provider (hyper) and receives streamed responses, including chain-of-thought reasoning. The hyper provider is stateful per buffer; `quoth-hyper-history-limit` 0 restores stateless per-prompt requests.
+1. **Chat buffer**: `M-x quoth` opens a per-project buffer where prompts and streamed responses (including chain-of-thought reasoning and tool-call rounds) accumulate as ordinary editable markdown. The buffer is the conversation: history is re-sent from its tagged regions on every request, so nothing needs to be saved separately (`quoth-hyper-history-limit` 0 restores stateless per-prompt requests).
 
-2. **Selection-as-context**: In any Emacs buffer, a selection can be used as context. When sent, the selection is formatted as a markdown fenced code block with file path and line numbers, then inserted into the quoth buffer. The user can then add additional context about what to do with the selection before sending the prompt.
+2. **Context insertion**: `quoth-minor-mode` commands push context from any buffer into the chat — a selection or whole buffer as a markdown fenced code block with a file-path header, the file path as a link, or an image as a link sent as pixels. Everything inserted is plain user input, so the user can add or edit the surrounding prompt before sending.
 
 ## Provider Strategy
 
@@ -20,10 +20,10 @@ Quoth talks to providers through a provider abstraction (`quoth-provider-*` gene
 
 - **Per-prompt calling (hyper)**: Each prompt is a single streaming chat completion against the provider. The hyper provider keeps no conversation state of its own; history round trips are handled by re-sending the buffer's prior turns.
 - **Per-root buffers**: Each project (or directory when none) gets its own quoth buffer, named after the root's basename (`*quoth:name*`, suffix `(2)` on collisions). `quoth-minor-mode` commands always target the buffer for the source buffer's project or directory.
-- **Context format**: Selections are formatted as markdown fenced code blocks with an attachment header line:
+- **Context format**: Inserted context is plain markdown user input, not a tracked attachment. Selections and whole buffers arrive as fenced code blocks fronted by a bold header naming the file and line span; file paths arrive as `[relpath](relpath)` links. The block itself is ordinary prompt text — only image links are true wire attachments, sent as `image_url` content parts:
 
 ````
-**Attachment: src/foo.go (lines 42-58)**
+**Source src/foo.go (lines 42-58)**
 
 ```go
 ...selected code...
@@ -81,7 +81,7 @@ The overlay/temp-buffer fontification described here was later removed entirely;
 
 Attachments are rendered as markdown (fenced blocks with a header line, or links), so the parent mode's font-lock highlights them; the org temp-buffer fontification machinery, `quoth-response-face`/`quoth-org-face`, and the `quoth-fontify-*` defcustoms were removed.
 
-- [x] Selections formatted as markdown fenced code blocks with `**Attachment: <relpath> (lines N-M)**` header; `quoth-insert-filepath` inserts a link
+- [x] Selections formatted as markdown fenced code blocks with `**Source <relpath> (lines N-M)**` header; `quoth-insert-filepath` inserts a link
 - [x] Paths resolved relative to the project root (or `default-directory`); language derived from file extension (`quoth--lang-from-extension`, fallback `plaintext`)
 - [x] `quoth-region-type` taxonomy reduced to `attachment` / `response`; `quoth-filename` / `quoth-lines` metadata properties
 - [x] Org fontify functions, faces, and defcustoms removed; `org-mode` dependency dropped

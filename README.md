@@ -194,7 +194,7 @@ Insert context from a source buffer with:
   attachment
 
 Inserted content is formatted as a markdown fenced code block with a
-`**Attachment: <relpath> (lines N-M)**` header (paths relative to the
+`**Source <relpath> (lines N-M)**` header (paths relative to the
 project root); `quoth-insert-filepath` inserts a `[relpath](relpath)`
 link instead. It is appended as plain user input, so it is sent as part
 of the prompt — there is no separate attachment tracking. Image files

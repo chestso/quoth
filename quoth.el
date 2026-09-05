@@ -1640,7 +1640,7 @@ path (or nil to re-resolve), START and END are the position bounds."
          (relative-file (or relative-file (quoth--relative-file file) "(no file)"))
          (lang (quoth--lang-from-extension (file-name-nondirectory relative-file)))
          (fence (quoth--fence-str selected-text)))
-    (format "**Attachment: %s (lines %d-%d)**\n\n%s%s\n%s\n%s"
+    (format "**Source %s (lines %d-%d)**\n\n%s%s\n%s\n%s"
             relative-file start-line end-line fence lang selected-text fence)))
 
 (defun quoth--reasoning-start-region ()

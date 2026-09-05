@@ -835,7 +835,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/org-region-type-still-set ()
-  "Attachment blocks should have quoth-region-type=user (appended input)."
+  "Source blocks should have quoth-region-type=user (appended input)."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -845,7 +845,7 @@ It tags the response, inserts a fresh prompt, and regenerates the ID."
               (setq-local buffer-file-name "/test/file.el")
               (quoth-insert-selection (point-min) (point-max)))
             (goto-char (point-min))
-            (should (search-forward "Attachment:" nil t))
+            (should (search-forward "Source " nil t))
             (should (eq (get-text-property (match-beginning 0) 'quoth-region-type) 'user))))
       (quoth-test--cleanup))))
 
