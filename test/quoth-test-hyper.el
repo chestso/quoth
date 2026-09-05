@@ -1914,7 +1914,7 @@ it to the current buffer and the global default." :tags '(:integration)
 ;;; 94. Hyper provider: process control
 
 (ert-deftest quoth-test/hyper-interrupt-calls-cleanup ()
-  "C-c \" i path delegates to provider cleanup, not a raw interrupt-process.
+  "`C-c \" i' delegates to provider cleanup, not a raw `interrupt-process'.
 With a live transport slot, cleanup must abort the transport, clear the
 slot, and clear the provider's completion action."
   (let ((aborted nil)
@@ -1976,14 +1976,13 @@ when both are dead."
                    :working-directory default-directory)))
     (setf (quoth-provider-completion-action provider) (lambda () 'x))
     (cl-letf (((symbol-function 'quoth-openai-abort)
-               (lambda (_proc) (error "must not be called"))))
+               (lambda (_proc) (error "Must not be called"))))
       (quoth-provider-cleanup provider))
     (should-not (quoth-provider-completion-action provider))))
 
 (ert-deftest quoth-test/hyper-send-provider-stores-transport ()
-  "A send returns the request handle and stores it in the provider
-slot; the curl transport lands in the handle once the staged prompt
-delivers."
+  "A send returns the request handle and stores it in the provider slot.
+The curl transport lands in the handle once the staged prompt delivers."
   (let ((provider (quoth-make-hyper-provider
                    :buffer (current-buffer)
                    :base-url "http://127.0.0.1:1"
@@ -2220,10 +2219,10 @@ header line shows the stats."
 ;;; 95. Hyper wire: image content parts
 
 (ert-deftest quoth-test/hyper-wire-user-image-parts-on-wire ()
-  "A user turn with an attached image rides as an OpenAI content-parts
-array on the wire: multipart image_url content is the gateway's only
-image mechanism, so the JSON body must carry content as an array of
-text and image_url parts." :tags '(:integration)
+  "A user turn with an attached image rides as an OpenAI content-parts array.
+Multipart `image_url' content is the gateway's only image mechanism,
+so the JSON body must carry content as an array of text and
+`image_url' parts." :tags '(:integration)
   (let* ((dir (make-temp-file "quoth-wire-img" t))
          (png (quoth-test--write-png (expand-file-name "dot.png" dir))))
     (unwind-protect
@@ -2273,9 +2272,9 @@ text and image_url parts." :tags '(:integration)
           (delete-directory dir t)))))
 
 (ert-deftest quoth-test/hyper-wire-tool-image-fanout-pair ()
-  "A tool round that looked at an image sends the fan-out pair on the
-wire: the tool message carries the result text minus the image line,
-and a synthetic user message right after carries the image part
+  "A tool round that looked at an image sends the fan-out pair on the wire.
+The tool message carries the result text minus the image line, and a
+synthetic user message right after carries the image part
 \(the gateway drops image content in tool messages)." :tags '(:integration)
   (let ((dir (make-temp-file "quoth-wire-img" t)))
     (unwind-protect

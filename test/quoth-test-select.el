@@ -233,8 +233,9 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
 ;;; 104. Select-model via the new apply path
 
 (ert-deftest quoth-test/select-model-applies-via-provider-generic ()
-  "`quoth-select-model' applies the chosen model through
-`quoth-provider--apply-model' (not a direct setf)."
+  "`quoth-select-model' applies the chosen model through the provider.
+The choice goes through `quoth-provider--apply-model', not a direct
+setf."
   (let ((quoth-model nil))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -295,8 +296,9 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
 ;;; 105. Persistence: savehist registration
 
 (ert-deftest quoth-test/savehist-registers-provider-and-model ()
-  "After loading savehist, `quoth-active-provider-name' and `quoth-model'
-are registered with `savehist-additional-variables'."
+  "Savehist registers the provider name and model after loading.
+`quoth-active-provider-name' and `quoth-model' are registered with
+`savehist-additional-variables'."
   (require 'savehist)
   (should (memq 'quoth-active-provider-name
                 (default-value 'savehist-additional-variables)))

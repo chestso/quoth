@@ -307,8 +307,9 @@ The block carries a Source header line."
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/format-selection-fence-grows-for-nested-backticks ()
-  "`quoth--format-selection' widens the fence when the selection
-contains backtick runs, so nested fences never close the block early."
+  "`quoth--format-selection' widens the fence for backtick runs.
+The selection contains backtick runs, so nested fences never close
+the block early."
   (let ((buf (quoth-test--fresh-buffer)))
     (unwind-protect
         (with-current-buffer buf
@@ -467,7 +468,7 @@ and the input history keys."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/chat-mode-does-not-add-after-change-hook ()
-  "`quoth-chat-mode' does NOT add an after-change-functions hook.
+  "`quoth-chat-mode' does NOT add an `after-change-functions' hook.
 User input is tagged at send time, not live; the header-line is kept
 fresh by `post-command-hook' alone."
   (unwind-protect

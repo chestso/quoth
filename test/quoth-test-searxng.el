@@ -207,8 +207,8 @@ relevance, and the whole payload is wrapped in the prose convention."
                                  (car result))))))))
 
 (ert-deftest quoth-test/searxng-empty-results ()
-  "An empty result set reports `Output: (empty)' without erroring, with
-no body text that could be mistaken for literal search output."
+  "An empty result set reports `Output: (empty)' without erroring.
+No body text could be mistaken for literal search output."
   (quoth-test--with-fake-url
    "200 OK" (json-encode '((results . [])))
    (lambda ()

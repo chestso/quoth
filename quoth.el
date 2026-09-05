@@ -977,9 +977,9 @@ PLIST is the span's `quoth-image' property; STATUS is `missing' or
       (_ (format "[image unavailable: %s]" name)))))
 
 (defun quoth--image-spans-in (start end &optional attach-only)
-  "Return `quoth-image' spans ((START . END) ...) within START..END,
-in buffer order.  With ATTACH-ONLY non-nil, only spans whose plist
-carries `:attach' t are returned."
+  "Return the `quoth-image' spans within START..END, in buffer order.
+With ATTACH-ONLY non-nil, only spans whose plist carries `:attach' t
+are returned."
   (let ((pos start)
         (spans nil))
     (while (< pos end)
@@ -1025,7 +1025,7 @@ bracketed text note and, when no image part remains, the whole
 message falls back to the plain string.  An `:attach' nil link never
 splits the text: it rides the text content verbatim, like typed
 markdown.  This is a pure buffer->wire read; the send path
-(`quoth--image-preflight') owns the side-effecting notes."
+\(`quoth--image-preflight') owns the side-effecting notes."
   (let* ((spans (quoth--user-turn-spans prompt-id))
          (images (apply #'nconc
                         (mapcar (lambda (s)
@@ -1099,7 +1099,7 @@ Switch with C-c \" m."
      :hint "The image will be sent but the model will ignore it.")))
 
 (defun quoth--image-preflight (prompt-id)
-  "Run the send-time image checks for PROMPT-ID and return its content.
+  "Check PROMPT-ID's attached images at send time and return its content.
 The combined pre-flight over the prompt's attached image spans:
 a missing file inserts an error note naming it and degrades to a
 text placeholder; an image past `quoth-image-max-raw-bytes' inserts
@@ -1302,14 +1302,14 @@ fall back to the trimmed block text when the span is absent."
      (buffer-substring-no-properties (car bounds) (cdr bounds)))))
 
 (defun quoth--tool-image-fanout (start end)
-  "Split a tool block's result for the image fan-out.
+  "Split the tool block within START..END for the image fan-out.
 The gateway drops image content in `role: \"tool\"' messages, so a
 result carrying a `quoth-image' `:attach' t span (an image-aware
 `read_file' placeholder) emits as a pair: the `tool' message keeps the
 result text minus the image lines, and a synthetic `user' message
 right after carries the images as content parts.  Returns
 \(TOOL-CONTENT . PARTS): TOOL-CONTENT is the trimmed remaining text
-(or the placeholder line when nothing remains); PARTS is the parts
+\(or the placeholder line when nothing remains); PARTS is the parts
 vector — image parts in order plus one trailing text part — or nil
 when the block carries no attachable image (a missing file at walk
 time leaves the link line in TOOL-CONTENT and drops the fan-out)."
@@ -3191,7 +3191,7 @@ re-parent it there to move the whole source-buffer prefix.")
 When enabled, provides keybindings under the `C-c \"' prefix for
 sending selections, whole buffers, and file paths to the Quoth
 interaction buffer.  The prefix lives in the minor-mode punctuation
-space of the Emacs key-binding conventions; move it by re-parenting
+space of the Emacs key binding conventions; move it by re-parenting
 `quoth-minor-command-map' under a different key in
 `quoth-minor-mode-map'.
 

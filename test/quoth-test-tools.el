@@ -479,18 +479,19 @@ session is deregistered."
     (should-not (string-match-p "exited" result))))
 
 (ert-deftest quoth-test/output-section-nil-vs-empty-string ()
-  "`quoth-exec--output-section' distinguishes nothing-to-show (nil) from
-an empty body string: nil renders the structural `(empty)' marker; a
-string (even empty) renders the `Output:' line plus the body, as when
-a budget marker follows and the body itself was dropped."
+  "`quoth-exec--output-section' distinguishes nil from an empty string.
+NIL (nothing to show) renders the structural
+`(empty)' marker; a string (even empty) renders the `Output:' line
+plus the body, as when a budget marker follows and the body itself
+was dropped."
   (should (string= (quoth-exec--output-section nil)
                    "Output: (empty)\n"))
   (should (string= (quoth-exec--output-section "") "Output:\n"))
   (should (string= (quoth-exec--output-section "x") "Output:\nx")))
 
 (ert-deftest quoth-test/result-format-empty-marks-emptiness-structurally ()
-  "An empty result reads `Output: (empty)' on the status line, never a
-body that could be mistaken for literal output."
+  "An empty result reads `Output: (empty)' on the status line.
+No body could be mistaken for literal output."
   (let* ((result (quoth-exec--format-result "" 0)))
     (should (string= result "Process exited with code 0\nOutput: (empty)\n"))
     (should-not (string-match-p "no output" result))
@@ -778,9 +779,9 @@ backtick run in the command text, even when the cmd is a single line."
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/tool-block-minimal-write-stdin ()
-  "Test that a minimal write_stdin block renders session, input, and yield.
+  "A minimal `write_stdin' block renders session, input, and yield.
 A block with only a session id renders the session, empty input
-(as a fenced block), yield, and no output fence."
+\(as a fenced block), yield, and no output fence."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -930,8 +931,8 @@ extraction; argument blocks are display decoration."
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/edit-file-tool-block-renders-fenced-spans ()
-  "An `edit_file' block renders path, fenced old/new spans, and the
-`replace_all' clause when requested."
+  "An `edit_file' block renders path, fenced old/new spans, and more.
+The `replace_all' clause is rendered when requested."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -1171,8 +1172,8 @@ escaped correctly (JSON, unlike `format %S', escapes control chars)."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/edit-file-cr-normalized-old-string-fails ()
-  "On a CRLF file an `old_string' with CRs normalized away fails to match
-and leaves the file untouched."
+  "A CRLF-normalized `old_string' fails to match on a CRLF file.
+The CRs normalized away mean no match, and the file stays untouched."
   (let ((dir (quoth-test--tmpdir)))
     (unwind-protect
         (let* ((target (expand-file-name "crlf3.txt" dir))
@@ -1186,7 +1187,7 @@ and leaves the file untouched."
                (result (quoth-test--sync-result
                         #'quoth-edit-file--exec call)))
           (should (= (cdr result) -1))
-          (should (string-match-p "old_string not found" (car result)))
+          (should (string-match-p "No match for old_string" (car result)))
           (with-temp-buffer
             (let ((coding-system-for-read 'binary))
               (insert-file-contents target))
@@ -1196,8 +1197,8 @@ and leaves the file untouched."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/edit-file-not-found-and-ambiguous ()
-  "Zero matches and multiple matches are error results; the ambiguous
-error names every match line."
+  "Zero matches and multiple matches are error results.
+The ambiguous error names every match line."
   (let ((dir (quoth-test--tmpdir)))
     (unwind-protect
         (let* ((target (expand-file-name "amb.txt" dir))
@@ -1211,7 +1212,7 @@ error names every match line."
                    (quoth-test--args-json
                     :path target :old_string "missing" :new_string "x")))))
             (should (= (cdr result) -1))
-            (should (string-match-p "old_string not found" (car result))))
+            (should (string-match-p "No match for old_string" (car result))))
           (let ((result
                  (quoth-test--sync-result
                   #'quoth-edit-file--exec
@@ -1273,8 +1274,9 @@ error names every match line."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/edit-file-validation-errors ()
-  "Missing/empty `old_string', missing `new_string', no-op edit, and a
-missing file deliver error results."
+  "Invalid `edit_file' calls deliver error results.
+Missing/empty `old_string', missing `new_string', a no-op edit, and a
+missing file all error out."
   (let ((dir (quoth-test--tmpdir)))
     (unwind-protect
         (let ((call-fn
@@ -1499,8 +1501,8 @@ the requested bits."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/write-file-mode-absent-leaves-default ()
-  "Without a `mode' arg the fresh file keeps the temp file's default
-bits (0600 from `make-temp-file'); nothing chmods."
+  "Without a `mode' arg the fresh file keeps the temp file's default bits.
+Nothing chmods; `make-temp-file' leaves 0600."
   (let ((dir (quoth-test--tmpdir)))
     (unwind-protect
         (let* ((target (expand-file-name "plain.txt" dir))
@@ -1514,8 +1516,8 @@ bits (0600 from `make-temp-file'); nothing chmods."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/write-file-mode-invalid-errors ()
-  "A present-but-invalid `mode' delivers an error result and writes
-nothing: the validation fires before the write."
+  "A present-but-invalid `mode' delivers an error result and writes nothing.
+The validation fires before the write."
   (let ((dir (quoth-test--tmpdir)))
     (unwind-protect
         (dolist (bad (list -1 4096 "x"))
@@ -1958,7 +1960,7 @@ line 2 as truncated; line 2's content must not appear anywhere."
 ;; what the gateway accepts.
 
 (defun quoth-test--blind-model-provider (model-id supports)
-  "Return a provider whose catalog holds one MODEL-ID entry.
+  "Return a provider whose catalog carries one entry for MODEL-ID.
 SUPPORTS is the entry's `:supports-attachments' flag.  Seeds the
 global catalog cache under the provider's key; the caller is
 responsible for running inside `quoth-test--with-models-cache'."
@@ -1975,8 +1977,8 @@ responsible for running inside `quoth-test--with-models-cache'."
     provider))
 
 (ert-deftest quoth-test/read-file-image-returns-link-line ()
-  "read_file on an image file returns the image-link placeholder
-instead of trying to decode the bytes as text."
+  "`read_file' on an image file returns the image-link placeholder.
+It never tries to decode the bytes as text."
   (let ((dir (quoth-test--tmpdir)))
     (unwind-protect
         (let* ((png (quoth-test--write-png (expand-file-name "dot.png" dir)))
@@ -2010,8 +2012,8 @@ PNG magic with an unknown extension reads as an image."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/read-file-image-oversize-errors-naming-cap ()
-  "An image past the raw-size cap errors (naming the cap) instead of
-returning a link that would hard-fail the request server-side."
+  "An image past the raw-size cap errors (naming the cap).
+No link is returned that would hard-fail the request server-side."
   (let ((dir (quoth-test--tmpdir))
         (quoth-image-max-raw-bytes 10))
     (unwind-protect
@@ -2024,8 +2026,8 @@ returning a link that would hard-fail the request server-side."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/read-file-image-blind-model-errors ()
-  "read_file on an image while the active model lacks
-`supports-attachments' returns an error result, so the model learns
+  "`read_file' on an image with a blind model returns an error result.
+The active model lacks `supports-attachments', so the model learns
 and can fall back to describing the file textually."
   (let ((dir (quoth-test--tmpdir)))
     (unwind-protect

@@ -101,7 +101,9 @@ synchronous.  THUNK runs in the chat buffer."
       (quoth-test--cleanup))))
 
 (defun quoth-test--call-entry (id name &optional args-json)
-  "Return one SSE tool-call vector entry with id ID, name NAME."
+  "Return one SSE tool-call vector entry with id ID and name NAME.
+With ARGS-JSON non-nil, it becomes the function arguments; otherwise
+the arguments default to \"{}\"."
   (list (cons 'id id)
         (cons 'type "function")
         (cons 'function
@@ -122,6 +124,7 @@ HANDLER's return value is the cancel thunk (or nil)."
 
 (defmacro quoth-test--with-dispatch (tool-calls entries &rest body)
   "Run BODY with the round dispatched in a fresh wired buffer.
+TOOL-CALLS seeds the SSE round and ENTRIES stubs the registry.
 Phase `tools' and a non-zero tool-loop count are preset (the state
 finalize leaves behind); BODY runs after dispatch."
   (declare (indent 2))

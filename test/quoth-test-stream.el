@@ -238,7 +238,8 @@ with a `user'-kind detail; the partial is tagged `response' with
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/system-note-visible-on-save ()
-  "The `system' pane is real buffer text included in buffer-substring."
+  "The `system' pane is real buffer text included in `buffer-substring'.
+Saving the buffer carries the note with it."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
         (quoth--insert-system-note "> **Error:** boom" :kind 'error)
@@ -267,7 +268,7 @@ fresh input separator — no separate continue step."
             (setq-local quoth--response-start (copy-marker resp-start)))
           ;; Failure surfaces: pane + pending-interrupt = error.
           (quoth--phase-set 'streaming)
-          (quoth--record-error "stream closed before [DONE]")
+          (quoth--record-error "Stream closed before [DONE]")
           (should (eq quoth--pending-interrupt 'error))
           ;; The unified finalizer closes the partial.
           (quoth--finalize-response)
@@ -284,7 +285,7 @@ fresh input separator — no separate continue step."
                              (point-min) (point-max)
                              'quoth-region-type 'system)))
             (should pane-start)
-            (should (string-match-p "stream closed before"
+            (should (string-match-p "Stream closed before"
                                     (buffer-substring-no-properties
                                      pane-start (point-max))))
             (should (text-property-any (or (next-single-property-change

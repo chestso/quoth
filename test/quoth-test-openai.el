@@ -140,9 +140,9 @@ The default is non-nil, so `tool_choice' is `auto'."
                           (cdr (assq 'function entry))))))))
 
 (ert-deftest quoth-test/openai-schema-edit-file-args ()
-  "The `edit_file' schema advertises old_string, new_string,
-replace_all, and workdir with the unique-match and CR-sensitivity
-teaching in the descriptions."
+  "The `edit_file' schema advertises old_string, new_string, and more.
+The schema covers replace_all and workdir too, with the unique-match
+and CR-sensitivity teaching in the descriptions."
   (let ((props (quoth-test--edit-file-props)))
     (should (assq 'old_string props))
     (should (equal (cdr (assq 'type (cdr (assq 'old_string props))))
@@ -177,8 +177,9 @@ teaching in the descriptions."
                           (cdr (assq 'function entry))))))))
 
 (ert-deftest quoth-test/openai-schema-read-file-line-numbers-args ()
-  "The `read_file' schema advertises line_numbers, offset, and limit
-with types, and teaches the strip-before-write discipline."
+  "The `read_file' schema advertises line_numbers, offset, and limit.
+The three shape args carry types, and the descriptions teach the
+strip-before-write discipline."
   (let ((props (quoth-test--read-file-props)))
     (should (assq 'line_numbers props))
     (should (equal (cdr (assq 'type (cdr (assq 'line_numbers props))))
@@ -279,8 +280,8 @@ When not in a git repo, no git lines appear."
     (should (string-match-p "</env>" env))))
 
 (ert-deftest quoth-test/openai-env-block-field-order ()
-  "The <env> block fields follow the CLI order: working directory,
-git repo status, platform, then date — no reversal."
+  "The <env> block fields follow the CLI order with no reversal.
+Working directory, git repo status, platform, then date."
   (let* ((default-directory "/tmp/nonexistent-project/")
          (env (quoth-openai--build-env-block))
          (wd-pos (string-match "Working directory:" env))
@@ -419,8 +420,8 @@ Uses the quoth.el repo root so AGENTS.md is discovered."
     (should-not mods)))
 
 (ert-deftest quoth-test/openai-cache-hit-same-key ()
-  "A second call with the same key delivers the cached prompt without
-rebuilding (the on-ready return equals the cached string)."
+  "A second call with the same key delivers the cached prompt unrebuilt.
+The on-ready return equals the cached string."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
                          (expand-file-name "quoth-openai.el" default-directory))))
@@ -447,8 +448,8 @@ rebuilding (the on-ready return equals the cached string)."
             (should (string= first delivered)))))))
 
 (ert-deftest quoth-test/openai-cache-miss-on-working-dir-change ()
-  "Changing default-directory invalidates the cache: the next call
-rebuilds and delivers a different prompt."
+  "Changing `default-directory' invalidates the cache.
+The next call rebuilds and delivers a different prompt."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
                          (expand-file-name "quoth-openai.el" default-directory))))
@@ -479,8 +480,8 @@ rebuilds and delivers a different prompt."
             (should-not (string= first delivered)))))))
 
 (ert-deftest quoth-test/openai-cache-miss-on-modtime-change ()
-  "Modifying a context file invalidates the cache: the next call
-rebuilds and delivers the new content."
+  "Modifying a context file invalidates the cache.
+The next call rebuilds and delivers the new content."
   (let* ((tmp-dir (make-temp-file "quoth-test-" t))
          (ctx-file (expand-file-name "AGENTS.md" tmp-dir))
          (delivered nil))

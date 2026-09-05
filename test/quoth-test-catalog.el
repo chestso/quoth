@@ -328,9 +328,10 @@ see no models and no fetch fires."
 ;;; 4. The bundled seed
 
 (defun quoth-test--with-seeded-models (seed live fn)
-  "Run FN with the seed generic faked to SEED and the async generic
-faked to deliver LIVE.  FN receives the fetch counter.  The fetch
-completes inline, so post-read assertions see the delivered state."
+  "Run FN with the seed generic faked to SEED and a fake async fetch.
+The async generic is faked to deliver LIVE.  FN receives the fetch
+counter.  The fetch completes inline, so post-read assertions see the
+delivered state."
   (let ((fetches 0))
     (cl-letf (((symbol-function 'quoth-provider--models-seed)
                (lambda (_provider) seed))
@@ -342,8 +343,9 @@ completes inline, so post-read assertions see the delivered state."
       (funcall fn (lambda () fetches)))))
 
 (defun quoth-test--with-seeded-models-pending (seed fn)
-  "Run FN with the seed generic faked to SEED and the async generic
-started but not yet delivered.  FN receives the pending ON-DONE
+  "Run FN with a faked seed and a pending async fetch.
+The seed generic is faked to SEED; the async generic is started but
+not yet delivered.  FN receives the pending ON-DONE
 delivery function alongside the fetch counter; the cache keeps the
 seeded entry until FN pumps."
   (let ((fetches 0) (deliver nil))
@@ -357,8 +359,8 @@ seeded entry until FN pumps."
       (funcall fn (lambda () fetches) (lambda (models) (funcall deliver models))))))
 
 (ert-deftest quoth-test/catalog-seed-fills-cold-cache-read ()
-  "A cache miss stores the bundled seed, stamped stale (FETCHED-AT 0),
-and the read returns the seeded models immediately while the
+  "A cache miss stores the bundled seed, stamped stale (FETCHED-AT 0).
+The read returns the seeded models immediately while the
 kicked refresh is still in flight."
   (quoth-test--with-models-cache
    (lambda ()
@@ -380,8 +382,8 @@ kicked refresh is still in flight."
                          (quoth-test--models "live")))))))))
 
 (ert-deftest quoth-test/catalog-seed-read-kicks-background-refresh ()
-  "The seeded entry counts as stale: the first read kicks exactly one
-background refresh, and the live fetch overrides the seed."
+  "The seeded entry counts as stale, kicking exactly one background refresh.
+The first read kicks it; the live fetch overrides the seed."
   (quoth-test--with-models-cache
    (lambda ()
      (let ((provider (quoth-make-hyper-provider
@@ -407,8 +409,8 @@ background refresh, and the live fetch overrides the seed."
           (should (= (funcall fetches) 1))))))))
 
 (ert-deftest quoth-test/catalog-seed-absent-cold-fallback-intact ()
-  "A nil seed (no snapshot, or an unparseable one) leaves the cache
-cold: the read returns nil and the caller's static fallback applies."
+  "A nil seed (no snapshot, or an unparseable one) leaves the cache cold.
+The read returns nil and the caller's static fallback applies."
   (quoth-test--with-models-cache
    (lambda ()
      (let ((provider (quoth-make-hyper-provider
@@ -451,8 +453,8 @@ a custom base URL gets no snapshot."
       (delete-file file))))
 
 (ert-deftest quoth-test/catalog-hyper-seed-read-parses-snapshot ()
-  "`quoth-hyper--models-seed-read' normalizes a snapshot through the
-same parse + normalize pipeline as the live fetch."
+  "`quoth-hyper--models-seed-read' parses and normalizes a snapshot.
+It goes through the same parse + normalize pipeline as the live fetch."
   (let* ((body (concat "{\"name\":\"Charm Hyper\",\"models\":[{"
                        "\"id\":\"deepseek-v4-flash\","
                        "\"name\":\"DeepSeek V4 Flash\","
@@ -479,8 +481,8 @@ same parse + normalize pipeline as the live fetch."
       (delete-file file))))
 
 (ert-deftest quoth-test/catalog-hyper-seed-read-absent-not-error ()
-  "A missing or unparseable snapshot yields a nil seed, never an
-error — absent is distinct from rejected."
+  "A missing or unparseable snapshot yields a nil seed, never an error.
+Absent is distinct from rejected."
   (should (null (quoth-hyper--models-seed-read "/nonexistent/path/x.json")))
   (let ((file (make-temp-file "quoth-seed-" nil ".json" "{not json")))
     (unwind-protect
@@ -488,9 +490,9 @@ error — absent is distinct from rejected."
       (delete-file file))))
 
 (ert-deftest quoth-test/catalog-select-model-detail-shape ()
-  "`quoth--select-model-detail' annotates uncached in/out plus, when
-the catalog reports them, both cache prices under their truthful
-labels (write and hit); segments join with two spaces."
+  "`quoth--select-model-detail' annotates uncached in/out costs.
+When the catalog reports cache prices, both are shown under their
+truthful labels (write and hit); segments join with two spaces."
   (let ((entry (list :id "m" :name "M" :context-window 1000
                      :cost-in 1.5 :cost-out 2.5
                      :cost-cache-write 0.75
@@ -510,9 +512,9 @@ labels (write and hit); segments join with two spaces."
       (should-not (string-match-p "cache-hit" detail)))))
 
 (ert-deftest quoth-test/catalog-hyper-seed-read-real-snapshot ()
-  "The tracked snapshot parses and normalizes: a non-empty model list
-with an :id on every entry.  No hardcoded model ids — the assertion
-must not rot as the gateway rotates models."
+  "The tracked snapshot parses and normalizes to a non-empty model list.
+An :id is present on every entry.  No hardcoded model ids — the
+assertion must not rot as the gateway rotates models."
   (let* ((dir (file-name-directory (locate-library "quoth-test-catalog")))
          (file (expand-file-name "../quoth-hyper-models.json" dir))
          (models (and (file-exists-p file)

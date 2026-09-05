@@ -142,7 +142,8 @@ The message is the existing user-error text."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/phase-send-sets-preparing-then-streaming ()
-  "A send enters `preparing' (the staged system prompt in flight) and
+  "A send enters `preparing' and moves to `streaming' on delivery.
+The staged system prompt is in flight during `preparing'; the phase
 moves to `streaming' once the stage delivers and the transport fires.
 The mocked provider stages synchronously, matching the real provider's
 on-ready handoff."
@@ -221,8 +222,9 @@ the round counter as :round."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/phase-record-error-keeps-message ()
-  "`quoth--record-error' records the message on the phase and flags
-the pending interruption; the phase stays busy until finalization."
+  "`quoth--record-error' records the message and flags the interruption.
+The message is recorded on the phase, the pending interruption is
+flagged; the phase stays busy until finalization."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
         (quoth--phase-set 'streaming)

@@ -436,8 +436,8 @@ getting stuck at its boundary."
 (ert-deftest quoth-test/fold-before-string-is-intangible ()
   "The fold marker overlay must NOT carry `intangible'.
 The marker overlay is at a visible position (before the invisible body),
-so its `after-string' text must be tangible for `line-move-visual' to
-navigate through it."
+so its `after-string' text must be tangible for function
+`line-move-visual' to navigate through it."
   (let ((buf (quoth-test--finalize-with-reasoning
               (lambda (_proc)
                 (quoth--append-delta (quoth-test--reasoning-lines 11)
@@ -951,9 +951,9 @@ This ensures the last preview line's background extends to EOL via
   "The fold marker must not block vertical navigation.
 The marker must NOT be a `before-string' on the invisible body overlay,
 because `before-string' text at an invisible+intangible position creates
-a navigation trap: `line-move-visual' targets the marker's visual line
-but cannot land point there (the position is invisible), so it signals
-`beginning-of-buffer'.
+a navigation trap: command `line-move-visual' targets the marker's
+visual line but cannot land point there (the position is invisible),
+so it signals `beginning-of-buffer'.
 
 Instead, the marker must be an `after-string' on a separate visible
 overlay at the boundary between preview and body.  This overlay is at a

@@ -360,8 +360,8 @@ prompt: the user separator lands at point-max."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/clear-buffer-cleans-provider-transport ()
-  "`quoth-clear-buffer' should clean up the active provider's request
-handle: the stage is killed, the curl aborted, and the slot cleared."
+  "`quoth-clear-buffer' cleans up the active provider's request handle.
+The stage is killed, the curl aborted, and the slot cleared."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2267,8 +2267,9 @@ text."
 ;;; Stale-tagged user text is retagged at send time
 
 (ert-deftest quoth-test/send-input-retags-stale-user-text ()
-  "quoth-send-input tags the input region as 'user even when the text
-inherited stale tags (e.g. yank, undo) from the divider."
+  "`quoth-send-input' retags stale user text.
+The input region is tagged `user' even when the text inherited
+stale tags (e.g. yank, undo) from the divider."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer))
             (second-id nil))
@@ -2355,7 +2356,7 @@ The the core sums :input-tokens, :output-tokens, :cached-tokens, and
     (should (= (plist-get acc :output-tokens) 150))))
 
 (ert-deftest quoth-test/accumulate-usage-sums-per-request ()
-  "quoth--accumulate-usage reads from the provider and sums."
+  "`quoth--accumulate-usage' reads from the provider and sums."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -2416,9 +2417,9 @@ The the core sums :input-tokens, :output-tokens, :cached-tokens, and
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/accumulate-usage-persists-across-prompts ()
-  "quoth--accumulate-usage is session-cumulative: a new prompt's usage
-is ADDED to the prior prompt's total, not reset.  The only reset is
-`quoth-clear-buffer'."
+  "`quoth--accumulate-usage' is session-cumulative.
+A new prompt's usage is ADDED to the prior prompt's total, not reset.
+The only reset is `quoth-clear-buffer'."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -2491,10 +2492,9 @@ is ADDED to the prior prompt's total, not reset.  The only reset is
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-usage-after-accumulation ()
-  "After usage is accumulated, the header shows in/out tokens, cost,
-and cache percentage.  Input and output tokens are shown separately
-(\='^\=' prefixed arrows), and the cache percentage divides cached by
-INPUT tokens only."
+  "The header shows in/out tokens, cost, and cache percentage after use.
+Input and output tokens are shown separately \(\='^\=' prefixed
+arrows), and the cache percentage divides cached by INPUT tokens only."
   (let ((quoth-model "my-model"))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -2568,7 +2568,7 @@ The input-based percentage is 50%."
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/group-number-compact-formats ()
-  "quoth--group-number-compact formats with k/M suffixes."
+  "`quoth--group-number-compact' formats with k/M suffixes."
   (should (string= (quoth--group-number-compact 0) "0"))
   (should (string= (quoth--group-number-compact 999) "999"))
   (should (string= (quoth--group-number-compact 1000) "1.0k"))
@@ -2714,8 +2714,8 @@ PROMPT-ID — the shape `quoth--insert-image-link' produces."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/user-turn-content-missing-file-degrades ()
-  "An attached image whose file is gone degrades to a bracketed note
-and the message stays plain text (no parts array)."
+  "An attached image whose file is gone degrades to a bracketed note.
+The message stays plain text (no parts array)."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2731,9 +2731,9 @@ and the message stays plain text (no parts array)."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/user-turn-content-oversized-file-dropped ()
-  "An attached image past the raw-size cap is dropped from the wire,
-replaced by a bracketed note naming the file, and the message stays
-plain text."
+  "An attached image past the raw-size cap is dropped from the wire.
+It is replaced by a bracketed note naming the file, and the message
+stays plain text."
   (let ((dir (make-temp-file "quoth-img" t))
         (quoth-image-max-raw-bytes 10))
     (unwind-protect
@@ -2751,8 +2751,8 @@ plain text."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/history-turns-replays-image-parts ()
-  "A prior exchange's attached image replays in history as a
-content-parts array (images replay every turn, like text)."
+  "Prior-exchange images replay in history as content-parts arrays.
+Images replay every turn, like text."
   (let ((dir (make-temp-file "quoth-img" t)))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -2817,8 +2817,8 @@ synthetic `user' message right after carries the image part."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/tool-rounds-image-fanout-missing-file ()
-  "When the fan-out image cannot be read at walk time, the link line
-stays in the tool content and no synthetic user message is emitted."
+  "An unreadable fan-out image keeps its link line in the tool content.
+No synthetic user message is emitted."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2841,9 +2841,9 @@ stays in the tool content and no synthetic user message is emitted."
                                     (quoth-test--msg-content (nth 1 msgs)))))))
     (quoth-test--cleanup)))
 
-(ert-deftest quoth-test/toggle-image-attach-flips-flag ()
-  "`quoth-toggle-image-attach' flips the `:attach' flag of the image
-link at point, switching the walk between parts and plain text."
+(ert-deftest quoth-test/toggle-image-attach-flips ()
+  "`quoth-toggle-image-attach' flips the `:attach' flag at point.
+The flip switches the walk between parts and plain text."
   (let ((dir (make-temp-file "quoth-img" t)))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -2866,8 +2866,9 @@ link at point, switching the walk between parts and plain text."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/insert-image-link-tags-region ()
-  "`quoth--insert-image-link' inserts the markdown image link as user
-input carrying the `quoth-image' plist with the attach flag."
+  "`quoth--insert-image-link' inserts a tagged markdown image link.
+The link is inserted as user input carrying the `quoth-image' plist
+with the attach flag."
   (let ((img-dir (make-temp-file "quoth-link" t)))
     (unwind-protect
         (let* ((buf (quoth-test--fresh-buffer))
@@ -2900,7 +2901,8 @@ input carrying the `quoth-image' plist with the attach flag."
       (ignore-errors (delete-directory img-dir t)))))
 
 (ert-deftest quoth-test/image-preflight-missing-file-notes-and-degrades ()
-  "Send-time preflight over the prompt's images: a missing file yields
+  "Preflight reports a missing image file and degrades to plain text.
+Send-time preflight over the prompt's images: a missing file yields
 an error system note and a plain-text content with the bracketed
 placeholder."
   (unwind-protect
@@ -2923,8 +2925,9 @@ placeholder."
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/image-preflight-blind-model-notes ()
-  "When the active model lacks attachment support and images remain on
-the wire, preflight inserts one user-kind note."
+  "Preflight notes a blind model when images remain on the wire.
+The active model lacks attachment support, so preflight inserts one
+user-kind note."
   (let ((dir (make-temp-file "quoth-img" t)))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
@@ -2951,8 +2954,9 @@ the wire, preflight inserts one user-kind note."
       (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest quoth-test/image-attach-time-blind-model-notes ()
-  "Attaching an image while the active model cannot see images inserts
-an error system note naming the model."
+  "Attach-time notes a blind model with an error system note.
+Attaching an image while the active model cannot see images inserts
+the note naming the model."
   (let ((dir (make-temp-file "quoth-img" t)))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))

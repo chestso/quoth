@@ -45,7 +45,7 @@
 ;; bytes) is reported as a markdown image-link line the chat walk
 ;; attaches as pixels, never decoded as text; a model without image
 ;; support or a past-cap image is an error result the model can adapt
-;; to. `read_file' additionally takes three shape args: `line_numbers'
+;; to.  `read_file' additionally takes three shape args: `line_numbers'
 ;; (default off) prefixes each line with its 1-based true number in
 ;; `cat -n' style; `offset' (1-based) and `limit' window the read;
 ;; both error on non-positive values and clamp past EOF silently.
@@ -480,7 +480,7 @@ string.  Writing under the `unix' EOL is the identity: `\\n' -> LF
 and `\\r' is left untouched, so a byte-exact round trip survives.
 A bare `utf-8' or a platform-default EOL could translate `\\n' to
 `\\r\\n' (or vice versa) and corrupt the file.  PATH must already
-exist: rename-file cannot replace an existing file on all platforms,
+exist: `rename-file' cannot replace an existing file on all platforms,
 so the write is direct; atomicity is a bonus here, not the
 requirement byte-exactness is."
   (let ((coding-system-for-write 'utf-8-unix))
@@ -682,12 +682,12 @@ identical (no-op edit)")))
                ((null hits)
                 (let ((first-line
                        (or (car (split-string old "\n" t)) "")))
-                  (error "old_string not found in %s (starts %S); \
+                  (error "No match for old_string in %s (starts %S); \
 read the file fresh before editing"
                          path (substring first-line 0
                                          (min (length first-line) 60)))))
                ((and (> (length hits) 1) (not replace-all))
-                (error "old_string occurs %d times (lines %s); \
+                (error "The old_string occurs %d times (lines %s); \
 include surrounding lines to make it unique, or set replace_all"
                        (length hits)
                        (mapconcat
@@ -1001,8 +1001,9 @@ pixels.  An immediate tool: returns nil (no cancel thunk)."
 (defun quoth-read-file--exec-text (path args numbered-p on-done)
   "Deliver the text read of PATH for ARGS to ON-DONE inline.
 The line-numbers / offset / limit rendering path of `read_file' for
-non-image files; see `quoth-read-file--exec' for the arg contracts.
-An immediate tool: returns nil (no cancel thunk)."
+non-image files: with NUMBERED-P non-nil, each rendered line is
+prefixed with its true number.  See `quoth-read-file--exec' for the
+arg contracts.  An immediate tool: returns nil (no cancel thunk)."
   (let* ((range (quoth-file--read-range args))
          (offset (car range))
          (limit (cdr range))

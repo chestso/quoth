@@ -78,8 +78,8 @@ without the git side."
      ,@body))
 
 (defun quoth-test--stage-repo-root ()
-  "Return the repository root directory for stage tests.
-Searches upward from this file (or `default-directory') for
+  "Return the repository root directory for the stage suite.
+Search upward from this file (or `default-directory') for
 `quoth.el', so the lint and the git-stage tests resolve sources both
 when run from the repo root and from test/."
   (let ((dir (file-name-directory
@@ -105,8 +105,8 @@ spawns) with context discovery disabled and the prompt cache empty."
 ;;; 1. Cache hit: delivery is inline, no stage spawns
 
 (ert-deftest quoth-test/stage-cache-hit-delivers-inline ()
-  "A cache hit delivers the cached prompt synchronously and spawns
-no git process."
+  "A cache hit delivers the cached prompt with no git process.
+The delivery is synchronous."
   (quoth-test--with-stage
    (quoth-test--with-prompt-buffer
     (setq-local quoth-openai--cached-system-prompt "CACHED")
@@ -127,9 +127,9 @@ no git process."
 ;;; 2. Cache miss: the git stage delivers the assembled prompt
 
 (ert-deftest quoth-test/stage-miss-runs-git-stage ()
-  "A miss spawns one marker-delimited git process for the whole
-stage; the sentinel's delivery carries the parsed git section and
-lands in the prompt cache."
+  "A miss spawns one marker-delimited git process for the whole stage.
+The sentinel's delivery carries the parsed git section and lands in
+the prompt cache."
   (quoth-test--with-stage
    (quoth-test--with-prompt-buffer
     (let ((delivered nil))
@@ -151,8 +151,9 @@ lands in the prompt cache."
         (should-not (process-live-p stage)))))))
 
 (ert-deftest quoth-test/stage-garbage-output-degrades ()
-  "Git failure (garbage output, no markers) still delivers exactly
-one prompt; the unparsable section degrades rather than erroring."
+  "Git failure still delivers exactly one prompt.
+Garbage output with no markers: the unparsable section degrades
+rather than erroring."
   (quoth-test--with-stage
    (quoth-test--with-prompt-buffer
     (let ((calls 0)
@@ -168,8 +169,8 @@ one prompt; the unparsable section degrades rather than erroring."
         (should (string= delivered quoth-openai--cached-system-prompt)))))))
 
 (ert-deftest quoth-test/stage-no-git-dir-delivers-gitless ()
-  "A non-git directory delivers the gitless prompt synchronously: no
-stage process, no git section."
+  "A non-git directory delivers the gitless prompt synchronously.
+No stage process, no git section."
   (quoth-test--with-stage
    (with-temp-buffer
      (setq-local default-directory "/tmp/")
@@ -188,8 +189,8 @@ stage process, no git section."
        (should-not quoth-test--stage--git-commands)))))
 
 (ert-deftest quoth-test/stage-timeout-delivers-gitless ()
-  "A stage past `quoth-openai-git-timeout' is aborted and delivers
-without waiting for git."
+  "A stage past `quoth-openai-git-timeout' is aborted.
+The delivery goes through without waiting for git."
   (let ((quoth-openai-git-timeout 0.01))
     (quoth-test--with-stage
      (quoth-test--with-prompt-buffer
@@ -208,8 +209,8 @@ without waiting for git."
 ;;; 3. The request handle: shape, activity, interrupt
 
 (ert-deftest quoth-test/stage-handle-shape ()
-  "A send returns a handle covering both stages (:stage-process,
-:curl, :done-p), not a raw process; cleanup clears it."
+  "A send returns a handle covering both stages, not a raw process.
+The handle covers :stage-process, :curl, :done-p; cleanup clears it."
   (let ((default-directory quoth-test--root)
         (quoth-openai-context-paths nil)
         (quoth-openai-global-context-paths nil))
@@ -231,9 +232,9 @@ without waiting for git."
          (should-not (quoth-provider-active-p provider)))))))
 
 (ert-deftest quoth-test/stage-active-p-covers-both-stages ()
-  "`quoth-provider-active-p' is true with only the stage live and
-true again once the curl transport takes over; with both dead it is
-nil."
+  "`quoth-provider-active-p' tracks the handle, not just the process.
+It is true with only the stage live, true again once the curl
+transport takes over; with both dead it is nil."
   (let ((default-directory quoth-test--root)
         (quoth-openai-context-paths nil)
         (quoth-openai-global-context-paths nil))
@@ -264,8 +265,8 @@ nil."
              (quoth-provider-cleanup provider))))))))
 
 (ert-deftest quoth-test/stage-interrupt-aborts-both-stages ()
-  "`quoth-provider-interrupt' kills the live stage and aborts the
-curl transport, clearing the handle and the completion action."
+  "`quoth-provider-interrupt' kills the live stage and aborts the curl.
+The transport abort clears the handle and the completion action."
   (let ((default-directory quoth-test--root)
         (quoth-openai-context-paths nil)
         (quoth-openai-global-context-paths nil))
@@ -297,9 +298,9 @@ curl transport, clearing the handle and the completion action."
 ;;; 4. Phase: preparing while staged, streaming once curl fires
 
 (ert-deftest quoth-test/stage-send-preparing-then-streaming ()
-  "`quoth--send-prompt' enters `preparing' while the system prompt
-stage is in flight; when the stage delivers, the phase moves to
-`streaming' and the curl transport sits in the handle."
+  "`quoth--send-prompt' enters `preparing' while the system prompt is staged.
+When the stage delivers, the phase moves to `streaming' and the curl
+transport sits in the handle."
   (let ((default-directory quoth-test--root)
         (quoth-openai-context-paths nil)
         (quoth-openai-global-context-paths nil))
@@ -331,8 +332,8 @@ stage is in flight; when the stage delivers, the phase moves to
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/stage-on-ready-streaming-only-when-busy ()
-  "The staged delivery moves a busy buffer to `streaming'; a buffer
-that went idle meanwhile (interrupted mid-stage) stays idle."
+  "The staged delivery moves a busy buffer to `streaming'.
+A buffer that went idle meanwhile (interrupted mid-stage) stays idle."
   (let ((default-directory quoth-test--root)
         (quoth-openai-context-paths nil)
         (quoth-openai-global-context-paths nil))
@@ -370,9 +371,9 @@ that went idle meanwhile (interrupted mid-stage) stays idle."
 ;;; 5. Tool-calls / usage read through the handle
 
 (ert-deftest quoth-test/stage-tool-calls-usage-read-handle ()
-  "`quoth-provider--tool-calls' and `quoth-provider--usage' read the
-curl process through the handle's :curl key; a raw process where the
-handle belongs reads as no request."
+  "`quoth-provider--tool-calls' and `quoth-provider--usage' read via the handle.
+Both read the curl process through the handle's :curl key; a raw
+process where the handle belongs reads as no request."
   (let* ((provider (quoth-make-hyper-provider
                     :buffer (current-buffer)
                     :working-directory default-directory))
@@ -407,8 +408,8 @@ handle belongs reads as no request."
 ;;; 6. Buffer init prefetches the staged prompt
 
 (ert-deftest quoth-test/stage-init-prefetches-system-prompt ()
-  "Buffer init prefetches the staged system prompt so the first send
-then hits the prompt cache."
+  "Buffer init prefetches the staged system prompt.
+The first send then hits the prompt cache."
   (let ((calls 0))
     (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
                (lambda (_buf _on-ready) (setq calls (1+ calls)) nil)))
@@ -434,7 +435,7 @@ Banned: `url-retrieve-synchronously', `shell-command-to-string',
 `call-process', `process-wait', `sleep-for', and `sit-for' as a wait.
 `accept-process-output' is permitted only as the zero-timeout poll in
 `quoth-process--collect-final' and the stage/catalog sentinels' drain
-(the same pattern).  Tests and `quoth-debug-tools.el' (user-invoked
+\(the same pattern).  Tests and `quoth-debug-tools.el' (user-invoked
 diagnostics) are exempt."
   (let* ((root (quoth-test--stage-repo-root))
          (sources (quoth-test--lint-sources))

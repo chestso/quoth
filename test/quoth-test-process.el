@@ -457,9 +457,9 @@ collects the exit chunk and exit code without waiting."
 ;;; 6. Spawn environment
 
 (ert-deftest quoth-test-process/spawn-env-reaches-child ()
-  "The sanitized environment (pagers off, NO_COLOR, TERM=dumb) reaches
-the child.  The child process is spawned with the sanitized
-`process-environment' already in effect."
+  "The sanitized environment reaches the child.
+Pagers off, NO_COLOR, TERM=dumb: the child process is spawned with the
+sanitized `process-environment' already in effect."
   (let ((owner (quoth-test-process--owner))
         (report (quoth-test-process--reporter))
         (session nil))
@@ -590,8 +590,8 @@ CRLF output reads as plain LF lines to the model."
   (should (equal (quoth-process--render "a\r\nb\r\n") "a\nb\n")))
 
 (ert-deftest quoth-test-process/render-plain-text-untouched ()
-  "Text without control bytes passes through unchanged, including
-newlines and multibyte characters."
+  "Text without control bytes passes through unchanged.
+Newlines and multibyte characters survive too."
   (should (equal (quoth-process--render "plain\u4e2d text\nmore\n")
                  "plain\u4e2d text\nmore\n")))
 
@@ -607,23 +607,23 @@ newlines and multibyte characters."
   (should (equal (quoth-process--render "x\e[1;5Hy\n") "xy\n")))
 
 (ert-deftest quoth-test-process/render-cup-deeper-row-drops ()
-  "A CUP to a row below the first collapses into this line (the
-one-line model); the cursor stays put."
+  "A CUP to a row below the first collapses into this line.
+The one-line model applies; the cursor stays put."
   (should (equal (quoth-process--render "x\e[2;5Hy\n") "xy\n")))
 
 (ert-deftest quoth-test-process/render-unterminated-csi-drops-line-rest ()
-  "A CSI sequence unterminated at end of chunk drops the rest of the
-line — a mid-frame artifact, and dropping it is the desired outcome."
+  "A CSI sequence unterminated at end of chunk drops the rest of the line.
+It is a mid-frame artifact, and dropping it is the desired outcome."
   (should (equal (quoth-process--render "ok\e[2") "ok")))
 
 (ert-deftest quoth-test-process/render-partial-trailing-line-kept ()
-  "A trailing partial line (no final newline) renders too; the chunk
-splitting on LF keeps its structure."
+  "A trailing partial line (no final newline) renders too.
+The chunk splitting on LF keeps its structure."
   (should (equal (quoth-process--render "abc\rd") "dbc")))
 
 (ert-deftest quoth-test-process/render-chunk-split-on-line-boundary ()
-  "Splitting a chunk at a line boundary renders identically to the
-whole: rendering is per line, and the join preserves structure."
+  "Splitting a chunk at a line boundary renders identically to the whole.
+Rendering is per line, and the join preserves structure."
   (let ((whole "resolving...\r100% done\nnext\n"))
     (should (equal (quoth-process--render whole)
                    (concat (quoth-process--render "resolving...\r100% done\n")
@@ -656,9 +656,9 @@ whole: rendering is per line, and the join preserves structure."
       (quoth-test-process--cleanup-owner owner))))
 
 (ert-deftest quoth-test-process/render-real-process-round-trip ()
-  "A real PTY session's exit report carries rendered output: the CR
-overwrite and the erase-line sequence are applied, the raw frame
-history is not."
+  "A real PTY session's exit report carries rendered output.
+The CR overwrite and the erase-line sequence are applied; the raw
+frame history is not."
   (let ((owner (quoth-test-process--owner))
         (report (quoth-test-process--reporter))
         (session nil))
