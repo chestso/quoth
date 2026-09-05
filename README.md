@@ -276,20 +276,23 @@ Prompt/response tagging and metadata are documented in
 
 ### Header Line Display
 
-The header line shows three clusters joined by `|`: the model name,
-session usage, and the region type at point.
+The header line shows three clusters joined by two spaces: the model
+name, session usage, and the region type at point.
 
 ```
-deepseek-v4-flash | ↑9.0k ↓1.2k $0.0123 42% | response
+deepseek-v4-flash  ↑9.0k ↓1.2k $0.0123 42%  response
 ```
 
-The model is the effective provider model (`quoth-model` if set, else
-the provider default). Usage — input (`↑`) and output (`↓`) tokens,
-accumulated cost, and cache percentage — appears only after the first
-response. The region type updates as the cursor moves: `user` on the
-input line, `separator` on a divider, `reasoning` on chain-of-thought
-text, `tool` and `tool-output` on tool blocks, and `response` on the
-final answer.
+The model is the active provider's model (set from `quoth-model` when
+the buffer is created, updated by the model selector). Usage — input
+(`↑`) and output (`↓`) tokens, accumulated cost, and cache percentage
+— appears after the first response completes and totals the whole
+session (tokens, cost, and cache percentage across all prompts and
+tool rounds; cleared by `C-c " k`). The third cluster is the region
+type at point — `user` (sent input), `response`, `reasoning`, `tool`,
+`tool-output`, `system` (error/info panes), `separator` /
+`user-separator` (the `---` dividers) — or `-` on untagged text,
+which includes the input area before its first send.
 
 ### Model selection and persistence
 
