@@ -151,6 +151,12 @@ event payloads the debug log pretty-prints are small and unaffected."
   :type 'integer
   :group 'quoth-openai)
 
+(defconst quoth--openai-truncated-format "%s\n... [%d chars omitted]"
+  "Format string for payloads over `quoth-openai-debug-pretty-max'.
+Kept as a named constant so the truncation note stays on one line;
+a literal string spanning lines in a call is fragile under
+structural editing tools.")
+
 (declare-function quoth--debug-log "quoth.el" (category message))
 (declare-function quoth--schedule "quoth.el" (fn))
 
@@ -1094,9 +1100,9 @@ truncated (with a size note) rather than pretty-printed, so the debug
 log stays cheap and bounded on large request bodies."
   (if (> (length json-string) quoth-openai-debug-pretty-max)
       (let ((max quoth-openai-debug-pretty-max))
-        (format "%s
-... [%d chars omitted]" (substring json-string 0 max)
-(- (length json-string) max)))
+        (format quoth--openai-truncated-format
+                (substring json-string 0 max)
+                (- (length json-string) max)))
     (with-temp-buffer
       (insert json-string)
       (json-pretty-print (point-min) (point-max))
