@@ -1,82 +1,76 @@
 # Quoth Architecture
 
-Developer-facing documentation for the Quoth codebase: how the
-package is structured, how each provider works, how the chat buffer
-tracks its content, and how to hack on it. User-facing documentation
-lives in [README.md](README.md).
+Developer-facing documentation for the Quoth codebase: how the package is
+structured, how each provider works, how the chat buffer tracks its content, and
+how to hack on it. User-facing documentation lives in [README.md](README.md).
 
 ## Design Principles
 
-These principles are load-bearing: every file and subsystem follows
-them, and new code must too.
+These principles are load-bearing: every file and subsystem follows them, and
+new code must too.
 
-1. **The buffer is the single source of truth.** Every outgoing HTTP
-   request — the initial send and every tool-loop follow-up — is
-   reconstructed from the buffer's tagged regions (text properties) at
-   send time. There is no cache, side table, or temporary store holding
-   message history or tool state. Killing and reopening the buffer
-   rebuilds an identical request. All conversation state lives in the
-   buffer; persistence via **file local variables** is the planned
-   next step (currently Phase 2 roadmap work — see
+1. **The buffer is the single source of truth.** Every outgoing HTTP request —
+   the initial send and every tool-loop follow-up — is reconstructed from the
+   buffer's tagged regions (text properties) at send time. There is no cache,
+   side table, or temporary store holding message history or tool state. Killing
+   and reopening the buffer rebuilds an identical request. All conversation
+   state lives in the buffer; persistence via **file local variables** is the
+   planned next step (currently Phase 2 roadmap work — see
    `quoth--session-uuid`).
 
-2. **The buffer is append-only.** The buffer only ever grows at
-   point-max; completed content (prompts, responses, tool blocks,
-   reasoning) is plain editable text, and history/state is derived
-   from its tagged regions. Nothing is made read-only; the whole
-   buffer — history included — stays editable, and edits flow into the
-   next request because requests are rebuilt from the buffer.
+2. **The buffer is append-only.** The buffer only ever grows at point-max;
+   completed content (prompts, responses, tool blocks, reasoning) is plain
+   editable text, and history/state is derived from its tagged regions. Nothing
+   is made read-only; the whole buffer — history included — stays editable, and
+   edits flow into the next request because requests are rebuilt from the
+   buffer.
 
-3. **Text properties carry state; overlays are for special UI only.**
-   Metadata (region type, prompt id, response linkage, tool-call
-   payloads) is stored as text properties so it survives
-   font-lock refontification. Overlays are reserved for transient,
-   display-only features — the reasoning highlight + fold and the
-   `system`-note overlays (transcript annotations; the underlying text
-   is buffer text tagged `quoth-region-type` = `system`, never
+3. **Text properties carry state; overlays are for special UI only.** Metadata
+   (region type, prompt id, response linkage, tool-call payloads) is stored as
+   text properties so it survives font-lock refontification. Overlays are
+   reserved for transient, display-only features — the reasoning highlight +
+   fold and the `system`-note overlays (transcript annotations; the underlying
+   text is buffer text tagged `quoth-region-type` = `system`, never
    display-only).
 
 4. **Protocols live in their own files.** The provider protocol
    (`quoth-provider.el`), the OpenAI chat-completions + tool protocol
    (`quoth-openai.el`), and the process-handler session protocol
-   (`quoth-process.el`) are each a dedicated, self-contained file with a
-   single dependency direction. `quoth.el` only orchestrates the buffer
-   and calls into them.
+   (`quoth-process.el`) are each a dedicated, self-contained file with a single
+   dependency direction. `quoth.el` only orchestrates the buffer and calls into
+   them.
 
-5. **Providers are abstracted and reuse the protocols.** Every provider
-   is a self-contained file implementing the `quoth-provider-*`
-   generics. The shared wire work (request composition, SSE parsing,
-   curl transport, tool dispatch) is implemented once in
-   `quoth-openai.el`; the concrete hyper provider is a thin shim that
-   maps its configuration onto that client.
+5. **Providers are abstracted and reuse the protocols.** Every provider is a
+   self-contained file implementing the `quoth-provider-*` generics. The shared
+   wire work (request composition, SSE parsing, curl transport, tool dispatch)
+   is implemented once in `quoth-openai.el`; the concrete hyper provider is a
+   thin shim that maps its configuration onto that client.
 
-6. **Buffer-unaware, presentation-agnostic layers.** The process
-   handler (`quoth-process.el`) and all providers never read or write
-   the quoth buffer. They treat the caller as opaque: the send loop in
-   `quoth.el` is the only place with buffer access, and it threads
-   progress, deltas, and errors through callbacks into those layers.
-   Keeping the providers buffer-unaware is a deliberate separation of
-   concerns, not an implementation detail.
+6. **Buffer-unaware, presentation-agnostic layers.** The process handler
+   (`quoth-process.el`) and all providers never read or write the quoth buffer.
+   They treat the caller as opaque: the send loop in `quoth.el` is the only
+   place with buffer access, and it threads progress, deltas, and errors through
+   callbacks into those layers. Keeping the providers buffer-unaware is a
+   deliberate separation of concerns, not an implementation detail.
 
-7. **Everything inserted must be valid markdown.** The chat buffer's
-   parent mode is `markdown-mode` (fallback `text-mode`); bodies,
-   inserted context, tool blocks, and the input divider are all rendered as
-   markdown constructs (fenced code blocks, bold headers, horizontal
-   rules) so native font-lock and preview/export stay correct.
+7. **Everything inserted must be valid markdown.** The chat buffer's parent mode
+   is `markdown-mode` (fallback `text-mode`); bodies, inserted context, tool
+   blocks, and the input divider are all rendered as markdown constructs (fenced
+   code blocks, bold headers, horizontal rules) so native font-lock and
+   preview/export stay correct.
 
-8. **No persistent process.** Each prompt fires a new HTTP request.
-   Tool execution is the one exception: interactive commands run in PTY
-   sessions owned by `quoth-process.el`, scoped per quoth buffer and
-   capped at `quoth-process-max-sessions`.
+8. **No persistent process.** Each prompt fires a new HTTP request. Tool
+   execution is the one exception: interactive commands run in PTY sessions
+   owned by `quoth-process.el`, scoped per quoth buffer and capped at
+   `quoth-process-max-sessions`.
 
-9. **No automatic retry.** A failed request surfaces its error in the
-   buffer (`> **Error:** …` system pane; non-2xx as `HTTP <code> from
-<url>`) and stops. Quoth never re-sends a failed request on its own:
-   the buffer is the record of what was sent and what came back, a
-   silent retry would falsify that record, and re-issuing a failed
-   tool-loop request could repeat `exec_command` side effects. Sending
-   again is always the user's explicit act (`C-c " s`), rebuilding the
-   request from the buffer — edits included.
+9. **No automatic retry.** A failed request surfaces its error in the buffer
+   (`> **Error:** …` system pane; non-2xx as `HTTP <code> from <url>`) and
+   stops. Quoth never re-sends a failed request on its own: the buffer is the
+   record of what was sent and what came back, a silent retry would falsify that
+   record, and re-issuing a failed tool-loop request could repeat `exec_command`
+   side effects. Sending again is always the user's explicit act (`C-c " s`),
+   rebuilding the request from the buffer — edits included.
 
 ## Project Layout
 
@@ -95,107 +89,97 @@ quoth/                  # Package root
   test/                 # ERT test suite (see "Hacking" below)
 ```
 
-Dependency direction: `quoth-provider.el` has no `require`s (it owns
-the shared session slots, the active-provider state, and the
-`quoth-provider-*` generics, so the OpenAI client and the selector
-depend on the protocol, not on `quoth.el`); `quoth-json.el` requires only `json` (a fallback); it exposes `quoth-json-read`
-and `quoth-json-write`, preferring the native C `json-parse-string` when
-`json-available-p` and keeping `json.el`'s representation contract. Every
-file that parses or emits JSON (`quoth-openai`, `quoth-hyper-provider`,
-`quoth-searxng`) calls through it. `quoth-openai.el` requires
-only `quoth-provider` (for the session slots); `quoth-xxh3.el` has no
-dependencies (pure math); `quoth-process.el` requires only `cl-lib`
-and `subr-x`; `quoth-hyper-provider.el` requires `quoth-provider` +
-`quoth-openai` + `quoth-xxh3`; `quoth-tools.el` requires
-`quoth-openai` + `quoth-process` and registers its tools at load;
-`quoth-select.el` requires `quoth-provider` + `quoth-openai` (both
-leaves) and refreshes the UI through `quoth-after-model-change-hook`
-rather than calling core functions — it never requires `quoth.el`;
-`quoth.el` requires all of them (including `quoth-select`, for the
-`C-c " m` keybinding). Stream state, buffer rendering,
-and error handling (`quoth--append-delta`, `quoth--record-error`,
-`quoth--stream-transition`, `quoth--debug-log`) all live in
-`quoth.el` — the providers call them through buffer-local process
-references and `declare-function` stubs.
+Dependency direction: `quoth-provider.el` has no `require`s (it owns the shared
+session slots, the active-provider state, and the `quoth-provider-*` generics,
+so the OpenAI client and the selector depend on the protocol, not on
+`quoth.el`); `quoth-json.el` requires only `json` (a fallback); it exposes
+`quoth-json-read` and `quoth-json-write`, preferring the native C
+`json-parse-string` when `json-available-p` and keeping `json.el`'s
+representation contract. Every file that parses or emits JSON (`quoth-openai`,
+`quoth-hyper-provider`, `quoth-searxng`) calls through it. `quoth-openai.el`
+requires only `quoth-provider` (for the session slots); `quoth-xxh3.el` has no
+dependencies (pure math); `quoth-process.el` requires only `cl-lib` and
+`subr-x`; `quoth-hyper-provider.el` requires `quoth-provider` + `quoth-openai` +
+`quoth-xxh3`; `quoth-tools.el` requires `quoth-openai` + `quoth-process` and
+registers its tools at load; `quoth-select.el` requires `quoth-provider` +
+`quoth-openai` (both leaves) and refreshes the UI through
+`quoth-after-model-change-hook` rather than calling core functions — it never
+requires `quoth.el`; `quoth.el` requires all of them (including `quoth-select`,
+for the `C-c " m` keybinding). Stream state, buffer rendering, and error
+handling (`quoth--append-delta`, `quoth--record-error`,
+`quoth--stream-transition`, `quoth--debug-log`) all live in `quoth.el` — the
+providers call them through buffer-local process references and
+`declare-function` stubs.
 
 ## Provider Abstraction
 
-All provider interaction goes through a provider protocol (the
-`cl-defgeneric` methods `quoth-provider-send-prompt`,
-`quoth-provider-interrupt`, `quoth-provider-active-p`,
-`quoth-provider-cleanup`, `quoth-provider-grant-permission`,
-`quoth-provider-model`, and the internal
-`quoth-provider--models-async` + `quoth-provider--models-key`
-(the async catalog fetch and its cache key — see the catalog cache
-below), `quoth-provider--apply-model`, and `quoth-provider--tool-calls`
-(reading the SSE stream's accumulated tool calls off the finished
-transport). The protocol and
-the shared `quoth-provider` base struct live in `quoth-provider.el`;
-each concrete provider is a dedicated, buffer-unaware file:
+All provider interaction goes through a provider protocol (the `cl-defgeneric`
+methods `quoth-provider-send-prompt`, `quoth-provider-interrupt`,
+`quoth-provider-active-p`, `quoth-provider-cleanup`,
+`quoth-provider-grant-permission`, `quoth-provider-model`, and the internal
+`quoth-provider--models-async` + `quoth-provider--models-key` (the async catalog
+fetch and its cache key — see the catalog cache below),
+`quoth-provider--apply-model`, and `quoth-provider--tool-calls` (reading the SSE
+stream's accumulated tool calls off the finished transport). The protocol and
+the shared `quoth-provider` base struct live in `quoth-provider.el`; each
+concrete provider is a dedicated, buffer-unaware file:
 
-- `quoth-hyper-provider.el` — the default implementation: direct HTTP
-  to the Charm Hyper gateway (see below).
+- `quoth-hyper-provider.el` — the default implementation: direct HTTP to the
+  Charm Hyper gateway (see below).
 
 ### Model catalog cache
 
 The protocol module owns a **global** catalog cache:
-`quoth-provider--models-cache`, keyed by
-`quoth-provider--models-key` (provider type + resolved base URL for
-hyper), shared across buffers of the same provider. All UI reads go
-through `quoth-provider-models-cached` (never a fetch); a fresh entry
-(inside `quoth-provider-models-ttl`, default 600 s) returns directly,
-a stale entry returns immediately and kicks exactly one background
-refresh (stale-while-revalidate, deduplicated in flight), and a
-successful refresh runs `quoth-provider-models-hook`. Refreshes ride
-the async `quoth-provider--models-async` generic; a failed fetch keeps
-the cached entry. The selector's `g` suffix force-refreshes, buffer
-initialization prefetches (`quoth-provider-models-prefetch`), and
-`quoth-select-model` falls back to the static list on a cold cache.
+`quoth-provider--models-cache`, keyed by `quoth-provider--models-key` (provider
+type + resolved base URL for hyper), shared across buffers of the same provider.
+All UI reads go through `quoth-provider-models-cached` (never a fetch); a fresh
+entry (inside `quoth-provider-models-ttl`, default 600 s) returns directly, a
+stale entry returns immediately and kicks exactly one background refresh
+(stale-while-revalidate, deduplicated in flight), and a successful refresh runs
+`quoth-provider-models-hook`. Refreshes ride the async
+`quoth-provider--models-async` generic; a failed fetch keeps the cached entry.
+The selector's `g` suffix force-refreshes, buffer initialization prefetches
+(`quoth-provider-models-prefetch`), and `quoth-select-model` falls back to the
+static list on a cold cache.
 
-The shared `quoth-provider` base struct has slots `buffer`,
-`completion-action`, `working-directory`, `request` (the request
-handle owned by the provider, set by `send-prompt`; see the staged
-send below), `application-count` (default 1), and `type`. The hyper
-provider subclasses it and adds its own slots (base URL, token,
-model, session-affinity hash, x-crush-id).
+The shared `quoth-provider` base struct has slots `buffer`, `completion-action`,
+`working-directory`, `request` (the request handle owned by the provider, set by
+`send-prompt`; see the staged send below), `application-count` (default 1), and
+`type`. The hyper provider subclasses it and adds its own slots (base URL,
+token, model, session-affinity hash, x-crush-id).
 
-Process control is a provider responsibility, routed through the
-protocol: `quoth-send-input` consults `quoth-provider-active-p` for its
-"still running" guard, `quoth-interrupt` calls
-`quoth-provider-interrupt`, and `quoth-clear-buffer` calls
-`quoth-provider-cleanup`. The core never reads or kills a transport
-process directly.
+Process control is a provider responsibility, routed through the protocol:
+`quoth-send-input` consults `quoth-provider-active-p` for its "still running"
+guard, `quoth-interrupt` calls `quoth-provider-interrupt`, and
+`quoth-clear-buffer` calls `quoth-provider-cleanup`. The core never reads or
+kills a transport process directly.
 
 ## The send loop
 
-The send loop in `quoth.el` is the buffer-facing orchestration layer
-that sits between the provider (wire work) and the chat buffer (source
-of truth). It is the **single place that owns the buffer** and drives
-the lifecycle of one prompt → response cycle.
+The send loop in `quoth.el` is the buffer-facing orchestration layer that sits
+between the provider (wire work) and the chat buffer (source of truth). It is
+the **single place that owns the buffer** and drives the lifecycle of one prompt
+→ response cycle.
 
 ### The staged send
 
 A send is two stages. First the **system-prompt stage**
 (`quoth-openai--system-prompt-async`): on a cache hit (working dir +
-context-file modtimes unchanged) the cached prompt delivers inline;
-on a miss one marker-delimited git process gathers the
-branch/status/commits sections and the assembled prompt is cached and
-delivered on the `quoth--schedule` hop. Git failure, a non-git
-directory, and a stage past `quoth-openai-git-timeout` all degrade to
-the gitless prompt — a send never blocks on git. Buffer
-initialization prefetches the stage so the first send is usually a
-cache hit.
+context-file modtimes unchanged) the cached prompt delivers inline; on a miss
+one marker-delimited git process gathers the branch/status/commits sections and
+the assembled prompt is cached and delivered on the `quoth--schedule` hop. Git
+failure, a non-git directory, and a stage past `quoth-openai-git-timeout` all
+degrade to the gitless prompt — a send never blocks on git. Buffer
+initialization prefetches the stage so the first send is usually a cache hit.
 
-Second, the curl transport fires in the provider's on-ready, running
-in the chat buffer (the phase machine moves `preparing` →
-`streaming` there, guarded by `quoth--busy-p`). The provider's
-`send-prompt` returns a **request handle** — a plist
-`(:stage-process … :curl … :done-p …)` covering both stages — stored
-in the provider's `request` slot. `quoth-provider-active-p`,
+Second, the curl transport fires in the provider's on-ready, running in the chat
+buffer (the phase machine moves `preparing` → `streaming` there, guarded by
+`quoth--busy-p`). The provider's `send-prompt` returns a **request handle** — a
+plist `(:stage-process … :curl … :done-p …)` covering both stages — stored in
+the provider's `request` slot. `quoth-provider-active-p`,
 `quoth-provider-interrupt`, `quoth-provider-cleanup`, and the
-`quoth-provider--tool-calls` / `quoth-provider--usage` reads all go
-through the handle, so an interrupt or a mid-stage cleanup covers
-whichever stage is live.
+`quoth-provider--tool-calls` / `quoth-provider--usage` reads all go through the
+handle, so an interrupt or a mid-stage cleanup covers whichever stage is live.
 
 | Function                                              | Role                                                                                             |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -217,239 +201,222 @@ whichever stage is live.
 
 ### Why the boundary exists
 
-The send loop is a **separation-of-concerns boundary** (design
-principle #6). Three motivations:
+The send loop is a **separation-of-concerns boundary** (design principle #6).
+Three motivations:
 
-1. **The provider must never touch the buffer.** The provider (and the
-   OpenAI client, SSE parser, and curl transport beneath it) only
-   knows how to send bytes and emit callbacks. It receives the buffer
-   as an _opaque data object_ — never read, never switched to.
-2. **The buffer is the single source of truth.** Requests are rebuilt
-   from text properties at send time. If the provider wrote directly
-   to the buffer, wire logic would entangle with buffer layout and
-   break that invariant.
-3. **One choke point for "stream event → buffer edit".** The send loop
-   is the only place with buffer access, so the streaming hot path
+1. **The provider must never touch the buffer.** The provider (and the OpenAI
+   client, SSE parser, and curl transport beneath it) only knows how to send
+   bytes and emit callbacks. It receives the buffer as an _opaque data object_ —
+   never read, never switched to.
+2. **The buffer is the single source of truth.** Requests are rebuilt from text
+   properties at send time. If the provider wrote directly to the buffer, wire
+   logic would entangle with buffer layout and break that invariant.
+3. **One choke point for "stream event → buffer edit".** The send loop is the
+   only place with buffer access, so the streaming hot path
    (`quoth--insert-at-eof` with `inhibit-modification-hooks`) and the
    reasoning-overlay logic live in exactly one place.
 
-The mechanism is **dependency inversion via callbacks**: the send loop
-passes `:completion`, `:on-delta`, and `:on-error` closures _into_ the
-provider. The provider invokes them blindly; each closure captures the
-buffer and re-enters it. The provider therefore "signals" stream
-completion without knowing what a buffer is.
+The mechanism is **dependency inversion via callbacks**: the send loop passes
+`:completion`, `:on-delta`, and `:on-error` closures _into_ the provider. The
+provider invokes them blindly; each closure captures the buffer and re-enters
+it. The provider therefore "signals" stream completion without knowing what a
+buffer is.
 
 ### Presentation-agnostic by design
 
-The provider protocol is deliberately **presentation-agnostic**: the
-same buffer-unaware provider can back different consumers. The current
-`quoth.el` send loop is just _one_ consumer of that protocol;
-alternatives are a matter of writing a new consumer, not touching the
-wire layer:
+The provider protocol is deliberately **presentation-agnostic**: the same
+buffer-unaware provider can back different consumers. The current `quoth.el`
+send loop is just _one_ consumer of that protocol; alternatives are a matter of
+writing a new consumer, not touching the wire layer:
 
-- **A transient/posframe or minibuffer UI** — deltas rendered into a
-  transient popup instead of a markdown chat buffer; only the
-  `:on-delta` consumer changes.
-- **A batch/scripting consumer** — deltas accumulated into a plain
-  string and returned to a caller (a synchronous-ish `quoth-ask`),
-  with no buffer, markers, or reasoning overlay.
-- **A log/timeline consumer** — append-only transcript to a
-  `*quoth-log*` buffer or file, no input area or dividers.
+- **A transient/posframe or minibuffer UI** — deltas rendered into a transient
+  popup instead of a markdown chat buffer; only the `:on-delta` consumer
+  changes.
+- **A batch/scripting consumer** — deltas accumulated into a plain string and
+  returned to a caller (a synchronous-ish `quoth-ask`), with no buffer, markers,
+  or reasoning overlay.
+- **A log/timeline consumer** — append-only transcript to a `*quoth-log*` buffer
+  or file, no input area or dividers.
 - **A completion/at-point consumer** — stream the answer inline into a
-  _different_ buffer than the one holding the prompt (region-replace
-  style), rather than a dedicated chat buffer.
-- **An Org-mode consumer** — metadata in `:PROPERTIES:` drawers and
-  tool output in Org source blocks instead of text properties and
-  markdown fences.
+  _different_ buffer than the one holding the prompt (region-replace style),
+  rather than a dedicated chat buffer.
+- **An Org-mode consumer** — metadata in `:PROPERTIES:` drawers and tool output
+  in Org source blocks instead of text properties and markdown fences.
 
-In every case the provider protocol, SSE parsing, curl transport, and
-tool dispatch are reused unchanged; only the buffer-aware consumer
-differs.
+In every case the provider protocol, SSE parsing, curl transport, and tool
+dispatch are reused unchanged; only the buffer-aware consumer differs.
 
 ## Hyper provider (primary)
 
-The hyper provider (default) is Quoth's **primary mode of
-operation**: it posts the prompt to Hyper's OpenAI-compatible
-chat-completions endpoint (`POST {base-url}/chat/completions`, base URL
-defaulting to `https://hyper.charm.land/v1`) and streams the response
-directly. It needs no `quoth` binary — only `curl` (used the same way
-gptel and plz.el use it). The HTTP+SSE wire work is implemented once in
-the reusable OpenAI client `quoth-openai.el`; the provider is a thin
-shim supplying hyper config (base URL, token, session-affinity hash,
-x-crush-id) and mapping the provider protocol onto the client's
-`quoth-openai-compose-request` and `quoth-openai-request`.
+The hyper provider (default) is Quoth's **primary mode of operation**: it posts
+the prompt to Hyper's OpenAI-compatible chat-completions endpoint
+(`POST {base-url}/chat/completions`, base URL defaulting to
+`https://hyper.charm.land/v1`) and streams the response directly. It needs no
+`quoth` binary — only `curl` (used the same way gptel and plz.el use it). The
+HTTP+SSE wire work is implemented once in the reusable OpenAI client
+`quoth-openai.el`; the provider is a thin shim supplying hyper config (base URL,
+token, session-affinity hash, x-crush-id) and mapping the provider protocol onto
+the client's `quoth-openai-compose-request` and `quoth-openai-request`.
 
 ### How it works
 
 1. `quoth-provider-send-prompt` composes the request body via
-   `quoth-openai-compose-request` (messages array with a minimal
-   system prompt, the user prompt, model, and `stream: t`) and fires a
-   `curl --config -` subprocess; the config (URL, `request = POST`,
-   JSON content-type, bearer auth header, and `data-binary = @-`) plus
-   the JSON body go to curl over stdin. `data-binary = @-` is the
-   **last** config line so curl reads the rest of stdin as the body.
+   `quoth-openai-compose-request` (messages array with a minimal system prompt,
+   the user prompt, model, and `stream: t`) and fires a `curl --config -`
+   subprocess; the config (URL, `request = POST`, JSON content-type, bearer auth
+   header, and `data-binary = @-`) plus the JSON body go to curl over stdin.
+   `data-binary = @-` is the **last** config line so curl reads the rest of
+   stdin as the body.
 2. SSE frames are parsed incrementally in the process filter
-   (`quoth--hyper-curl-filter` → `quoth-openai-sse-feed`); content
-   deltas are emitted to the `:on-delta` callback
-   (`quoth--append-delta`), which appends them in order and
-   drives the reasoning overlay.
-3. A final `[DONE]` event, or the process exiting, runs the injected
-   completion (`quoth--finalize-response`), which tags the response and
-   inserts a fresh input divider (`---`, framed by blank lines). Stream
-   errors and user interrupts both finalize the interrupted turn
-   immediately through that same unified path: `:on-error` inserts and
-   tags a `system` pane (`> **Error:** …` for a failure, `>
-**Interrupted.**` for `quoth-interrupt`) and sets
+   (`quoth--hyper-curl-filter` → `quoth-openai-sse-feed`); content deltas are
+   emitted to the `:on-delta` callback (`quoth--append-delta`), which appends
+   them in order and drives the reasoning overlay.
+3. A final `[DONE]` event, or the process exiting, runs the injected completion
+   (`quoth--finalize-response`), which tags the response and inserts a fresh
+   input divider (`---`, framed by blank lines). Stream errors and user
+   interrupts both finalize the interrupted turn immediately through that same
+   unified path: `:on-error` inserts and tags a `system` pane (`> **Error:** …`
+   for a failure, `> **Interrupted.**` for `quoth-interrupt`) and sets
    `quoth--pending-interrupt`; `quoth--finalize-response` then stamps
-   `quoth-interrupted` on the partial and closes it. The `system` pane
-   is real buffer text (visible on save/preview), tagged at insert time
-   so it is never swept into a `response` region or a wire message.
+   `quoth-interrupted` on the partial and closes it. The `system` pane is real
+   buffer text (visible on save/preview), tagged at insert time so it is never
+   swept into a `response` region or a wire message.
 
 ### Session continuity
 
-The hyper provider is stateful: prior conversation from the buffer's
-tagged regions is folded into each request's messages array as
+The hyper provider is stateful: prior conversation from the buffer's tagged
+regions is folded into each request's messages array as
 `[system, prior-user, prior-assistant, prior-tool, ..., current-user]` (tool
-rounds interleave as assistant `tool_calls` + `role: "tool"` result pairs).
-Set `quoth-hyper-history-limit` to `0` for stateless per-prompt requests.
-Because the buffer is the source of truth, `C-c " k` (clear) starts a
-fresh conversation naturally.
+rounds interleave as assistant `tool_calls` + `role: "tool"` result pairs). Set
+`quoth-hyper-history-limit` to `0` for stateless per-prompt requests. Because
+the buffer is the source of truth, `C-c " k` (clear) starts a fresh conversation
+naturally.
 
 Tool calls replay in the OpenAI function-calling shape: an assistant
-`tool_calls` declaration (content `null`) followed by a
-`role: "tool"` result message with the matching `tool_call_id`. Only
-the raw result text — Codex prose convention, `Process exited with
-code N`/`Output:` — and the stored call id travel, never the rendered
-tool block. A `tool`-tagged span without reconstructable
-`quoth-tool-call` metadata contributes nothing: the server pairs a
-tool result only with a matching assistant `tool_calls` declaration,
-so a call without its id cannot be replayed.
+`tool_calls` declaration (content `null`) followed by a `role: "tool"` result
+message with the matching `tool_call_id`. Only the raw result text — Codex prose
+convention, `Process exited with code N`/`Output:` — and the stored call id
+travel, never the rendered tool block. A `tool`-tagged span without
+reconstructable `quoth-tool-call` metadata contributes nothing: the server pairs
+a tool result only with a matching assistant `tool_calls` declaration, so a call
+without its id cannot be replayed.
 
-Each buffer also owns an opaque session UUID (rotated by `C-c " k`),
-whose XXH3-64 hash is sent as the `x-session-id` /
-`x-session-affinity` headers on every hyper request, enabling
-server-side prefix/token caching (HYPER-API.md §3.1). The raw UUID
-never leaves the machine; only the 16-hex hash goes over TLS. Disable
-with `quoth-hyper-session-cache-p` (default t). Persistence of the UUID
-as a file local variable is planned but not yet implemented.
+Each buffer also owns an opaque session UUID (rotated by `C-c " k`), whose
+XXH3-64 hash is sent as the `x-session-id` / `x-session-affinity` headers on
+every hyper request, enabling server-side prefix/token caching (HYPER-API.md
+§3.1). The raw UUID never leaves the machine; only the 16-hex hash goes over
+TLS. Disable with `quoth-hyper-session-cache-p` (default t). Persistence of the
+UUID as a file local variable is planned but not yet implemented.
 
 ### Tool calls
 
-When `quoth-tools-enabled` is non-nil (default), the model may call a
-tool. There are five tools: two process-backed ones in `quoth-tools.el`
-wrapping the `quoth-process.el` session handler, two immediate file
-tools in `quoth-tools.el`, and `web_search` in `quoth-searxng.el`:
+When `quoth-tools-enabled` is non-nil (default), the model may call a tool.
+There are five tools: two process-backed ones in `quoth-tools.el` wrapping the
+`quoth-process.el` session handler, two immediate file tools in
+`quoth-tools.el`, and `web_search` in `quoth-searxng.el`:
 
 - `exec_command` — starts a command in a new PTY session and arms a
   running-report window for the requested duration (default
-  `quoth-process-yield-ms`, clamped 250–30000 ms): the session
-  sentinel reports `Process exited with code N` when the command
-  finishes; the window timer reports `Process running with session
-ID N` plus the captured output while it is still live. Both deliver
-  exactly once; a cancelled wait abandons the reports without killing
-  the session.
-- `write_stdin` — writes to a live session (identified by the session
-  id echoed by `exec_command`) and arms the same read window for the
-  output produced since the last report. A trailing `\x04` in the
-  `input` closes the session's stdin through `process-send-eof`, which
-  is connection-type-agnostic: a raw C-d byte is EOF only through a
-  PTY line discipline, so on pipe connections (MS-Windows, where
-  Emacs ignores `:connection-type` and uses pipes) the byte would
-  arrive as data and stdin would never close. An interior `\x04`
-  delivers an error result rather than a truncated write, and a
-  session whose stdin was closed accepts no further writes. A session
-  whose process already exited reports its final output immediately.
+  `quoth-process-yield-ms`, clamped 250–30000 ms): the session sentinel reports
+  `Process exited with code N` when the command finishes; the window timer
+  reports `Process running with session ID N` plus the captured output while it
+  is still live. Both deliver exactly once; a cancelled wait abandons the
+  reports without killing the session.
+- `write_stdin` — writes to a live session (identified by the session id echoed
+  by `exec_command`) and arms the same read window for the output produced since
+  the last report. A trailing `\x04` in the `input` closes the session's stdin
+  through `process-send-eof`, which is connection-type-agnostic: a raw C-d byte
+  is EOF only through a PTY line discipline, so on pipe connections (MS-Windows,
+  where Emacs ignores `:connection-type` and uses pipes) the byte would arrive
+  as data and stdin would never close. An interior `\x04` delivers an error
+  result rather than a truncated write, and a session whose stdin was closed
+  accepts no further writes. A session whose process already exited reports its
+  final output immediately.
 
 Two do byte-exact file I/O (no process involved):
 
-- `write_file` — writes the `content` arg byte-exact to `path`,
-  creating missing parent directories and replacing an existing file
-  unless `overwrite` is false; fresh-file writes go through a temp
-  file and atomic rename so no reader observes a half-written file.
-  A `mode` arg (decimal POSIX permission bits, 0–4095) is chmod'ed
-  onto the file after the write on both paths — the rename-based
-  fresh-file path needs it because the temp sibling is created 0600
-  regardless of umask; without `mode` a fresh file keeps those 0600
-  bits. An out-of-range or non-integer `mode` is an error result
-  delivered before anything is written. On MS-Windows the bits
-  degrade to the read-only attribute (the write never fails on
-  them); the cap matches Emacs's own `set-file-modes`, which uses
-  only the 12 low bits.
-- `read_file` — reads the file at `path` byte-exact (a `\r\n` on disk
-  stays `\r\n`), errors on non-UTF-8 content, and emits its result
-  under the `quoth-tool-max-output` byte budget. **Image files are
-  never decoded as text**: a path whose extension or magic bytes name
-  a PNG/JPEG/GIF/WebP (`quoth-file--image-mime` in `quoth-tools.el`,
-  shared with the attach path in `quoth.el`) reads as a one-line
-  markdown image link (`![name](path)`) tagged `quoth-image` with
-  `:attach t` by the block renderer — the buffer shows what was
-  looked at, and the wire walk fans the pixels into a synthetic
-  `user` message (see the tool-loop section below). A past-cap image
-  (`quoth-image-max-raw-bytes`, the ~3.75MB raw size under the
-  gateway's 5MB base64 limit) or a model whose catalog entry lacks
-  `supports-attachments` is an **error result** naming the limit, so
-  the model learns and can fall back to describing the file; the
-  blindness check reads the cached catalog only and treats an unknown
-  catalog as permissive (the server strips images silently rather
-  than erroring). Three optional args
-  shape the read: `line_numbers` (default off) prefixes each line
-  with its 1-based true line number in `cat -n` style — a fixed
-  6-char right-aligned width, then a tab — so models can refer to
-  lines by number and the user can cross-check in Emacs; `offset`
-  is a 1-based first line; `limit` is a max line count. `offset < 1`,
+- `write_file` — writes the `content` arg byte-exact to `path`, creating missing
+  parent directories and replacing an existing file unless `overwrite` is false;
+  fresh-file writes go through a temp file and atomic rename so no reader
+  observes a half-written file. A `mode` arg (decimal POSIX permission bits,
+  0–4095) is chmod'ed onto the file after the write on both paths — the
+  rename-based fresh-file path needs it because the temp sibling is created 0600
+  regardless of umask; without `mode` a fresh file keeps those 0600 bits. An
+  out-of-range or non-integer `mode` is an error result delivered before
+  anything is written. On MS-Windows the bits degrade to the read-only attribute
+  (the write never fails on them); the cap matches Emacs's own `set-file-modes`,
+  which uses only the 12 low bits.
+- `read_file` — reads the file at `path` byte-exact (a `\r\n` on disk stays
+  `\r\n`), errors on non-UTF-8 content, and emits its result under the
+  `quoth-tool-max-output` byte budget. **Image files are never decoded as
+  text**: a path whose extension or magic bytes name a PNG/JPEG/GIF/WebP
+  (`quoth-file--image-mime` in `quoth-tools.el`, shared with the attach path in
+  `quoth.el`) reads as a one-line markdown image link (`![name](path)`) tagged
+  `quoth-image` with `:attach t` by the block renderer — the buffer shows what
+  was looked at, and the wire walk fans the pixels into a synthetic `user`
+  message (see the tool-loop section below). A past-cap image
+  (`quoth-image-max-raw-bytes`, the ~3.75MB raw size under the gateway's 5MB
+  base64 limit) or a model whose catalog entry lacks `supports-attachments` is
+  an **error result** naming the limit, so the model learns and can fall back to
+  describing the file; the blindness check reads the cached catalog only and
+  treats an unknown catalog as permissive (the server strips images silently
+  rather than erroring). Three optional args shape the read: `line_numbers`
+  (default off) prefixes each line with its 1-based true line number in `cat -n`
+  style — a fixed 6-char right-aligned width, then a tab — so models can refer
+  to lines by number and the user can cross-check in Emacs; `offset` is a
+  1-based first line; `limit` is a max line count. `offset < 1`,
   `offset > line_count`, and `limit <= 0` are error results;
-  `offset + limit > line_count` clamps silently to EOF. **The
-  budget is spent on whole rendered lines, head first**: when the
-  read exceeds it, only the head is emitted and a marker names the
-  dropped line range, the dropped count, and the `offset` that
-  fetches them (`… lines 7-90 omitted (84 lines). Use offset=7 to
-resume …`); the resume offset is the first dropped line, so it
-  always names an existing line. The byte-exact
-  read→edit→write_file round trip holds whenever `line_numbers`
-  is off (the default); the schema description of `line_numbers`
-  teaches the model to strip the prefix before passing content back
-  to `write_file`, because leaked prefixes permanently corrupt the
-  file (hermes-agent issue #19798). An empty file returns
-  `Output: (empty)` on the status line with no body — the same
-  structural emptiness marker every tool uses, so no fake body text
-  can be mistaken for file content. Smaller slices go through
-  `offset`/`limit`.
-- `edit_file` — replaces one literal `old_string` span in the file
-  at `path` with `new_string`, written verbatim through the shared
-  write choke point (`quoth-file--write-text`, the same
-  `utf-8-unix` byte-exact write `write_file` uses), so the round
-  trip from an un-numbered `read_file` is byte-exact and CRLF files
-  keep their CRs. Matching is literal `cl-search` over the whole
-  file text — never per-line, never regexp — so multiline spans are
-  first-class and embedded newlines are plain characters; on a CRLF
-  file the match is CR-sensitive and a normalized `old_string`
-  fails loudly, leaving the file untouched. `old_string` must occur
-  exactly once unless `replace_all` is true; zero occurrences and
-  ambiguous matches are error results naming the match lines, so a
-  stale model copy fails instead of clobbering the file. An empty
-  `new_string` deletes the span (a missing one is an error —
-  absence is not rejection); `old_string` = `new_string` is a
-  no-op error. The JSON string is the only quoting layer: no shell
-  is involved, so there is no shell escaping to get wrong. The
-  result reports the occurrence count, the match line numbers, and
-  a `-`/`+` mini-diff of the changed span.
+  `offset + limit > line_count` clamps silently to EOF. **The budget is spent on
+  whole rendered lines, head first**: when the read exceeds it, only the head is
+  emitted and a marker names the dropped line range, the dropped count, and the
+  `offset` that fetches them:
+
+  ```text
+  … lines 7-90 omitted (84 lines). Use offset=7 to resume …
+  ```
+
+  The resume offset is the first dropped line, so it always names an existing
+  line. The byte-exact read→edit→write_file round trip holds whenever
+  `line_numbers` is off (the default); the schema description of `line_numbers`
+  teaches the model to strip the prefix before passing content back to
+  `write_file`, because leaked prefixes permanently corrupt the file
+  (hermes-agent issue #19798). An empty file returns `Output: (empty)` on the
+  status line with no body — the same structural emptiness marker every tool
+  uses, so no fake body text can be mistaken for file content. Smaller slices go
+  through `offset`/`limit`.
+
+- `edit_file` — replaces one literal `old_string` span in the file at `path`
+  with `new_string`, written verbatim through the shared write choke point
+  (`quoth-file--write-text`, the same `utf-8-unix` byte-exact write `write_file`
+  uses), so the round trip from an un-numbered `read_file` is byte-exact and
+  CRLF files keep their CRs. Matching is literal `cl-search` over the whole file
+  text — never per-line, never regexp — so multiline spans are first-class and
+  embedded newlines are plain characters; on a CRLF file the match is
+  CR-sensitive and a normalized `old_string` fails loudly, leaving the file
+  untouched. `old_string` must occur exactly once unless `replace_all` is true;
+  zero occurrences and ambiguous matches are error results naming the match
+  lines, so a stale model copy fails instead of clobbering the file. An empty
+  `new_string` deletes the span (a missing one is an error — absence is not
+  rejection); `old_string` = `new_string` is a no-op error. The JSON string is
+  the only quoting layer: no shell is involved, so there is no shell escaping to
+  get wrong. The result reports the occurrence count, the match line numbers,
+  and a `-`/`+` mini-diff of the changed span.
 - Every tool result renders its `Output:` section through
-  `quoth-exec--output-section`: nil (nothing to show) becomes the
-  structural `Output: (empty)` marker on the status line, and a
-  string — even empty, as when a line-budget marker follows a
-  dropped body — becomes `Output:` plus the body. The helper is the
-  single rendering decision, so a new tool adopts the convention by
-  building its result with it (or with `quoth-exec--format-result` /
-  `quoth-exec--format-running`, which route through it) rather than
-  hand-writing the `Output:` line. No result ever carries fake body
-  text like `no output` / `no results` that a reader could mistake
-  for literal tool output.
+  `quoth-exec--output-section`: nil (nothing to show) becomes the structural
+  `Output: (empty)` marker on the status line, and a string — even empty, as
+  when a line-budget marker follows a dropped body — becomes `Output:` plus the
+  body. The helper is the single rendering decision, so a new tool adopts the
+  convention by building its result with it (or with `quoth-exec--format-result`
+  / `quoth-exec--format-running`, which route through it) rather than
+  hand-writing the `Output:` line. No result ever carries fake body text like
+  `no output` / `no results` that a reader could mistake for literal tool
+  output.
 - `web_search` — queries the local SearXNG instance (`quoth-searxng.el`)
-  asynchronously: `url-retrieve` plus a `quoth-searxng-timeout` timer
-  that deletes the retrieval and delivers an error result; the cancel
-  thunk deletes the process and its timer. The search request doubles
-  as the health probe cached in `quoth-searxng--healthy`; an
-  `unreachable` cache short-circuits with no HTTP request.
+  asynchronously: `url-retrieve` plus a `quoth-searxng-timeout` timer that
+  deletes the retrieval and delivers an error result; the cancel thunk deletes
+  the process and its timer. The search request doubles as the health probe
+  cached in `quoth-searxng--healthy`; an `unreachable` cache short-circuits with
+  no HTTP request.
 
 The tool block is rendered in the buffer as valid markdown:
 
@@ -472,149 +439,134 @@ quoth.el
 ...
 ```
 
-The header line carries the tool icon, name, and scalar clauses
-(yield, shell, login, session, mode, overwrite, numbers, offset,
-limit, max, categories, engines). Free-text argument values
-(cmd, workdir, input, query) are rendered below the header as
-`label: value` lines, or as fenced code blocks when they span multiple
-lines. The `exec_command` command (`ran`) is always fenced — single- or
-multi-line — so the command text is a proper code block. Other values
-fence only when multiline. The fence length is one
-backtick longer than the longest run of backticks in the enclosed text
-(`quoth--fence-str`), so nested fences never break the block. The tool block is
-tagged `quoth-region-type 'tool'`; inside it, the raw result text
-(between the output fences) is tagged `quoth-region-type 'tool-output'`
-— a nested region that survives response re-tagging — and the block
-carries the call's `quoth-tool-call` metadata (id, name, args). When
-the exchange enters conversation history, only the raw result and the
-real `tool_call_id` travel, never the rendered markup.
+The header line carries the tool icon, name, and scalar clauses (yield, shell,
+login, session, mode, overwrite, numbers, offset, limit, max, categories,
+engines). Free-text argument values (cmd, workdir, input, query) are rendered
+below the header as `label: value` lines, or as fenced code blocks when they
+span multiple lines. The `exec_command` command (`ran`) is always fenced —
+single- or multi-line — so the command text is a proper code block. Other values
+fence only when multiline. The fence length is one backtick longer than the
+longest run of backticks in the enclosed text (`quoth--fence-str`), so nested
+fences never break the block. The tool block is tagged
+`quoth-region-type 'tool'`; inside it, the raw result text (between the output
+fences) is tagged `quoth-region-type 'tool-output'` — a nested region that
+survives response re-tagging — and the block carries the call's
+`quoth-tool-call` metadata (id, name, args). When the exchange enters
+conversation history, only the raw result and the real `tool_call_id` travel,
+never the rendered markup.
 
 The tool _protocol_ — the `quoth-openai-tool-call` struct, the registry
-(`quoth-openai-tool-registry`), dispatch (`quoth-openai-execute-tool`),
-argument parsing, and the execution policy — lives in
-`quoth-openai.el`; `quoth-tools.el` only implements the concrete tools
-and registers them at load. A registry entry takes a tool call and an
-`on-done` reporter, delivering `(RESULT . EXIT-OR-NIL)` exactly once —
-inline for immediate tools (`read_file`, `write_file`,
-`edit_file`), from a window
-timer or the session sentinel for process-backed ones — and returns a
-cancel thunk (abandon the wait) or nil.
+(`quoth-openai-tool-registry`), dispatch (`quoth-openai-execute-tool`), argument
+parsing, and the execution policy — lives in `quoth-openai.el`; `quoth-tools.el`
+only implements the concrete tools and registers them at load. A registry entry
+takes a tool call and an `on-done` reporter, delivering `(RESULT . EXIT-OR-NIL)`
+exactly once — inline for immediate tools (`read_file`, `write_file`,
+`edit_file`), from a window timer or the session sentinel for process-backed
+ones — and returns a cancel thunk (abandon the wait) or nil.
 
-The **round orchestrator** in `quoth.el` owns the event chain: on
-finalize with pending calls it moves the phase to `tools`, inserts a
-placeholder block (header, argument blocks, live `⏳ running…`
-status) for each call in the SSE vector's declared order, and runs the
-entries. Each completion hops through the 0-timer hop, fills its own
-block's status span with the fenced result (tagging the raw result
-`tool-output`), and decrements the round's pending count; the last
-completion rebuilds the wire continuation from the buffer
-(`quoth--tool-rounds`) and sends the follow-up. Interrupt mid-round
-cancels every pending wait and fills the still-pending blocks with the
-interrupted result so the buffer holds a valid wire `role: "tool"`
-content for every call the model already emitted.
+The **round orchestrator** in `quoth.el` owns the event chain: on finalize with
+pending calls it moves the phase to `tools`, inserts a placeholder block
+(header, argument blocks, live `⏳ running…` status) for each call in the SSE
+vector's declared order, and runs the entries. Each completion hops through the
+0-timer hop, fills its own block's status span with the fenced result (tagging
+the raw result `tool-output`), and decrements the round's pending count; the
+last completion rebuilds the wire continuation from the buffer
+(`quoth--tool-rounds`) and sends the follow-up. Interrupt mid-round cancels
+every pending wait and fills the still-pending blocks with the interrupted
+result so the buffer holds a valid wire `role: "tool"` content for every call
+the model already emitted.
 
 #### Image fan-out in tool rounds
 
-The gateway **drops image content in `role: "tool"` messages**
-(validated against the live endpoint: the model received an empty
-string). A tool result carrying a `quoth-image` `:attach t` span —
-the image-link line an image-aware `read_file` produced — therefore
-emits as a **pair** at wire-build time (`quoth--tool-image-fanout`,
-run inside `quoth--tool-rounds`, so history replay rebuilds the same
-pair on every resend): the `tool` message keeps the result text
-_minus_ the image line(s), and a synthetic `user` message immediately
-after carries the image as an `image_url` content part plus a text
-part (`Image content from the tool result:`). The
-tool-call/tool-result pairing never changes — the server rejects an
-unpaired tool result on every later turn — only the split of where
-the pixels ride. When no image is readable at walk time (the file was
-deleted after the read), the link line stays in the tool content and
-no synthetic user message is emitted.
+The gateway **drops image content in `role: "tool"` messages** (validated
+against the live endpoint: the model received an empty string). A tool result
+carrying a `quoth-image` `:attach t` span — the image-link line an image-aware
+`read_file` produced — therefore emits as a **pair** at wire-build time
+(`quoth--tool-image-fanout`, run inside `quoth--tool-rounds`, so history replay
+rebuilds the same pair on every resend): the `tool` message keeps the result
+text _minus_ the image line(s), and a synthetic `user` message immediately after
+carries the image as an `image_url` content part plus a text part
+(`Image content from the tool result:`). The tool-call/tool-result pairing never
+changes — the server rejects an unpaired tool result on every later turn — only
+the split of where the pixels ride. When no image is readable at walk time (the
+file was deleted after the read), the link line stays in the tool content and no
+synthetic user message is emitted.
 
 User-driven attachments ride the same mechanism from the other side:
-`quoth--user-turn-content` walks the prompt's `user` spans and, when
-an `:attach t` image link is present, emits an OpenAI
-**content-parts vector** (text parts split around `image_url` parts
-carrying the file inline as a base64 data URL) instead of the plain
-string; `quoth--image-preflight` runs the send-time checks (missing
-file → error note + text placeholder; past-cap → error note + drop;
-positively-blind model → advisory note). An `:attach nil` link never
-splits the text — it rides the content as literal markdown. Image
-bytes are re-read from disk at send time; the buffer holds only the
-link, staying the single source of truth.
+`quoth--user-turn-content` walks the prompt's `user` spans and, when an
+`:attach t` image link is present, emits an OpenAI **content-parts vector**
+(text parts split around `image_url` parts carrying the file inline as a base64
+data URL) instead of the plain string; `quoth--image-preflight` runs the
+send-time checks (missing file → error note + text placeholder; past-cap → error
+note + drop; positively-blind model → advisory note). An `:attach nil` link
+never splits the text — it rides the content as literal markdown. Image bytes
+are re-read from disk at send time; the buffer holds only the link, staying the
+single source of truth.
 
 ### Process handler (quoth-process.el)
 
-General-purpose, model-neutral, buffer-unaware layer that owns PTY
-sessions. It handles spawning (with sanitized env: `PAGER=cat`,
-`GIT_PAGER=cat`, `NO_COLOR=1`, `TERM=dumb`), output buffering,
-dumb-terminal rendering of collected chunks (`quoth-process--render`
-collapses spinner frames joined by carriage returns, applies ANSI
-erase sequences, and drops color/OSC codes, governed by the
-`quoth-process-render-output` toggle), event-driven exit
-reports (a real process sentinel delivering `(CHUNK . EXIT-CODE)` on
-the `quoth--schedule` hop), one-shot running-report window timers
-(`quoth-process--arm-window`), non-blocking stdin writes, and cleanup.
-Sessions live in a global registry keyed by session id and are scoped
-per quoth buffer through the `owner` slot; `quoth-clear-buffer` runs
-`quoth-process--cleanup-buffer` to kill every session owned by the
-cleared buffer, and the buffer's `kill-buffer-hook` does the same on
-kill. A session whose wait was abandoned stays registered when its
-process exits on its own, so a later `write_stdin` poll still collects
-the final output. `quoth-process-max-sessions` (default 128) caps
-concurrent sessions.
+General-purpose, model-neutral, buffer-unaware layer that owns PTY sessions. It
+handles spawning (with sanitized env: `PAGER=cat`, `GIT_PAGER=cat`,
+`NO_COLOR=1`, `TERM=dumb`), output buffering, dumb-terminal rendering of
+collected chunks (`quoth-process--render` collapses spinner frames joined by
+carriage returns, applies ANSI erase sequences, and drops color/OSC codes,
+governed by the `quoth-process-render-output` toggle), event-driven exit reports
+(a real process sentinel delivering `(CHUNK . EXIT-CODE)` on the
+`quoth--schedule` hop), one-shot running-report window timers
+(`quoth-process--arm-window`), non-blocking stdin writes, and cleanup. Sessions
+live in a global registry keyed by session id and are scoped per quoth buffer
+through the `owner` slot; `quoth-clear-buffer` runs
+`quoth-process--cleanup-buffer` to kill every session owned by the cleared
+buffer, and the buffer's `kill-buffer-hook` does the same on kill. A session
+whose wait was abandoned stays registered when its process exits on its own, so
+a later `write_stdin` poll still collects the final output.
+`quoth-process-max-sessions` (default 128) caps concurrent sessions.
 
 ### Current limitations
 
 - Manual token only (`quoth-hyper-token`); OAuth device flow is planned.
-- `quoth-provider-grant-permission` is a no-op (tools run without
-  confirmation).
+- `quoth-provider-grant-permission` is a no-op (tools run without confirmation).
 
 ## Chat Buffer Composition
 
-The quoth buffer's major mode is the parent mode (`markdown-mode` if
-available, else `text-mode`); `quoth-chat-mode` is a **minor mode** that
-provides the chat keybindings and hooks. Rendering, prompt tracking,
-and fontification are all implemented with text properties, markers,
-and markdown native font-lock instead of comint.
+The quoth buffer's major mode is the parent mode (`markdown-mode` if available,
+else `text-mode`); `quoth-chat-mode` is a **minor mode** that provides the chat
+keybindings and hooks. Rendering, prompt tracking, and fontification are all
+implemented with text properties, markers, and markdown native font-lock instead
+of comint.
 
 ### Append-Only Handling
 
-The buffer only grows at point-max (streamed deltas, responses, tool
-blocks, and new input dividers are all inserted at EOF). Nothing is
-made read-only: the entire buffer — history, dividers, tool blocks,
-and the current input area alike — stays editable, and any edits are
-reflected in the next request because requests are rebuilt from the
-buffer's tagged regions at send time. A font-lock guard
-(`font-lock-unfontify-region-function`) preserves the reasoning fold's
-`keymap`/`quoth-fold-mark` properties across markdown-mode
-refontification.
+The buffer only grows at point-max (streamed deltas, responses, tool blocks, and
+new input dividers are all inserted at EOF). Nothing is made read-only: the
+entire buffer — history, dividers, tool blocks, and the current input area alike
+— stays editable, and any edits are reflected in the next request because
+requests are rebuilt from the buffer's tagged regions at send time. A font-lock
+guard (`font-lock-unfontify-region-function`) preserves the reasoning fold's
+`keymap`/`quoth-fold-mark` properties across markdown-mode refontification.
 
-The **sanctioned overlay exceptions** (they carry faces and display
-properties):
+The **sanctioned overlay exceptions** (they carry faces and display properties):
 
-- **Reasoning (CoT) highlight + fold.** The reasoning span is
-  highlighted by an overlay and, when longer than
-  `quoth-reasoning-preview-lines`, folded via a two-overlay model: an
-  always-visible preview overlay over the first N lines, and a body
-  overlay carrying `invisible` + a display-only `before-string` marker.
-  No buffer text is inserted or deleted during toggle, keeping the
+- **Reasoning (CoT) highlight + fold.** The reasoning span is highlighted by an
+  overlay and, when longer than `quoth-reasoning-preview-lines`, folded via a
+  two-overlay model: an always-visible preview overlay over the first N lines,
+  and a body overlay carrying `invisible` + a display-only `before-string`
+  marker. No buffer text is inserted or deleted during toggle, keeping the
   buffer-as-database intact.
-- **System notes.** Stream errors and user interrupts insert a
-  `system`-tagged blockquote pane (`> **Error:** …` / `> **Interrupted.**`)
-  at point-max, with a display-only overlay carrying the `face`, a
-  `help-echo`, and a `quoth-system-detail` plist (`:kind` `user` or
-  `error`). The pane is inert (no dismiss keymap): the turn finalizes on
-  its own, and the text is buffer text saved with the buffer. Overlays
-  are tagged `quoth-overlay` so `quoth-clear-buffer` sweeps them. The
-  `system` text is skipped by history reconstruction and
-  `quoth--tag-response-region`, so it never becomes a response or a
-  wire message.
+- **System notes.** Stream errors and user interrupts insert a `system`-tagged
+  blockquote pane (`> **Error:** …` / `> **Interrupted.**`) at point-max, with a
+  display-only overlay carrying the `face`, a `help-echo`, and a
+  `quoth-system-detail` plist (`:kind` `user` or `error`). The pane is inert (no
+  dismiss keymap): the turn finalizes on its own, and the text is buffer text
+  saved with the buffer. Overlays are tagged `quoth-overlay` so
+  `quoth-clear-buffer` sweeps them. The `system` text is skipped by history
+  reconstruction and `quoth--tag-response-region`, so it never becomes a
+  response or a wire message.
 
 ### Metadata
 
-All metadata is stored as **text properties** on buffer content;
-highlighting is left to markdown-mode's native font-lock.
+All metadata is stored as **text properties** on buffer content; highlighting is
+left to markdown-mode's native font-lock.
 
 | Text Region                           | Property                                                                                               | Value                                                                                                                                                                   |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -627,12 +579,12 @@ highlighting is left to markdown-mode's native font-lock.
 | Reasoning text                        | `quoth-region-type 'reasoning` + `quoth-prompt-id` + `quoth-response-to`                               | Chain-of-thought sub-span                                                                                                                                               |
 | System notes (error / interrupt)      | `quoth-region-type 'system`                                                                            | A transcript annotation: error pane or `> **Interrupted.**` note                                                                                                        |
 
-The `system` region is a distinct `quoth-region-type`, never reconstructed
-into a wire message: `quoth-get-response-text`, `quoth--tool-rounds`, and
-`quoth--tag-response-region` all skip it (like `reasoning` and tool
-spans). The interruption kind is carried on the **response** span via
-`quoth-interrupted` (not on the `system` region) so a future reader-only
-change can tell the model that a prior turn was cut off.
+The `system` region is a distinct `quoth-region-type`, never reconstructed into
+a wire message: `quoth-get-response-text`, `quoth--tool-rounds`, and
+`quoth--tag-response-region` all skip it (like `reasoning` and tool spans). The
+interruption kind is carried on the **response** span via `quoth-interrupted`
+(not on the `system` region) so a future reader-only change can tell the model
+that a prior turn was cut off.
 
 ### History Retrieval Functions
 
@@ -645,6 +597,50 @@ change can tell the model that a prior turn was cut off.
 (quoth-get-all-prompts)
 ;; => ("20260805-091012-abc123" "20260805-091000-xyz789")
 ```
+
+### Header line
+
+`quoth--update-header-line` joins three cluster segments with two spaces, each
+built by a dedicated function: the model (`quoth--header-model-segment`, the
+active provider's model), session usage (`quoth--header-usage-segment` →
+`quoth--usage-header-segment`: input/output tokens with k/M suffixes and `↑`/`↓`
+arrows, accumulated cost, and the cache percentage — cached ÷ **input** tokens
+only, since caching applies to the prompt side — from the session-scoped
+`quoth--usage-acc`, nil until the first response completes), and the region type
+at point (`quoth--header-buffer-segment` → `quoth--region-label-at-point`, the
+`quoth-region-type` symbol as a string, `-` on untagged text).
+
+`header-line-format` is a mode-line construct: `%`-specifications are
+escape-processed at display, so the segment stores `42%%` and the user sees
+`42%`. The header refreshes on `post-command-hook` and at finalize; the tool
+loop refreshes it explicitly because it runs synchronously inside one
+process-filter callback where `post-command-hook` never fires between rounds.
+
+### Model persistence
+
+`quoth-model` is a plain `defvar`, not a defcustom: it is the runtime selection
+owned by savehist, not a user option owned by Customize, so the two never fight
+over it at startup. It is registered on `savehist-additional-variables`
+(alongside `quoth-active-provider-name`) inside
+`with-eval-after-load 'savehist`, so savehist is never required at load time:
+when `savehist-mode` is on, the value is restored on startup and written back on
+exit, persisting the model choice across Emacs restarts. (The input history ring
+persists through its own file, `quoth--input-ring-file-name`, not savehist.)
+`quoth-openai-default-model` remains the Customize-level default for buffers
+that have not selected a model.
+
+### Debug log
+
+`quoth--debug-log` (gated on `quoth-debug-mode`) appends
+`[HH:MM:SS] category: message` lines to `*quoth-debug*`. Categories include
+commands, input, output, sentinel, tool, and request. The request line — one per
+send, written by `quoth-openai-request` — carries the URL, model, whether a
+token was sent (`present`/`none`, never the token itself), the session id, and
+the JSON body pretty-printed through `quoth--openai-json-pretty` (which caps
+pretty-printing at `quoth-openai-debug-pretty-max` and falls back to compact,
+truncated logging for larger payloads so the per-request log stays cheap). SSE
+event payloads are logged through the same capping pretty-printer; the token and
+request headers are never logged.
 
 ### Programmatic Access
 
@@ -662,9 +658,8 @@ Text properties can be accessed directly:
 ### Prerequisites
 
 - Emacs 28.1+ (the package requirement)
-- `markdown-mode` (optional — installed via MELPA; the chat buffer
-  falls back to `text-mode` without it, and markdown-dependent tests
-  are skipped)
+- `markdown-mode` (optional — installed via MELPA; the chat buffer falls back to
+  `text-mode` without it, and markdown-dependent tests are skipped)
 
 ### Running the tests
 
@@ -675,13 +670,13 @@ emacs --batch -L . -L test \
 ```
 
 The runner byte-compiles first (compiler warnings are treated as
-errors-in-waiting — do not introduce new ones) and sets
-`load-prefer-newer t` so fresh source beats stale `.elc` files. When
-`markdown-mode` is installed, the runner adds it to the load path so
-the fontification regression tests run under the markdown parent.
+errors-in-waiting — do not introduce new ones) and sets `load-prefer-newer t` so
+fresh source beats stale `.elc` files. When `markdown-mode` is installed, the
+runner adds it to the load path so the fontification regression tests run under
+the markdown parent.
 
-Run a single topic file with its own harness helpers; test files load
-`quoth` via `require` with a fallback to the repo root.
+Run a single topic file with its own harness helpers; test files load `quoth`
+via `require` with a fallback to the repo root.
 
 ### Formatting
 
@@ -694,34 +689,33 @@ Always run it before committing.
 
 ### Debugging
 
-- Read-only bugs: many only reproduce under markdown-mode — run with
-  it installed.
+- Read-only bugs: many only reproduce under markdown-mode — run with it
+  installed.
 - Region/tagging bugs: check which text properties (`quoth-region-type`,
   `quoth-prompt-id`, `quoth-response-to`) are applied where, using
   `get-text-property` or the header line's `region:` label.
-- Backend wire tests use `test/hyper-server.py` (started as a
-  subprocess per test) — inspect the capture file for request bodies.
+- Backend wire tests use `test/hyper-server.py` (started as a subprocess per
+  test) — inspect the capture file for request bodies.
 - Lisp paren issues: never hand-count — use
-  `parinfer-rust -l lisp -m paren FILE` to validate and
-  `-m indent` to repair from indentation.
+  `parinfer-rust -l lisp -m paren FILE` to validate and `-m indent` to repair
+  from indentation.
 
 ### Conventions
 
 - `quoth-` prefix: public commands, defcustoms, defgroup, faces.
 - `quoth--` prefix: internal functions, state variables, markers.
-- Provider protocol names: `quoth-provider-*` generics; the concrete
-  provider struct is `quoth-hyper-provider`.
+- Provider protocol names: `quoth-provider-*` generics; the concrete provider
+  struct is `quoth-hyper-provider`.
 - Test names: `quoth-test/<topic>` under `ert-deftest`; helpers
   `quoth-test--...`, traveling with their topic file.
 - Docstrings follow checkdoc conventions.
-- No blocking process/network primitives in the runtime sources
-  (`quoth.el` through `quoth-xxh3.el`): `url-retrieve-synchronously`,
-  `shell-command-to-string`, `call-process`, `process-wait`, `sleep-for`,
-  and `sit-for` as a wait are banned; `accept-process-output` appears
-  only as the zero-timeout drain poll (`quoth-process--collect-final`
-  and the stage/catalog sentinels). The lint test
-  `quoth-test/lint-no-blocking-primitives-in-runtime`
-  (test/quoth-test-stage.el) enforces this; tests and
-  `quoth-debug-tools.el` (user-invoked diagnostics) are exempt.
-- Pre-alpha: no backwards-compatibility constraint — change things
-  breakingly when a cleaner design is clear.
+- No blocking process/network primitives in the runtime sources (`quoth.el`
+  through `quoth-xxh3.el`): `url-retrieve-synchronously`,
+  `shell-command-to-string`, `call-process`, `process-wait`, `sleep-for`, and
+  `sit-for` as a wait are banned; `accept-process-output` appears only as the
+  zero-timeout drain poll (`quoth-process--collect-final` and the stage/catalog
+  sentinels). The lint test `quoth-test/lint-no-blocking-primitives-in-runtime`
+  (test/quoth-test-stage.el) enforces this; tests and `quoth-debug-tools.el`
+  (user-invoked diagnostics) are exempt.
+- Pre-alpha: no backwards-compatibility constraint — change things breakingly
+  when a cleaner design is clear.

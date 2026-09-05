@@ -1,21 +1,21 @@
 # Hyper Provider API Specification
 
 This document specifies the **HTTP API of the Charm Hyper gateway** — the
-provider that Crush (and other clients) call to proxy LLM requests. It is
-not the Crush CLI protocol (see `CRUSH-SPEC.md`); it describes Hyper's
-server-side endpoints as consumed by the OpenAI-compatible provider
-in Crush. The gateway's OpenAI-compatible chat-completions API lives
-under `/v1`; tokens (`sk-hyper-` prefixed) come from the Hyper
-Dashboard.
+provider that Crush (and other clients) call to proxy LLM requests. It is not
+the Crush CLI protocol (see `CRUSH-SPEC.md`); it describes Hyper's server-side
+endpoints as consumed by the OpenAI-compatible provider in Crush. The gateway's
+OpenAI-compatible chat-completions API lives under `/v1`; tokens (`sk-hyper-`
+prefixed) come from the Hyper Dashboard.
 
-Quoth consumes this API through the hyper provider: the reusable
-OpenAI client (`quoth-openai.el`) runs a curl subprocess transport with SSE
-parsed in the process filter (see the integration fixture
-`test/hyper-server.py`).
+Quoth consumes this API through the hyper provider: the reusable OpenAI client
+(`quoth-openai.el`) runs a curl subprocess transport with SSE parsed in the
+process filter (see the integration fixture `test/hyper-server.py`).
 
-Source of truth: [`internal/agent/hyper/`](https://github.com/charmbracelet/crush/tree/main/internal/agent/hyper),
+Source of truth:
+[`internal/agent/hyper/`](https://github.com/charmbracelet/crush/tree/main/internal/agent/hyper),
 [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go),
-and the embedded [`provider.json`](https://github.com/charmbracelet/crush/blob/main/internal/agent/hyper/provider.json).
+and the embedded
+[`provider.json`](https://github.com/charmbracelet/crush/blob/main/internal/agent/hyper/provider.json).
 
 ## 1. Overview
 
@@ -27,20 +27,19 @@ and the embedded [`provider.json`](https://github.com/charmbracelet/crush/blob/m
 | Content type       | `application/json`                                                                                                                       |
 | User-Agent         | `quoth` (device/token/introspect endpoints)                                                                                              |
 
-The chat-completions, credits, and model-catalog endpoints live under
-`{base}` = `https://hyper.charm.land/v1` (or `$HYPER_URL` when set).
-The OAuth device endpoints in §2 are served from the auth service root,
-not under `/v1`.
+The chat-completions, credits, and model-catalog endpoints live under `{base}` =
+`https://hyper.charm.land/v1` (or `$HYPER_URL` when set). The OAuth device
+endpoints in §2 are served from the auth service root, not under `/v1`.
 
 ---
 
 ## 2. Authentication — OAuth device flow
 
-Crush authenticates to Hyper via a **device authorization flow**
-(RFC 8628-style), then exchanges the resulting refresh token for an access
-token. Each token exchange **rotates** the refresh token (the previous one
-is consumed), so a `401` on an LLM request means the refresh token was
-already used and the user must re-authenticate.
+Crush authenticates to Hyper via a **device authorization flow** (RFC
+8628-style), then exchanges the resulting refresh token for an access token.
+Each token exchange **rotates** the refresh token (the previous one is
+consumed), so a `401` on an LLM request means the refresh token was already used
+and the user must re-authenticate.
 
 ### 2.1 Initiate device auth
 
@@ -54,8 +53,8 @@ Body:
 { "device_name": "Crush (myhostname)" }
 ```
 
-`device_name` defaults to `Crush (<hostname>)`, or `Crush` when the hostname
-is unavailable.
+`device_name` defaults to `Crush (<hostname>)`, or `Crush` when the hostname is
+unavailable.
 
 Response `200` — `DeviceAuthResponse`:
 
@@ -112,11 +111,11 @@ Body:
 ```
 
 Response `200` — a token object (consumed by Crush as `internal/oauth.Token`),
-with `expires_at` set from the reported lifetime. On non-`200`, Hyper returns
-an exchange error; Crush surfaces a `TokenExchangeError`.
+with `expires_at` set from the reported lifetime. On non-`200`, Hyper returns an
+exchange error; Crush surfaces a `TokenExchangeError`.
 
-**Rotation note:** this endpoint consumes the presented refresh token. The
-new refresh token (if any) replaces it for the next exchange.
+**Rotation note:** this endpoint consumes the presented refresh token. The new
+refresh token (if any) replaces it for the next exchange.
 
 ### 2.4 Token introspection
 
@@ -166,9 +165,9 @@ x-session-id:        <xxh3 hash of the session UUID>
 x-session-affinity:  <xxh3 hash of the session UUID>
 ```
 
-The value is a deterministic XXH3 hash of the Crush session UUID (not the
-raw UUID), so it is opaque and stable for the life of the session. This is
-what enables **server-side prefix/token caching** across turns.
+The value is a deterministic XXH3 hash of the Crush session UUID (not the raw
+UUID), so it is opaque and stable for the life of the session. This is what
+enables **server-side prefix/token caching** across turns.
 
 Crush also sends a per-machine identifier on every request
 (`internal/agent/coordinator.go` sets it on the Hyper provider):
@@ -177,17 +176,16 @@ Crush also sends a per-machine identifier on every request
 x-crush-id: <per-machine identifier>
 ```
 
-The value derives from the same machine fingerprint Crush uses for its
-analytics (`machineid.ProtectedID("charm")`, HMAC-SHA256 hardware
-fingerprint, hex-encoded; `internal/event/identifier.go`), so it is
-opaque, stable per machine, and carries no user payload. It lets the
-gateway recognize repeat clients (rate/pricing/cache correlation) the
-way the CLI's own requests do.
+The value derives from the same machine fingerprint Crush uses for its analytics
+(`machineid.ProtectedID("charm")`, HMAC-SHA256 hardware fingerprint,
+hex-encoded; `internal/event/identifier.go`), so it is opaque, stable per
+machine, and carries no user payload. It lets the gateway recognize repeat
+clients (rate/pricing/cache correlation) the way the CLI's own requests do.
 
-Quoth mirrors this: the hyper backend sends `x-crush-id` on every
-request by default, deriving a stable per-machine value (XXH3-64 of the
-local system identity) via `quoth-hyper-x-crush-id` (`t` derive, string
-verbatim, function, or `nil` to omit).
+Quoth mirrors this: the hyper backend sends `x-crush-id` on every request by
+default, deriving a stable per-machine value (XXH3-64 of the local system
+identity) via `quoth-hyper-x-crush-id` (`t` derive, string verbatim, function,
+or `nil` to omit).
 
 ### 3.2 Request body
 
@@ -243,8 +241,8 @@ Tools are announced on **every** request using the OpenAI function format
 }
 ```
 
-`tool_choice` accepts `"auto"`, `"none"`, `"required"`, or `{ "type":
-"function", "function": { "name": "<tool>" } }`.
+`tool_choice` accepts `"auto"`, `"none"`, `"required"`, or
+`{ "type": "function", "function": { "name": "<tool>" } }`.
 
 ### 3.4 Message roles
 
@@ -306,9 +304,9 @@ image bytes inline as a base64 `data:` URL:
 }
 ```
 
-This is the only image mechanism — there is no separate attachment
-endpoint or multipart upload. All findings below validated empirically
-against `POST /v1/chat/completions`:
+This is the only image mechanism — there is no separate attachment endpoint or
+multipart upload. All findings below validated empirically against
+`POST /v1/chat/completions`:
 
 | Behavior                         | Result                                                                                                                                                                                                                                                                                                                                                                             |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -341,23 +339,22 @@ Non-streamed response (`choices[0].message`, OpenAI shape):
 }
 ```
 
-**Reasoning content:** models with `can_reason` may return a
-`reasoning_content` field on the assistant message. This field carries the
-model's chain-of-thought trace, produced when reasoning is active. Crush
-reads it from the raw JSON and surfaces it as a thinking/reasoning trace
-(streamed via `reasoning_content` deltas before the final `content` deltas),
-distinct from the visible `content`. On the `hyper` provider, `thinking:
-false` suppresses the trace only when `reasoning_effort` is omitted; sending
-`reasoning_effort` alongside it re-enables reasoning. When reasoning is
-enabled, the trace must be echoed back — as `reasoning_content` on the
-assistant message — on any subsequent request that carries that turn
-(including tool-call rounds); some providers require it present (or empty)
-on assistant tool-call messages in the history.
+**Reasoning content:** models with `can_reason` may return a `reasoning_content`
+field on the assistant message. This field carries the model's chain-of-thought
+trace, produced when reasoning is active. Crush reads it from the raw JSON and
+surfaces it as a thinking/reasoning trace (streamed via `reasoning_content`
+deltas before the final `content` deltas), distinct from the visible `content`.
+On the `hyper` provider, `thinking: false` suppresses the trace only when
+`reasoning_effort` is omitted; sending `reasoning_effort` alongside it
+re-enables reasoning. When reasoning is enabled, the trace must be echoed back —
+as `reasoning_content` on the assistant message — on any subsequent request that
+carries that turn (including tool-call rounds); some providers require it
+present (or empty) on assistant tool-call messages in the history.
 
 **Tool-call round trip:** the assistant turn with `tool_calls` and
 `finish_reason: "tool_calls"` is persisted and re-sent on the next request,
-immediately followed by `tool` role messages carrying each result. This
-whole block is treated as one assistant + tool exchange in the history.
+immediately followed by `tool` role messages carrying each result. This whole
+block is treated as one assistant + tool exchange in the history.
 
 ---
 
@@ -376,13 +373,13 @@ Response `200`:
 
 Special cases:
 
-- `{ "balance": null }` — the team has **hypercredit display disabled**;
-  Hyper reports the balance in dollars instead, so no hypercredit figure is
-  shown. Crush returns `nil` (no balance) rather than `0`.
-- Crush normally avoids this call entirely: it extracts remaining
-  hypercredits from the `usage.remaining.hypercredits` field of chat
-  response metadata and only falls back to `GET /v1/credits` when no cached
-  value is available from the last response.
+- `{ "balance": null }` — the team has **hypercredit display disabled**; Hyper
+  reports the balance in dollars instead, so no hypercredit figure is shown.
+  Crush returns `nil` (no balance) rather than `0`.
+- Crush normally avoids this call entirely: it extracts remaining hypercredits
+  from the `usage.remaining.hypercredits` field of chat response metadata and
+  only falls back to `GET /v1/credits` when no cached value is available from
+  the last response.
 
 ---
 
@@ -395,14 +392,14 @@ refreshed via:
 GET /v1/provider        // go:generate wget -O provider.json https://hyper.charm.land/v1/provider
 ```
 
-The gateway also serves an OpenAI-compatible public list at
-`GET /v1/models` (shape `{"object": "list", "data": [...]}`); as of
-2026-09 the two carry the same 32 model ids, and both answer without a
-Bearer token. Quoth consumes `/v1/provider`: its schema is the one
-`quoth-hyper--normalize-model` maps onto the selector's plists
-(`reasoning_levels`, `supports_attachments`, per-1M costs); `/v1/models`
-reports the same models in a different shape (`reasoning.effort_levels`
-as `{value, display}` objects, `capabilities.vision`, `pricing.*`).
+The gateway also serves an OpenAI-compatible public list at `GET /v1/models`
+(shape `{"object": "list", "data": [...]}`); as of 2026-09 the two carry the
+same 32 model ids, and both answer without a Bearer token. Quoth consumes
+`/v1/provider`: its schema is the one `quoth-hyper--normalize-model` maps onto
+the selector's plists (`reasoning_levels`, `supports_attachments`, per-1M
+costs); `/v1/models` reports the same models in a different shape
+(`reasoning.effort_levels` as `{value, display}` objects, `capabilities.vision`,
+`pricing.*`).
 
 Top-level shape:
 
@@ -445,48 +442,53 @@ Each model entry:
   server-side prefix caching, billed at `cost_per_1m_in_cached`.
 - **Affinity by session.** The `x-session-id` / `x-session-affinity` headers
   keep a conversation pinned to the same upstream cache node.
-- **Cache TTL: undocumented.** Hyper does not publish the server-side
-  lifetime (expiry/eviction) of a cached conversation prefix. The closest
-  upstream reference (Fireworks/Workers AI, which Hyper appears to resell)
-  states cached prompts usually persist "at least several minutes" and up
-  to "several hours", with the oldest evicted first. Clients therefore need
-  no rotation logic: on expiry the cache simply misses and rebuilds (often
-  billed at `cache_create: 0`).
-- **Cached-token reporting is flaky.** With an identical ~1900-token prefix
-  and stable session-affinity headers, `usage.prompt_tokens_details.
-cached_tokens` reported `1152` on some runs and was **absent (`null`) on
-  others** — including text-only runs with no images. The image-turn runs
-  show images are not excluded from the cached prefix, but clients must
-  not treat `cached_tokens` as a dependable per-request fact (or bill
-  predictions off it): the same request can report a cache hit or nothing.
-  Not observed: image tokens ever being billed as uncached while the
-  surrounding text prefix was cached.
+- **Cache TTL: undocumented.** Hyper does not publish the server-side lifetime
+  (expiry/eviction) of a cached conversation prefix. The closest upstream
+  reference (Fireworks/Workers AI, which Hyper appears to resell) states cached
+  prompts usually persist "at least several minutes" and up to "several hours",
+  with the oldest evicted first. Clients therefore need no rotation logic: on
+  expiry the cache simply misses and rebuilds (often billed at
+  `cache_create: 0`).
+- **Cached-token reporting is flaky.** With an identical ~1900-token prefix and
+  stable session-affinity headers, `usage.prompt_tokens_details. cached_tokens`
+  reported `1152` on some runs and was **absent (`null`) on others** — including
+  text-only runs with no images. The image-turn runs show images are not
+  excluded from the cached prefix, but clients must not treat `cached_tokens` as
+  a dependable per-request fact (or bill predictions off it): the same request
+  can report a cache hit or nothing. Not observed: image tokens ever being
+  billed as uncached while the surrounding text prefix was cached.
 - **Rotating refresh tokens.** Because each `/token/exchange` consumes the
-  presented refresh token, an HTTP `401` on an LLM request indicates the
-  refresh token is stale/consumed and the client must re-run the device
-  flow (`crush auth`).
+  presented refresh token, an HTTP `401` on an LLM request indicates the refresh
+  token is stale/consumed and the client must re-run the device flow
+  (`crush auth`).
 - **`thinking` and `reasoning_effort` interact nontrivially.** `thinking`
   (boolean) is the chain-of-thought switch: `true` makes the model emit
-  `reasoning_content` deltas before the answer. `false` answers directly
-  **only when `reasoning_effort` is omitted**; sending `reasoning_effort`
-  alongside `false` re-enables reasoning (validated empirically on the
-  `hyper` provider). Hyper maps `thinking: true` to the DeepSeek
-  thinking-mode format (`{"thinking": {"type": "enabled"}}`). Crush sets
-  `thinking` from the per-model `think` config and injects a default
-  `reasoning_effort` for reasoning-capable models.
+  `reasoning_content` deltas before the answer. `false` answers directly **only
+  when `reasoning_effort` is omitted**; sending `reasoning_effort` alongside
+  `false` re-enables reasoning (validated empirically on the `hyper` provider).
+  Hyper maps `thinking: true` to the DeepSeek thinking-mode format
+  (`{"thinking": {"type": "enabled"}}`). Crush sets `thinking` from the
+  per-model `think` config and injects a default `reasoning_effort` for
+  reasoning-capable models.
 - **Provider-family quirks.** Because Hyper is openai-compatible, Crush's
   OpenAI/`openaicompat` hooks apply: media tool results are fanned out into
-  separate messages (an OpenAI `tool` message cannot carry images/audio —
-  the gateway silently drops image content in `role: "tool"` messages, see
-  §3.4.1), and tool-call JSON is validated/repaired before execution.
+  separate messages (an OpenAI `tool` message cannot carry images/audio — the
+  gateway silently drops image content in `role: "tool"` messages, see §3.4.1),
+  and tool-call JSON is validated/repaired before execution.
 
 ---
 
 ## References
 
-- Hyper provider implementation: [`internal/agent/hyper/provider.go`](https://github.com/charmbracelet/crush/blob/main/internal/agent/hyper/provider.go)
-- Model catalog: [`internal/agent/hyper/provider.json`](https://github.com/charmbracelet/crush/blob/main/internal/agent/hyper/provider.json)
-- OAuth device flow: [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go)
-- Provider/chat request assembly: [`internal/agent/coordinator.go`](https://github.com/charmbracelet/crush/blob/main/internal/agent/coordinator.go)
-- Session affinity & caching: [`internal/agent/agent.go`](https://github.com/charmbracelet/crush/blob/main/internal/agent/agent.go)
-- Provider abstraction: `providers/openaicompat`, `providers/openai` (OpenAI-compatible)
+- Hyper provider implementation:
+  [`internal/agent/hyper/provider.go`](https://github.com/charmbracelet/crush/blob/main/internal/agent/hyper/provider.go)
+- Model catalog:
+  [`internal/agent/hyper/provider.json`](https://github.com/charmbracelet/crush/blob/main/internal/agent/hyper/provider.json)
+- OAuth device flow:
+  [`internal/oauth/hyper/device.go`](https://github.com/charmbracelet/crush/blob/main/internal/oauth/hyper/device.go)
+- Provider/chat request assembly:
+  [`internal/agent/coordinator.go`](https://github.com/charmbracelet/crush/blob/main/internal/agent/coordinator.go)
+- Session affinity & caching:
+  [`internal/agent/agent.go`](https://github.com/charmbracelet/crush/blob/main/internal/agent/agent.go)
+- Provider abstraction: `providers/openaicompat`, `providers/openai`
+  (OpenAI-compatible)

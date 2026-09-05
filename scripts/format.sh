@@ -25,8 +25,11 @@ timeout --foreground 60 emacs --batch -L . --eval '(progn
             (message "  %s" file))))' 2>&1 | grep -E "^  " || true
 
 echo "=== Formatting Markdown ==="
+# `--prose-wrap always' reflows prose and bullets to `--print-width',
+# keeping inline code spans unbroken and the output idempotent, so
+# wrapping is a gate property rather than a per-edit chore.
 find . -name "*.md" -not -path "./.git/*" -not -path "./.crush/*" -print0 |
-	xargs -0 npx prettier --write --prose-wrap preserve 2>&1 | sed 's/^/  /'
+	xargs -0 npx prettier --write --prose-wrap always --print-width 80 2>&1 | sed 's/^/  /'
 
 echo "=== Formatting Shell ==="
 find . -name "*.sh" -not -path "./.git/*" -print0 |

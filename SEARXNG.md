@@ -1,10 +1,15 @@
 # Setting up SearXNG for Quoth
 
-Quoth includes a `web_search` tool that queries a local [SearXNG](https://searxng.org) instance over HTTP. The tool is enabled by default and expects the server at `http://127.0.0.1:8888`.
+Quoth includes a `web_search` tool that queries a local
+[SearXNG](https://searxng.org) instance over HTTP. The tool is enabled by
+default and expects the server at `http://127.0.0.1:8888`.
 
-If you already have SearXNG running on that address with the JSON format enabled, no further setup is needed — the model can call `web_search` automatically during a tool round.
+If you already have SearXNG running on that address with the JSON format
+enabled, no further setup is needed — the model can call `web_search`
+automatically during a tool round.
 
-If not, this guide walks through installing SearXNG as a local, non-root user with no Docker required.
+If not, this guide walks through installing SearXNG as a local, non-root user
+with no Docker required.
 
 ---
 
@@ -43,11 +48,15 @@ If you use plain `pip` instead of `uv`, the equivalent is:
     --use-pep517 --no-build-isolation -e ~/.local/share/searxng/src/searxng
 ```
 
-> **Install reality check:** the real SearXNG is **not** published on PyPI. The `searxng` package on PyPI is an unrelated third-party MCP server. The only supported install paths are: git clone + editable venv install, Docker, or an OS package / install script.
+> **Install reality check:** the real SearXNG is **not** published on PyPI. The
+> `searxng` package on PyPI is an unrelated third-party MCP server. The only
+> supported install paths are: git clone + editable venv install, Docker, or an
+> OS package / install script.
 
 ### Prepare the settings file
 
-Copy the shipped defaults and enable the JSON format (required for quoth), a loopback bind, and a real secret key.
+Copy the shipped defaults and enable the JSON format (required for quoth), a
+loopback bind, and a real secret key.
 
 ```bash
 cp ~/.local/share/searxng/src/searxng/searx/settings.yml \
@@ -71,9 +80,12 @@ server:
   secret_key: "<random hex 32>" # MUST change from "ultrasecretkey" — the server refuses to start otherwise
 ```
 
-Generate a secret key: `python3 -c "import secrets; print(secrets.token_hex(32))"`
+Generate a secret key:
+`python3 -c "import secrets; print(secrets.token_hex(32))"`
 
-On first run the process groups runtime data under `~/.local/share/searxng`. The git-version warning in the logs ("fatal: not a git repository") is cosmetic (harmless) when cloned with `--depth 1`.
+On first run the process groups runtime data under `~/.local/share/searxng`. The
+git-version warning in the logs ("fatal: not a git repository") is cosmetic
+(harmless) when cloned with `--depth 1`.
 
 ---
 
@@ -92,13 +104,16 @@ curl 'http://127.0.0.1:8888/search?q=searxng&format=json'
 
 Expect `HTTP 200` and a JSON document with a `"results"` array.
 
-Once the server is running, open `M-x quoth` in Emacs and ask the model to search for something. The `web_search` tool fires automatically during a tool round — no extra config needed.
+Once the server is running, open `M-x quoth` in Emacs and ask the model to
+search for something. The `web_search` tool fires automatically during a tool
+round — no extra config needed.
 
 ---
 
 ## 3. Linux: run as a systemd user service
 
-Survives reboots without root. Enable _linger_ so the service keeps running when you log out.
+Survives reboots without root. Enable _linger_ so the service keeps running when
+you log out.
 
 Create `~/.config/systemd/user/searxng.service`:
 
@@ -130,13 +145,16 @@ loginctl enable-linger "$USER"
 
 Logs: `journalctl --user -u searxng -f`
 
-If you prefer a **system** service instead (needs root), place the unit in `/etc/systemd/system/searxng.service`, point paths at a dedicated user/serve dir, and reuse the same `[Service]` block with `User=` set.
+If you prefer a **system** service instead (needs root), place the unit in
+`/etc/systemd/system/searxng.service`, point paths at a dedicated user/serve
+dir, and reuse the same `[Service]` block with `User=` set.
 
 ---
 
 ## 4. macOS: run via launchd
 
-Launchd is the macOS daemon manager. The `%h` in launchd expands to your home directory, which keeps everything user-local.
+Launchd is the macOS daemon manager. The `%h` in launchd expands to your home
+directory, which keeps everything user-local.
 
 Create `~/Library/LaunchAgents/local.searxng.plist`:
 
@@ -170,7 +188,8 @@ Create `~/Library/LaunchAgents/local.searxng.plist`:
 </plist>
 ```
 
-> Replace `USERNAME` with your macOS username (paths like `%%h%%/...` are not usable in the plist XML).
+> Replace `USERNAME` with your macOS username (paths like `%%h%%/...` are not
+> usable in the plist XML).
 
 ```bash
 launchctl load ~/Library/LaunchAgents/local.searxng.plist
@@ -182,7 +201,8 @@ launchctl unload ~/Library/LaunchAgents/local.searxng.plist
 launchctl load ~/Library/LaunchAgents/local.searxng.plist
 ```
 
-Logs: check `~/Library/Logs` or the system log (`log stream --predicate 'process == "python"'`).
+Logs: check `~/Library/Logs` or the system log
+(`log stream --predicate 'process == "python"'`).
 
 ---
 
@@ -199,19 +219,27 @@ docker run -d --name searxng \
   searxng/searxng
 ```
 
-Enable the JSON format and set a secret key by mounting config (see the [searxng-docker](https://github.com/searxng/searxng-docker) repo for the settings overrides).
+Enable the JSON format and set a secret key by mounting config (see the
+[searxng-docker](https://github.com/searxng/searxng-docker) repo for the
+settings overrides).
 
 ### B. Git install under WSL (matches the Linux flow)
 
-Install inside WSL using the common git + venv steps (Section 1) and the systemd user unit (Section 3). Access the JSON endpoint at `http://127.0.0.1:8888` from Windows once WSL port forwarding is working.
+Install inside WSL using the common git + venv steps (Section 1) and the systemd
+user unit (Section 3). Access the JSON endpoint at `http://127.0.0.1:8888` from
+Windows once WSL port forwarding is working.
 
-> If you want a native Command Prompt service, register the same `python -m searx.webapp` command with NSSM as a Windows service, and set `SEARXNG_SETTINGS_PATH` in the service's environment.
+> If you want a native Command Prompt service, register the same
+> `python -m searx.webapp` command with NSSM as a Windows service, and set
+> `SEARXNG_SETTINGS_PATH` in the service's environment.
 
 ---
 
 ## 6. Quoth configuration
 
-The `web_search` tool is announced to the model alongside `exec_command` and `write_stdin` when `quoth-searxng-enabled` is non-nil (default `t`). The server URL defaults to `http://127.0.0.1:8888`.
+The `web_search` tool is announced to the model alongside `exec_command` and
+`write_stdin` when `quoth-searxng-enabled` is non-nil (default `t`). The server
+URL defaults to `http://127.0.0.1:8888`.
 
 To change the server URL:
 
@@ -225,9 +253,12 @@ To disable the tool entirely:
 (setq quoth-searxng-enabled nil)
 ```
 
-Other options in the `quoth-searxng` customize group: `quoth-searxng-timeout` (HTTP timeout, default 10s), `quoth-searxng-max-results` (default 8).
+Other options in the `quoth-searxng` customize group: `quoth-searxng-timeout`
+(HTTP timeout, default 10s), `quoth-searxng-max-results` (default 8).
 
-Keyless engines (Wikipedia, DuckDuckGo) work out of the box. Google, Bing, Brave, and others generally need API keys configured under `engines:` in the SearXNG settings.
+Keyless engines (Wikipedia, DuckDuckGo) work out of the box. Google, Bing,
+Brave, and others generally need API keys configured under `engines:` in the
+SearXNG settings.
 
 ---
 
@@ -244,4 +275,5 @@ Keyless engines (Wikipedia, DuckDuckGo) work out of the box. Google, Bing, Brave
 
 ---
 
-**Reference:** https://docs.searxng.org/ and https://docs.searxng.org/dev/search_api.html
+**Reference:** https://docs.searxng.org/ and
+https://docs.searxng.org/dev/search_api.html
