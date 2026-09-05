@@ -19,13 +19,13 @@ and the embedded [`provider.json`](https://github.com/charmbracelet/crush/blob/m
 
 ## 1. Overview
 
-| Field              | Value                                                               |
-| ------------------ | ------------------------------------------------------------------- |
-| Base URL (default) | `https://hyper.charm.land/v1`                                       |
-| Override           | `$HYPER_URL` — when set, Chat + provider endpoints use `$HYPER_URL` |
-| Auth               | `Authorization: Bearer sk-hyper-...` (except device-flow endpoints) |
-| Content type       | `application/json`                                                  |
-| User-Agent         | `quoth` (device/token/introspect endpoints)                         |
+| Field              | Value                                                                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Base URL (default) | `https://hyper.charm.land/v1`                                                                                                            |
+| Override           | `$HYPER_URL` — when set, Chat + provider endpoints use `$HYPER_URL`                                                                      |
+| Auth               | `Authorization: Bearer sk-hyper-...` (the model-catalog endpoints also answer without a token; the device-flow endpoints never take one) |
+| Content type       | `application/json`                                                                                                                       |
+| User-Agent         | `quoth` (device/token/introspect endpoints)                                                                                              |
 
 The chat-completions, credits, and model-catalog endpoints live under
 `{base}` = `https://hyper.charm.land/v1` (or `$HYPER_URL` when set).
@@ -394,6 +394,15 @@ refreshed via:
 ```
 GET /v1/provider        // go:generate wget -O provider.json https://hyper.charm.land/v1/provider
 ```
+
+The gateway also serves an OpenAI-compatible public list at
+`GET /v1/models` (shape `{"object": "list", "data": [...]}`); as of
+2026-09 the two carry the same 32 model ids, and both answer without a
+Bearer token. Quoth consumes `/v1/provider`: its schema is the one
+`quoth-hyper--normalize-model` maps onto the selector's plists
+(`reasoning_levels`, `supports_attachments`, per-1M costs); `/v1/models`
+reports the same models in a different shape (`reasoning.effort_levels`
+as `{value, display}` objects, `capabilities.vision`, `pricing.*`).
 
 Top-level shape:
 
