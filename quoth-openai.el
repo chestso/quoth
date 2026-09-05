@@ -594,7 +594,11 @@ cancel thunk (abandon the wait), or nil for immediate tools."
 
 (defun quoth-openai-compose-request (prompt model &optional history continuation)
   "Compose a chat-completions request alist for PROMPT.
-MODEL is the resolved model (the caller passes the provider's model
+PROMPT is the new user message's content: a plain string, or an
+OpenAI content-parts vector (text and `image_url' parts) when the
+turn carries image attachments — both ride the `content' field
+verbatim, the gateway's only image mechanism.  MODEL is the resolved
+model (the caller passes the provider's model
 slot, already derived from the shared `quoth-model' variable).  Falls
 back to `quoth-openai-default-model'.  The system prompt is the
 buffer's cached one (the staged send guarantees it is built before the
@@ -737,7 +741,7 @@ non-nil)."
                                                 (required . ["path" "content"]))))))
                    ((type . "function")
                     (function . ((name . "read_file")
-                                 (description . "Read a file's text and return its content (or a window of it) under a byte cap. Un-numbered reads are byte-exact (a CRLF on disk stays a CRLF) and suited to read->edit->write_file round trips. Set line_numbers to prefix each line with its 1-based number in cat -n style when you need to refer to lines by number. Use offset and limit to paginate cheaply. Errors on missing/unreadable paths and non-UTF-8 content.")
+                                 (description . "Read a file's text and return its content (or a window of it) under a byte cap. Un-numbered reads are byte-exact (a CRLF on disk stays a CRLF) and suited to read->edit->write_file round trips. Set line_numbers to prefix each line with its 1-based number in cat -n style when you need to refer to lines by number. Use offset and limit to paginate cheaply. Image files (png/jpg/jpeg/webp/gif, or any file carrying those magic bytes) are read as an image link the chat attaches as pixels, never as text; a model without image support or an image past the attachment cap returns an error instead. Errors on missing/unreadable paths and non-UTF-8 content.")
                                  (parameters . ((type . "object")
                                                 (properties . ,read-file-props)
                                                 (required . ["path"]))))))

@@ -58,6 +58,8 @@
 
 (declare-function quoth-test--fresh-buffer "quoth-test" ())
 (declare-function quoth-test--cleanup "quoth-test" ())
+(declare-function quoth-test--with-models-cache "quoth-test" (fn))
+(declare-function quoth-test--write-png "quoth-test" (file))
 (defvar quoth-test--root)
 
 (defun quoth-test--tool-call (name &optional args-json)
@@ -1946,6 +1948,122 @@ line 2 as truncated; line 2's content must not appear anywhere."
             ;; Head-only: line 2's content never appears.
             (should-not (string-match-p (regexp-quote line2) (car result))))
         (ignore-errors (delete-directory dir t))))))
+
+;;; 9b. read_file: image awareness
+
+;; read_file treats image files specially: the model cannot consume
+;; image bytes as text, so the result carries the file as a markdown
+;; image-link placeholder (the wire walk fans it out into a synthetic
+;; user message), with blindness and size-cap error results mirroring
+;; what the gateway accepts.
+
+(defun quoth-test--blind-model-provider (model-id supports)
+  "Return a provider whose catalog holds one MODEL-ID entry.
+SUPPORTS is the entry's `:supports-attachments' flag.  Seeds the
+global catalog cache under the provider's key; the caller is
+responsible for running inside `quoth-test--with-models-cache'."
+  (let ((provider (quoth-make-hyper-provider
+                   :buffer (current-buffer)
+                   :base-url "http://127.0.0.1:1" :token "tok"
+                   :model model-id)))
+    (puthash (quoth-provider--models-key provider)
+             (cons (list (list :id model-id
+                               :name model-id
+                               :supports-attachments supports))
+                   (float-time))
+             quoth-provider--models-cache)
+    provider))
+
+(ert-deftest quoth-test/read-file-image-returns-link-line ()
+  "read_file on an image file returns the image-link placeholder
+instead of trying to decode the bytes as text."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((png (quoth-test--write-png (expand-file-name "dot.png" dir)))
+               (default-directory dir)
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path "dot.png")))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p "Process exited with code 0" (car result)))
+          (should (string-match-p
+                   (regexp-quote "![dot.png](dot.png)")
+                   (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-image-sniffs-magic-bytes ()
+  "An extensionless or mislabeled file is classified by magic bytes:
+PNG magic with an unknown extension reads as an image."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((png (quoth-test--write-png (expand-file-name "blob.dat" dir)))
+               (default-directory dir)
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path "blob.dat")))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (= (cdr result) 0))
+          (should (string-match-p
+                   (regexp-quote "![blob.dat](blob.dat)")
+                   (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-image-oversize-errors-naming-cap ()
+  "An image past the raw-size cap errors (naming the cap) instead of
+returning a link that would hard-fail the request server-side."
+  (let ((dir (quoth-test--tmpdir))
+        (quoth-image-max-raw-bytes 10))
+    (unwind-protect
+        (let* ((png (quoth-test--write-png (expand-file-name "big.png" dir)))
+               (call (quoth-test--tool-call
+                      "read_file"
+                      (quoth-test--args-json :path png)))
+               (result (quoth-test--sync-result #'quoth-read-file--exec call)))
+          (should (string-match-p "attachment cap" (car result))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-image-blind-model-errors ()
+  "read_file on an image while the active model lacks
+`supports-attachments' returns an error result, so the model learns
+and can fall back to describing the file textually."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((png (quoth-test--write-png (expand-file-name "dot.png" dir))))
+          (quoth-test--with-models-cache
+           (lambda ()
+             (let ((provider (quoth-test--blind-model-provider
+                              "blind-model" nil)))
+               (with-temp-buffer
+                 (setq-local quoth-active-provider provider)
+                 (let* ((call (quoth-test--tool-call
+                               "read_file"
+                               (quoth-test--args-json :path png)))
+                        (result (quoth-test--sync-result
+                                 #'quoth-read-file--exec call)))
+                   (should (string-match-p "does not support image data"
+                                           (car result)))))))))
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/read-file-image-sighted-model-reads ()
+  "A model with `supports-attachments' set reads the image normally."
+  (let ((dir (quoth-test--tmpdir)))
+    (unwind-protect
+        (let* ((png (quoth-test--write-png (expand-file-name "dot.png" dir))))
+          (quoth-test--with-models-cache
+           (lambda ()
+             (let ((provider (quoth-test--blind-model-provider
+                              "sighted-model" t)))
+               (with-temp-buffer
+                 (setq-local quoth-active-provider provider)
+                 (let* ((call (quoth-test--tool-call
+                               "read_file"
+                               (quoth-test--args-json :path png)))
+                        (result (quoth-test--sync-result
+                                 #'quoth-read-file--exec call)))
+                   (should (= (cdr result) 0))
+                   (should (string-match-p "!\\[dot.png\\]" (car result)))))))))
+      (ignore-errors (delete-directory dir t)))))
 
 (provide 'quoth-test-tools)
 ;;; quoth-test-tools.el ends here

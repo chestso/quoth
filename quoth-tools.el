@@ -41,7 +41,11 @@
 ;; (atomic on a fresh file, byte-exact line endings, optional `mode'
 ;; permission bits applied after the write) and `read_file'
 ;; reads a file back byte-exact, erroring on non-UTF-8 content.
-;; `read_file' additionally takes three shape args: `line_numbers'
+;; `read_file' is image-aware: an image file (by extension or magic
+;; bytes) is reported as a markdown image-link line the chat walk
+;; attaches as pixels, never decoded as text; a model without image
+;; support or a past-cap image is an error result the model can adapt
+;; to. `read_file' additionally takes three shape args: `line_numbers'
 ;; (default off) prefixes each line with its 1-based true number in
 ;; `cat -n' style; `offset' (1-based) and `limit' window the read;
 ;; both error on non-positive values and clamp past EOF silently.
@@ -104,6 +108,14 @@ request `login' on the tool call for it to take effect."
   :type 'boolean
   :group 'quoth-tool)
 
+(declare-function quoth-provider-model-supports-attachments-p "quoth-provider" (provider))
+(defvar quoth-image-max-raw-bytes 3750000
+  "Raw-size cap for one image attachment, in bytes.
+The `defcustom' in `quoth.el' owns the option; this plain `defvar'
+declares the binding so this file byte-compiles and loads
+standalone.  A `defvar' never overwrites an existing binding, so
+when `quoth.el' loads this file first the later `defcustom' (and
+the user's Customize value) still wins.")
 (declare-function quoth-openai-tool-error-result "quoth-openai" (message))
 (declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
 (declare-function quoth-process--start "quoth-process" (command working-directory owner &optional shell login on-exit))
@@ -366,6 +378,83 @@ bytes as text.  This keeps the read byte-exact."
     (let ((coding-system-for-read 'binary))
       (insert-file-contents path))
     (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun quoth-file--read-bytes-prefix (path count)
+  "Return the first COUNT raw bytes of the file at PATH, or nil.
+The magic-byte sniff: a short unibyte read that never touches UTF-8
+decoding.  Returns nil when the file is unreadable; a shorter file
+yields all its bytes."
+  (when (file-readable-p path)
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (let ((coding-system-for-read 'binary))
+        (ignore-errors
+          (insert-file-contents path nil 0 count)))
+      (buffer-substring-no-properties (point-min) (point-max)))))
+
+(defun quoth-file--image-magic-mime (path)
+  "Return PATH's image MIME type by magic bytes, or nil.
+Matches the PNG / JPEG / GIF / WebP signatures in the first 12
+bytes; the declared extension is never trusted alone."
+  (let ((head (quoth-file--read-bytes-prefix path 12)))
+    (and head
+         (cond ((string-prefix-p "\x89PNG" head) "image/png")
+               ((string-prefix-p "\xff\xd8\xff" head) "image/jpeg")
+               ((string-prefix-p "GIF8" head) "image/gif")
+               ((and (string-prefix-p "RIFF" head)
+                     (> (length head) 11)
+                     (string= (substring head 8 12) "WEBP"))
+                "image/webp")))))
+
+(defun quoth-file--image-mime (path)
+  "Return the image MIME type for PATH, or nil for a non-image.
+The extension decides when it names a known image type; otherwise
+the magic bytes do (an extension can lie, and unknown extensions
+still carry real images)."
+  (or (pcase (downcase (or (file-name-extension path) ""))
+        ("png" "image/png")
+        ("jpg" "image/jpeg")
+        ("jpeg" "image/jpeg")
+        ("webp" "image/webp")
+        ("gif" "image/gif")
+        (_ nil))
+      (quoth-file--image-magic-mime path)))
+
+(defun quoth-file--image-supported-p ()
+  "Return whether the active model accepts image attachments.
+Delegates to the cached-catalog lookup on `quoth-active-provider'
+\(t / nil / `unknown'); `unknown' is permissive — the server strips
+images silently rather than erroring, so an uncertain catalog never
+blocks the read."
+  (quoth-provider-model-supports-attachments-p
+   (and (boundp 'quoth-active-provider) quoth-active-provider)))
+
+(defun quoth-file--image-supported-error ()
+  "Return the blindness error result for an image read."
+  (quoth-openai-tool-error-result
+   "This model does not support image data; describe the file textually instead"))
+
+(defun quoth-file--image-size-error (path)
+  "Return the past-cap error result for the image at PATH."
+  (quoth-openai-tool-error-result
+   (format "Image %s exceeds the raw-size attachment cap (%d bytes); resize or crop it first"
+           (file-name-nondirectory path) quoth-image-max-raw-bytes)))
+
+(defun quoth-read-file--image-result (path)
+  "Return the image read result (TEXT . 0) for the image at PATH.
+The result body is the file's markdown image-link line
+\(`![name](path)'): compact display text in the tool block, and the
+marker the chat walk recognizes to attach the pixels in a synthetic
+user message — the model cannot consume image bytes as text, so the
+bytes never ride this result.  PATH is written verbatim into the
+link (as the tool call passed it), so the buffer display names what
+the model asked for and the walk resolves it the same way on every
+replay."
+  (cons (concat (format "Process exited with code %s\n" 0)
+                (quoth-exec--output-section
+                 (format "![%s](%s)"
+                         (file-name-nondirectory path) path)))
+        0))
 
 (defun quoth-file--write-mode (args)
   "Return the validated `mode' permission bits from ARGS, or nil.
@@ -862,9 +951,14 @@ emitted.  An empty file reports the status header only.
 
 A missing or unreadable path, an invalid `offset' / `limit', or
 content that is not valid UTF-8 delivers an error result
-immediately.  An immediate tool: returns nil (no cancel thunk)."
+immediately.  An image file (by extension or magic bytes) never
+reaches the text path: a past-cap image or a model without image
+support is an error result the model can adapt to, otherwise the
+result is the markdown image-link line the chat walk attaches as
+pixels.  An immediate tool: returns nil (no cancel thunk)."
   (let* ((args (quoth-openai-tool-call-args tool-call))
          (path (quoth-file--resolve-path args))
+         (as-written (plist-get args :path))
          (numbered-p (quoth-file--read-line-numbered-p args)))
     (cond
      ((not path)
@@ -876,93 +970,119 @@ immediately.  An immediate tool: returns nil (no cancel thunk)."
           (progn
             (unless (file-readable-p path)
               (error "Cannot read %s" path))
-            ;; Resolve the window inside the condition-case so an
-            ;; invalid value becomes an error result, not a raw
-            ;; signal out of the entry.
-            (let* ((range (quoth-file--read-range args))
-                   (offset (car range))
-                   (limit (cdr range))
-                   (text (quoth-file--read-content path))
-                   (lines (quoth-file--lines text))
-                   (line-count (length lines))
-                   (status "Process exited with code 0\n")
-                   ;; The budget's fixed cost is the non-empty
-                   ;; `Output:' header, derived from the same
-                   ;; `output-section' helper that renders the result:
-                   ;; its section with a one-byte dummy body, minus
-                   ;; the dummy, plus the status line.  The empty-file
-                   ;; case below renders the `(empty)' marker instead
-                   ;; and never reaches the budget arithmetic.
-                   (header-len (+ (length status)
-                                  (1- (length
-                                       (quoth-exec--output-section "x"))))))
-              (if (= line-count 0)
-                  ;; Empty file: the `output-section' helper's
-                  ;; structural `(empty)' marker, no body, no marker.
-                  ;; Short-circuits before the offset-past-EOF check,
-                  ;; because offset 1 is trivially past an empty file.
-                  (funcall on-done
-                           (cons (concat status
-                                         (quoth-exec--output-section nil))
-                                 0))
-                (progn
-                  (when (> offset line-count)
-                    (error "Offset %d is past the last line (%d)"
-                           offset line-count))
-                  (let* (;; window-end doubles as the exclusive end
-                         ;; index into LINES: line N lives at index
-                         ;; N-1, so the slice (1- offset)..window-end
-                         ;; covers lines offset..window-end inclusive.
-                         (window-end (if limit
-                                         (min (+ offset limit -1)
-                                              line-count)
-                                       line-count))
-                         (windowed (vconcat
-                                    (cl-subseq lines
-                                               (1- offset)
-                                               window-end)))
-                         (window-size (length windowed))
-                         (keep 0)
-                         (consumed header-len)
-                         (fit-p t))
-                    ;; Spend the budget on whole rendered lines, head
-                    ;; first.  A blank line renders to one byte (its
-                    ;; LF) so files of blank lines still terminate.
-                    (while (and fit-p (< keep window-size))
-                      (let* ((line (aref windowed keep))
-                             (cost (if numbered-p
-                                       (length
-                                        (quoth-file--numbered-line
-                                         (+ offset keep) line))
-                                     ;; + 1 for the LF the render adds;
-                                     ;; a final line the file ends
-                                     ;; without is over-charged by that
-                                     ;; one byte (conservative).
-                                     (1+ (length line)))))
-                        (if (> (+ consumed cost) quoth-tool-max-output)
-                            (setq fit-p nil)
-                          (setq consumed (+ consumed cost))
-                          (setq keep (1+ keep)))))
-                    (let* ((body (quoth-read-file--render
-                                  text lines offset (+ offset keep) numbered-p))
-                           (dropped (- window-size keep))
-                           (first-dropped (+ offset keep))
-                           (marker (quoth-read-file--marker
-                                    dropped
-                                    first-dropped
-                                    ;; window-end: the last line of the
-                                    ;; requested window, dropped or not.
-                                    window-end)))
-                      (funcall on-done
-                               (cons (concat status
-                                             (quoth-exec--output-section body)
-                                             marker)
-                                     0))
-                      nil))))))
+            ;; Image files never ride the text path: the model cannot
+            ;; consume image bytes as UTF-8 text, so the result is the
+            ;; image-link line the chat walk fans out into a synthetic
+            ;; user message (blindness and size errors mirror the
+            ;; gateway's own limits, so the model learns and adapts).
+            (let ((mime (quoth-file--image-mime path)))
+              (cond
+               ((and mime
+                     (> (or (file-attribute-size
+                             (file-attributes path)) 0)
+                        quoth-image-max-raw-bytes))
+                (funcall on-done (quoth-file--image-size-error path))
+                nil)
+               ((and mime (eq (quoth-file--image-supported-p) nil))
+                (funcall on-done (quoth-file--image-supported-error))
+                nil)
+               (mime
+                (funcall on-done
+                         (quoth-read-file--image-result
+                          (or as-written path)))
+                nil)
+               (t
+                (quoth-read-file--exec-text path args numbered-p on-done)))))
         (error
          (funcall on-done (quoth-openai-tool-error-result
                            (error-message-string err)))
          nil))))))
+
+(defun quoth-read-file--exec-text (path args numbered-p on-done)
+  "Deliver the text read of PATH for ARGS to ON-DONE inline.
+The line-numbers / offset / limit rendering path of `read_file' for
+non-image files; see `quoth-read-file--exec' for the arg contracts.
+An immediate tool: returns nil (no cancel thunk)."
+  (let* ((range (quoth-file--read-range args))
+         (offset (car range))
+         (limit (cdr range))
+         (text (quoth-file--read-content path))
+         (lines (quoth-file--lines text))
+         (line-count (length lines))
+         (status "Process exited with code 0\n")
+         ;; The budget's fixed cost is the non-empty
+         ;; `Output:' header, derived from the same
+         ;; `output-section' helper that renders the result:
+         ;; its section with a one-byte dummy body, minus
+         ;; the dummy, plus the status line.  The empty-file
+         ;; case below renders the `(empty)' marker instead
+         ;; and never reaches the budget arithmetic.
+         (header-len (+ (length status)
+                        (1- (length
+                             (quoth-exec--output-section "x"))))))
+    (if (= line-count 0)
+        ;; Empty file: the `output-section' helper's
+        ;; structural `(empty)' marker, no body, no marker.
+        ;; Short-circuits before the offset-past-EOF check,
+        ;; because offset 1 is trivially past an empty file.
+        (funcall on-done
+                 (cons (concat status
+                               (quoth-exec--output-section nil))
+                       0))
+      (progn
+        (when (> offset line-count)
+          (error "Offset %d is past the last line (%d)"
+                 offset line-count))
+        (let* (;; window-end doubles as the exclusive end
+               ;; index into LINES: line N lives at index
+               ;; N-1, so the slice (1- offset)..window-end
+               ;; covers lines offset..window-end inclusive.
+               (window-end (if limit
+                               (min (+ offset limit -1)
+                                    line-count)
+                             line-count))
+               (windowed (vconcat
+                          (cl-subseq lines
+                                     (1- offset)
+                                     window-end)))
+               (window-size (length windowed))
+               (keep 0)
+               (consumed header-len)
+               (fit-p t))
+          ;; Spend the budget on whole rendered lines, head
+          ;; first.  A blank line renders to one byte (its
+          ;; LF) so files of blank lines still terminate.
+          (while (and fit-p (< keep window-size))
+            (let* ((line (aref windowed keep))
+                   (cost (if numbered-p
+                             (length
+                              (quoth-file--numbered-line
+                               (+ offset keep) line))
+                           ;; + 1 for the LF the render adds;
+                           ;; a final line the file ends
+                           ;; without is over-charged by that
+                           ;; one byte (conservative).
+                           (1+ (length line)))))
+              (if (> (+ consumed cost) quoth-tool-max-output)
+                  (setq fit-p nil)
+                (setq consumed (+ consumed cost))
+                (setq keep (1+ keep)))))
+          (let* ((body (quoth-read-file--render
+                        text lines offset (+ offset keep) numbered-p))
+                 (dropped (- window-size keep))
+                 (first-dropped (+ offset keep))
+                 (marker (quoth-read-file--marker
+                          dropped
+                          first-dropped
+                          ;; window-end: the last line of the
+                          ;; requested window, dropped or not.
+                          window-end)))
+            (funcall on-done
+                     (cons (concat status
+                                   (quoth-exec--output-section body)
+                                   marker)
+                           0))
+            nil))))))
 
 ;;; Register the tools into the protocol registry.
 

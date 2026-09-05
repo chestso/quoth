@@ -55,6 +55,8 @@
 (declare-function quoth-test--fresh-buffer "quoth-test")
 (declare-function quoth-test--cleanup "quoth-test")
 (declare-function quoth-test--buffer-name "quoth-test")
+(declare-function quoth-test--with-models-cache "quoth-test" (fn))
+(declare-function quoth-test--write-png "quoth-test" (file))
 (defvar quoth-test--root)
 
 ;;; Simulation helper: lets tests drive the response cycle
@@ -2615,6 +2617,364 @@ partial is still included as plain assistant content."
             (should (string-match-p "partial answer" all-content))
             (should-not (string-match-p "boom" all-content)))))
     (quoth-test--cleanup)))
+
+;;; Image attachments
+
+;; Helpers: seed user-region text and tagged image links the way the
+;; interactive inserters do (no after-change hook), so the walk tests
+;; exercise the exact buffer shape a real attach produces.
+
+(defun quoth-test--insert-user-text (prompt-id text)
+  "Insert TEXT at point tagged `user' with `quoth-prompt-id' PROMPT-ID."
+  (goto-char (point-max))
+  (let ((start (point)))
+    (insert text)
+    (put-text-property start (point) 'quoth-region-type 'user)
+    (put-text-property start (point) 'quoth-prompt-id prompt-id)))
+
+(defun quoth-test--insert-image (prompt-id file &optional attach)
+  "Insert a tagged image link line for FILE at point as user input.
+ATTACH sets the `:attach' flag verbatim and defaults to t: pass the
+sentinel `:no-attach' for an `:attach' nil link (a plain nil means
+\"not passed\" in `&optional' position).  The link carries the
+`quoth-image' plist \(:path :mime :attach) over exactly the link
+characters, and the whole inserted region is tagged `user' with
+PROMPT-ID — the shape `quoth--insert-image-link' produces."
+  (goto-char (point-max))
+  (let* ((start (point))
+         (link (format "![%s](%s)" (file-name-nondirectory file) file))
+         (attach (if (eq attach :no-attach) nil (or attach t))))
+    (insert link "\n\n")
+    (put-text-property start (+ start (length link))
+                       'quoth-image
+                       (list :path file :mime "image/png"
+                             :attach attach))
+    (put-text-property start (point) 'quoth-region-type 'user)
+    (put-text-property start (point) 'quoth-prompt-id prompt-id)))
+
+(ert-deftest quoth-test/user-turn-content-string-without-images ()
+  "With no attached image spans the content is the plain trimmed string."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (quoth-test--insert-user-text quoth--prompt-id "hello world")
+          (let ((content (quoth--user-turn-content quoth--prompt-id)))
+            (should (stringp content))
+            (should (equal content "hello world")))))
+    (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/user-turn-content-parts-order-and-split ()
+  "An attached image splits the user text into ordered content parts."
+  (let ((dir (make-temp-file "quoth-img" t)))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((png (quoth-test--write-png (expand-file-name "dot.png" dir))))
+              (quoth-test--insert-user-text quoth--prompt-id "before the image\n\n")
+              (quoth-test--insert-image quoth--prompt-id png)
+              (quoth-test--insert-user-text quoth--prompt-id "after the image")
+              (let ((content (quoth--user-turn-content quoth--prompt-id)))
+                (should (vectorp content))
+                (should (= (length content) 3))
+                ;; Part 0: the leading text.
+                (should (equal (cdr (assoc 'type (aref content 0))) "text"))
+                (should (equal (cdr (assoc 'text (aref content 0)))
+                               "before the image"))
+                ;; Part 1: the image, inline as a data URL.
+                (let* ((img (aref content 1))
+                       (url (cdr (assoc 'url (cdr (assoc 'image_url img))))))
+                  (should (equal (cdr (assoc 'type img)) "image_url"))
+                  (should (string-prefix-p "data:image/png;base64," url))
+                  (should (equal url
+                                 (concat "data:image/png;base64,"
+                                         (base64-encode-string
+                                          (quoth-test--png-bytes))))))
+                ;; Part 2: the trailing text.
+                (should (equal (cdr (assoc 'type (aref content 2))) "text"))
+                (should (equal (cdr (assoc 'text (aref content 2)))
+                               "after the image"))))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/user-turn-content-attach-nil-rides-text ()
+  "An `:attach' nil image link rides the text content verbatim."
+  (let ((dir (make-temp-file "quoth-img" t)))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((png (quoth-test--write-png (expand-file-name "dot.png" dir))))
+              (quoth-test--insert-user-text quoth--prompt-id "what is\n\n")
+              (quoth-test--insert-image quoth--prompt-id png :no-attach)
+              (let ((content (quoth--user-turn-content quoth--prompt-id)))
+                (should (stringp content))
+                (should (string-match-p (regexp-quote
+                                         (format "![dot.png](%s)" png))
+                                        content))))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/user-turn-content-missing-file-degrades ()
+  "An attached image whose file is gone degrades to a bracketed note
+and the message stays plain text (no parts array)."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((gone (expand-file-name "quoth-missing/gone.png"
+                                        quoth-test--root)))
+            (quoth-test--insert-user-text quoth--prompt-id "describe\n\n")
+            (quoth-test--insert-image quoth--prompt-id gone)
+            (let ((content (quoth--user-turn-content quoth--prompt-id)))
+              (should (stringp content))
+              (should (string-match-p "\\[image unavailable: gone.png\\]"
+                                      content))
+              (should-not (string-match-p "!\\[gone.png\\]" content))))))
+    (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/user-turn-content-oversized-file-dropped ()
+  "An attached image past the raw-size cap is dropped from the wire,
+replaced by a bracketed note naming the file, and the message stays
+plain text."
+  (let ((dir (make-temp-file "quoth-img" t))
+        (quoth-image-max-raw-bytes 10))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((png (quoth-test--write-png (expand-file-name "big.png" dir))))
+              (quoth-test--insert-user-text quoth--prompt-id "look\n\n")
+              (quoth-test--insert-image quoth--prompt-id png)
+              (let ((content (quoth--user-turn-content quoth--prompt-id)))
+                (should (stringp content))
+                (should (string-match-p "\\[image too large for attachment: big.png\\]"
+                                        content))
+                (should-not (string-match-p "!\\[big.png\\]" content))))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/history-turns-replays-image-parts ()
+  "A prior exchange's attached image replays in history as a
+content-parts array (images replay every turn, like text)."
+  (let ((dir (make-temp-file "quoth-img" t)))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((png (quoth-test--write-png (expand-file-name "dot.png" dir))))
+              (quoth-test--insert-user-text quoth--prompt-id "what is this?\n\n")
+              (quoth-test--insert-image quoth--prompt-id png)
+              ;; Close the exchange: response + fresh pending prompt.
+              (goto-char (point-max))
+              (let ((response-start (point)))
+                (insert "a red square")
+                (quoth--tag-response-region response-start (point)
+                                            quoth--prompt-id))
+              (setq-local quoth--prompt-id (quoth--generate-id))
+              (quoth--insert-input-separator)
+              (quoth-test--insert-user-text quoth--prompt-id "and now?"))
+            (let* ((msgs (quoth--history-turns quoth--prompt-id))
+                   (user (car msgs))
+                   (content (cdr (assoc 'content user))))
+              (should (equal (quoth-test--msg-role user) "user"))
+              (should (vectorp content))
+              (should (equal (cdr (assoc 'type (aref content 1))) "image_url")))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/tool-rounds-image-fanout ()
+  "A tool result carrying an attached image emits the fan-out pair:
+the `tool' message keeps the result text minus the image line, and a
+synthetic `user' message right after carries the image part."
+  (let ((dir (make-temp-file "quoth-img" t)))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let* ((png (quoth-test--write-png (expand-file-name "dot.png" dir)))
+                   (result (format "Process exited with code 0\nOutput:\n![dot.png](%s)\n"
+                                   png))
+                   (id (quoth-test--seed-tool-exchange
+                        "look at the plot"
+                        "It is a red square."
+                        (list (list :name "read_file" :id "call_1"
+                                    :args-json "{}"
+                                    :result result :exit 0))))
+                   (msgs (quoth--tool-rounds id)))
+              (should (= (length msgs) 4))
+              ;; assistant(tool_calls), tool, synthetic user, answer —
+              ;; the leading user message is history's job, not the
+              ;; tool-rounds walk's.
+              (should (equal (quoth-test--msg-role (nth 1 msgs)) "tool"))
+              (should (equal (quoth-test--msg-content (nth 1 msgs))
+                             "Process exited with code 0\nOutput:"))
+              (let* ((fan (nth 2 msgs))
+                     (content (cdr (assoc 'content fan))))
+                (should (equal (quoth-test--msg-role fan) "user"))
+                (should (vectorp content))
+                (should (equal (cdr (assoc 'type (aref content 0))) "image_url"))
+                (should (equal (cdr (assoc 'type (aref content 1))) "text"))
+                (should (equal (cdr (assoc 'text (aref content 1)))
+                               "Image content from the tool result:")))
+              (should (equal (quoth-test--msg-content (nth 3 msgs))
+                             "It is a red square.")))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/tool-rounds-image-fanout-missing-file ()
+  "When the fan-out image cannot be read at walk time, the link line
+stays in the tool content and no synthetic user message is emitted."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let* ((gone (expand-file-name "quoth-missing/gone.png"
+                                         quoth-test--root))
+                 (result (format "Process exited with code 0\nOutput:\n![gone.png](%s)\n"
+                                 gone))
+                 (id (quoth-test--seed-tool-exchange
+                      "look at it"
+                      "Done."
+                      (list (list :name "read_file" :id "call_1"
+                                  :args-json "{}"
+                                  :result result :exit 0))))
+                 (msgs (quoth--tool-rounds id)))
+            (should (= (length msgs) 3))
+            ;; assistant(tool_calls), tool, answer: no synthetic user
+            ;; message, and the link line stays in the tool content.
+            (should (equal (quoth-test--msg-role (nth 1 msgs)) "tool"))
+            (should (string-match-p "!\\[gone.png\\]"
+                                    (quoth-test--msg-content (nth 1 msgs)))))))
+    (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/toggle-image-attach-flips-flag ()
+  "`quoth-toggle-image-attach' flips the `:attach' flag of the image
+link at point, switching the walk between parts and plain text."
+  (let ((dir (make-temp-file "quoth-img" t)))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let ((png (quoth-test--write-png (expand-file-name "dot.png" dir))))
+              (quoth-test--insert-image quoth--prompt-id png)
+              (goto-char (point-min))
+              (search-forward "![dot.png]")
+              (let ((plist (get-text-property (point) 'quoth-image)))
+                (should (plist-get plist :attach)))
+              (quoth-toggle-image-attach)
+              (should-not (plist-get (get-text-property (point) 'quoth-image)
+                                     :attach))
+              (should (stringp (quoth--user-turn-content quoth--prompt-id)))
+              (quoth-toggle-image-attach)
+              (should (plist-get (get-text-property (point) 'quoth-image)
+                                 :attach))
+              (should (vectorp (quoth--user-turn-content quoth--prompt-id))))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/insert-image-link-tags-region ()
+  "`quoth--insert-image-link' inserts the markdown image link as user
+input carrying the `quoth-image' plist with the attach flag."
+  (let ((img-dir (make-temp-file "quoth-link" t)))
+    (unwind-protect
+        (let* ((buf (quoth-test--fresh-buffer))
+               ;; The link must be relative to the project root (the
+               ;; quoth buffer's root is `quoth-test--root'), so seed
+               ;; the png inside a root-relative directory the link
+               ;; names relatively.
+               (png-abs (quoth-test--write-png
+                         (expand-file-name "dot.png" img-dir))))
+          (with-current-buffer buf
+            (quoth--insert-image-link png-abs t)
+            (goto-char (point-min))
+            (should (search-forward
+                     (format "![dot.png](%s)"
+                             (file-relative-name png-abs
+                                                 quoth-test--root))
+                     nil t))
+            (should (eq (get-text-property (match-beginning 0)
+                                           'quoth-region-type)
+                        'user))
+            (let ((plist (get-text-property (match-beginning 0)
+                                            'quoth-image)))
+              (should plist)
+              (should (equal (plist-get plist :path)
+                             (file-relative-name png-abs
+                                                 quoth-test--root)))
+              (should (equal (plist-get plist :mime) "image/png"))
+              (should (plist-get plist :attach)))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory img-dir t)))))
+
+(ert-deftest quoth-test/image-preflight-missing-file-notes-and-degrades ()
+  "Send-time preflight over the prompt's images: a missing file yields
+an error system note and a plain-text content with the bracketed
+placeholder."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (let ((gone (expand-file-name "quoth-missing/gone.png"
+                                        quoth-test--root)))
+            (quoth-test--insert-user-text quoth--prompt-id "describe\n\n")
+            (quoth-test--insert-image quoth--prompt-id gone)
+            (let ((content (quoth--image-preflight quoth--prompt-id)))
+              (should (stringp content))
+              (should (string-match-p "\\[image unavailable: gone.png\\]"
+                                      content))
+              ;; The system note is real buffer text tagged `system'.
+              (goto-char (point-min))
+              (should (search-forward "gone.png" nil t))
+              (should (search-forward "Error" nil t))
+              (should (eq (get-text-property (point) 'quoth-region-type)
+                          'system))))))
+    (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/image-preflight-blind-model-notes ()
+  "When the active model lacks attachment support and images remain on
+the wire, preflight inserts one user-kind note."
+  (let ((dir (make-temp-file "quoth-img" t)))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let* ((png (quoth-test--write-png (expand-file-name "dot.png" dir)))
+                   (provider quoth-active-provider))
+              (quoth-test--with-models-cache
+               (lambda ()
+                 (puthash (quoth-provider--models-key provider)
+                          (cons (list (list :id "blind-model"
+                                            :supports-attachments nil))
+                                (float-time))
+                          quoth-provider--models-cache)
+                 (quoth-provider--apply-model provider
+                                              (list :id "blind-model"))
+                 (quoth-test--insert-image quoth--prompt-id png)
+                 (let ((content (quoth--image-preflight quoth--prompt-id)))
+                   (should (vectorp content))
+                   (goto-char (point-min))
+                   (should (search-forward "cannot see images" nil t))
+                   (should (eq (get-text-property (point) 'quoth-region-type)
+                               'system))))))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
+
+(ert-deftest quoth-test/image-attach-time-blind-model-notes ()
+  "Attaching an image while the active model cannot see images inserts
+an error system note naming the model."
+  (let ((dir (make-temp-file "quoth-img" t)))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let* ((png (quoth-test--write-png (expand-file-name "dot.png" dir)))
+                   (provider quoth-active-provider))
+              (quoth-test--with-models-cache
+               (lambda ()
+                 (puthash (quoth-provider--models-key provider)
+                          (cons (list (list :id "blind-model"
+                                            :supports-attachments nil))
+                                (float-time))
+                          quoth-provider--models-cache)
+                 (quoth-provider--apply-model provider
+                                              (list :id "blind-model"))
+                 (quoth--insert-image-link png t)
+                 (goto-char (point-min))
+                 (should (search-forward "cannot see images" nil t))
+                 (goto-char (point-min))
+                 (should (search-forward "blind-model" nil t)))))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
 
 (provide 'quoth-test-buffer)
 ;;; quoth-test-buffer.el ends here

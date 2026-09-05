@@ -78,7 +78,8 @@ The `quoth` group covers the essentials — working directory,
 request tuning (`quoth-openai-timeout`, `-max-tokens`, `-temperature`,
 `-thinking`, `-reasoning-effort`), history replay
 (`quoth-hyper-history-limit`, `quoth-hyper-history-include-reasoning`),
-reasoning display (`quoth-reasoning-preview-lines`), the system prompt
+reasoning display (`quoth-reasoning-preview-lines`), image
+attachments (`quoth-image-max-raw-bytes`), the system prompt
 (`quoth-openai-system-prompt`), debug logging, and the hyper provider
 settings (`quoth-hyper-base-url`, `quoth-hyper-token`). Process
 handling lives in the `quoth-process` group and tool behavior in the
@@ -149,6 +150,8 @@ live in [ARCHITECTURE.md](ARCHITECTURE.md).
 - `C-c c i` — interrupt the running quoth process
 - `C-c c k` — clear the quoth buffer (also starts a fresh session and rotates the session UUID)
 - `C-c c r` — expand/collapse the reasoning fold at point
+- `C-c c a` — attach an image file to the prompt (see [Image Attachments](#image-attachments))
+- `C-c c t` — toggle the image link at point between attachment and plain markdown
 
 ### Per-Project Buffers
 
@@ -178,6 +181,7 @@ Keybindings (active when `quoth-minor-mode` is enabled):
 - `C-c C-s` — insert the active region as a markdown fenced code block with a context header
 - `C-c C-b` — insert the entire buffer as a markdown fenced code block
 - `C-c C-p` — insert the buffer's file path as context
+- `C-c C-i` — attach the buffer's image file to the prompt (see [Image Attachments](#image-attachments))
 
 ## Inserting Context
 
@@ -185,13 +189,51 @@ Insert context from a source buffer with:
 
 - `C-c C-s` (`quoth-insert-selection`) — the active region
 - `C-c C-b` (`quoth-insert-buffer`) — the entire buffer
-- `C-c C-p` (`quoth-insert-filepath`) — the file path as a link
+- `C-c C-p` (`quoth-insert-filepath`) — the file path as a link; with a
+  prefix arg the same link is inserted as plain text without wire
+  attachment
 
 Inserted content is formatted as a markdown fenced code block with a
 `**Attachment: <relpath> (lines N-M)**` header (paths relative to the
 project root); `quoth-insert-filepath` inserts a `[relpath](relpath)`
 link instead. It is appended as plain user input, so it is sent as part
-of the prompt — there is no separate attachment tracking.
+of the prompt — there is no separate attachment tracking. Image files
+are the exception: `C-c C-p` on an image buffer inserts the
+[Image Attachments](#image-attachments) link instead of the plain
+path link.
+
+### Image Attachments
+
+Attach an image (PNG, JPEG, GIF, or WebP — by extension or magic
+bytes) to a prompt and the model sees the pixels:
+
+- `C-c c a` (`quoth-attach-image`) in the chat buffer, or
+  `C-c C-i` in a source buffer visiting the image — picks a file,
+  inserts a `![name](path)` link as user input, and marks it for wire
+  attachment.
+- `C-c c t` (`quoth-toggle-image-attach`) on a link flips it between
+  attachment (the model sees the image) and plain markdown (the model
+  reads the path as text). The buffer looks identical either way;
+  only the wire behavior changes.
+
+The buffer holds only the link — the image bytes are re-read from
+disk and sent inline (base64 data URL) as an `image_url` content part
+at send time, so the buffer stays the single source of truth and
+killing/reopening it rebuilds the same request. An image larger than
+`quoth-image-max-raw-bytes` (3.75MB raw by default, under the
+gateway's 5MB base64 limit) is dropped from the wire with an error
+note naming the cap; an unreadable file degrades to a text
+placeholder the same way. When the model catalog positively knows the
+active model cannot see images (e.g. the deepseek and llama families),
+attaching still inserts the link and a warning note — the image is
+sent but ignored; switch to a vision model with `C-c c m`.
+
+The model can look at images it finds on its own: an image-aware
+`read_file` returns the same `![name](path)` link as its result, and
+the wire walk moves the pixels into a follow-up user message (the
+gateway drops image content in tool messages). A model without image
+support or a past-cap image gets an error result instead, so it can
+fall back to describing the file textually.
 
 Prompt/response tagging and metadata are documented in
 [ARCHITECTURE.md](ARCHITECTURE.md).

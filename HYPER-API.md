@@ -284,6 +284,44 @@ Tool results use `role: "tool"` with `tool_call_id`:
 }
 ```
 
+### 3.4.1 Image attachments (multimodal user content)
+
+When a user message carries an image, `content` switches from a string to an
+**array of OpenAI content parts**; images ride as `image_url` parts with the
+image bytes inline as a base64 `data:` URL:
+
+```jsonc
+{
+  "role": "user",
+  "content": [
+    { "type": "text", "text": "What color is this image? One word." },
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/png;base64,<base64 bytes>",
+        "detail": "low", // optional; "auto" | "low" | "high"
+      },
+    },
+  ],
+}
+```
+
+This is the only image mechanism — there is no separate attachment
+endpoint or multipart upload. All findings below validated empirically
+against `POST /v1/chat/completions`:
+
+| Behavior                         | Result                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Format                           | OpenAI content-parts array, `image_url` + `data:` URL (base64). A 512×512 PNG was answered correctly; `detail` is accepted and optional.                                                                                                                                                                                                                                           |
+| Image size validation            | The gateway enforces a size floor: an 8×8 PNG returns `400` `{"error":{"message":"Invalid image attachment size. Image is too small or too large."}}`.                                                                                                                                                                                                                             |
+| MIME type leniency               | The declared MIME is not strictly trusted — a `data:image/jpeg;base64,` URL carrying PNG bytes was decoded and answered correctly (content sniffing).                                                                                                                                                                                                                              |
+| Vision vs. text-only models      | Sending an image to a model with `supports_attachments: false` (e.g. `deepseek-v4-pro`) is **not an error**: the server strips the image and the model answers blind ("I don't see an image"). Clients that gate on the catalog flag do so for UX, not wire validity.                                                                                                              |
+| Images in history                | A multipart image turn replays fine as prior history alongside later plain-string user messages; models recall earlier images.                                                                                                                                                                                                                                                     |
+| Images in `role: "tool"` results | Silently dropped (model sees an empty string). Tool messages are text-only; media tool results must be fanned out into a separate synthetic `user` message carrying the image (see §6). The fan-out shape — tool result placeholder text + a following `user` message with the `image_url` part — is accepted and produces a correct image-grounded answer (validated end-to-end). |
+
+`supports_attachments` in the model catalog (§5) is the client-side signal for
+which models meaningfully accept images.
+
 ### 3.5 Response / streaming
 
 `stream: true` returns an SSE stream of Chat Completions chunks with the
@@ -386,7 +424,7 @@ Each model entry:
 | `can_reason`               | bool     | Whether the model supports reasoning/thinking.                             |
 | `reasoning_levels`         | string[] | Supported reasoning levels (`low`, `medium`, `high`, `max`, `xhigh`, ...). |
 | `default_reasoning_effort` | string   | Reasoned effort used when unset.                                           |
-| `supports_attachments`     | bool     | Whether the model accepts file/image attachments.                          |
+| `supports_attachments`     | bool     | Whether the model accepts image attachments (see §3.4.1).                  |
 
 ---
 
@@ -405,6 +443,15 @@ Each model entry:
   to "several hours", with the oldest evicted first. Clients therefore need
   no rotation logic: on expiry the cache simply misses and rebuilds (often
   billed at `cache_create: 0`).
+- **Cached-token reporting is flaky.** With an identical ~1900-token prefix
+  and stable session-affinity headers, `usage.prompt_tokens_details.
+cached_tokens` reported `1152` on some runs and was **absent (`null`) on
+  others** — including text-only runs with no images. The image-turn runs
+  show images are not excluded from the cached prefix, but clients must
+  not treat `cached_tokens` as a dependable per-request fact (or bill
+  predictions off it): the same request can report a cache hit or nothing.
+  Not observed: image tokens ever being billed as uncached while the
+  surrounding text prefix was cached.
 - **Rotating refresh tokens.** Because each `/token/exchange` consumes the
   presented refresh token, an HTTP `401` on an LLM request indicates the
   refresh token is stale/consumed and the client must re-run the device
@@ -420,8 +467,9 @@ Each model entry:
   `reasoning_effort` for reasoning-capable models.
 - **Provider-family quirks.** Because Hyper is openai-compatible, Crush's
   OpenAI/`openaicompat` hooks apply: media tool results are fanned out into
-  separate messages (an OpenAI `tool` message cannot carry images/audio), and
-  tool-call JSON is validated/repaired before execution.
+  separate messages (an OpenAI `tool` message cannot carry images/audio —
+  the gateway silently drops image content in `role: "tool"` messages, see
+  §3.4.1), and tool-call JSON is validated/repaired before execution.
 
 ---
 

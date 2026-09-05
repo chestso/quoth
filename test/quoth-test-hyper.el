@@ -59,6 +59,10 @@
 (declare-function quoth-test--fresh-buffer "quoth-test" ())
 (declare-function quoth-test--cleanup "quoth-test" ())
 (declare-function quoth-test--wait-until "quoth-test-process" (pred &optional timeout))
+(declare-function quoth-test--write-png "quoth-test" (file))
+(declare-function quoth-test--png-bytes "quoth-test" ())
+(declare-function quoth-test--seed-tool-exchange
+                  "quoth-test-buffer" (prompt-text answer-text tool-calls))
 
 (defvar quoth-test--captured-completion nil
   "Capture slot for `quoth-test/hyper-send-injects-completion'.")
@@ -2212,6 +2216,126 @@ header line shows the stats."
               (should (string-match-p "hc0.043" h))
               (should (string-match-p "93%%" h)))))
       (quoth-test--cleanup))))
+
+;;; 95. Hyper wire: image content parts
+
+(ert-deftest quoth-test/hyper-wire-user-image-parts-on-wire ()
+  "A user turn with an attached image rides as an OpenAI content-parts
+array on the wire: multipart image_url content is the gateway's only
+image mechanism, so the JSON body must carry content as an array of
+text and image_url parts." :tags '(:integration)
+  (let* ((dir (make-temp-file "quoth-wire-img" t))
+         (png (quoth-test--write-png (expand-file-name "dot.png" dir))))
+    (unwind-protect
+        (let* ((content
+                (vector
+                 (list (cons 'type "text") (cons 'text "what is this?"))
+                 (list (cons 'type "image_url")
+                       (cons 'image_url
+                             (list (cons 'url
+                                         (concat
+                                          "data:image/png;base64,"
+                                          (base64-encode-string
+                                           (quoth-test--png-bytes)))))))))
+               (result (quoth-test--with-hyper-server
+                        'ok-stream
+                        (lambda (base)
+                          (let ((proc (quoth-openai-request
+                                       base "tok-img"
+                                       (quoth-openai-compose-request content "m")
+                                       #'ignore #'ignore nil
+                                       (quoth-xxh3-hash64
+                                        "f47ac10b-58cc-4372-a567-0e02b2c3d479"))))
+                            (let ((deadline (+ (float-time) 6)))
+                              (while (and (process-live-p proc)
+                                          (null (process-get proc :quoth-finished))
+                                          (< (float-time) deadline))
+                                (accept-process-output nil 0.1)))
+                            nil))))
+               (requests (nth 1 result))
+               (body (nth 3 (car requests)))
+               (decoded (and body (quoth-json-read body)))
+               (messages (and decoded (cdr (assoc 'messages decoded))))
+               (user (and messages
+                          (cl-find "user" messages
+                                   :test #'string=
+                                   :key (lambda (m)
+                                          (cdr (assoc 'role m))))))
+               (parts (and user (cdr (assoc 'content user)))))
+          (should (= (length requests) 1))
+          (should (vectorp parts))
+          (should (= (length parts) 2))
+          (should (equal (cdr (assoc 'type (aref parts 0))) "text"))
+          (should (equal (cdr (assoc 'type (aref parts 1))) "image_url"))
+          (should (string-prefix-p
+                   "data:image/png;base64,"
+                   (cdr (assoc 'url (cdr (assoc 'image_url (aref parts 1)))))))
+          (delete-directory dir t)))))
+
+(ert-deftest quoth-test/hyper-wire-tool-image-fanout-pair ()
+  "A tool round that looked at an image sends the fan-out pair on the
+wire: the tool message carries the result text minus the image line,
+and a synthetic user message right after carries the image part
+\(the gateway drops image content in tool messages)." :tags '(:integration)
+  (let ((dir (make-temp-file "quoth-wire-img" t)))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (let* ((png (quoth-test--write-png (expand-file-name "dot.png" dir)))
+                   (result (format "Process exited with code 0\nOutput:\n![dot.png](%s)\n"
+                                   png))
+                   (id (quoth-test--seed-tool-exchange
+                        "look at the plot"
+                        "It is a red square."
+                        (list (list :name "read_file" :id "call_1"
+                                    :args-json "{}"
+                                    :result result :exit 0))))
+                   (continuation (append
+                                  (list (list (cons 'role "user")
+                                              (cons 'content "look at the plot")))
+                                  (quoth--tool-rounds id))))
+              (should continuation)
+              (let* ((wire (quoth-test--with-hyper-server
+                            'ok-stream
+                            (lambda (base)
+                              (let ((proc (quoth-openai-request
+                                           base "tok-fan"
+                                           (quoth-openai-compose-request
+                                            "" "m" nil continuation)
+                                           #'ignore #'ignore nil
+                                           (quoth-xxh3-hash64
+                                            "f47ac10b-58cc-4372-a567-0e02b2c3d479"))))
+                                (let ((deadline (+ (float-time) 6)))
+                                  (while (and (process-live-p proc)
+                                              (null (process-get proc :quoth-finished))
+                                              (< (float-time) deadline))
+                                    (accept-process-output nil 0.1)))
+                                nil))))
+                     (requests (nth 1 wire))
+                     (body (nth 3 (car requests)))
+                     (decoded (and body (quoth-json-read body)))
+                     (messages (and decoded (cdr (assoc 'messages decoded))))
+                     (roles (mapcar (lambda (m) (cdr (assoc 'role m)))
+                                    (append messages nil))))
+                (should (= (length requests) 1))
+                ;; Message order: system, user, assistant, tool,
+                ;; fan-out user, assistant.
+                (should (equal roles
+                               '("system" "user" "assistant" "tool"
+                                 "user" "assistant")))
+                (let* ((tool-msg (nth 3 (append messages nil)))
+                       (fan (nth 4 (append messages nil)))
+                       (tool-content (cdr (assoc 'content tool-msg)))
+                       (parts (cdr (assoc 'content fan))))
+                  (should (equal tool-content
+                                 "Process exited with code 0\nOutput:"))
+                  (should (vectorp parts))
+                  (should (equal (cdr (assoc 'type (aref parts 0)))
+                                 "image_url"))
+                  (should (equal (cdr (assoc 'type (aref parts 1)))
+                                 "text")))))))
+      (quoth-test--cleanup)
+      (ignore-errors (delete-directory dir t)))))
 
 (provide 'quoth-test-hyper)
 ;;; quoth-test-hyper.el ends here

@@ -455,6 +455,8 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
     (define-key map (kbd "k") #'quoth-clear-buffer)
     (define-key map (kbd "r") #'quoth-reasoning-toggle)
     (define-key map (kbd "m") #'quoth-select-model-menu)
+    (define-key map (kbd "a") #'quoth-attach-image)
+    (define-key map (kbd "t") #'quoth-toggle-image-attach)
     map)
   "Keymap under `C-c c' for quoth chat-buffer commands.")
 
@@ -876,6 +878,335 @@ Returns nil when nothing remains."
       (when (> (length (string-trim text)) 0)
         (string-trim text)))))
 
+;;; Image attachments
+;; The buffer holds a markdown image link (`![name](path)') tagged with
+;; the `quoth-image' plist (:path :mime :attach); the wire bytes are
+;; re-read from disk at send time, so the buffer stays the single
+;; source of truth.  `:attach' t makes the link ride the wire as an
+;; OpenAI `image_url' content part; nil leaves the link as literal
+;; markdown text.  The buffer display is identical either way.
+
+(defcustom quoth-image-max-raw-bytes 3750000
+  "Raw-size cap for one image attachment, in bytes.
+The gateway rejects base64 payloads over 5MB (about 3.75MB raw); an
+attached image past this cap is dropped from the wire with an error
+note rather than hard-failing the whole request server-side."
+  :type 'integer
+  :group 'quoth)
+
+(defun quoth--image-magic-mime (file)
+  "Return FILE's image MIME type by magic bytes, or nil.
+Delegates to the shared sniffer in `quoth-tools.el'."
+  (quoth-file--image-magic-mime file))
+
+(defun quoth--image-mime-for-file (file)
+  "Return the image MIME type for FILE, or nil for a non-image.
+Delegates to the shared classifier in `quoth-tools.el'
+\(extension first, then magic bytes — an extension can lie, and
+unknown extensions still carry real images)."
+  (quoth-file--image-mime file))
+
+(defun quoth--image-link-text (path)
+  "Return the one-line markdown image link for PATH."
+  (format "![%s](%s)" (file-name-nondirectory path) path))
+
+(defun quoth--image-resolve (path)
+  "Return the absolute file PATH names, as inserted in a link.
+Absolute paths pass through.  A relative path resolves against the
+project root when that file exists, otherwise against
+`default-directory' (the link was inserted relative to one of the
+two by `quoth--relative-file' conventions)."
+  (if (file-name-absolute-p path)
+      path
+    (let* ((root (when-let ((proj (project-current)))
+                   (project-root proj)))
+           (via-root (expand-file-name path root)))
+      (cond ((and root (file-exists-p via-root)) via-root)
+            (root via-root)
+            (t (expand-file-name path default-directory))))))
+
+(defun quoth--image-read-bytes (file)
+  "Return FILE's raw bytes as a unibyte string, or nil when unreadable.
+Delegates to the shared byte reader in `quoth-tools.el'."
+  (quoth-file--read-bytes file))
+
+(defun quoth--image-data-url (file mime)
+  "Return FILE's bytes as an inline data URL for MIME.
+Returns nil when the file is unreadable or past
+`quoth-image-max-raw-bytes'."
+  (let ((bytes (quoth--image-read-bytes file)))
+    (when bytes
+      (if (> (length bytes) quoth-image-max-raw-bytes)
+          nil
+        (format "data:%s;base64,%s"
+                (or mime (quoth--image-mime-for-file file) "image/png")
+                (base64-encode-string bytes))))))
+
+(defun quoth--image-part (plist)
+  "Return (PART . STATUS) for a `quoth-image' PLIST span.
+PART is the OpenAI `image_url' content-part alist, or nil when the
+image cannot ride the wire.  STATUS is `ok', `missing' (unreadable),
+or `oversized' (past the raw-size cap), which the callers render as
+bracketed placeholder text and system notes."
+  (let* ((path (plist-get plist :path))
+         (file (and (stringp path) (quoth--image-resolve path))))
+    (cond
+     ((not (and file (file-readable-p file)))
+      (cons nil 'missing))
+     ((> (file-attribute-size (file-attributes file))
+         quoth-image-max-raw-bytes)
+      (cons nil 'oversized))
+     (t
+      (cons (list (cons 'type "image_url")
+                  (cons 'image_url
+                        (list (cons 'url
+                                    (quoth--image-data-url
+                                     file (plist-get plist :mime))))))
+            'ok)))))
+
+(defun quoth--image-placeholder (plist status)
+  "Return the bracketed wire-text note for a failed image span.
+PLIST is the span's `quoth-image' property; STATUS is `missing' or
+`oversized' from `quoth--image-part'."
+  (let ((name (file-name-nondirectory (or (plist-get plist :path) "image"))))
+    (pcase status
+      ('oversized
+       (format "[image too large for attachment: %s]" name))
+      (_ (format "[image unavailable: %s]" name)))))
+
+(defun quoth--image-spans-in (start end &optional attach-only)
+  "Return `quoth-image' spans ((START . END) ...) within START..END,
+in buffer order.  With ATTACH-ONLY non-nil, only spans whose plist
+carries `:attach' t are returned."
+  (let ((pos start)
+        (spans nil))
+    (while (< pos end)
+      (let* ((plist (get-text-property pos 'quoth-image))
+             (next (or (next-single-property-change pos 'quoth-image nil end)
+                       end)))
+        (when (and plist (or (not attach-only) (plist-get plist :attach)))
+          (push (cons pos next) spans))
+        (setq pos next)))
+    (nreverse spans)))
+
+(defun quoth--user-turn-spans (prompt-id)
+  "Return the `user' region spans ((START . END) ...) for PROMPT-ID.
+The same walk `quoth--user-turn-text' performs, keeping the buffer
+ranges so image links inside them can be found by position."
+  (let ((pos (text-property-any (point-min) (point-max)
+                                'quoth-prompt-id prompt-id))
+        (spans nil))
+    (while pos
+      (let* ((prompt-end (or (next-single-property-change pos 'quoth-prompt-id
+                                                          nil (point-max))
+                             (point-max)))
+             (type-end (or (next-single-property-change pos 'quoth-region-type
+                                                        nil prompt-end)
+                           prompt-end))
+             (end type-end))
+        (when (and (< pos end)
+                   (eq (get-text-property pos 'quoth-region-type) 'user))
+          (push (cons pos end) spans))
+        (setq pos (and (< end (point-max))
+                       (text-property-any end (point-max)
+                                          'quoth-prompt-id prompt-id)))))
+    (nreverse spans)))
+
+(defun quoth--user-turn-content (prompt-id)
+  "Return the user message content for PROMPT-ID.
+A plain string (today's shape) when the turn carries no attached
+image span; otherwise an OpenAI content-parts vector — text parts
+split around each `:attach' t image link, with an `image_url' part
+carrying the file inline as a base64 data URL.  An attached image
+whose file is unreadable or past the size cap degrades to a
+bracketed text note and, when no image part remains, the whole
+message falls back to the plain string.  An `:attach' nil link never
+splits the text: it rides the text content verbatim, like typed
+markdown.  This is a pure buffer->wire read; the send path
+(`quoth--image-preflight') owns the side-effecting notes."
+  (let* ((spans (quoth--user-turn-spans prompt-id))
+         (images (apply #'nconc
+                        (mapcar (lambda (s)
+                                  (quoth--image-spans-in (car s) (cdr s) t))
+                                spans))))
+    (if (not images)
+        (quoth--user-turn-text prompt-id)
+      ;; Walk the user spans in buffer order, splitting the text at
+      ;; each attached image span.  Items are strings (text runs and
+      ;; placeholders) or image-part alists, in order.
+      (let ((usable nil)
+            (ordered nil))
+        (dolist (span spans)
+          (let ((pos (car span))
+                (end (cdr span))
+                (group nil))
+            (dolist (img (quoth--image-spans-in pos end t))
+              (let* ((plist (get-text-property (car img) 'quoth-image))
+                     (part (quoth--image-part plist)))
+                (push (buffer-substring-no-properties pos (car img)) group)
+                (if (car part)
+                    (progn (setq usable t)
+                           (push (car part) group))
+                  (push (quoth--image-placeholder plist (cdr part)) group)))
+              (setq pos (cdr img)))
+            (push (buffer-substring-no-properties pos end) group)
+            (setq ordered (append ordered (nreverse group)))))
+        (if (not usable)
+            ;; No image survived: plain text with the placeholders
+            ;; spliced in where the link lines were.
+            (let ((text (string-trim (apply #'concat ordered))))
+              (and (> (length text) 0) text))
+          ;; Merge adjacent strings into trimmed text parts; emit the
+          ;; parts in order.
+          (let ((parts nil)
+                (pending-text nil))
+            (dolist (item ordered)
+              (if (stringp item)
+                  (setq pending-text (concat pending-text item))
+                (let ((text (string-trim pending-text)))
+                  (when (> (length text) 0)
+                    (push (list (cons 'type "text") (cons 'text text))
+                          parts)))
+                (push item parts)
+                (setq pending-text nil)))
+            (let ((text (string-trim (or pending-text ""))))
+              (when (> (length text) 0)
+                (push (list (cons 'type "text") (cons 'text text)) parts)))
+            (vconcat (nreverse parts))))))))
+
+(defun quoth--image-model-name ()
+  "Return the active model id for image advisory notes."
+  (and quoth-active-provider
+       (quoth-provider-p quoth-active-provider)
+       (quoth-provider-model quoth-active-provider)))
+
+(defun quoth--image-attach-note (name)
+  "Insert the attach-time blindness note for NAME, when applicable.
+The note appears only when the cached catalog positively knows the
+active model cannot see images; a cold catalog stays silent (the
+server accepts the wire either way — this is advisory, never a
+block)."
+  (when (eq (quoth-provider-model-supports-attachments-p
+             quoth-active-provider)
+            nil)
+    (quoth--insert-system-note
+     (format "> **%s attached, but the current model (%s) cannot see images.**
+Switch with C-c c m."
+             name (or (quoth--image-model-name) "the active model"))
+     :kind 'error
+     :hint "The image will be sent but the model will ignore it.")))
+
+(defun quoth--image-preflight (prompt-id)
+  "Run the send-time image checks for PROMPT-ID and return its content.
+The combined pre-flight over the prompt's attached image spans:
+a missing file inserts an error note naming it and degrades to a
+text placeholder; an image past `quoth-image-max-raw-bytes' inserts
+an error note naming the cap and drops the image (keeping it would
+hard-fail the whole request server-side); when the active model
+lacks attachment support and images remain on the wire, one
+user-kind note reminds of the blindness.  Returns the wire content
+\(string or parts vector) from `quoth--user-turn-content' — the
+notes ride the buffer, never the wire."
+  (let* ((spans (quoth--user-turn-spans prompt-id))
+         (images (apply #'nconc
+                        (mapcar (lambda (s)
+                                  (quoth--image-spans-in (car s) (cdr s) t))
+                                spans))))
+    (dolist (img images)
+      (let* ((plist (get-text-property (car img) 'quoth-image))
+             (part (quoth--image-part plist))
+             (name (file-name-nondirectory (or (plist-get plist :path)
+                                               "image"))))
+        (pcase (cdr part)
+          ('missing
+           (quoth--insert-system-note
+            (format "> **Error:** image %s could not be read for
+attachment; it is sent as a text placeholder." name)
+            :kind 'error
+            :hint "The file did not exist or was unreadable at send time."))
+          ('oversized
+           (quoth--insert-system-note
+            (format "> **Error:** image %s exceeds the attachment cap
+\(%d bytes raw, a 5MB base64 server limit); it is dropped from the wire."
+                    name quoth-image-max-raw-bytes)
+            :kind 'error
+            :hint "Resize or crop the image, then attach it again."))
+          (_ nil))))
+    (let ((content (quoth--user-turn-content prompt-id)))
+      (when (and (vectorp content)
+                 (eq (quoth-provider-model-supports-attachments-p
+                      quoth-active-provider)
+                     nil))
+        (quoth--insert-system-note
+         (format "> **The current model (%s) cannot see images.**
+The attached image(s) will be sent but ignored."
+                 (or (quoth--image-model-name) "the active model"))
+         :kind 'user
+         :hint "Switch to a vision model with C-c c m."))
+      content)))
+
+(defun quoth--insert-image-link (file &optional attach)
+  "Insert FILE into the current quoth buffer as a tagged image link.
+The link is one markdown line (`![name](path)') appended as user
+input, carrying the `quoth-image' plist (:path as inserted, :mime,
+:attach) over the link characters; ATTACH (default t) sets the wire
+mode — t sends the file as an image attachment part, nil leaves the
+line riding the user content as literal markdown.  Runs the
+attach-time advisory checks.  Must run in the chat buffer."
+  (let* ((rel (or (quoth--relative-file file) file))
+         (mime (quoth--image-mime-for-file file))
+         (link (quoth--image-link-text rel))
+         (start (if (and quoth--input-start-marker
+                         (markerp quoth--input-start-marker))
+                    (marker-position quoth--input-start-marker)
+                  (point-max))))
+    (quoth--append-as-user-input (current-buffer) link)
+    (put-text-property start (+ start (length link))
+                       'quoth-image
+                       (list :path rel :mime mime :attach (if attach attach t)))
+    (quoth--image-attach-note (file-name-nondirectory rel))))
+
+(defun quoth-attach-image (file)
+  "Attach an image FILE to the current project's quoth buffer.
+Inserts the tagged markdown image link (`:attach' t) as user input —
+the wire bytes are re-read from the file at send time, so the buffer
+holds only the link.  Use this for files that are not the current
+buffer (screenshots and the like)."
+  (interactive "fAttach image file: ")
+  (unless (quoth--image-mime-for-file file)
+    (user-error "Not an image file: %s" file))
+  (let ((buf (quoth--current-quoth-buffer)))
+    (with-current-buffer buf
+      (quoth--insert-image-link file t)
+      (quoth--update-header-line))
+    (switch-to-buffer-other-window buf)))
+
+(defun quoth-toggle-image-attach ()
+  "Toggle the wire mode of the image link at point.
+`:attach' t sends the file as an image attachment; nil leaves the
+link as literal markdown text the model reads as a path reference.
+The buffer text is identical either way — only the property flips."
+  (interactive)
+  (let ((plist (get-text-property (point) 'quoth-image)))
+    (if (not plist)
+        (message "No image link at point")
+      (let ((start (point))
+            (end (point))
+            (new (plist-put (copy-tree plist) :attach
+                            (not (plist-get plist :attach)))))
+        (while (and (> start (point-min))
+                    (get-text-property (1- start) 'quoth-image))
+          (setq start (1- start)))
+        (while (and (< end (point-max))
+                    (get-text-property end 'quoth-image))
+          (setq end (1+ end)))
+        (put-text-property start end 'quoth-image new)
+        (message "Image %s: %s"
+                 (file-name-nondirectory (or (plist-get new :path) "?"))
+                 (if (plist-get new :attach)
+                     "sent as an image attachment"
+                   "sent as literal markdown text"))))))
+
 (defun quoth--history-turns (prompt-id)
   "Return the conversation history for PROMPT-ID as message alists.
 Iterate the buffer's prompts in order, stopping at PROMPT-ID (the pending
@@ -897,12 +1228,12 @@ Returns nil when PROMPT-ID is the first prompt, or when
             (setq reached-current t)
           (unless reached-current
             (let ((exchange nil))
-              (let ((user-text (quoth--user-turn-text id)))
-                (when user-text
+              (let ((user-content (quoth--user-turn-content id)))
+                (when user-content
                   (setq exchange
                         (append exchange
                                 (list (list (cons 'role "user")
-                                            (cons 'content user-text)))))))
+                                            (cons 'content user-content)))))))
               (let ((round-msgs (quoth--tool-rounds id)))
                 (if round-msgs
                     (setq exchange (append exchange round-msgs))
@@ -948,18 +1279,73 @@ keeps the provider buffer-free."
   (with-current-buffer buffer
     (quoth--history-turns quoth--prompt-id)))
 
+(defun quoth--tool-block-raw-bounds (start end)
+  "Return (RAW-START . RAW-END) for the tool block spanning START..END.
+The nested `tool-output' span is the wire `role: \"tool\"' content;
+the whole block is the fallback when the span is absent."
+  (let ((raw-pos (text-property-any start end 'quoth-region-type 'tool-output)))
+    (if raw-pos
+        (cons raw-pos
+              (or (next-single-property-change raw-pos 'quoth-region-type
+                                               nil end)
+                  end))
+      (cons start end))))
+
 (defun quoth--tool-block-raw-result (start end)
   "Return the raw tool result for the tool block spanning START..END.
 The nested `tool-output' span is the wire `role: \"tool\"' content;
 fall back to the trimmed block text when the span is absent."
-  (let ((raw-pos (text-property-any start end 'quoth-region-type 'tool-output)))
+  (let ((bounds (quoth--tool-block-raw-bounds start end)))
     (string-trim
-     (buffer-substring-no-properties
-      (or raw-pos start)
-      (if raw-pos
-          (or (next-single-property-change raw-pos 'quoth-region-type nil end)
-              end)
-        end)))))
+     (buffer-substring-no-properties (car bounds) (cdr bounds)))))
+
+(defun quoth--tool-image-fanout (start end)
+  "Split a tool block's result for the image fan-out.
+The gateway drops image content in `role: \"tool\"' messages, so a
+result carrying a `quoth-image' `:attach' t span (an image-aware
+`read_file' placeholder) emits as a pair: the `tool' message keeps the
+result text minus the image lines, and a synthetic `user' message
+right after carries the images as content parts.  Returns
+\(TOOL-CONTENT . PARTS): TOOL-CONTENT is the trimmed remaining text
+(or the placeholder line when nothing remains); PARTS is the parts
+vector — image parts in order plus one trailing text part — or nil
+when the block carries no attachable image (a missing file at walk
+time leaves the link line in TOOL-CONTENT and drops the fan-out)."
+  (let* ((bounds (quoth--tool-block-raw-bounds start end))
+         (rs (car bounds))
+         (re (cdr bounds))
+         (images (quoth--image-spans-in rs re t)))
+    (if (not images)
+        (cons (string-trim (buffer-substring-no-properties rs re)) nil)
+      (let ((parts nil)
+            (moved nil))
+        (dolist (img images)
+          (let* ((plist (get-text-property (car img) 'quoth-image))
+                 (part (quoth--image-part plist)))
+            (when (car part)
+              (push (car part) parts)
+              (push (cons (car img) (cdr img)) moved))))
+        (if (not parts)
+            ;; No image readable at walk time: emit the raw result
+            ;; unstripped, no synthetic user message.
+            (cons (string-trim (buffer-substring-no-properties rs re)) nil)
+          ;; Tool content: the raw region minus the moved image lines.
+          (let* ((segs nil)
+                 (pos rs))
+            (dolist (m (nreverse moved))
+              (push (buffer-substring-no-properties pos (car m)) segs)
+              (setq pos (cdr m)))
+            (push (buffer-substring-no-properties pos re) segs)
+            (let* ((content (string-trim (apply #'concat (nreverse segs))))
+                   (content (if (> (length content) 0)
+                                content
+                              "Image loaded - see attached file."))
+                   (parts (vconcat (nreverse parts)
+                                   (list (list
+                                          (cons 'type "text")
+                                          (cons 'text
+                                                "Image content from the tool result:"))))))
+              (cons content parts))))))))
 
 (defun quoth--tool-call-alist (plist)
   "Return the wire element for `quoth-tool-call' PLIST, or nil.
@@ -982,6 +1368,10 @@ accumulate assistant content; each `tool' span contributes an assistant
 `tool_calls' message (carrying any accumulated leading content) followed
 by its `role: \"tool\"' result.  One tool call per assistant
 message preserves round boundaries (no merging of sequential rounds).
+A result carrying an attached image span fans out into a pair — the
+`tool' message with the result text minus the image line, and a
+synthetic `user' message with the image as a content part (the gateway
+drops image content in `role: \"tool\"' messages).
 Reasoning and the nested `tool-output' spans are skipped, and a `tool'
 span without reconstructable `quoth-tool-call' metadata is skipped too:
 the server pairs a tool result only with a matching assistant
@@ -1001,7 +1391,7 @@ reconstruction used by both history replay and the live tool loop."
       (let ((pos start)
             (prev nil)
             (pending nil)        ; accumulated response text, reverse order
-            (calls nil)          ; (call-alist id raw) triples, forward order
+            (calls nil)          ; (call-alist id raw start end) tuples
             (messages nil))      ; message alists, forward order
         (cl-labels
             ((flush-tools
@@ -1017,11 +1407,19 @@ reconstruction used by both history replay and the live tool loop."
                                               (cons 'content content))
                                         (list (cons 'tool_calls tcs))))))
                    (dolist (entry calls)
-                     (setq messages
-                           (append messages
-                                   (list (list (cons 'role "tool")
-                                               (cons 'tool_call_id (nth 1 entry))
-                                               (cons 'content (nth 2 entry)))))))
+                     (let* ((fanout (quoth--tool-image-fanout
+                                     (nth 3 entry) (nth 4 entry)))
+                            (tool-msg (list (cons 'role "tool")
+                                            (cons 'tool_call_id (nth 1 entry))
+                                            (cons 'content (car fanout))))
+                            (user-msg (and (cdr fanout)
+                                           (list (cons 'role "user")
+                                                 (cons 'content
+                                                       (cdr fanout))))))
+                       (setq messages
+                             (append messages
+                                     (list tool-msg)
+                                     (and user-msg (list user-msg))))))
                    (setq calls nil
                          pending nil)))))
           (while (< pos end)
@@ -1038,11 +1436,14 @@ reconstruction used by both history replay and the live tool loop."
                ;; though the nested `tool-output' span splits region-type.
                ((and call-plist (quoth--tool-call-alist call-plist))
                 ;; One tool call per assistant message, preserving round
-                ;; boundaries (no merging of sequential rounds).
+                ;; boundaries (no merging of sequential rounds).  The
+                ;; entry carries the block bounds so the flush can run
+                ;; the image fan-out over the raw result region.
                 (setq calls
                       (list (list (quoth--tool-call-alist call-plist)
                                   (plist-get call-plist :id)
-                                  (quoth--tool-block-raw-result pos call-end)))
+                                  (quoth--tool-block-raw-result pos call-end)
+                                  pos call-end))
                       pos call-end)
                 (flush-tools))
                ;; A `tool'-typed span without reconstructable wire metadata
@@ -1913,11 +2314,11 @@ completion and this hop already closed the turn."
   (when (eq (plist-get quoth--phase :phase) 'tools)
     (let* ((prompt-id quoth--prompt-id)
            (buf (current-buffer))
-           (user-msg (let ((text (quoth--user-turn-text prompt-id)))
-                       (and text
-                            (> (length text) 0)
+           (user-msg (let ((content (quoth--user-turn-content prompt-id)))
+                       (and content
+                            (> (length content) 0)
                             (list (cons 'role "user")
-                                  (cons 'content text)))))
+                                  (cons 'content content)))))
            (continuation (append (and user-msg (list user-msg))
                                  (quoth--tool-rounds prompt-id))))
       ;; Clear the old transport and set up for the follow-up.
@@ -2011,6 +2412,9 @@ closure enters it)."
 
 (defun quoth--send-prompt (prompt)
   "Send PROMPT via the active provider.
+PROMPT is the turn's wire content: a plain string, or an OpenAI
+content-parts vector when the user region carries attached images
+\(built by `quoth--user-turn-content' through `quoth--image-preflight').
 Injects completion/delta/error callbacks as the provider's completion
 action so providers signal stream events without touching buffers.  Runs in
 the quoth buffer, which owns all streamed output."
@@ -2284,6 +2688,36 @@ untouched."
       (when (< newlines 2)
         (insert (make-string (- 2 newlines) ?\n))))))
 
+(defun quoth--tag-tool-image-links (start end)
+  "Tag markdown image-link lines in START..END with `quoth-image'.
+The tool-result rendering path: an image-aware `read_file' result
+carries a `![name](path)' placeholder line for the file it looked at.
+Each such line whose path resolves to a real image file is tagged
+`quoth-image' (:path as written :mime sniffed :attach t), so the wire
+walk (`quoth--tool-image-fanout') can move the pixels into a synthetic
+user message.  The line itself stays as the compact display placeholder."
+  (save-excursion
+    (save-restriction
+      (narrow-to-region start end)
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let ((line-end (line-end-position)))
+          ;; The whole line must be the link (the placeholder is
+          ;; exactly one link per line): match unanchored from point,
+          ;; which sits at a line beginning, and require the match to
+          ;; reach the line end.  `\\`' is unusable here — it anchors
+          ;; to the start of the narrowed region, not each line.
+          (when (and (looking-at "!\\[[^]\n]*\\](\\([^()\n]*\\))")
+                     (= line-end (match-end 0)))
+            (let* ((path (match-string 1))
+                   (file (quoth--image-resolve path))
+                   (mime (quoth--image-mime-for-file file)))
+              (when mime
+                (put-text-property (line-beginning-position) line-end
+                                   'quoth-image
+                                   (list :path path :mime mime :attach t)))))
+          (forward-line 1))))))
+
 (defun quoth--tool-block-insert (tool-calls prompt-id)
   "Insert a tool-call block for TOOL-CALLS into the buffer.
 TOOL-CALLS is a plist of :name :id :args-json :result :exit.
@@ -2382,7 +2816,8 @@ for wire resume.  Returns the end position of the inserted block."
       (when raw-start
         (put-text-property raw-start raw-end 'quoth-region-type 'tool-output)
         (put-text-property raw-start raw-end 'quoth-prompt-id prompt-id)
-        (put-text-property raw-start raw-end 'quoth-response-to prompt-id))
+        (put-text-property raw-start raw-end 'quoth-response-to prompt-id)
+        (quoth--tag-tool-image-links raw-start raw-end))
       end)))
 
 (defconst quoth--tool-status-running "\u23f3 running\u2026"
@@ -2499,7 +2934,8 @@ from the buffer."
                 (put-text-property raw-start raw-end
                                    'quoth-prompt-id prompt-id)
                 (put-text-property raw-start raw-end
-                                   'quoth-response-to prompt-id)))
+                                   'quoth-response-to prompt-id)
+                (quoth--tag-tool-image-links raw-start raw-end)))
             ;; The status span carried the block's trailing blank line;
             ;; restore it when the fill consumed the end of buffer.
             (when (and fill-end-was-eob
@@ -2533,7 +2969,8 @@ from the buffer."
                           (point-min)))
          (input (buffer-substring-no-properties
                  input-start (point-max)))
-         (prompt (string-trim input)))
+         (prompt (string-trim input))
+         content)
     (when (string-empty-p prompt)
       (user-error "No prompt to send"))
     (quoth--input-ring-add prompt)
@@ -2545,6 +2982,10 @@ from the buffer."
                        'quoth-region-type 'user)
     (put-text-property input-start (point-max)
                        'quoth-prompt-id quoth--prompt-id)
+    ;; Send-time image pre-flight (notes for missing / oversized /
+    ;; model-blind images) before the separator closes the input area;
+    ;; returns the wire content (string or content-parts vector).
+    (setq content (quoth--image-preflight quoth--prompt-id))
     (goto-char (point-max))
     (newline)
     ;; Draw a horizontal divider after the user turn so the response is
@@ -2556,7 +2997,7 @@ from the buffer."
     (setq-local quoth--tool-loop-count 0)
     (setq-local quoth--follow-p t)
     (setq-local quoth--last-follow-point (point-max))
-    (quoth--send-prompt prompt)))
+    (quoth--send-prompt (or content prompt))))
 
 (defun quoth-interrupt ()
   "Interrupt the active provider's in-flight request.
@@ -2685,19 +3126,28 @@ BEG and END are the bounds of the selection."
   (interactive)
   (quoth-insert-selection (point-min) (point-max)))
 
-(defun quoth-insert-filepath ()
-  "Insert the current buffer's file path into the Quoth buffer as context."
-  (interactive)
+(defun quoth-insert-filepath (&optional as-text)
+  "Insert the current buffer's file path into the Quoth buffer.
+An image file inserts the `![name](path)' image link tagged for
+wire attachment — the model sees the pixels.  With AS-TEXT
+\(prefix arg) the same link is inserted with `:attach' nil: the
+link rides the user content as literal markdown, for asking about
+the file rather than showing it.  Non-image files keep the plain
+`[path](path)' text link (the gateway attaches images only)."
+  (interactive "P")
   (let ((file (buffer-file-name)))
     (unless file
       (user-error "Current buffer has no file"))
-    (let* ((relative-file (quoth--relative-file file))
-           (formatted (if relative-file
-                          (format "[%s](%s)" relative-file relative-file)
-                        ""))
-           (buf (quoth--current-quoth-buffer)))
+    (let* ((buf (quoth--current-quoth-buffer))
+           (image-p (quoth--image-mime-for-file file)))
       (with-current-buffer buf
-        (quoth--append-as-user-input buf formatted)
+        (if image-p
+            (quoth--insert-image-link file (not as-text))
+          (let* ((relative-file (quoth--relative-file file))
+                 (formatted (if relative-file
+                                (format "[%s](%s)" relative-file relative-file)
+                              "")))
+            (quoth--append-as-user-input buf formatted)))
         (quoth--update-header-line))
       (switch-to-buffer-other-window buf))))
 
@@ -2718,6 +3168,7 @@ Creates a buffer if none exists, switches to it, and prepares it for input."
     (define-key map (kbd "C-c C-s") #'quoth-insert-selection)
     (define-key map (kbd "C-c C-b") #'quoth-insert-buffer)
     (define-key map (kbd "C-c C-p") #'quoth-insert-filepath)
+    (define-key map (kbd "C-c C-i") #'quoth-attach-image)
     (define-key map (kbd "C-c C-c") #'quoth)
     map)
   "Keymap for `quoth-minor-mode'.")

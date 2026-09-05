@@ -262,6 +262,26 @@ source.")
 Values are the ON-DONE fan-out list for the pending fetch; one fetch
 runs per key regardless of how many refreshes requested it.")
 
+(defun quoth-provider-model-supports-attachments-p (provider)
+  "Return whether PROVIDER's active model accepts image attachments.
+Reads the model id through `quoth-provider-model' and looks it up in
+the cached catalog (never a fetch).  Returns t or nil when the
+catalog knows the model, or `unknown' when the provider has no
+model selected or the catalog has not loaded — callers treat
+`unknown' as permissive (the server strips images silently rather
+than erroring) and stay silent rather than blocking."
+  (if (not (and provider (quoth-provider-p provider)))
+      'unknown
+    (let* ((model (quoth-provider-model provider))
+           (models (and model (quoth-provider-models-cached provider)))
+           (entry (and models
+                       (cl-find model models
+                                :test #'string=
+                                :key (lambda (m) (plist-get m :id))))))
+      (if entry
+          (if (plist-get entry :supports-attachments) t nil)
+        'unknown))))
+
 (defun quoth-provider-models-cached (provider)
   "Return PROVIDER's cached catalog, or nil when never fetched.
 A fresh entry (inside `quoth-provider-models-ttl') returns directly.

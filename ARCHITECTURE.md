@@ -368,7 +368,21 @@ Two do byte-exact file I/O (no process involved):
   only the 12 low bits.
 - `read_file` — reads the file at `path` byte-exact (a `\r\n` on disk
   stays `\r\n`), errors on non-UTF-8 content, and emits its result
-  under the `quoth-tool-max-output` byte budget. Three optional args
+  under the `quoth-tool-max-output` byte budget. **Image files are
+  never decoded as text**: a path whose extension or magic bytes name
+  a PNG/JPEG/GIF/WebP (`quoth-file--image-mime` in `quoth-tools.el`,
+  shared with the attach path in `quoth.el`) reads as a one-line
+  markdown image link (`![name](path)`) tagged `quoth-image` with
+  `:attach t` by the block renderer — the buffer shows what was
+  looked at, and the wire walk fans the pixels into a synthetic
+  `user` message (see the tool-loop section below). A past-cap image
+  (`quoth-image-max-raw-bytes`, the ~3.75MB raw size under the
+  gateway's 5MB base64 limit) or a model whose catalog entry lacks
+  `supports-attachments` is an **error result** naming the limit, so
+  the model learns and can fall back to describing the file; the
+  blindness check reads the cached catalog only and treats an unknown
+  catalog as permissive (the server strips images silently rather
+  than erroring). Three optional args
   shape the read: `line_numbers` (default off) prefixes each line
   with its 1-based true line number in `cat -n` style — a fixed
   6-char right-aligned width, then a tab — so models can refer to
@@ -490,6 +504,36 @@ cancels every pending wait and fills the still-pending blocks with the
 interrupted result so the buffer holds a valid wire `role: "tool"`
 content for every call the model already emitted.
 
+#### Image fan-out in tool rounds
+
+The gateway **drops image content in `role: "tool"` messages**
+(validated against the live endpoint: the model received an empty
+string). A tool result carrying a `quoth-image` `:attach t` span —
+the image-link line an image-aware `read_file` produced — therefore
+emits as a **pair** at wire-build time (`quoth--tool-image-fanout`,
+run inside `quoth--tool-rounds`, so history replay rebuilds the same
+pair on every resend): the `tool` message keeps the result text
+_minus_ the image line(s), and a synthetic `user` message immediately
+after carries the image as an `image_url` content part plus a text
+part (`Image content from the tool result:`). The
+tool-call/tool-result pairing never changes — the server rejects an
+unpaired tool result on every later turn — only the split of where
+the pixels ride. When no image is readable at walk time (the file was
+deleted after the read), the link line stays in the tool content and
+no synthetic user message is emitted.
+
+User-driven attachments ride the same mechanism from the other side:
+`quoth--user-turn-content` walks the prompt's `user` spans and, when
+an `:attach t` image link is present, emits an OpenAI
+**content-parts vector** (text parts split around `image_url` parts
+carrying the file inline as a base64 data URL) instead of the plain
+string; `quoth--image-preflight` runs the send-time checks (missing
+file → error note + text placeholder; past-cap → error note + drop;
+positively-blind model → advisory note). An `:attach nil` link never
+splits the text — it rides the content as literal markdown. Image
+bytes are re-read from disk at send time; the buffer holds only the
+link, staying the single source of truth.
+
 ### Process handler (quoth-process.el)
 
 General-purpose, model-neutral, buffer-unaware layer that owns PTY
@@ -563,15 +607,16 @@ properties):
 All metadata is stored as **text properties** on buffer content;
 highlighting is left to markdown-mode's native font-lock.
 
-| Text Region                           | Property                                                                                               | Value                                                                                       |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| Input separator (`---` divider)       | `quoth-prompt-id` + `quoth-region-type 'separator`                                                     | Markdown divider above the input area                                                       |
-| User input (typed + inserted context) | `quoth-prompt-id` + `quoth-region-type 'user`                                                          | Editable input; inserted context appended as user input                                     |
-| Tool blocks                           | `quoth-region-type 'tool` + `quoth-prompt-id` + `quoth-response-to` + `quoth-tool-call` (id/name/args) | Displayed tool call                                                                         |
-| Tool raw result                       | `quoth-region-type 'tool-output` (nested) + `quoth-prompt-id` + `quoth-response-to`                    | Raw result sent in history                                                                  |
-| Response text                         | `quoth-response-to` + `quoth-region-type 'response` (+ `quoth-interrupted` when the turn was cut off)  | The prompt ID being answered; `quoth-interrupted` is `user`/`error` for an interrupted turn |
-| Reasoning text                        | `quoth-region-type 'reasoning` + `quoth-prompt-id` + `quoth-response-to`                               | Chain-of-thought sub-span                                                                   |
-| System notes (error / interrupt)      | `quoth-region-type 'system`                                                                            | A transcript annotation: error pane or `> **Interrupted.**` note                            |
+| Text Region                           | Property                                                                                               | Value                                                                                                                                                                   |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Input separator (`---` divider)       | `quoth-prompt-id` + `quoth-region-type 'separator`                                                     | Markdown divider above the input area                                                                                                                                   |
+| User input (typed + inserted context) | `quoth-prompt-id` + `quoth-region-type 'user`                                                          | Editable input; inserted context appended as user input                                                                                                                 |
+| Image link (`![name](path)`)          | `quoth-image` (`:path` as written, `:mime`, `:attach`) over the link characters                        | A user-attached or tool-read image; `:attach t` sends it as an `image_url` content part at send time (bytes re-read from disk), nil leaves the line as literal markdown |
+| Tool blocks                           | `quoth-region-type 'tool` + `quoth-prompt-id` + `quoth-response-to` + `quoth-tool-call` (id/name/args) | Displayed tool call                                                                                                                                                     |
+| Tool raw result                       | `quoth-region-type 'tool-output` (nested) + `quoth-prompt-id` + `quoth-response-to`                    | Raw result sent in history                                                                                                                                              |
+| Response text                         | `quoth-response-to` + `quoth-region-type 'response` (+ `quoth-interrupted` when the turn was cut off)  | The prompt ID being answered; `quoth-interrupted` is `user`/`error` for an interrupted turn                                                                             |
+| Reasoning text                        | `quoth-region-type 'reasoning` + `quoth-prompt-id` + `quoth-response-to`                               | Chain-of-thought sub-span                                                                                                                                               |
+| System notes (error / interrupt)      | `quoth-region-type 'system`                                                                            | A transcript annotation: error pane or `> **Interrupted.**` note                                                                                                        |
 
 The `system` region is a distinct `quoth-region-type`, never reconstructed
 into a wire message: `quoth-get-response-text`, `quoth--tool-rounds`, and

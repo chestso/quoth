@@ -118,6 +118,25 @@ tests stay isolated."
   (let ((quoth--root-buffer-alist nil))
     (quoth--buffer-name-for-root quoth-test--root)))
 
+(defconst quoth-test--png-b64
+  "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC"
+  "A minimal valid 10x10 RGB PNG fixture (75 bytes).
+Width 10 clears the gateway's dimension floor, so the same fixture is
+usable in wire tests.")
+
+(defun quoth-test--write-png (file)
+  "Write the PNG fixture to FILE and return FILE's absolute name."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert (base64-decode-string quoth-test--png-b64))
+    (let ((coding-system-for-write 'binary))
+      (write-region (point-min) (point-max) file nil 'silent)))
+  (expand-file-name file))
+
+(defun quoth-test--png-bytes ()
+  "Return the PNG fixture's raw bytes as a unibyte string."
+  (base64-decode-string quoth-test--png-b64))
+
 (defun quoth-test--fresh-buffer (&optional prefetch)
   "Create a fresh quoth test buffer and return it.
 The buffer is bound to `quoth-test--root' and deterministically named.
