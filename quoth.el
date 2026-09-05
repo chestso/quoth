@@ -3,7 +3,7 @@
 
 ;;; Author: Thomas Christensen <thomasc1971@hotmail.com>
 ;;; URL: https://github.com/chestso/quoth
-;;; Version: 0.8.0
+;;; Version: 0.9.0
 ;;; Package-Requires: ((emacs "28.1") (transient "0.4"))
 ;;; Keywords: tools, ai, convenience
 ;;; Prefix: quoth-
