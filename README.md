@@ -320,9 +320,10 @@ input area before its first send.
 
 `C-c " m` opens a transient selector: pick a model from the active provider's
 catalog, toggle thinking on/off, set a reasoning-effort level, or use `d` to
-reset the per-session attributes to the provider defaults. The catalog is
-fetched live from the provider, so prices and context windows show for each
-model.
+reset the per-session attributes to the provider defaults. The catalog is seeded
+from a bundled snapshot of the gateway's model list, so prices and context
+windows show for each model even before the first fetch, and a live refresh (`g`
+in the selector) keeps it current.
 
 The selected model persists across Emacs restarts via `savehist` when
 `savehist-mode` is enabled. Savehist is opt-in, so enable it in your init

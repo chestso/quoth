@@ -325,7 +325,202 @@ see no models and no fetch fires."
                     (should (= (funcall fetches) 1)))))))
          (when (buffer-live-p buf) (kill-buffer buf)))))))
 
-;;; 4. The transient g suffix
+;;; 4. The bundled seed
+
+(defun quoth-test--with-seeded-models (seed live fn)
+  "Run FN with the seed generic faked to SEED and the async generic
+faked to deliver LIVE.  FN receives the fetch counter.  The fetch
+completes inline, so post-read assertions see the delivered state."
+  (let ((fetches 0))
+    (cl-letf (((symbol-function 'quoth-provider--models-seed)
+               (lambda (_provider) seed))
+              ((symbol-function 'quoth-provider--models-async)
+               (lambda (_provider on-done)
+                 (setq fetches (1+ fetches))
+                 (funcall on-done live)
+                 nil)))
+      (funcall fn (lambda () fetches)))))
+
+(defun quoth-test--with-seeded-models-pending (seed fn)
+  "Run FN with the seed generic faked to SEED and the async generic
+started but not yet delivered.  FN receives the pending ON-DONE
+delivery function alongside the fetch counter; the cache keeps the
+seeded entry until FN pumps."
+  (let ((fetches 0) (deliver nil))
+    (cl-letf (((symbol-function 'quoth-provider--models-seed)
+               (lambda (_provider) seed))
+              ((symbol-function 'quoth-provider--models-async)
+               (lambda (_provider on-done)
+                 (setq fetches (1+ fetches))
+                 (setq deliver on-done)
+                 nil)))
+      (funcall fn (lambda () fetches) (lambda (models) (funcall deliver models))))))
+
+(ert-deftest quoth-test/catalog-seed-fills-cold-cache-read ()
+  "A cache miss stores the bundled seed, stamped stale (FETCHED-AT 0),
+and the read returns the seeded models immediately while the
+kicked refresh is still in flight."
+  (quoth-test--with-models-cache
+   (lambda ()
+     (let ((provider (quoth-make-hyper-provider
+                      :buffer (current-buffer)
+                      :base-url "http://example/v1")))
+       (quoth-test--with-seeded-models-pending
+        (quoth-test--models "seeded")
+        (lambda (_fetches deliver)
+          (should (equal (quoth-provider-models-cached provider)
+                         (quoth-test--models "seeded")))
+          (let ((entry (gethash (quoth-provider--models-key provider)
+                                quoth-provider--models-cache)))
+            (should (equal (car entry) (quoth-test--models "seeded")))
+            (should (= (cdr entry) 0.0)))
+          ;; Pump the in-flight fetch: the live catalog overrides.
+          (funcall deliver (quoth-test--models "live"))
+          (should (equal (quoth-provider-models-cached provider)
+                         (quoth-test--models "live")))))))))
+
+(ert-deftest quoth-test/catalog-seed-read-kicks-background-refresh ()
+  "The seeded entry counts as stale: the first read kicks exactly one
+background refresh, and the live fetch overrides the seed."
+  (quoth-test--with-models-cache
+   (lambda ()
+     (let ((provider (quoth-make-hyper-provider
+                      :buffer (current-buffer)
+                      :base-url "http://example/v1")))
+       (quoth-test--with-seeded-models
+        (quoth-test--models "seeded")
+        (quoth-test--models "live")
+        (lambda (fetches)
+          ;; The first read returns the seed and starts a fetch.
+          (should (equal (quoth-provider-models-cached provider)
+                         (quoth-test--models "seeded")))
+          (should (= (funcall fetches) 1))
+          ;; The inline fake already delivered: the live catalog
+          ;; replaced the seed and restamped the entry.
+          (let ((entry (gethash (quoth-provider--models-key provider)
+                                quoth-provider--models-cache)))
+            (should (equal (car entry) (quoth-test--models "live")))
+            (should (> (cdr entry) 0.0)))
+          ;; Further reads hit the fresh entry: no more fetches.
+          (should (equal (quoth-provider-models-cached provider)
+                         (quoth-test--models "live")))
+          (should (= (funcall fetches) 1))))))))
+
+(ert-deftest quoth-test/catalog-seed-absent-cold-fallback-intact ()
+  "A nil seed (no snapshot, or an unparseable one) leaves the cache
+cold: the read returns nil and the caller's static fallback applies."
+  (quoth-test--with-models-cache
+   (lambda ()
+     (let ((provider (quoth-make-hyper-provider
+                      :buffer (current-buffer)
+                      :base-url "http://example/v1")))
+       (quoth-test--with-seeded-models
+        nil
+        (quoth-test--models "live")
+        (lambda (_fetches)
+          (should (null (quoth-provider-models-cached provider)))
+          (should (null (gethash (quoth-provider--models-key provider)
+                                 quoth-provider--models-cache)))))))))
+
+(ert-deftest quoth-test/catalog-hyper-seed-gated-on-base-url ()
+  "The hyper seed method only fires for the default gateway base URL;
+a custom base URL gets no snapshot."
+  (let ((file (make-temp-file "quoth-seed-" nil ".json"
+                              "{\"name\":\"Charm Hyper\",\"models\":[]}")))
+    (unwind-protect
+        (let ((quoth-hyper--models-seed-directory
+               (file-name-directory file))
+              (quoth-hyper--models-seed-file
+               (file-name-nondirectory file))
+              ;; Unset HYPER_URL so the default gateway applies.
+              (process-environment
+               (cl-remove-if (lambda (env)
+                               (string-prefix-p "HYPER_URL=" env))
+                             process-environment)))
+          ;; A custom base URL: no seed.
+          (should (null (quoth-provider--models-seed
+                         (quoth-make-hyper-provider
+                          :buffer (current-buffer)
+                          :base-url "http://other/v1"))))
+          ;; The default gateway: the seed reads the snapshot (the
+          ;; empty models array parses; absent-vs-invalid is
+          ;; exercised by the seed-read tests below).
+          (should (null (quoth-provider--models-seed
+                         (quoth-make-hyper-provider
+                          :buffer (current-buffer))))))
+      (delete-file file))))
+
+(ert-deftest quoth-test/catalog-hyper-seed-read-parses-snapshot ()
+  "`quoth-hyper--models-seed-read' normalizes a snapshot through the
+same parse + normalize pipeline as the live fetch."
+  (let* ((body (concat "{\"name\":\"Charm Hyper\",\"models\":[{"
+                       "\"id\":\"deepseek-v4-flash\","
+                       "\"name\":\"DeepSeek V4 Flash\","
+                       "\"cost_per_1m_in\":0.2,"
+                       "\"cost_per_1m_out\":0.4,"
+                       "\"cost_per_1m_in_cached\":0,"
+                       "\"cost_per_1m_out_cached\":0.04,"
+                       "\"context_window\":1000000,"
+                       "\"default_max_tokens\":384000,"
+                       "\"can_reason\":true,"
+                       "\"reasoning_levels\":[\"high\",\"xhigh\"],"
+                       "\"default_reasoning_effort\":\"high\","
+                       "\"supports_attachments\":false}]}"))
+         (file (make-temp-file "quoth-seed-" nil ".json" body))
+         (models (quoth-hyper--models-seed-read file)))
+    (unwind-protect
+        (let ((m (car models)))
+          (should (= (length models) 1))
+          (should (string= (plist-get m :id) "deepseek-v4-flash"))
+          (should (= (plist-get m :cost-cache-write) 0))
+          (should (= (plist-get m :cost-cache-hit) 0.04))
+          (should (equal (plist-get m :reasoning-levels) '("high" "xhigh")))
+          (should (eq (plist-get m :can-reason) t)))
+      (delete-file file))))
+
+(ert-deftest quoth-test/catalog-hyper-seed-read-absent-not-error ()
+  "A missing or unparseable snapshot yields a nil seed, never an
+error — absent is distinct from rejected."
+  (should (null (quoth-hyper--models-seed-read "/nonexistent/path/x.json")))
+  (let ((file (make-temp-file "quoth-seed-" nil ".json" "{not json")))
+    (unwind-protect
+        (should (null (quoth-hyper--models-seed-read file)))
+      (delete-file file))))
+
+(ert-deftest quoth-test/catalog-select-model-detail-shape ()
+  "`quoth--select-model-detail' annotates uncached in/out plus, when
+the catalog reports them, both cache prices under their truthful
+labels (write and hit); segments join with two spaces."
+  (let ((entry (list :id "m" :name "M" :context-window 1000
+                     :cost-in 1.5 :cost-out 2.5
+                     :cost-cache-write 0.75
+                     :cost-cache-hit 0.25)))
+    (let ((detail (quoth--select-model-detail (list entry) "m")))
+      (should (string= detail
+                       (concat "ctx 1000  $1.50/1M in  $2.50/1M out"
+                               "  cache-write $0.75/1M"
+                               "  cache-hit $0.25/1M"))))
+    ;; Without the cache prices both segments are simply absent.
+    (let ((detail (quoth--select-model-detail
+                   (list (list :id "m" :context-window 100
+                               :cost-in 1 :cost-out 1))
+                   "m")))
+      (should (string-match-p "ctx 100" detail))
+      (should-not (string-match-p "cache-write" detail))
+      (should-not (string-match-p "cache-hit" detail)))))
+
+(ert-deftest quoth-test/catalog-hyper-seed-read-real-snapshot ()
+  "The tracked snapshot parses and normalizes: a non-empty model list
+with an :id on every entry.  No hardcoded model ids — the assertion
+must not rot as the gateway rotates models."
+  (let* ((dir (file-name-directory (locate-library "quoth-test-catalog")))
+         (file (expand-file-name "../quoth-hyper-models.json" dir))
+         (models (and (file-exists-p file)
+                      (quoth-hyper--models-seed-read file))))
+    (should (consp models))
+    (should (cl-every (lambda (m) (stringp (plist-get m :id))) models))))
+
+;;; 5. The transient g suffix
 
 (ert-deftest quoth-test/catalog-transient-has-force-refresh-suffix ()
   "The selector menu declares a `g' suffix force-refreshing the cache.

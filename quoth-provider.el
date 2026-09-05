@@ -219,11 +219,23 @@ depends on configuration (e.g. the gateway base URL) override this."
   (ignore provider)
   nil)
 
+(cl-defgeneric quoth-provider--models-seed (provider)
+  "Return PROVIDER's bundled model-catalog seed, or nil.
+The seed is a list of model plists (same shape as
+`quoth-provider--models-async' delivers) sourced from a snapshot
+shipped with the package — no network.  `quoth-provider-models-cached'
+stores it on a cache miss with FETCHED-AT 0, so the entry counts as
+stale and the first read kicks the background refresh that overrides
+it with live data.  Providers with no bundled snapshot deliver nil;
+a failed or partial seed is absent (nil), never an error."
+  (ignore provider)
+  nil)
+
 (cl-defgeneric quoth-provider--models-async (provider on-done)
   "Fetch PROVIDER's model catalog, delivering it to ON-DONE once.
 The delivered value is a list of model plists (keys: :id, :name,
 :context-window, :default-max-tokens, :cost-in, :cost-out,
-:cost-in-cached, :cost-out-cached, :can-reason, :reasoning-levels,
+:cost-cache-write, :cost-cache-hit, :can-reason, :reasoning-levels,
 :default-reasoning-effort, :supports-attachments), or nil on failure.
 Providers that have no catalog deliver nil without fetching.  Returns
 a cancel thunk or nil.  The cache layer (`quoth-provider-models-refresh')
@@ -286,11 +298,19 @@ than erroring) and stay silent rather than blocking."
   "Return PROVIDER's cached catalog, or nil when never fetched.
 A fresh entry (inside `quoth-provider-models-ttl') returns directly.
 A stale entry returns immediately and kicks exactly one background
-refresh (stale-while-revalidate); a nil (never fetched) entry returns
-nil — the caller decides whether to refresh or fall back to a static
-list."
+refresh (stale-while-revalidate).  On a cache miss the bundled seed
+\(`quoth-provider--models-seed') is stored first — stamped
+FETCHED-AT 0, i.e. stale — so it returns through the same
+stale-while-revalidate path and the live refresh overrides it; with
+no seed a nil entry returns nil and the caller falls back to a
+static list."
   (let* ((key (quoth-provider--models-key provider))
          (entry (and key (gethash key quoth-provider--models-cache))))
+    (unless entry
+      (let ((seed (and key (quoth-provider--models-seed provider))))
+        (when seed
+          (setq entry (cons seed 0.0))
+          (puthash key entry quoth-provider--models-cache))))
     (when entry
       (when (and quoth-provider-models-ttl
                  (> (- (float-time) (cdr entry))

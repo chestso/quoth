@@ -3062,13 +3062,14 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
 (defun quoth-select-model ()
   "Select a model from the active provider's catalog.
 Reads the catalog from the protocol's global cache; on a cold cache
-offers the static fallback list while a refresh runs in the
-background (the refresh message notes it, and the cache warming lands
-on `quoth-provider-models-hook').  Picking a model applies it through
-`quoth-provider--apply-model' (which sets the provider's model slot)
-and also sets the global `quoth-model' so future buffers use the
-choice.  Choosing the `default' entry clears the selection back to the
-provider default."
+the bundled seed (`quoth-provider--models-seed') usually fills it
+first, and the static fallback list covers the seed-less cases while
+a refresh runs in the background (the refresh message notes it, and
+the cache warming lands on `quoth-provider-models-hook').  Picking a
+model applies it through `quoth-provider--apply-model' (which sets
+the provider's model slot) and also sets the global `quoth-model'
+so future buffers use the choice.  Choosing the `default' entry
+clears the selection back to the provider default."
   (interactive)
   (let* ((models (and quoth-active-provider
                       (quoth-provider-p quoth-active-provider)

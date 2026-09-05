@@ -43,11 +43,17 @@ After making changes:
 make check      # version gate + tests (byte-compile + ERT)
 make test-wire  # wire (:integration) tests only
 make format     # format Elisp, Markdown, Shell, Python
+make models     # regenerate the bundled model-catalog snapshot
 ```
 
 `make test` / `make check` run the fast default suite, which skips the
 live-server `:integration` wire tests (they need emacs+curl plus the dummy HTTP
 servers and are opt-in via `make test-wire`).
+
+`make models` refreshes `quoth-hyper-models.json`, the bundled `/v1/provider`
+snapshot that seeds the model-catalog cache before the first network fetch; run
+it before a release (or whenever the gateway's model list has visibly changed)
+and commit the result — it is a tracked data file, not a generated artifact.
 
 The test runner treats byte-compiler warnings as errors-in-waiting: do not
 introduce new ones. `make format` must produce no further changes before you

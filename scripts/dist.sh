@@ -13,7 +13,7 @@ fi
 
 files="quoth.el quoth-json.el quoth-provider.el quoth-openai.el quoth-hyper-provider.el \
 quoth-xxh3.el quoth-process.el quoth-tools.el quoth-searxng.el quoth-select.el \
-quoth-debug-tools.el LICENSE README.md SEARXNG.md"
+quoth-debug-tools.el quoth-hyper-models.json LICENSE README.md SEARXNG.md"
 
 out="quoth-${tag#v}.tar.gz"
 # shellcheck disable=SC2086  # allowlist words are deliberate

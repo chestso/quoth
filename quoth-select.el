@@ -114,20 +114,34 @@ VALUE is one of t (on), :json-false (off), or nil (unset)."
 (defun quoth--select-model-detail (models model-id)
   "Return a pricing/context string for the model with :id MODEL-ID, or nil.
 MODELS is the model list (plists) to look the id up in.
-Only context window and per-token costs appear; the model id is shown
-by the caller."
+Context window and per-token costs appear; the model id is shown
+by the caller.  The two cache prices (write: what building a fresh
+prefix costs; hit: what a conversation's turns after the first
+actually bill) appear when the catalog reports them.  Segments join
+with two spaces."
   (let ((m (quoth--select-current-model-entry models model-id)))
     (when m
       (let ((ctx   (or (plist-get m :context-window) "?"))
             (cin   (plist-get m :cost-in))
             (cout  (plist-get m :cost-out))
-            (ccin  (plist-get m :cost-in-cached)))
+            (write (plist-get m :cost-cache-write))
+            (hit   (plist-get m :cost-cache-hit)))
         (string-trim
-         (format "ctx %s  $%s/1M in · $%s/1M out · cached $%s"
-                 ctx
-                 (if (numberp cin) (format "%.2f" cin) "?")
-                 (if (numberp cout) (format "%.2f" cout) "?")
-                 (if (numberp ccin) (format "%.2f" ccin) "?")))))))
+         (mapconcat
+          #'identity
+          (delq nil
+                (list (format "ctx %s" ctx)
+                      (if (numberp cin)
+                          (format "$%.2f/1M in" cin)
+                        "$?/1M in")
+                      (if (numberp cout)
+                          (format "$%.2f/1M out" cout)
+                        "$?/1M out")
+                      (when (numberp write)
+                        (format "cache-write $%.2f/1M" write))
+                      (when (numberp hit)
+                        (format "cache-hit $%.2f/1M" hit))))
+          "  "))))))
 
 ;;; Transient menu
 (defun quoth--select-current-model ()
@@ -209,9 +223,11 @@ sending one re-enables the reasoning trace."
 
 (defun quoth--select-model-picker (&rest _)
   "Prompt for a model from the active provider's catalog.
-Reads the catalog from the protocol's global cache; a cold cache
-offers the static fallback while a background refresh runs, and the
-message notes it."
+Reads the catalog from the protocol's global cache; a cold cache is
+usually seeded from the bundled snapshot first
+\(`quoth-provider--models-seed'), and the static fallback covers the
+seed-less cases while a background refresh runs, with the message
+noting it."
   (interactive)
   (let* ((models (and quoth-active-provider
 		      (quoth-provider-p quoth-active-provider)
