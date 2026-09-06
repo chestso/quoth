@@ -190,6 +190,27 @@
       "supports_attachments": false
     },
     {
+      "id": "inkling",
+      "name": "Inkling",
+      "cost_per_1m_in": 1.0888,
+      "cost_per_1m_out": 4.40964,
+      "cost_per_1m_in_cached": 0,
+      "cost_per_1m_out_cached": 0.185096,
+      "context_window": 1048576,
+      "default_max_tokens": 32768,
+      "can_reason": true,
+      "reasoning_levels": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "default_reasoning_effort": "medium",
+      "supports_attachments": true
+    },
+    {
       "id": "kimi-k2.5",
       "name": "Kimi K2.5",
       "cost_per_1m_in": 0.5144,

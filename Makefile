@@ -18,7 +18,7 @@ help:
 	@echo "  make dist                     build the package tarball from the current tag"
 	@echo "  make release VERSION=x.y.z    tag release (bumps header if behind; push manual)"
 	@echo "  make clean                    remove byte-compiled and cache artifacts"
-	@echo "  make models                   regenerate quoth-hyper-models.json from the live gateway"
+	@echo "  make models                   regenerate both model-catalog seeds from the live providers"
 
 test:
 	./scripts/test.sh unit
