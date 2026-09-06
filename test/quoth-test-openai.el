@@ -733,7 +733,8 @@ The sentinel must not re-finalize after a deliberate interrupt."
 (ert-deftest quoth-test/openai-sentinel-stream-closed-before-done ()
   "A 2xx stream that ends without [DONE] reports truncation, not the status.
 The HTTP status is not itself the error; a 200 that dropped mid-stream is
-a truncation.  Design A middle branch."
+a `truncated-stream' condition carrying the status and the received
+character count."
   (let ((error nil)
         (proc (make-pipe-process :name "quoth-test-trunc"
                                  :noquery t :coding 'binary
@@ -743,12 +744,14 @@ a truncation.  Design A middle branch."
           (process-put proc :quoth-status 200)
           (process-put proc :quoth-finished nil)
           (process-put proc :quoth-url "https://hyper.charm.land/chat/completions")
+          (process-put proc :quoth-model "m")
+          (process-put proc :quoth-received-chars 1214)
           (process-put proc :quoth-on-error
                        (lambda (msg) (setq error msg)))
           (quoth--openai-curl-sentinel proc "finished\n")
-          (should (string-match-p "stream closed before \\[DONE\\]"
-                                  error))
-          (should (string-match-p "HTTP 200" error)))
+          (should (eq (plist-get error :kind) 'truncated-stream))
+          (should (= (plist-get error :status) 200))
+          (should (= (plist-get error :received-chars) 1214)))
       (when (process-live-p proc) (delete-process proc)))))
 
 (ert-deftest quoth-test/openai-sentinel-no-head-reports-connection-closed ()
@@ -765,12 +768,13 @@ a truncation.  Design A middle branch."
           (process-put proc :quoth-on-error
                        (lambda (msg) (setq error msg)))
           (quoth--openai-curl-sentinel proc "finished\n")
-          (should (string-match-p "connection closed before response head"
-                                  error)))
+          (should (eq (plist-get error :kind) 'no-response)))
       (when (process-live-p proc) (delete-process proc)))))
 
 (ert-deftest quoth-test/openai-sentinel-non-2xx-reports-status ()
-  "A genuine non-2xx status is reported with its code (unchanged)."
+  "A genuine non-2xx status carries the code and the captured body.
+The body rides the condition so the note can quote what the server
+actually said."
   (let ((error nil)
         (proc (make-pipe-process :name "quoth-test-404"
                                  :noquery t :coding 'binary
@@ -780,25 +784,93 @@ a truncation.  Design A middle branch."
           (process-put proc :quoth-status 404)
           (process-put proc :quoth-finished nil)
           (process-put proc :quoth-url "https://hyper.charm.land/chat/completions")
+          (process-put proc :quoth-model "m")
+          (process-put proc :quoth-trace "req-123")
+          (process-put proc :quoth-error-body
+                       "{\"error\":{\"message\":\"model not found: nope\"}}")
           (process-put proc :quoth-on-error
                        (lambda (msg) (setq error msg)))
           (quoth--openai-curl-sentinel proc "finished\n")
-          (should (string-match-p "HTTP 404 from" error))
-          (should-not (string-match-p "\\[DONE\\]" error)))
+          (should (eq (plist-get error :kind) 'http-error))
+          (should (= (plist-get error :status) 404))
+          (should (string= (plist-get error :trace) "req-123"))
+          (should (string-match-p "model not found"
+                                  (plist-get error :body))))
+      (when (process-live-p proc) (delete-process proc)))))
+
+(ert-deftest quoth-test/openai-error-extract-cascade ()
+  "Extraction handles every gateway's error body shape.
+The nested OpenAI shape, the OpenRouter wrapped-provider shape (the
+upstream error re-encoded as a JSON string under metadata.raw), the
+flat string, and a bare message each yield their text; non-JSON
+input yields nil so the caller falls back to the raw body."
+  (should (string= (quoth--openai-error-extract-message
+                    "{\"error\":{\"message\":\"model not found\"}}")
+                   "model not found"))
+  (should (string= (quoth--openai-error-extract-message
+                    (json-encode
+                     '((error
+                        (message . "Provider returned error")
+                        (code . 400)
+                        (metadata
+                         (raw . "{\"error\":{\"message\":\"Invalid base64 image_url.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_base64\"}}")
+                         (provider_name . "OpenAI"))))))
+                   "Invalid base64 image_url."))
+  (should (string= (quoth--openai-error-extract-message
+                    "{\"error\":\"authentication failed\"}")
+                   "authentication failed"))
+  (should (string= (quoth--openai-error-extract-message
+                    "{\"message\":\"bare message\"}")
+                   "bare message"))
+  (should-not (quoth--openai-error-extract-message "<html>404</html>"))
+  (should-not (quoth--openai-error-extract-message "")))
+
+(ert-deftest quoth-test/openai-error-body-accumulates-on-error-response ()
+  "The filter accumulates a non-SSE body instead of SSE-parsing it.
+A 404 JSON error response's post-head bytes ride
+`:quoth-error-body' (capped) and never reach the SSE parser or the
+on-delta callback."
+  (let ((deltas nil)
+        (proc (make-pipe-process :name "quoth-test-body-acc"
+                                 :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore)))
+    (unwind-protect
+        (progn
+          (process-put proc :quoth-sse (quoth-openai-sse-new-state))
+          (process-put proc :quoth-on-delta
+                       (lambda (d k) (push (cons k d) deltas)))
+          (process-put proc :quoth-on-error #'ignore)
+          (process-put proc :quoth-done-callback #'ignore)
+          (process-put proc :quoth-head "")
+          (process-put proc :quoth-head-parsed nil)
+          (process-put proc :quoth-status nil)
+          (process-put proc :quoth-url "http://test/chat/completions")
+          (quoth--openai-curl-filter
+           proc "HTTP/1.1 404 Not Found\nContent-Type: application/json\n\n")
+          (should (eq (process-get proc :quoth-status) 404))
+          (quoth--openai-curl-filter
+           proc "{\"error\":{\"message\":\"model not found: nope\"}}")
+          (should (string= (process-get proc :quoth-error-body)
+                           "{\"error\":{\"message\":\"model not found: nope\"}}"))
+          (should-not deltas)
+          ;; The SSE parser never saw the error body.
+          (should (equal (process-get proc :quoth-sse)
+                         (quoth-openai-sse-new-state))))
       (when (process-live-p proc) (delete-process proc)))))
 
 (ert-deftest quoth-test/openai-sse-error-object-renders-fields ()
-  "An SSE error payload whose 'error' is an object renders message/type.
-The on-error contract stays a string, never an alist."
+  "An SSE error payload whose 'error' is an object carries message/type.
+The structured condition's `:message' and `:type' hold the fields."
   (let* ((result (quoth-openai-sse-feed
                   (list :pending "" :done nil :error nil
                         :tool-calls nil :content-started nil :usage nil)
                   "data: {\"error\":{\"message\":\"boom detail\",\"type\":\"server_error\"}}\n\n")))
     (should (plist-get (cdr result) :done))
     (let ((err (plist-get (cdr result) :error)))
-      (should (stringp err))
-      (should (string-match-p "boom detail" err))
-      (should (string-match-p "server_error" err)))))
+      (should (consp err))
+      (should (eq (plist-get err :kind) 'server-event))
+      (should (string= (plist-get err :message) "boom detail"))
+      (should (string= (plist-get err :type) "server_error")))))
 
 (ert-deftest quoth-test/openai-json-pretty-caps-large-payloads ()
   "`quoth--openai-json-pretty' truncates payloads over the debug cap.

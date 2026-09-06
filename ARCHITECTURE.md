@@ -28,10 +28,9 @@ new code must too.
 3. **Text properties carry state; overlays are for special UI only.** Metadata
    (region type, prompt id, response linkage, tool-call payloads) is stored as
    text properties so it survives font-lock refontification. Overlays are
-   reserved for transient, display-only features — the reasoning highlight +
-   fold and the `system`-note overlays (transcript annotations; the underlying
-   text is buffer text tagged `quoth-region-type` = `system`, never
-   display-only).
+   reserved for the one transient, display-only feature — the reasoning
+   highlight + fold; everything else (including `system`-note metadata) rides
+   text properties.
 
 4. **Protocols live in their own files.** The provider protocol
    (`quoth-provider.el`), the OpenAI chat-completions + tool protocol
@@ -382,12 +381,26 @@ provider protocol onto the client's `quoth-openai-compose-request` and
    (`quoth--finalize-response`), which tags the response and inserts a fresh
    input divider (`---`, framed by blank lines). Stream errors and user
    interrupts both finalize the interrupted turn immediately through that same
-   unified path: `:on-error` inserts and tags a `system` pane (`> **Error:** …`
-   for a failure, `> **Interrupted.**` for `quoth-interrupt`) and sets
+   unified path: `:on-error` inserts and tags a `system` pane and sets
    `quoth--pending-interrupt`; `quoth--finalize-response` then stamps
    `quoth-interrupted` on the partial and closes it. The `system` pane is real
    buffer text (visible on save/preview), tagged at insert time so it is never
    swept into a `response` region or a wire message.
+
+   The transport delivers failures as structured condition plists (not
+   preformatted strings): `:kind` is one of `http-error`, `truncated-stream`,
+   `no-response`, or `server-event`, alongside what the wire captured — status,
+   url, model, the trace header (`x-request-id` / `x-generation-id` /
+   `x-cloud-trace-context`, whichever the gateway sends), the received character
+   count, and for HTTP errors the response body itself (non-SSE responses are
+   accumulated on the process, capped at `quoth-openai-error-body-max`, instead
+   of being fed to the SSE parser). `quoth--record-error` renders the condition
+   as a verbose blockquote: what failed, why (the server's own message via
+   `quoth--openai-error-extract-message`, a cascade over the nested OpenAI
+   shape, the OpenRouter wrapped-provider shape under `error.metadata.raw`, flat
+   string errors, bare messages, and the raw text as the last resort), and what
+   to do next. A plain string condition still renders one-line, for callers that
+   have no wire detail.
 
 ### Session continuity
 
@@ -708,14 +721,15 @@ The **sanctioned overlay exceptions** (they carry faces and display properties):
   marker. No buffer text is inserted or deleted during toggle, keeping the
   buffer-as-database intact.
 - **System notes.** Stream errors and user interrupts insert a `system`-tagged
-  blockquote pane (`> **Error:** …` / `> **Interrupted.**`) at point-max, with a
-  display-only overlay carrying the `face`, a `help-echo`, and a
-  `quoth-system-detail` plist (`:kind` `user` or `error`). The pane is inert (no
-  dismiss keymap): the turn finalizes on its own, and the text is buffer text
-  saved with the buffer. Overlays are tagged `quoth-overlay` so
-  `quoth-clear-buffer` sweeps them. The `system` text is skipped by history
-  reconstruction and `quoth--tag-response-region`, so it never becomes a
-  response or a wire message.
+  blockquote pane at point-max (`> **Error:** …` / `> **Interrupted.**`). There
+  is deliberately no overlay: the note's metadata — kind (`quoth-system-kind`,
+  `user` or `error`) and action hint (`quoth-system-hint`) — rides the text
+  alongside `quoth-region-type` = `system` and a `help-echo`, so it survives
+  saves, previews, and markdown refontification like every other tagged region.
+  The pane is inert (no dismiss keymap): the turn finalizes on its own. The
+  `system` text is skipped by history reconstruction and
+  `quoth--tag-response-region`, so it never becomes a response or a wire
+  message.
 
 ### Metadata
 
@@ -731,7 +745,7 @@ left to markdown-mode's native font-lock.
 | Tool raw result                       | `quoth-region-type 'tool-output` (nested) + `quoth-prompt-id` + `quoth-response-to`                    | Raw result sent in history                                                                                                                                              |
 | Response text                         | `quoth-response-to` + `quoth-region-type 'response` (+ `quoth-interrupted` when the turn was cut off)  | The prompt ID being answered; `quoth-interrupted` is `user`/`error` for an interrupted turn                                                                             |
 | Reasoning text                        | `quoth-region-type 'reasoning` + `quoth-prompt-id` + `quoth-response-to`                               | Chain-of-thought sub-span                                                                                                                                               |
-| System notes (error / interrupt)      | `quoth-region-type 'system`                                                                            | A transcript annotation: error pane or `> **Interrupted.**` note                                                                                                        |
+| System notes (error / interrupt)      | `quoth-region-type 'system` + `quoth-system-kind` (`user`/`error`) + `quoth-system-hint`               | A transcript annotation: verbose error pane (structured condition from the transport) or `> **Interrupted.**` note                                                      |
 
 The `system` region is a distinct `quoth-region-type`, never reconstructed into
 a wire message: `quoth-get-response-text`, `quoth--tool-rounds`, and

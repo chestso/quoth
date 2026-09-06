@@ -114,8 +114,9 @@ calling the captured completion runs the finalizer inline."
 
 (ert-deftest quoth-test/stream-record-error-tags-system-pane ()
   "Recording an error marks the stream errored and renders a system pane.
-The pane is a blockquote tagged `system' (never `response'), carrying a
-`help-echo' and a `quoth-system-detail' plist with `:kind' `error'."
+The pane is a blockquote tagged `system' (never `response'), carrying
+`quoth-system-kind' = `error' and a `quoth-system-hint' as text
+properties (no overlay)."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
         (quoth--phase-set 'streaming)
@@ -125,38 +126,38 @@ The pane is a blockquote tagged `system' (never `response'), carrying a
         (save-excursion
           (goto-char (point-min))
           (should (re-search-forward "> \\*\\*Error:\\*\\*" nil t)))
-        (let ((ov (cl-find-if
-                   (lambda (o) (overlay-get o 'quoth-overlay))
-                   (overlays-in (point-min) (point-max)))))
-          (should (overlayp ov))
-          (should (eq (overlay-get ov 'face) 'error))
-          (should (overlay-get ov 'help-echo))
-          (let ((detail (overlay-get ov 'quoth-system-detail)))
-            (should (consp detail))
-            (should (eq (plist-get detail :kind) 'error)))
-          (let ((type (get-text-property (overlay-start ov)
-                                         'quoth-region-type)))
-            (should (eq type 'system)))
+        (let ((note-start (text-property-any
+                           (point-min) (point-max)
+                           'quoth-region-type 'system)))
+          (should note-start)
+          ;; All metadata is on the text: kind and hint as properties.
+          (should (eq (get-text-property note-start 'quoth-system-kind)
+                      'error))
+          (should (get-text-property note-start 'quoth-system-hint))
+          (should (get-text-property note-start 'help-echo))
+          ;; No overlay carries the note.
           (should-not
-           (text-property-any (overlay-start ov) (overlay-end ov)
-                              'quoth-region-type 'response)))
-        ;; The pane is inert: no dismiss keymap.
-        (should-not
-         (cl-some (lambda (o) (overlay-get o 'quoth-error-action))
-                  (overlays-in (point-min) (point-max)))))
+           (cl-some (lambda (o) (overlay-get o 'quoth-overlay))
+                    (overlays-in (point-min) (point-max))))
+          ;; The pane is inert: no dismiss keymap.
+          (should-not
+           (text-property-any note-start (point-max)
+                              'quoth-error-action t))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/clear-buffer-removes-error-pane ()
-  "Quoth-clear-buffer should remove the error pane overlay.
-Clear sweeps any `quoth-overlay'-tagged overlay, including the system
-pane; the text beneath is deleted by clear-buffer's full wipe."
+  "Quoth-clear-buffer should remove the error pane text.
+Clear erases the buffer, so the note text and its text properties
+die with it; no overlay survives either."
   (unwind-protect
       (with-current-buffer (quoth-test--fresh-buffer)
         (quoth--phase-set 'streaming)
         (quoth--record-error "Boom")
-        (should (cl-some (lambda (o) (overlay-get o 'quoth-overlay))
-                         (overlays-in (point-min) (point-max))))
+        (should (text-property-any (point-min) (point-max)
+                                   'quoth-region-type 'system))
         (quoth-clear-buffer)
+        (should-not (text-property-any (point-min) (point-max)
+                                       'quoth-region-type 'system))
         (should-not (cl-some (lambda (o) (overlay-get o 'quoth-overlay))
                              (overlays-in (point-min) (point-max)))))
     (quoth-test--cleanup)))
@@ -198,14 +199,9 @@ with a `user'-kind detail; the partial is tagged `response' with
                 (should-not
                  (text-property-any note-start note-end
                                     'quoth-region-type 'response)))
-              ;; The note carries a user-kind detail.
-              (let ((ov (cl-find-if
-                         (lambda (o) (overlay-get o 'quoth-system-detail))
-                         (overlays-in (point-min) (point-max)))))
-                (should (overlayp ov))
-                (let ((detail (overlay-get ov 'quoth-system-detail)))
-                  (should (eq (plist-get detail :kind) 'user)))
-                (should-not (eq (overlay-get ov 'face) 'error))))
+              ;; The note carries a user-kind text property.
+              (should (eq (get-text-property note-start 'quoth-system-kind)
+                          'user)))
             ;; The partial response carries the interruption marker.
             (let ((resp-start (text-property-any
                                (point-min) (point-max)

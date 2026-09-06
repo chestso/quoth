@@ -820,22 +820,26 @@ of each COMPLETE `data:' event (before it is dispatched), including
                         (progn
                           (setq done t)
                           (let ((err (quoth--openai-alist-get "error" obj)))
-                            ;; An object error carries message/type; render
-                            ;; them to a string so the on-error contract
-                            ;; stays a string (never an alist).
+                            ;; The error event carries a structured
+                            ;; condition: kind, the message, and the
+                            ;; type when present.  The on-error
+                            ;; contract takes a string or a plist; the
+                            ;; core renders both.
                             (setq error
-                                  (if (and (consp err)
-                                           (quoth--openai-alist-get
-                                            "message" err))
-                                      (let ((msg (quoth--openai-alist-get
-                                                  "message" err))
-                                            (type (quoth--openai-alist-get
-                                                   "type" err)))
-                                        (format "%s%s"
-                                                (or msg "")
-                                                (and type
-                                                     (format " (%s)" type))))
-                                    err))))
+                                  (list :kind 'server-event
+                                        :message
+                                        (cond
+                                         ((and (consp err)
+                                               (quoth--openai-alist-get
+                                                "message" err))
+                                          (quoth--openai-alist-get
+                                           "message" err))
+                                         ((stringp err) err)
+                                         (t (format "%S" err)))
+                                        :type
+                                        (and (consp err)
+                                             (quoth--openai-alist-get
+                                              "type" err))))))
                       (dolist (delta (quoth--openai-sse-extract-deltas obj))
                         (if (and (eq (nth 0 delta) 'content)
                                  (quoth--openai-blank-content-p (nth 1 delta)))
@@ -994,6 +998,58 @@ process."
       (ignore-errors (delete-process proc))))
   nil)
 
+(defconst quoth-openai-error-body-max 2048
+  "Maximum bytes of a non-SSE error body captured from the wire.
+Bodies past the cap (a full HTML error page, say) keep only their
+prefix; the note renders the status and the extracted message, never
+the raw overflow.")
+
+(defun quoth--openai-error-extract-message (body)
+  "Extract the human-readable message from an error response BODY.
+BODY is the raw post-head response text.  Gateways disagree on the
+error shape, so extraction is a cascade and every step is optional:
+a wrapped-provider `error.metadata.raw' (a re-encoded upstream
+error whose message beats the proxy's useless \"Provider returned
+error\") first; then the nested OpenAI-style `error.message'; then a
+flat `error' string; then a bare `message'; then nil so the caller
+falls back to the raw text."
+  (when (and (stringp body) (> (length body) 0))
+    (let ((obj (ignore-errors (quoth-json-read body))))
+      (or
+       ;; The wrapped-provider shape first: error.metadata.raw holds the
+       ;; upstream's response as a JSON-encoded STRING, and its message is
+       ;; more specific than the proxy's own (which is a useless
+       ;; "Provider returned error").  Only one level — no arbitrary
+       ;; recursion.
+       (when-let* ((err (and obj (quoth--openai-alist-get "error" obj)))
+                   (meta (and (consp err)
+                              (quoth--openai-alist-get "metadata" err)))
+                   (raw (and (consp meta)
+                             (quoth--openai-alist-get "raw" meta)))
+                   ((stringp raw))
+                   (upstream (quoth--openai-error-obj-message
+                              (ignore-errors (quoth-json-read raw)))))
+         upstream)
+       ;; The nested OpenAI-style shape.
+       (quoth--openai-error-obj-message obj)
+       ;; A flat string error (hyper 401, native Ollama).
+       (when-let* ((err (and obj (quoth--openai-alist-get "error" obj)))
+                   ((stringp err)))
+         err)
+       ;; A bare message field.
+       (when-let* ((msg (and obj (quoth--openai-alist-get "message" obj)))
+                   ((stringp msg)))
+         msg)))))
+
+(defun quoth--openai-error-obj-message (obj)
+  "Return OBJ's `error.message' when both are present, else nil.
+OBJ is a decoded JSON body (an alist) or nil."
+  (when obj
+    (let ((err (quoth--openai-alist-get "error" obj)))
+      (when (consp err)
+        (let ((msg (quoth--openai-alist-get "message" err)))
+          (when (stringp msg) msg))))))
+
 (defun quoth--openai-http-finish (proc error)
   "Finalize the curl request on PROC with optional ERROR.
 Emits ERROR through the core's `:quoth-on-error' callback when
@@ -1017,39 +1073,97 @@ Feed the chunk to the SSE parser and emit any content deltas through
 the core's on-delta callback.  The HTTP response head (headers) is
 not valid SSE and is ignored by the parser; the status line is parsed
 for diagnostics, and errors are surfaced by the sentinel when curl
-exits non-zero."
+exits non-zero.  A response whose status or content-type says it is
+not an SSE stream (a JSON or HTML error body) is never fed to the
+parser: it is accumulated on PROC under `:quoth-error-body' capped at
+`quoth-openai-error-body-max', so the sentinel can surface what the
+server actually said instead of a bare status code."
   (unless (process-get proc :quoth-head-parsed)
-    (setq string (quoth--openai-parse-head proc string)))
-  (let* ((on-event (lambda (payload)
-                     (quoth--debug-log
-                      'output
-                      (if (quoth--openai-event-worth-pretty-p payload)
-                          (concat "data:\n"
-                                  (quoth--openai-json-pretty payload))
-                        (concat "data: " payload)))))
-         (sse-state (process-get proc :quoth-sse))
-         (result (quoth-openai-sse-feed sse-state string :on-event on-event))
-         (deltas (car result))
-         (new-state (cdr result)))
-    (dolist (delta deltas)
-      (when (nth 1 delta)
-        (quoth--openai-emit-delta proc (nth 1 delta) (nth 0 delta))))
-    ;; Persist the full parser state: the state plist has no :sse key,
-    ;; and dropping the `:pending' fragment would lose any SSE event
-    ;; split across process-filter chunks.
-    (process-put proc :quoth-sse new-state)
-    (when (plist-get new-state :done)
-      (quoth--openai-http-finish proc (plist-get new-state :error)))))
+    (setq string (quoth--openai-parse-head proc string))
+    ;; An error response carries a JSON/HTML body, not SSE: seed the
+    ;; accumulator so every later chunk rides `:quoth-error-body'.
+    (when (and (process-get proc :quoth-head-parsed)
+               (quoth--openai-error-response-p proc))
+      (process-put proc :quoth-error-body "")))
+  (let ((body (process-get proc :quoth-error-body)))
+    (if body
+        ;; An error body: keep accumulating (capped) until the sentinel
+        ;; runs; no SSE parsing, no deltas.
+        (when (> quoth-openai-error-body-max (length body))
+          (process-put proc :quoth-error-body
+                       (concat body
+                               (substring
+                                string 0
+                                (min (length string)
+                                     (- quoth-openai-error-body-max
+                                        (length body)))))))
+      (let* ((on-event (lambda (payload)
+                         (quoth--debug-log
+                          'output
+                          (if (quoth--openai-event-worth-pretty-p payload)
+                              (concat "data:\n"
+                                      (quoth--openai-json-pretty payload))
+                            (concat "data: " payload)))))
+             (sse-state (process-get proc :quoth-sse))
+             (result (quoth-openai-sse-feed sse-state string :on-event on-event))
+             (deltas (car result))
+             (new-state (cdr result)))
+        (dolist (delta deltas)
+          (when (nth 1 delta)
+            (process-put proc :quoth-received-chars
+                         (+ (or (process-get proc :quoth-received-chars) 0)
+                            (length (nth 1 delta))))
+            (quoth--openai-emit-delta proc (nth 1 delta) (nth 0 delta))))
+        ;; Persist the full parser state: the state plist has no :sse key,
+        ;; and dropping the `:pending' fragment would lose any SSE event
+        ;; split across process-filter chunks.
+        (process-put proc :quoth-sse new-state)
+        (when (plist-get new-state :done)
+          (quoth--openai-http-finish proc (plist-get new-state :error)))))))
+
+(defun quoth--openai-error-response-p (proc)
+  "Return non-nil when PROC's response head announced an error body.
+True when the status is outside 2xx or the content-type is not an
+event stream: either way the post-head bytes are not SSE."
+  (let ((status (process-get proc :quoth-status))
+        (content-type (process-get proc :quoth-content-type)))
+    (or (and status (not (and (<= 200 status) (< status 300))))
+        (and content-type
+             (not (string-prefix-p "text/event-stream" content-type))))))
+
+(defconst quoth--openai-trace-headers
+  '("x-request-id" "x-generation-id" "x-cloud-trace-context")
+  "Response headers captured as a trace id for bug reports.
+Each gateway carries a different one (none is universal), so the
+transport records whichever is present and the error note names it
+verbatim.  Matched case-insensitively (HTTP headers are).")
+
+(defun quoth--openai-head-trace (head-text)
+  "Return the trace header VALUE present in HEAD-TEXT, or nil.
+Covers only `quoth--openai-trace-headers'; the first match wins."
+  (catch 'found
+    (dolist (name quoth--openai-trace-headers)
+      (when (string-match (concat (regexp-quote name) ": *\\([^\r\n]+\\)")
+                          (downcase head-text))
+        ;; Match against the downcased copy but slice the original so
+        ;; the value keeps its case.
+        (throw 'found (substring head-text (match-beginning 1)
+                                 (match-end 1)))))))
 
 (defun quoth--openai-parse-head (proc string)
   "Parse the HTTP status line out of the first chunks from PROC.
 Accumulates chunks in `:quoth-head' until a double newline, then
-records `:quoth-status' and `:quoth-content-type', logs a request
-diagnostic line, and returns the remainder of STRING after the head.
-The token is never logged."
+records `:quoth-status', `:quoth-content-type', and `:quoth-trace'
+\(the trace header), logs a request diagnostic line, and returns the
+remainder of STRING after the head.  The token is never logged."
   (let ((head (concat (process-get proc :quoth-head) string)))
     (if (string-match "\r?\n\r?\n" head)
-        (let* ((head-text (substring head 0 (match-beginning 0)))
+        ;; Capture the boundary end FIRST: the status / content-type /
+        ;; trace matches below clobber the match data, and the returned
+        ;; remainder must slice at the head boundary, not at whatever
+        ;; matched last.
+        (let* ((boundary-end (match-end 0))
+               (head-text (substring head 0 (match-beginning 0)))
                (status (and (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" head-text)
                             (string-to-number (match-string 1 head-text))))
                (content-type (and (string-match
@@ -1058,6 +1172,7 @@ The token is never logged."
                                   (downcase (match-string 1 head-text)))))
           (process-put proc :quoth-status status)
           (process-put proc :quoth-content-type content-type)
+          (process-put proc :quoth-trace (quoth--openai-head-trace head-text))
           (process-put proc :quoth-head-parsed t)
           (quoth--debug-log 'output (string-replace "\r" "" head-text))
           (quoth--debug-log
@@ -1068,7 +1183,7 @@ The token is never logged."
                    (if status (number-to-string status) "?")
                    (or content-type "?")
                    (if (process-get proc :quoth-token-p) "present" "none")))
-          (substring head (match-end 0)))
+          (substring head boundary-end))
       (progn
         (process-put proc :quoth-head head)
         ""))))
@@ -1076,7 +1191,9 @@ The token is never logged."
 (defun quoth--openai-curl-sentinel (proc _event)
   "Sentinel for the curl process PROC.
 If the stream did not end with `[DONE]' (e.g. connection dropped or
-HTTP error), finish with an error; otherwise ensure cleanup."
+HTTP error), finish with a structured condition so the core can
+render a note carrying what the server actually said; otherwise
+ensure cleanup."
   (let ((status (process-get proc :quoth-status)))
     (quoth--debug-log
      'sentinel
@@ -1088,13 +1205,21 @@ HTTP error), finish with an error; otherwise ensure cleanup."
        proc
        (cond
         ((null status)
-         (format "connection closed before response head from %s"
-                 (process-get proc :quoth-url)))
+         (list :kind 'no-response
+               :url (process-get proc :quoth-url)))
         ((and (<= 200 status) (< status 300))
-         (format "stream closed before [DONE] (HTTP %s from %s)"
-                 status (process-get proc :quoth-url)))
+         (list :kind 'truncated-stream
+               :status status
+               :url (process-get proc :quoth-url)
+               :model (process-get proc :quoth-model)
+               :received-chars (process-get proc :quoth-received-chars)))
         (t
-         (format "HTTP %s from %s" status (process-get proc :quoth-url))))))))
+         (list :kind 'http-error
+               :status status
+               :url (process-get proc :quoth-url)
+               :model (process-get proc :quoth-model)
+               :trace (process-get proc :quoth-trace)
+               :body (process-get proc :quoth-error-body))))))))
 
 (defun quoth--openai-json-pretty (json-string)
   "Return JSON-STRING pretty-printed with 2-space indentation.

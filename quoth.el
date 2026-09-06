@@ -64,14 +64,6 @@ visible on top.  `:extend t' paints the background across the full
 window width on every line the reasoning covers."
   :group 'quoth)
 
-(defface quoth-interrupt-face
-  '((t :inherit shadow :extend t))
-  "Face for a user-interrupt system note (`> **Interrupted.**').
-Applied via an overlay (not a text property) so markdown-mode
-refontification cannot strip it.  Distinct from the `error' face used for
-server-failure panes so the two interruption kinds read differently."
-  :group 'quoth)
-
 ;;; Buffer-local state
 
 ;;; `quoth--continue', `quoth--session-uuid', `quoth--session-id', and
@@ -250,20 +242,19 @@ the last error message, and ROUND the live tool round (0 outside one)."
 
 (defun quoth--insert-system-note (text &rest args)
   "Insert a system note with TEXT as real buffer text.
-ARGS is a plist: KIND (`user' or `error') selects the overlay face,
-HINT supplies the `help-echo'.  TEXT is the full blockquote (a `>'
+ARGS is a plist: KIND (`user' or `error') classifies the note, HINT
+supplies a trailing action line.  TEXT is the full blockquote (a `>'
 prefix on each line keeps a multi-line note one markdown block).  The
-inserted text is tagged
-`quoth-region-type' = `system' at insert time, so it can never be swept
-into a `response' tag by `quoth--tag-response-region'.  A reasoning
-region still open when the note arrives (an error or interrupt note
-lands mid-turn) is stopped first, like a tool block: the note is not
-model output, so it must sit outside the CoT span.  A display-only
-overlay carries KIND (`user' or `error'), the `help-echo', and the
-structured `quoth-system-detail' plist `(:kind :message :hint)' so
-actions and future readers can inspect the note.  The overlay is tagged
-`quoth-overlay' (swept by `quoth-clear-buffer').  The text itself is
-always visible on save / preview (real buffer text, never display-only)."
+inserted text is tagged `quoth-region-type' = `system' at insert time,
+so it can never be swept into a `response' tag by
+`quoth--tag-response-region'.  KIND and HINT ride the same span as
+text properties `quoth-system-kind' and `quoth-system-hint', with a
+`help-echo' duplicating them for hover; all metadata is on the text
+\(no overlay), so it survives saves, previews, and markdown
+refontification.  A reasoning region still open when the note arrives
+\(an error or interrupt note lands mid-turn) is stopped first, like a
+tool block: the note is not model output, so it must sit outside the
+CoT span."
   (let ((kind (plist-get args :kind))
         (hint (plist-get args :hint)))
     (save-excursion
@@ -277,32 +268,136 @@ always visible on save / preview (real buffer text, never display-only)."
       (let ((start (point)))
         (insert text)
         (put-text-property start (point) 'quoth-region-type 'system)
-        (let ((ov (make-overlay start (point) (current-buffer) t nil)))
-          (overlay-put ov 'face (if (eq kind 'error)
-                                    'error
-                                  'quoth-interrupt-face))
-          (overlay-put ov 'quoth-overlay t)
-          (overlay-put ov 'quoth-system-detail
-                       (list :kind kind :message text :hint hint))
-          (overlay-put ov 'help-echo
-                       (format "%s%s"
-                               (if hint (format "hint: %s\n" hint) "")
-                               text)))))))
+        (put-text-property start (point) 'quoth-system-kind
+                           (or kind 'user))
+        (when hint
+          (put-text-property start (point) 'quoth-system-hint hint))
+        (put-text-property
+         start (point) 'help-echo
+         (format "%s%s"
+                 (if hint (format "hint: %s\n" hint) "")
+                 text))))))
 
 (defun quoth--record-error (message)
   "Record an error MESSAGE on the stream and insert the system pane.
-Marks the stream `error', flags the in-flight turn as an `error'
-interruption via `quoth--pending-interrupt', and inserts a blockquote
-pane (`> **Error:** …') tagged `quoth-region-type' = `system', carrying
-the structured detail in `quoth-system-detail'.  The unified finalizer
-\(which follows via the done-callback) stamps `quoth-interrupted' =
-`error' on the partial."
-  (quoth--phase-set (plist-get quoth--phase :phase) :error message)
+MESSAGE is a plain string or a structured condition plist from the
+transport (`:kind' plus what the transport captured: `:status',
+`:message', `:url', `:model', `:trace', `:body',
+`:received-chars').  A plist renders through
+`quoth--render-error-note' with the server's own words when it said
+any; a plain string renders as before.  Either way this marks the
+stream `error', flags the in-flight turn as an `error' interruption
+via `quoth--pending-interrupt', and inserts a blockquote pane tagged
+`quoth-region-type' = `system' carrying the kind and hint as text
+properties.  The unified finalizer (which follows via the
+done-callback) stamps `quoth-interrupted' = `error' on the partial."
+  (quoth--phase-set (plist-get quoth--phase :phase)
+                    :error (if (stringp message) message
+                             (quoth--error-summary message)))
   (setq-local quoth--pending-interrupt 'error)
   (quoth--insert-system-note
-   (format "> **Error:** %s" message)
+   (if (stringp message) (format "> **Error:** %s" message)
+     (quoth--render-error-note message))
    :kind 'error
-   :hint "See *quoth-debug* / *quoth-errors* for the full trace."))
+   :hint "Resend the prompt to retry; see *quoth-debug* for the full trace."))
+
+(defun quoth--error-summary (condition)
+  "Return a one-line summary of a CONDITION plist for the phase state.
+The phase `:error' feeds `quoth--stream-progress' consumers, which
+expect a short string."
+  (cond
+   ((stringp condition) condition)
+   ((plist-get condition :message)
+    (format "%s: %s" (or (plist-get condition :kind) 'error)
+            (plist-get condition :message)))
+   ((plist-get condition :status)
+    (format "%s: HTTP %s" (or (plist-get condition :kind) 'error)
+            (plist-get condition :status)))
+   (t (format "%s" (or (plist-get condition :kind) 'error)))))
+
+(defun quoth--render-error-note (condition)
+  "Render CONDITION as a verbose markdown blockquote system note.
+CONDITION is a plist from the transport.  The note always covers what
+failed, why (the server's own words when the body was captured), and
+what to do next; the `> ' prefix on every line keeps it one markdown
+block."
+  (pcase (plist-get condition :kind)
+    ('http-error
+     (let ((model (plist-get condition :model))
+           (status (plist-get condition :status))
+           (trace (plist-get condition :trace)))
+       (quoth--blockquote
+        (list (format "**Error:** the request to %s failed."
+                      (cond
+                       ((and model status)
+                        (format "`%s` (HTTP %s)" model status))
+                       (status (format "the gateway (HTTP %s)" status))
+                       (model (format "`%s`" model))
+                       (t "the gateway"))))
+        (list (format "The server said: %s"
+                      (quoth--error-extracted condition)))
+        (list "Nothing was lost: the prompt is still in the buffer."
+              "Resend it with `C-c \" s`, or switch models with `C-c \" m`.")
+        (and trace
+             (list (format "Trace id `%s` for bug reports; full trace in *quoth-debug*."
+                           trace))))))
+    ('truncated-stream
+     (quoth--blockquote
+      (list (format "**Error:** the stream from `%s` closed before the end marker."
+                    (or (plist-get condition :model) "the model")))
+      (list (format "About %s characters of the answer had arrived; the partial text above is kept and is re-sent as history, so it may be incomplete.  Resend the prompt to regenerate the tail."
+                    (or (plist-get condition :received-chars) 0)))))
+    ('no-response
+     (quoth--blockquote
+      (list (format "**Error:** the connection closed before any response arrived (no HTTP head from %s)."
+                    (or (plist-get condition :url) "the gateway")))))
+    ('server-event
+     (quoth--blockquote
+      (list (format "**Error:** the server reported an error mid-stream%s."
+                    (if (plist-get condition :message)
+                        (format ": %s" (plist-get condition :message))
+                      "")))))
+    (_ (quoth--blockquote
+        (list (format "**Error:** %s" (quoth--error-summary condition)))))))
+
+(defun quoth--blockquote (&rest line-groups)
+  "Join LINE-GROUPS into a `> '-prefixed markdown blockquote.
+Each group is a list of strings; the strings inside a group join with
+a single space (one blockquote line), and the groups join with
+newlines.  Internal newlines in the rendered text are collapsed,
+since `> ' must prefix every visual line.  Nil groups are skipped."
+  (string-join
+   (seq-filter #'stringp
+               (mapcar (lambda (group)
+                         (and group
+                              (concat "> "
+                                      (string-join
+                                       (mapcar (lambda (s)
+                                                 (string-join
+                                                  (split-string s "[\n\r]+" t)
+                                                  " "))
+                                               group)
+                                       " "))))
+                       line-groups))
+   "\n"))
+
+(defun quoth--error-extracted (condition)
+  "Return the extracted server message or a fallback from CONDITION.
+Runs the extraction cascade over the captured body (JSON
+`error.message', a wrapped provider's re-encoded error, a flat error
+string, a bare message), then falls back to the raw body (trimmed
+and capped) or a generic line when nothing was captured."
+  (let* ((body (plist-get condition :body))
+         (msg (quoth--openai-error-extract-message body)))
+    (cond
+     ((and msg (> (length msg) 0))
+      (if (> (length msg) 200)
+          (concat (substring msg 0 200) "…")
+        msg))
+     ((and body (> (length body) 0))
+      (concat (string-trim (substring body 0 (min 200 (length body))))
+              (and (> (length body) 200) "…")))
+     (t "The server did not say what went wrong."))))
 
 (defvar quoth--prompt-id nil
   "Unique ID for the current pending prompt.

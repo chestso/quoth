@@ -556,7 +556,12 @@ tier-gating logic, so the server's own rejection is the whole story."
       (should (string= (nth 1 req) "/v1/chat/completions")))
     (save-excursion
       (goto-char (point-min))
-      (should (re-search-forward "> \\*\\*Error:\\*\\* HTTP 402" nil t)))
+      (should (re-search-forward "> \\*\\*Error:\\*\\*" nil t))
+      (should (re-search-forward "HTTP 402" nil t))
+      (should (re-search-forward "server said" nil t))
+      ;; The server's own message rides the note verbatim.
+      (should (re-search-forward "requires a subscription" nil t))
+      (should (re-search-forward "Resend" nil t)))
     (let ((pane-start (text-property-any (point-min) (point-max)
                                          'quoth-region-type 'system)))
       (should pane-start)

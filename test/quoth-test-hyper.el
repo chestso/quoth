@@ -247,12 +247,17 @@ which region each delta belongs to."
       (should (string= (nth 1 (nth 1 deltas)) "text")))))
 
 (ert-deftest quoth-test/sse-parser-error-payload ()
-  "An error data payload should set done and surface the message."
+  "An error data payload sets done and carries a structured condition.
+The condition's `:kind' is `server-event' and its `:message' carries
+the payload's error text (a flat string here)."
   (let* ((result (quoth-openai-sse-feed
                   (quoth-test--sse-state)
                   "data: {\"error\":\"boom\"}\n\n")))
     (should (plist-get (cdr result) :done))
-    (should (string= (plist-get (cdr result) :error) "boom"))))
+    (let ((err (plist-get (cdr result) :error)))
+      (should (consp err))
+      (should (eq (plist-get err :kind) 'server-event))
+      (should (string= (plist-get err :message) "boom")))))
 
 (ert-deftest quoth-test/sse-on-event-fires-per-data-event ()
   "With `:on-event', the callback sees every raw payload.
@@ -989,8 +994,10 @@ swallowing the newline separator before the real answer."
 
 (ert-deftest quoth-test/hyper-wire-non-2xx-surfaces-error-pane ()
   "A non-2xx status surfaces an error pane tagged `system'.
-The pane is a blockquote (`> **Error:** HTTP <code>') and the parsed
-status is recorded on the process." :tags '(:integration)
+The pane is a blockquote naming the status, quoting what the server
+said (the dummy's HTML error page, via the raw-body fallback), and
+advising a resend; the parsed status is recorded on the process."
+  :tags '(:integration)
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
@@ -1014,11 +1021,20 @@ status is recorded on the process." :tags '(:integration)
                  (should (= status 404))))
              (save-excursion
                (goto-char (point-min))
-               (should (re-search-forward "> \\*\\*Error:\\*\\* HTTP 404" nil t)))
+               (should (re-search-forward "> \\*\\*Error:\\*\\*" nil t))
+               (should (re-search-forward "HTTP 404" nil t))
+               (should (re-search-forward "server said" nil t))
+               ;; The captured HTML body rides the note (raw-text
+               ;; fallback; nothing JSON-extracts from an HTML page).
+               (should (re-search-forward "Not Found" nil t))
+               ;; The action hint is visible buffer text.
+               (should (re-search-forward "Resend" nil t)))
              (let ((pane-start (text-property-any
                                 (point-min) (point-max)
                                 'quoth-region-type 'system)))
                (should pane-start)
+               (should (eq (get-text-property pane-start 'quoth-system-kind)
+                           'error))
                (should-not
                 (text-property-any pane-start (point-max)
                                    'quoth-region-type 'response))))))
