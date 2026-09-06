@@ -255,7 +255,10 @@ HINT supplies the `help-echo'.  TEXT is the full blockquote (a `>'
 prefix on each line keeps a multi-line note one markdown block).  The
 inserted text is tagged
 `quoth-region-type' = `system' at insert time, so it can never be swept
-into a `response' tag by `quoth--tag-response-region'.  A display-only
+into a `response' tag by `quoth--tag-response-region'.  A reasoning
+region still open when the note arrives (an error or interrupt note
+lands mid-turn) is stopped first, like a tool block: the note is not
+model output, so it must sit outside the CoT span.  A display-only
 overlay carries KIND (`user' or `error'), the `help-echo', and the
 structured `quoth-system-detail' plist `(:kind :message :hint)' so
 actions and future readers can inspect the note.  The overlay is tagged
@@ -264,6 +267,11 @@ always visible on save / preview (real buffer text, never display-only)."
   (let ((kind (plist-get args :kind))
         (hint (plist-get args :hint)))
     (save-excursion
+      ;; A note can arrive while reasoning streams (an error note from
+      ;; the transport, an interrupt note).  Stop the region first —
+      ;; the tool-block precedent — so the note lands after the CoT
+      ;; span and the close-time retag never sweeps it in.
+      (quoth--reasoning-stop)
       (goto-char (point-max))
       (newline)
       (let ((start (point)))
@@ -1985,7 +1993,10 @@ the CoT) when set, else the first tool block at or after the start
 `point-max'.  Each tool-loop round gets its own region tracked by its
 own markers; the boundary is computed relative to the start, never the
 response head, so reasoning that follows an earlier round's tool
-blocks is still found after `quoth--reasoning-reset'."
+blocks is still found after `quoth--reasoning-reset'.  The close path
+runs `quoth--reasoning-stop' before tagging, so a region still open at
+close time ends at the marker stop sets — before the separator newline
+it inserts — keeping that blank line out of the tagged CoT span."
   (when (markerp quoth--reasoning-start)
     (let* ((pos (marker-position quoth--reasoning-start))
            (end (if (markerp quoth--reasoning-end)
@@ -2087,6 +2098,18 @@ KIND stamps `quoth-interrupted' on the partial; nil means normal
 completion.  Runs in the quoth buffer, which owns all response text."
   (save-excursion
     (goto-char (point-max))
+    ;; A reasoning region can still be open here: the model streamed CoT
+    ;; but never answered (went straight to a tool loop the user aborted)
+    ;; or the transport closed before the first content delta.  Stop it
+    ;; first so the overlay ends on its separator newline — the boundary
+    ;; the fold's `:extend t' face and `before-string' marker rely on —
+    ;; and so the retag's region guard sees an end inside the response.
+    ;; No inner `save-excursion': `stop' moves point to the separator,
+    ;; and the outer `save-excursion' already protects the caller's
+    ;; point; restoring the pre-stop point here would drop the close's
+    ;; own newline before `quoth--reasoning-end', pushing the region
+    ;; past `response-end'.
+    (quoth--reasoning-stop)
     (newline)
     ;; Remember where response ends (before new prompt)
     (let ((response-end (point)))

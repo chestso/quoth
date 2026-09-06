@@ -931,6 +931,62 @@ test sees a clean capture (the server appends per-request).  Returns
               (when (process-live-p proc) (delete-process proc)))))
       (quoth-test--cleanup))))
 
+(ert-deftest quoth-test/hyper-wire-ollama-reasoning-stream-stays-whole ()
+  "Ollama's `\"content\":\"\"`-on-reasoning-chunks shape keeps the CoT whole.
+Every reasoning chunk carries an empty content field; emitting it would
+stop the reasoning region on the first chunk, splitting the CoT and
+swallowing the newline separator before the real answer."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (save-excursion (goto-char (point-max)) (newline))
+          (setq-local quoth--response-start (point-marker))
+          (let ((proc (quoth-test--make-transport-proc
+                       (current-buffer)
+                       (quoth-test--hyper-completion (current-buffer)))))
+            (unwind-protect
+                (progn
+                  (quoth-test--stream-into-buffer
+                   proc
+                   "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning\":\"Goal\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\":\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\" respond\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                   "data: [DONE]\n\n")
+                  (goto-char (point-min))
+                  ;; All three reasoning deltas landed in one reasoning
+                  ;; region — no early split after the first chunk.
+                  (should (search-forward "Goal: respond" nil t))
+                  (search-backward "Goal")
+                  (let ((rs (match-beginning 0)))
+                    (should (eq (get-text-property rs 'quoth-region-type)
+                                'reasoning))
+                    ;; The whole CoT span is tagged reasoning.
+                    (should (eq (get-text-property (1- (+ rs 12))
+                                                   'quoth-region-type)
+                                'reasoning)))
+                  ;; The answer after it is tagged response.
+                  (should (search-forward "Hello" nil t))
+                  (should (eq (get-text-property (- (point) 1)
+                                                 'quoth-region-type)
+                              'response))
+                  ;; One reasoning overlay covering the full CoT plus
+                  ;; the newline `quoth--reasoning-stop' inserted before
+                  ;; the answer (the separator blank line follows,
+                  ;; outside the overlay).
+                  (let ((found nil))
+                    (dolist (ov (overlays-in (point-min) (point-max)))
+                      (when (and (eq (overlay-get ov 'face) 'quoth-reasoning-face)
+                                 (overlay-get ov 'quoth-overlay))
+                        (setq found ov)))
+                    (should (overlayp found))
+                    (should (string= (buffer-substring-no-properties
+                                      (overlay-start found) (overlay-end found))
+                                     "Goal: respond\n"))))
+              (when (process-live-p proc) (delete-process proc)))))
+      (quoth-test--cleanup))))
+
 (ert-deftest quoth-test/hyper-wire-non-2xx-surfaces-error-pane ()
   "A non-2xx status surfaces an error pane tagged `system'.
 The pane is a blockquote (`> **Error:** HTTP <code>') and the parsed

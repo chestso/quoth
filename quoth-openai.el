@@ -904,11 +904,16 @@ tool_calls); ORIG is the parsed JSON object (nil when OBJ is nil)."
                        (quoth--openai-alist-get "delta" first-choice)))
            (content (and delta
                          (quoth--openai-alist-get "content" delta)))
+           ;; An empty content delta carries no text.  Some OpenAI-compatible
+           ;; gateways (ollama) put `"content":""` on every reasoning chunk;
+           ;; emitting it would end the reasoning region before the CoT
+           ;; arrives and mark content as started, so it is dropped here.
+           (content (and (stringp content) (> (length content) 0) content))
            (reasoning (and delta (quoth--openai-delta-reasoning delta)))
            (tool-calls (and delta
                             (quoth--openai-alist-get "tool_calls" delta))))
       (delq nil
-            (list (when (stringp content)
+            (list (when content
                     (list 'content content obj))
                   (when (stringp reasoning)
                     (list 'reasoning reasoning obj))
@@ -1127,7 +1132,8 @@ compact to bound the debug log during long streams."
                (content (and delta
                              (quoth--openai-alist-get "content" delta)))
                (reasoning (and delta (quoth--openai-delta-reasoning delta)))
-               (text (or content reasoning)))
+               (text (or (and (stringp content) (> (length content) 0) content)
+                         reasoning)))
           (or finish usage
               (and (stringp text)
                    (>= (length text) 40))))))))
