@@ -780,9 +780,17 @@ request's** share of the active model's context window, `ctx N%`, from the
 per-request `quoth--usage-last` and the cached catalog's `:context-window` via
 `quoth-provider-model-context-window`; omitted when either input is unknown — no
 finished round, an `:accumulated` provider whose per-request split is not
-reported, or a model the catalog carries no window for), and the region type at
-point (`quoth--header-buffer-segment` → `quoth--region-label-at-point`, the
-`quoth-region-type` symbol as a string, `-` on untagged text).
+reported, or a model the catalog carries no window for — plus the history part
+`hist S/L`: S exchanges actually sent against the limit L in force when the
+request composed — `quoth--history-turns` records the limit alongside the
+counts, so the header never mixes a stale send with a since-changed limit. A `!`
+(`hist 200/200!`) marks a sliding window — the buffer held more exchanges than
+L, so the oldest were cut and the request prefix moved, which is bad for the
+provider's prompt cache. The hist part is absent before the first send or when
+history is disabled (limit 0); the cluster hides only when both parts are
+absent), and the region type at point (`quoth--header-buffer-segment` →
+`quoth--region-label-at-point`, the `quoth-region-type` symbol as a string, `-`
+on untagged text).
 
 `header-line-format` is a mode-line construct: `%`-specifications are
 escape-processed at display, so the segment stores `42%%` and the user sees

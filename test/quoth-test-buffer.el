@@ -1573,6 +1573,39 @@ completed prompt's ID."
     (quoth--insert-input-separator)
     prompt-id))
 
+(ert-deftest quoth-test/history-turns-records-last-send ()
+  "`quoth--history-turns' records the last send's history counts.
+`quoth--history-last' holds (:sent N :total M :limit L): N exchanges
+after the sliding-window cut, M available before it, L the limit in
+force at compose time.  Each call overwrites, never sums."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (let ((quoth-history-limit 1)
+                (p1 (quoth-test--seed-user-separator "one" "" "r1"))
+                (_p2 (quoth-test--seed-user-separator "two" "" "r2")))
+            ;; Two exchanges exist; the pending prompt is a third.
+            ;; Limit 1 cuts the oldest: sent 1 of 2 available.
+            (setq-local quoth--prompt-id
+                        (quoth--generate-id))
+            (quoth--insert-input-separator)
+            (setq-local quoth--history-last nil)
+            (should (quoth--history-turns quoth--prompt-id))
+            (should (equal quoth--history-last
+                           '(:sent 1 :total 2 :limit 1)))
+            ;; The cut grows with the buffer: another exchange makes
+            ;; 3 available, still 1 sent.
+            (quoth-test--seed-user-separator "three" "" "r3")
+            (setq-local quoth--prompt-id (quoth--generate-id))
+            (quoth--insert-input-separator)
+            (quoth--history-turns quoth--prompt-id)
+            (should (equal quoth--history-last
+                           '(:sent 1 :total 3 :limit 1)))
+            (should (= (plist-get quoth--history-last :sent) 1))
+            (should (= (plist-get quoth--history-last :total) 3))
+            (should p1)))
+      (quoth-test--cleanup))))
+
 (ert-deftest quoth-test/history-turns-nil-when-only-one-prompt ()
   "With a single (pending) prompt there is no history to extract."
   (unwind-protect
@@ -2396,8 +2429,10 @@ cluster on without waiting for user input."
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
           (setq-local quoth--usage-last (list :input-tokens 60))
+          (setq-local quoth--history-last (list :sent 3 :total 3))
           (quoth-clear-buffer)
-          (should-not quoth--usage-last))
+          (should-not quoth--usage-last)
+          (should-not quoth--history-last))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/merge-usage-sums-two-rounds ()
@@ -2614,6 +2649,44 @@ arrows), and the cache percentage divides cached by INPUT tokens only."
             (should (string= h
                              "(my-model  \u21918.8k \u2193311 $0.0139 0%%  -)")))))
     (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/header-line-shows-hist-under-limit ()
+  "The capacity cluster shows hist sent/limit from the first send.
+No marker while the window holds all available exchanges."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (setq-local quoth--history-last '(:sent 3 :total 3))
+          (quoth--update-header-line)
+          (should (string-match-p "hist 3/200"
+                                  (format "%s" header-line-format))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/header-line-shows-hist-cut-marker ()
+  "A sliding window is marked in the hist part.
+The header shows hist 1/2! when the buffer held more exchanges than
+the limit sent."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (setq-local quoth-history-limit 2)
+          (setq-local quoth--history-last '(:sent 1 :total 5))
+          (quoth--update-header-line)
+          (should (string-match-p "hist 1/2!"
+                                  (format "%s" header-line-format))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/header-line-omits-hist-without-send ()
+  "Before the first send the hist part is absent.
+With usage recorded the capacity cluster still shows ctx alone."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (setq-local quoth--history-last nil)
+          (quoth--update-header-line)
+          (should-not (string-match-p "hist"
+                                      (format "%s" header-line-format))))
+      (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-capacity-after-round ()
   "A completed round with a known window shows the capacity cluster.

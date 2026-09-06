@@ -837,7 +837,8 @@ inserted at point (on the line after the user's prompt, before the
 response starts).  It carries no face; markdown renders the `---'
 itself as a horizontal rule.  Tagged `quoth-region-type'
 `user-separator' so the history/continuation readers
-\(`quoth--user-turn-text', `quoth-get-response-text', `quoth--tool-rounds'\)
+\(`quoth--user-turn-text'/-content', `quoth-get-response-text',
+`quoth--tool-rounds'\)
 all skip it; it carries `quoth-prompt-id' but never `quoth-response-to',
 so it belongs to the turn yet never leaks into the assistant response
 region."
@@ -1346,7 +1347,7 @@ The buffer text is identical either way — only the property flips."
 Iterate the buffer's prompts in order, stopping at PROMPT-ID (the pending
 prompt is being sent and never part of history).  Each prior exchange is
 reconstructed from the buffer's tagged regions: the user message via
-`quoth--user-turn-text', the assistant/tool messages via
+`quoth--user-turn-content', the assistant/tool messages via
 `quoth--tool-rounds' (which yields message alists directly).  When
 `quoth-hyper-history-include-reasoning' is non-nil, the CoT text is folded
 into the exchange's trailing assistant message as `reasoning_content'.
@@ -1401,7 +1402,14 @@ Returns nil when PROMPT-ID is the first prompt, or when
                 (when (string= (cdr (assoc 'role (nth i ordered))) "user")
                   (setq cut (1+ cut)))
                 (setq i (1+ i)))
+              (setq-local quoth--history-last
+                          (list :sent quoth-history-limit
+                                :total exchanges
+                                :limit quoth-history-limit))
               (seq-subseq ordered i))
+          (setq-local quoth--history-last
+                      (list :sent exchanges :total exchanges
+                            :limit quoth-history-limit))
           ordered)))))
 
 (defun quoth--history-for (buffer)
@@ -2275,6 +2283,18 @@ Holds the provider's normalized plist verbatim (:input-tokens,
 request's share of the model's context window.  nil before the first
 response.  Buffer-local; reset only by `quoth-clear-buffer'.")
 
+(defvar-local quoth--history-last nil
+  "The last send's history counts, or nil.
+Plist `(:sent N :total M :limit L)': N user exchanges actually sent
+\(after the sliding-window cut), M available in the buffer before the
+cut, L the `quoth-history-limit' in force at compose time.  M > N
+means the window is sliding — the oldest exchanges were dropped and
+the request prefix moved (bad for the provider's prompt cache).  L is
+recorded with the counts so the header never mixes a stale send's
+counts with a since-changed limit.  Recorded by
+`quoth--history-turns' when a request composes; nil before the first
+send.  Buffer-local; reset only by `quoth-clear-buffer'.")
+
 (defun quoth--merge-usage (acc usage)
   "Merge one round's USAGE plist into ACC, summing numeric fields.
 Sums :input-tokens, :output-tokens, :cached-tokens, and :cost-value.
@@ -2363,21 +2383,43 @@ model."
 (defun quoth--capacity-header-segment ()
   "Return the compact capacity string for the header, or nil.
 The cluster shows the LAST request's share of the active model's
-context window: `ctx N%%', where N divides the last round's
-input+output tokens (from `quoth--usage-last') by the window.  Nil
-when either input is unknown: no round has finished, the provider
-reports accumulated totals only (its per-request split is not
-reported), or the catalog carries no window."
-  (when (and quoth--usage-last
-             (numberp (plist-get quoth--usage-last :input-tokens))
-             (numberp (plist-get quoth--usage-last :output-tokens)))
-    (let ((window (quoth-provider-model-context-window
-                   quoth-active-provider)))
-      (when (and (numberp window) (> window 0))
-        (let ((total (+ (plist-get quoth--usage-last :input-tokens)
-                        (plist-get quoth--usage-last :output-tokens))))
-          (format "ctx %d%%%%"
-                  (round (* 100.0 (/ (float total) (float window))))))))))
+context window and how much history it carried: `ctx N%% hist S/L',
+joined by single spaces, each part present only when its inputs are
+known.  The ctx part divides the last round's input+output tokens
+\(from `quoth--usage-last') by the window; absent when no round has
+finished, the provider reports accumulated totals only (its
+per-request split is not reported), or the catalog carries no window.
+The hist part shows S exchanges sent against the limit L in force when
+that request composed (from `quoth--history-last'); a `!' marks
+a sliding window (the buffer held more exchanges than L, so the oldest
+were cut and the request prefix moved -- bad for the provider's prompt
+cache).  Absent before the first send or when history is disabled
+\(limit 0).  The cluster hides only when both parts are absent."
+  (let ((parts nil))
+    (when (and quoth--usage-last
+               (numberp (plist-get quoth--usage-last :input-tokens))
+               (numberp (plist-get quoth--usage-last :output-tokens)))
+      (let ((window (quoth-provider-model-context-window
+                     quoth-active-provider)))
+        (when (and (numberp window) (> window 0))
+          (let ((total (+ (plist-get quoth--usage-last :input-tokens)
+                          (plist-get quoth--usage-last :output-tokens))))
+            (push (format "ctx %d%%%%"
+                          (round (* 100.0 (/ (float total)
+                                             (float window)))))
+                  parts)))))
+    (when (and quoth--history-last (numberp quoth-history-limit)
+               (> quoth-history-limit 0))
+      (let ((sent (or (plist-get quoth--history-last :sent) 0))
+            (total (or (plist-get quoth--history-last :total) 0))
+            (limit (or (plist-get quoth--history-last :limit)
+                       quoth-history-limit)))
+        (push (if (> total sent)
+                  (format "hist %d/%d!" sent limit)
+                (format "hist %d/%d" sent limit))
+              parts)))
+    (when parts
+      (mapconcat #'identity (nreverse parts) " "))))
 
 (defun quoth--finalize-if-live (buf)
   "Run the unified finalizer in BUF when its turn is still in flight.
@@ -3292,6 +3334,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (quoth--reasoning-reset)
   (setq-local quoth--usage-acc nil)
   (setq-local quoth--usage-last nil)
+  (setq-local quoth--history-last nil)
   (erase-buffer)
   (quoth--insert-input-separator)
   (setq-local buffer-undo-list nil))
