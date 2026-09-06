@@ -244,12 +244,16 @@ shape is wrong."
   "Return the context length from a parsed MODEL-INFO alist, or nil.
 The key is architecture-prefixed (`gptoss.context_length',
 `gemma4.context_length'), so the `.context_length' suffix is matched,
-not a fixed key name."
+not a fixed key name.  Keys arrive as symbols or strings depending on
+the JSON engine, so both shapes match."
   (when (and model-info (consp model-info))
     (let ((hit (cl-find-if
                 (lambda (cell)
-                  (and (stringp (car cell))
-                       (string-suffix-p ".context_length" (car cell))))
+                  (let ((key (and (consp cell) (car cell))))
+                    (and (or (stringp key) (symbolp key))
+                         (string-suffix-p
+                          ".context_length"
+                          (if (symbolp key) (symbol-name key) key)))))
                 model-info)))
       (and hit (numberp (cdr hit)) (cdr hit)))))
 
@@ -348,18 +352,21 @@ NAMES order."
          (failed nil))
     (cl-loop for name in names
              for i from 0
-             do (quoth-ollama--show-one-async
-                 api token name
-                 (lambda (entry)
-                   (if (null entry)
-                       (setq failed t)
-                     (aset results i entry))
-                   ;; Join: deliver once every show landed.
-                   (setq pending (1- pending))
-                   (when (zerop pending)
-                     (funcall on-done
-                              (unless failed
-                                (append results nil)))))))))
+             ;; Bind the index per iteration: the async callback must
+             ;; see this round's slot, not the loop's final value.
+             do (let ((slot i))
+                  (quoth-ollama--show-one-async
+                   api token name
+                   (lambda (entry)
+                     (if (null entry)
+                         (setq failed t)
+                       (aset results slot entry))
+                     ;; Join: deliver once every show landed.
+                     (setq pending (1- pending))
+                     (when (zerop pending)
+                       (funcall on-done
+                                (unless failed
+                                  (append results nil))))))))))
 
 (defun quoth-ollama--fetch-models-async (provider on-done)
   "Fetch the model catalog for PROVIDER, delivering it to ON-DONE once.
