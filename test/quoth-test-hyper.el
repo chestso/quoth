@@ -71,25 +71,23 @@
 
 (ert-deftest quoth-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
-  (let ((quoth-model nil))
-    (let* ((req (quoth-openai-compose-request "Hello" "m"))
-           (msgs (alist-get 'messages req)))
-      (should (string= (alist-get 'model req) "m"))
-      (should (eq (alist-get 'stream req) t))
-      (should (= (length msgs) 2))
-      (should (string= (quoth--openai-alist-get "role" (nth 0 msgs)) "system"))
-      (should (string= (quoth--openai-alist-get "role" (nth 1 msgs)) "user"))
-      (should (string= (quoth--openai-alist-get "content" (nth 1 msgs)) "Hello")))))
+  (let* ((req (quoth-openai-compose-request "Hello" "m"))
+         (msgs (alist-get 'messages req)))
+    (should (string= (alist-get 'model req) "m"))
+    (should (eq (alist-get 'stream req) t))
+    (should (= (length msgs) 2))
+    (should (string= (quoth--openai-alist-get "role" (nth 0 msgs)) "system"))
+    (should (string= (quoth--openai-alist-get "role" (nth 1 msgs)) "user"))
+    (should (string= (quoth--openai-alist-get "content" (nth 1 msgs)) "Hello"))))
 
 (ert-deftest quoth-test/hyper-compose-respects-defcustoms ()
   "Model, max-tokens, temperature, thinking, reasoning-effort land in body.
 Session attributes are buffer-local; set them with `let'."
-  (let ((quoth-model "my-model")
-        (quoth-openai-max-tokens 1234)
+  (let ((quoth-openai-max-tokens 1234)
         (quoth-openai-temperature 0.5)
         (quoth--session-thinking t)
         (quoth--session-reasoning-effort "high"))
-    (let ((req (quoth-openai-compose-request "P" quoth-model)))
+    (let ((req (quoth-openai-compose-request "P" "my-model")))
       (should (string= (alist-get 'model req) "my-model"))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
@@ -97,8 +95,8 @@ Session attributes are buffer-local; set them with `let'."
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 
 (ert-deftest quoth-test/hyper-compose-model-default ()
-  "When no model is set, the quoth default model is used."
-  (let ((quoth-model nil))
+  "When no model is set, the client default model is used."
+  (let ((quoth-default-model nil))
     (should (string= (alist-get 'model (quoth-openai-compose-request "P" nil))
                      quoth-openai-default-model))))
 
@@ -933,6 +931,62 @@ test sees a clean capture (the server appends per-request).  Returns
               (when (process-live-p proc) (delete-process proc)))))
       (quoth-test--cleanup))))
 
+(ert-deftest quoth-test/hyper-wire-ollama-reasoning-stream-stays-whole ()
+  "Ollama's `\"content\":\"\"`-on-reasoning-chunks shape keeps the CoT whole.
+Every reasoning chunk carries an empty content field; emitting it would
+stop the reasoning region on the first chunk, splitting the CoT and
+swallowing the newline separator before the real answer."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (save-excursion (goto-char (point-max)) (newline))
+          (setq-local quoth--response-start (point-marker))
+          (let ((proc (quoth-test--make-transport-proc
+                       (current-buffer)
+                       (quoth-test--hyper-completion (current-buffer)))))
+            (unwind-protect
+                (progn
+                  (quoth-test--stream-into-buffer
+                   proc
+                   "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning\":\"Goal\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\":\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\" respond\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"
+                   "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                   "data: [DONE]\n\n")
+                  (goto-char (point-min))
+                  ;; All three reasoning deltas landed in one reasoning
+                  ;; region — no early split after the first chunk.
+                  (should (search-forward "Goal: respond" nil t))
+                  (search-backward "Goal")
+                  (let ((rs (match-beginning 0)))
+                    (should (eq (get-text-property rs 'quoth-region-type)
+                                'reasoning))
+                    ;; The whole CoT span is tagged reasoning.
+                    (should (eq (get-text-property (1- (+ rs 12))
+                                                   'quoth-region-type)
+                                'reasoning)))
+                  ;; The answer after it is tagged response.
+                  (should (search-forward "Hello" nil t))
+                  (should (eq (get-text-property (- (point) 1)
+                                                 'quoth-region-type)
+                              'response))
+                  ;; One reasoning overlay covering the full CoT plus
+                  ;; the newline `quoth--reasoning-stop' inserted before
+                  ;; the answer (the separator blank line follows,
+                  ;; outside the overlay).
+                  (let ((found nil))
+                    (dolist (ov (overlays-in (point-min) (point-max)))
+                      (when (and (eq (overlay-get ov 'face) 'quoth-reasoning-face)
+                                 (overlay-get ov 'quoth-overlay))
+                        (setq found ov)))
+                    (should (overlayp found))
+                    (should (string= (buffer-substring-no-properties
+                                      (overlay-start found) (overlay-end found))
+                                     "Goal: respond\n"))))
+              (when (process-live-p proc) (delete-process proc)))))
+      (quoth-test--cleanup))))
+
 (ert-deftest quoth-test/hyper-wire-non-2xx-surfaces-error-pane ()
   "A non-2xx status surfaces an error pane tagged `system'.
 The pane is a blockquote (`> **Error:** HTTP <code>') and the parsed
@@ -1006,7 +1060,7 @@ status is recorded on the process." :tags '(:integration)
 ;;; Prior turns always ride in the composed request body as
 ;;; [system, prior-user, prior-assistant, ..., current-user]; with no
 ;;; prior turns the messages array stays a plain [system, user].
-;;; `quoth-hyper-history-limit' (0 = off) is the only switch.
+;;; `quoth-history-limit' (0 = off) is the only switch.
 
 (ert-deftest quoth-test/hyper-history-compose-prepends-turns ()
   "Prior messages (alists) ride before the new user message."
@@ -1142,7 +1196,7 @@ user \"hello\"]; the first stays [system, user \"hi\"]." :tags '(:integration)
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
-                       :model quoth-model))
+                       :model "m"))
           (let ((result
                  (quoth-test--with-hyper-server
                   'history
@@ -1187,7 +1241,7 @@ user \"hello\"]; the first stays [system, user \"hi\"]." :tags '(:integration)
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/hyper-history-limit-zero-disables ()
-  "Setting `quoth-hyper-history-limit' to 0 disables history.
+  "Setting `quoth-history-limit' to 0 disables history.
 The second request is a plain [system, user]." :tags '(:integration)
   (let ((default-directory quoth-test--root))
     (unwind-protect
@@ -1197,8 +1251,8 @@ The second request is a plain [system, user]." :tags '(:integration)
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
-                       :model quoth-model))
-          (let ((quoth-hyper-history-limit 0))
+                       :model "m"))
+          (let ((quoth-history-limit 0))
             (let ((result
                    (quoth-test--with-hyper-server
                     'history
@@ -1286,7 +1340,7 @@ history arrives pre-filtered here, so the request stays system + user."
                        :buffer (current-buffer)
                        :working-directory default-directory
                        :token "tok"
-                       :model quoth-model))
+                       :model "m"))
           (let ((quoth-hyper-history-include-reasoning t))
             (let ((result
                    (quoth-test--with-hyper-server
@@ -1822,10 +1876,10 @@ id, name, context window, and reasoning flag." :tags '(:integration)
     (should (equal delivered '(nil)))))
 
 (ert-deftest quoth-test/select-model-sets-provider-and-global ()
-  "`quoth-select-model' updates the provider slot, `quoth-model', and header.
+  "`quoth-select-model' updates the session slot, provider slot, and header.
 The catalog is fetched from the dummy server; picking a model applies
-it to the current buffer and the global default." :tags '(:integration)
-  (let ((quoth-model nil))
+it to the current buffer and the sticky per-provider alist." :tags '(:integration)
+  (let ((quoth-model-by-provider nil))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
@@ -1850,10 +1904,12 @@ it to the current buffer and the global default." :tags '(:integration)
                              (cl-letf (((symbol-function 'completing-read)
                                         (lambda (&rest _) "qwen3.7-plus")))
                                (quoth-select-model))))))
+              (should (string= quoth--session-model "qwen3.7-plus"))
               (should (string= (quoth-hyper-provider-model
                                 quoth-active-provider)
                                "qwen3.7-plus"))
-              (should (string= quoth-model "qwen3.7-plus"))
+              (should (string= (cdr (assq 'hyper quoth-model-by-provider))
+                               "qwen3.7-plus"))
               (quoth--update-header-line)
               (should (string-match-p "qwen3.7-plus"
                                       (format "%s" header-line-format)))
@@ -1864,10 +1920,11 @@ it to the current buffer and the global default." :tags '(:integration)
 
 (ert-deftest quoth-test/select-model-resets-to-default ()
   "Choosing the `default' entry clears the model back to the default." :tags '(:integration)
-  (let ((quoth-model "qwen3.7-plus"))
+  (let ((quoth-model-by-provider (list (cons 'hyper "qwen3.7-plus"))))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
+            (setq-local quoth--session-model "qwen3.7-plus")
             (setf (quoth-hyper-provider-model quoth-active-provider)
                   "qwen3.7-plus")
             (quoth-test--with-hyper-server
@@ -1886,30 +1943,32 @@ it to the current buffer and the global default." :tags '(:integration)
                (cl-letf (((symbol-function 'completing-read)
                           (lambda (&rest _) "default")))
                  (quoth-select-model))))
+            (should (null quoth--session-model))
             (should (null (quoth-hyper-provider-model quoth-active-provider)))
-            (should (null quoth-model))))
+            (should (null (assq 'hyper quoth-model-by-provider)))))
+      (setq quoth-model-by-provider nil)
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/select-model-fallback-on-fetch-failure ()
   "When the catalog fetch fails, `quoth-select-model' offers a fallback list."
-  (let ((quoth-model nil))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (cl-letf (((symbol-function 'quoth-provider-models-cached)
-                       (lambda (&rest _) nil))
-                      ((symbol-function 'quoth-provider-models-refresh)
-                       #'ignore)
-                      ((symbol-function 'completing-read)
-                       (lambda (_prompt coll &rest _)
-                         (should (assoc quoth-openai-default-model coll))
-                         "qwen3.7-plus")))
-              (quoth-select-model))
-            (should (string= (quoth-hyper-provider-model
-                              quoth-active-provider)
-                             "qwen3.7-plus"))
-            (should (string= quoth-model "qwen3.7-plus"))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "qwen3.7-plus")
+          (cl-letf (((symbol-function 'quoth-provider-models-cached)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'quoth-provider-models-refresh)
+                     #'ignore)
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt coll &rest _)
+                       (should (assoc "qwen3.7-plus" coll))
+                       "qwen3.7-plus")))
+            (quoth-select-model))
+          (should (string= quoth--session-model "qwen3.7-plus"))
+          (should (string= (quoth-hyper-provider-model
+                            quoth-active-provider)
+                           "qwen3.7-plus"))))
+    (quoth-test--cleanup)))
 
 ;;; 94. Hyper provider: process control
 

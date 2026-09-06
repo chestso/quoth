@@ -29,9 +29,12 @@
 
 ;;; Commentary:
 
-;; Shared provider protocol for quoth.el: the `quoth-provider' base struct
-;; and the `quoth-provider-*' generic functions implemented by
-;; `quoth-hyper-provider.el' (direct HTTP to the Charm Hyper gateway).
+;; Shared provider protocol for quoth.el: the `quoth-provider' base
+;; struct, the `quoth-provider-*' generic functions implemented by
+;; `quoth-hyper-provider.el' (direct HTTP to the Charm Hyper gateway)
+;; and `quoth-ollama-provider.el' (Ollama Cloud over its
+;; OpenAI-compatible surface), the shared buffer-local session slots,
+;; the global defaults that seed them, and the provider registry.
 
 ;;; Code:
 
@@ -54,10 +57,33 @@
   :group 'quoth
   :prefix "quoth-hyper-")
 
+(defgroup quoth-ollama nil
+  "Ollama Cloud provider."
+  :group 'quoth
+  :prefix "quoth-ollama-")
+
 ;;; Session state shared across the core, the OpenAI client, and the
 ;;; selector UI.  Lives here — in the protocol module — so that
 ;;; `quoth-openai.el' and `quoth-select.el' depend on the protocol, not
-;;; on `quoth.el'.  The core sets these buffer-locally at init time.
+;;; on `quoth.el'.  The core sets these buffer-locally at init time,
+;;; seeded from the global defaults (`quoth-default-thinking',
+;;; `quoth-default-reasoning-effort'); every transient selection the
+;;; selector applies writes a buffer-local slot, never a global.
+
+(defvar-local quoth--session-provider nil
+  "Per-buffer active provider name, a string.
+Seeded from `quoth-default-provider' at buffer init; set by the
+selector's provider switch.  The dispatch handle
+`quoth-active-provider' is derived state, (re)instantiated from this
+name whenever it changes.")
+
+(defvar-local quoth--session-model nil
+  "Per-buffer model id, or nil for the provider default.
+Seeded at buffer init from the model chain (the sticky
+`quoth-model-by-provider' entry for the session provider, else the
+registry entry's :default-model, else `quoth-default-model'); set by
+the model picker.  nil means the request falls back to that same
+chain.")
 
 (defvar-local quoth--session-thinking nil
   "Per-buffer thinking flag: nil (unset), t (on), or :json-false (off).
@@ -70,43 +96,92 @@ false', explicitly disabling reasoning.")
 When non-nil, the request body carries `reasoning_effort: VALUE'.
 nil (the default) omits the key.")
 
-;;; Active provider state.  The registry and the active-provider-name
-;;; defcustom live here (protocol concerns); the default registry's
-;;; :factory points at `quoth--make-default-hyper-provider', defined in
-;;; `quoth.el' and resolved at `funcall' time, so this file does not
-;;; require `quoth.el'.  The byte-compiler is told about it via
-;;; `declare-function' below.
+;;; Global defaults.  These seed the buffer-local session slots at
+;;; init time; no transient action ever writes them.
 
-(defcustom quoth-active-provider-name "hyper"
-  "Name of the active provider for new quoth buffers.
-Must match the :name of an entry in `quoth-providers'.  The chosen
-provider is instantiated per-buffer in `quoth--init-buffer'.
-Persisted across sessions via `savehist-mode' when enabled."
+(defcustom quoth-default-provider "hyper"
+  "Provider name used for new quoth buffers.
+Must match the :name of an entry in `quoth-providers'; when it names
+nothing, the first registry entry is used instead.  Persisted across
+sessions via `savehist-mode' when enabled."
   :type 'string
   :group 'quoth)
 
-(declare-function quoth--make-default-hyper-provider "quoth.el" (&optional buf dir))
+(defcustom quoth-default-model nil
+  "Cross-provider fallback model id, or nil.
+Seeds a new buffer's session model when no per-provider default
+applies (the sticky `quoth-model-by-provider' entry and the registry
+entry's :default-model are consulted first).  nil defers to the
+provider's own fallback at request time."
+  :type '(choice (const :tag "Provider default" nil) string)
+  :group 'quoth)
 
-(defvar quoth-providers-default
+(defcustom quoth-default-thinking nil
+  "Thinking state seeded into new quoth buffers.
+nil (the default) means unset: the request omits the key and the
+provider applies its own default.  t sends `thinking: true';
+:json-false sends `thinking: false'."
+  :type '(choice (const :tag "Unset (provider default)" nil)
+                 (const :tag "On" t)
+                 (const :tag "Off (send thinking: false)" :json-false))
+  :group 'quoth)
+
+(defcustom quoth-default-reasoning-effort nil
+  "Reasoning effort seeded into new quoth buffers, or nil.
+nil (the default) omits `reasoning_effort' from the request."
+  :type '(choice (const :tag "Unset (provider default)" nil)
+                 (string :tag "Effort level"))
+  :group 'quoth)
+
+(defvar quoth-model-by-provider nil
+  "Alist of last-used model per provider name, the sticky model memory.
+The model picker writes the active provider's entry so the next
+buffer on that provider starts where the last one left off.  A plain
+defvar (not a defcustom): it is runtime state persisted by savehist,
+not a user option owned by Customize.")
+
+;;; Provider registry.  The factory functions live in `quoth.el' and
+;;; are resolved at `funcall' time, so this file does not require
+;;; `quoth.el'.  The byte-compiler is told about them via
+;;; `declare-function' below.
+
+(declare-function quoth--make-default-hyper-provider "quoth.el" (&optional buf dir))
+(declare-function quoth--make-default-ollama-provider "quoth.el" (&optional buf dir))
+
+(defvar quoth-builtin-providers
   (list (list :name    "hyper"
               :type    'hyper
-              :factory #'quoth--make-default-hyper-provider))
-  "Default value for `quoth-providers' — a registry with one entry: hyper.")
+              :factory #'quoth--make-default-hyper-provider)
+        (list :name    "ollama"
+              :type    'ollama
+              :factory #'quoth--make-default-ollama-provider
+              :default-model "gpt-oss:20b"))
+  "Every provider shipped with quoth, in priority order.
+Each entry is a plist: :name (string, display + id), :type (symbol),
+:factory (function of two arguments returning a configured provider
+instance), and the optional :default-model (string) — the model a new
+buffer on this provider starts with when no sticky
+`quoth-model-by-provider' entry exists.  `quoth-providers' defaults
+to this list; users override, reorder, or prune it there.")
 
-(defcustom quoth-providers quoth-providers-default
+(defcustom quoth-providers quoth-builtin-providers
   "Registered quoth providers, in priority order.
 Each entry is a plist: :name (string, display + id), :type (symbol),
-:factory (function of zero args returning a configured provider
-instance).  The first entry is the default active provider for new
-buffers.  Add a second provider by appending an entry with its own
-:factory; nothing in the protocol changes."
+:factory (function of two arguments returning a configured provider
+instance), and the optional :default-model (string) seeding a new
+buffer's session model.  The first entry is the fallback active
+provider for new buffers when `quoth-default-provider' names nothing.
+Add a provider by appending an entry with its own :factory; nothing in
+the protocol changes."
   :type '(repeat (plist :name string :type symbol :factory function))
   :group 'quoth)
 
 (defvar-local quoth-active-provider nil
   "The active quoth provider for this buffer.
-Set during buffer initialization; `quoth--send-prompt' and
-`quoth-interrupt' dispatch through it.  Buffer-local.")
+Derived state, (re)instantiated from `quoth--session-provider' and
+`quoth--session-model' whenever either changes or the buffer
+initializes.  `quoth--send-prompt' and `quoth-interrupt' dispatch
+through it.  Buffer-local.")
 
 (defvar quoth-after-model-change-hook nil
   "Hook run after a model, thinking, or effort change is applied to a buffer.

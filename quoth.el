@@ -102,6 +102,16 @@ otherwise `default-directory'."
   :type '(choice (const nil) directory)
   :group 'quoth)
 
+(defcustom quoth-history-limit 200
+  "Maximum number of prior exchanges sent as history with each request.
+Provider-agnostic and buffer-local: a new chat buffer seeds its
+session value from this global, and a session can tighten its own
+window.  0 disables history entirely (each prompt is a single
+request).  Only the last LIMIT complete exchanges are sent; the
+current turn is always sent in full."
+  :type 'integer
+  :group 'quoth)
+
 (defcustom quoth-input-ring-size 32
   "Maximum number of prompts stored in the input ring."
   :type 'integer
@@ -144,7 +154,6 @@ with `quoth-interrupted' exactly once and the flag never leaks into a
 later turn.")
 
 (defvar quoth-active-provider)
-(defvar quoth-active-provider-name)
 (defvar quoth-providers)
 (declare-function quoth-provider-p "quoth-provider" (object))
 (declare-function quoth-provider-application-count "quoth-provider" (provider))
@@ -246,7 +255,10 @@ HINT supplies the `help-echo'.  TEXT is the full blockquote (a `>'
 prefix on each line keeps a multi-line note one markdown block).  The
 inserted text is tagged
 `quoth-region-type' = `system' at insert time, so it can never be swept
-into a `response' tag by `quoth--tag-response-region'.  A display-only
+into a `response' tag by `quoth--tag-response-region'.  A reasoning
+region still open when the note arrives (an error or interrupt note
+lands mid-turn) is stopped first, like a tool block: the note is not
+model output, so it must sit outside the CoT span.  A display-only
 overlay carries KIND (`user' or `error'), the `help-echo', and the
 structured `quoth-system-detail' plist `(:kind :message :hint)' so
 actions and future readers can inspect the note.  The overlay is tagged
@@ -255,6 +267,11 @@ always visible on save / preview (real buffer text, never display-only)."
   (let ((kind (plist-get args :kind))
         (hint (plist-get args :hint)))
     (save-excursion
+      ;; A note can arrive while reasoning streams (an error note from
+      ;; the transport, an interrupt note).  Stop the region first —
+      ;; the tool-block precedent — so the note lands after the CoT
+      ;; span and the close-time retag never sweeps it in.
+      (quoth--reasoning-stop)
       (goto-char (point-max))
       (newline)
       (let ((start (point)))
@@ -353,7 +370,8 @@ Buffer-local.")
 ;;; both setups work.
 (eval-and-compile
   (dolist (dep '("quoth-json" "quoth-provider" "quoth-openai" "quoth-xxh3"
-                 "quoth-process" "quoth-hyper-provider" "quoth-tools"
+                 "quoth-process" "quoth-hyper-provider" "quoth-ollama-provider"
+                 "quoth-tools"
                  "quoth-searxng" "quoth-select"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
@@ -490,10 +508,10 @@ interrupting, clearing, and session management.
     (remove-hook 'post-command-hook #'quoth--update-header-line t)))
 
 ;; The selector (quoth-select.el) applies model/thinking/effort changes
-;; out-of-band; it runs `quoth-after-model-change-hook' instead of
+;; out-of-band: it runs `quoth-after-model-change-hook' instead of
 ;; calling `quoth--update-header-line' directly, so it need not depend
-;; on `quoth.el'.  This is a global hook (the function is a no-op
-;; outside a chat buffer).
+;; on `quoth.el'; the core functions it calls are declared in
+;; `quoth-select.el' for the byte-compiler.
 (add-hook 'quoth-after-model-change-hook #'quoth--update-header-line)
 ;; The phase machine refreshes the header line on every event-driven
 ;; transition (not only on user commands, which drive post-command-hook).
@@ -584,11 +602,13 @@ Only logs when `quoth-debug-mode' is non-nil."
 (defun quoth--header-model ()
   "Return the effective model name for the header line, or nil.
 Reads the provider's model via the `quoth-provider-model' generic
-\(derived from `quoth-model' at buffer init); falls back to
-`quoth-openai-default-model' when the provider reports none."
+\(derived from `quoth--session-model' whenever it changes); falls
+back to `quoth-default-model', then `quoth-openai-default-model',
+when the provider reports none."
   (or (and quoth-active-provider
            (quoth-provider-p quoth-active-provider)
            (quoth-provider-model quoth-active-provider))
+      quoth-default-model
       quoth-openai-default-model))
 
 (defun quoth--region-label-at-point ()
@@ -1219,8 +1239,8 @@ reconstructed from the buffer's tagged regions: the user message via
 `quoth-hyper-history-include-reasoning' is non-nil, the CoT text is folded
 into the exchange's trailing assistant message as `reasoning_content'.
 Returns nil when PROMPT-ID is the first prompt, or when
-`quoth-hyper-history-limit' is 0.  This is a pure buffer->wire read."
-  (if (= quoth-hyper-history-limit 0)
+`quoth-history-limit' is 0.  This is a pure buffer->wire read."
+  (if (= quoth-history-limit 0)
       nil
     (let* ((prompts (quoth-get-all-prompts))
            (reached-current nil)
@@ -1257,9 +1277,9 @@ Returns nil when PROMPT-ID is the first prompt, or when
       (let* ((ordered messages)
              (exchanges (cl-count-if (lambda (m) (string= (cdr (assoc 'role m)) "user"))
                                      ordered)))
-        (if (and (> quoth-hyper-history-limit 0)
-                 (> exchanges quoth-hyper-history-limit))
-            (let ((to-cut (- exchanges quoth-hyper-history-limit))
+        (if (and (> quoth-history-limit 0)
+                 (> exchanges quoth-history-limit))
+            (let ((to-cut (- exchanges quoth-history-limit))
                   (cut 0)
                   (i 0))
               (while (and (< i (length ordered))
@@ -1517,26 +1537,77 @@ buffer-local and never leaves via the network; only the hash is sent."
 (defun quoth--make-default-hyper-provider (&optional buf dir)
   "Return a hyper provider configured from the current settings.
 BUF is the buffer slot; DIR is the working-directory slot.  Uses
-`quoth-hyper-base-url', `quoth-hyper-token', and `quoth-model'."
+`quoth-hyper-base-url' and `quoth-hyper-token'; the model comes from
+the calling buffer's `quoth--session-model'."
   (quoth-make-hyper-provider
    :buffer buf
    :working-directory dir
    :base-url quoth-hyper-base-url
    :token quoth-hyper-token
-   :model quoth-model))
+   :model (and (bufferp buf) (buffer-local-value 'quoth--session-model buf))))
+
+(defun quoth--make-default-ollama-provider (&optional buf dir)
+  "Return an ollama provider configured from the current settings.
+BUF is the buffer slot; DIR is the working-directory slot.  Uses
+`quoth-ollama-base-url' and `quoth-ollama-token'; the model comes from
+the calling buffer's `quoth--session-model'."
+  (quoth-make-ollama-provider
+   :buffer buf
+   :working-directory dir
+   :base-url quoth-ollama-base-url
+   :token quoth-ollama-token
+   :model (and (bufferp buf) (buffer-local-value 'quoth--session-model buf))))
+
+(defun quoth--provider-entry (name)
+  "Return the `quoth-providers' entry named NAME, or the first entry.
+NAME nil or unknown falls back to the registry's first entry, the
+priority default for new buffers."
+  (or (cl-find name quoth-providers
+               :test #'string=
+               :key (lambda (e) (plist-get e :name)))
+      (car quoth-providers)))
 
 (defun quoth--instantiate-provider (name buf dir)
   "Look up provider NAME in `quoth-providers' and call its :factory.
 Returns a provider instance configured for BUF and DIR, or nil when
 the name is not found."
-  (let ((entry (cl-find name quoth-providers
-                        :test #'string=
-                        :key (lambda (e) (plist-get e :name)))))
+  (let ((entry (quoth--provider-entry name)))
     (when entry
       (let ((factory (plist-get entry :factory)))
         (if (functionp factory)
             (funcall factory buf dir)
-          (error "Provider %s has no valid :factory" name))))))
+          (error "Provider %s has no valid :factory"
+                 (plist-get entry :name)))))))
+
+(defun quoth--provider-default-model (name)
+  "Return the initial model for a fresh buffer on provider NAME.
+The chain: the sticky `quoth-model-by-provider' entry for NAME, else
+the registry entry's :default-model, else `quoth-default-model'.
+nil when nothing applies — the request then falls back to the
+provider's own default at compose time."
+  (let* ((entry (quoth--provider-entry name))
+         (pname (and entry (plist-get entry :name))))
+    (or (cdr (assq (intern pname) quoth-model-by-provider))
+        (and entry (plist-get entry :default-model))
+        quoth-default-model)))
+
+(defun quoth--seed-session-model ()
+  "Seed this buffer's `quoth--session-model' from the provider chain.
+Called at buffer init and after a provider switch: the sticky
+`quoth-model-by-provider' entry for the session provider wins, else
+the registry entry's :default-model, else `quoth-default-model'."
+  (setq-local quoth--session-model
+              (quoth--provider-default-model quoth--session-provider)))
+
+(defun quoth--sync-provider-model ()
+  "Sync the provider instance's model slot from the session slot.
+The provider struct's model slot is a cache of the session value; this
+re-syncs it after either side changed."
+  (when (and quoth-active-provider
+             (quoth-provider-p quoth-active-provider))
+    (quoth-provider--apply-model
+     quoth-active-provider
+     (list :id quoth--session-model))))
 
 (defun quoth--init-buffer (buf)
   "Initialize BUF as a quoth buffer if not already initialized."
@@ -1562,6 +1633,16 @@ the name is not found."
       (setq-local quoth--input-ring nil)
       (setq-local quoth--input-ring-index 0)
       (setq-local quoth--tool-loop-count 0)
+      ;; Session slots: every transient selection is buffer-local,
+      ;; seeded from the global defaults here.
+      (setq-local quoth--session-provider
+                  (or quoth-default-provider
+                      (plist-get (car quoth-providers) :name)))
+      (quoth--seed-session-model)
+      (setq-local quoth--session-thinking quoth-default-thinking)
+      (setq-local quoth--session-reasoning-effort
+                  quoth-default-reasoning-effort)
+      (setq-local quoth-history-limit quoth-history-limit)
       (add-hook 'kill-buffer-hook #'quoth--cleanup-on-kill nil t)
       (quoth-chat-mode 1)
       (quoth--install-font-lock-guard t)
@@ -1583,7 +1664,7 @@ the name is not found."
                   (quoth--canonical-root default-directory))
       (setq-local quoth-active-provider
                   (quoth--instantiate-provider
-                   (or quoth-active-provider-name "hyper")
+                   quoth--session-provider
                    buf default-directory))
       ;; Mark initialized only after mode setup so the flag is not wiped
       ;; by the parent mode (which calls kill-all-local-variables).
@@ -1912,7 +1993,10 @@ the CoT) when set, else the first tool block at or after the start
 `point-max'.  Each tool-loop round gets its own region tracked by its
 own markers; the boundary is computed relative to the start, never the
 response head, so reasoning that follows an earlier round's tool
-blocks is still found after `quoth--reasoning-reset'."
+blocks is still found after `quoth--reasoning-reset'.  The close path
+runs `quoth--reasoning-stop' before tagging, so a region still open at
+close time ends at the marker stop sets — before the separator newline
+it inserts — keeping that blank line out of the tagged CoT span."
   (when (markerp quoth--reasoning-start)
     (let* ((pos (marker-position quoth--reasoning-start))
            (end (if (markerp quoth--reasoning-end)
@@ -2014,6 +2098,18 @@ KIND stamps `quoth-interrupted' on the partial; nil means normal
 completion.  Runs in the quoth buffer, which owns all response text."
   (save-excursion
     (goto-char (point-max))
+    ;; A reasoning region can still be open here: the model streamed CoT
+    ;; but never answered (went straight to a tool loop the user aborted)
+    ;; or the transport closed before the first content delta.  Stop it
+    ;; first so the overlay ends on its separator newline — the boundary
+    ;; the fold's `:extend t' face and `before-string' marker rely on —
+    ;; and so the retag's region guard sees an end inside the response.
+    ;; No inner `save-excursion': `stop' moves point to the separator,
+    ;; and the outer `save-excursion' already protects the caller's
+    ;; point; restoring the pre-stop point here would drop the close's
+    ;; own newline before `quoth--reasoning-end', pushing the region
+    ;; past `response-end'.
+    (quoth--reasoning-stop)
     (newline)
     ;; Remember where response ends (before new prompt)
     (let ((response-end (point)))
@@ -3066,24 +3162,26 @@ the bundled seed (`quoth-provider--models-seed') usually fills it
 first, and the static fallback list covers the seed-less cases while
 a refresh runs in the background (the refresh message notes it, and
 the cache warming lands on `quoth-provider-models-hook').  Picking a
-model applies it through `quoth-provider--apply-model' (which sets
-the provider's model slot) and also sets the global `quoth-model'
-so future buffers use the choice.  Choosing the `default' entry
-clears the selection back to the provider default."
+model sets the buffer's session model (and the provider's model slot
+cache) and writes the sticky `quoth-model-by-provider' entry for the
+active provider so the next buffer on it starts there.  Choosing the
+`default' entry clears both.  Never writes a global."
   (interactive)
   (let* ((models (and quoth-active-provider
                       (quoth-provider-p quoth-active-provider)
                       (quoth-provider-models-cached quoth-active-provider)))
          (cold (null models))
+         (fallback (or quoth--session-model
+                       (quoth--provider-default-model quoth--session-provider)
+                       quoth-default-model
+                       quoth-openai-default-model))
          (choices (if models
                       (mapcar (lambda (m)
                                 (cons (plist-get m :id)
                                       (plist-get m :id)))
                               models)
-                    (list (cons quoth-openai-default-model
-                                (format "%s (default)" quoth-openai-default-model))
-                          (cons "qwen3.7-plus" "qwen3.7-plus")
-                          (cons "deepseek-v4-flash" "deepseek-v4-flash"))))
+                    (list (cons fallback
+                                (format "%s (default)" fallback)))))
          (choice (completing-read
                   "Model: "
                   (cons (cons "default" "default (provider default)")
@@ -3091,23 +3189,23 @@ clears the selection back to the provider default."
                   nil t nil)))
     (if (string= choice "default")
         (progn
-          (setq quoth-model nil)
-          (when (and quoth-active-provider
-                     (quoth-provider-p quoth-active-provider))
-            (quoth-provider--apply-model quoth-active-provider '(:id nil))))
-      (setq quoth-model choice)
-      (when (and quoth-active-provider
-                 (quoth-provider-p quoth-active-provider))
-        (quoth-provider--apply-model
-         quoth-active-provider
-         (list :id choice))))
+          (setq-local quoth--session-model nil)
+          (setq quoth-model-by-provider
+                (assq-delete-all
+                 (intern quoth--session-provider) quoth-model-by-provider))
+          (quoth--sync-provider-model))
+      (setq-local quoth--session-model choice)
+      (setq quoth-model-by-provider
+            (cons (cons (intern quoth--session-provider) choice)
+                  (assq-delete-all
+                   (intern quoth--session-provider) quoth-model-by-provider)))
+      (quoth--sync-provider-model))
     (quoth--update-header-line)
     (when cold
       (quoth-provider-models-refresh quoth-active-provider)
       (message "fetching model catalog..."))
     (message "Model: %s"
-             (or (and (not (string= choice "default")) choice)
-                 quoth-openai-default-model))))
+             (or quoth--session-model fallback))))
 
 ;;; Minor mode commands
 
@@ -3201,16 +3299,18 @@ space of the Emacs key binding conventions; move it by re-parenting
   :keymap quoth-minor-mode-map)
 
 (defvar savehist-additional-variables)
-;; Persistence: register provider and model with savehist so they
-;; survive restarts.  Registered via `with-eval-after-load' so savehist
-;; is never required at quoth load time.  `quoth-model' is a plain
-;; defvar (not a defcustom): it is the runtime selection owned by
-;; savehist, not a user option owned by Customize, so the two never
-;; fight over it at startup.  `quoth-active-provider-name' stays a
-;; defcustom since its default picks the provider new buffers use.
+;; Persistence: register the provider default and the per-provider
+;; sticky model memory with savehist so they survive restarts.
+;; Registered via `with-eval-after-load' so savehist is never
+;; required at quoth load time.  `quoth-model-by-provider' is a plain
+;; defvar (not a defcustom): it is runtime state owned by savehist,
+;; not a user option owned by Customize, so the two never fight over
+;; it at startup.  `quoth-default-provider' is a defcustom whose saved
+;; value is the default for new buffers, not the live state of any
+;; buffer (transient provider switching stays buffer-local).
 (with-eval-after-load 'savehist
-  (add-to-list 'savehist-additional-variables 'quoth-active-provider-name)
-  (add-to-list 'savehist-additional-variables 'quoth-model))
+  (add-to-list 'savehist-additional-variables 'quoth-default-provider)
+  (add-to-list 'savehist-additional-variables 'quoth-model-by-provider))
 
 (provide 'quoth)
 ;;; quoth.el ends here

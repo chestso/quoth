@@ -573,6 +573,44 @@ Only the *leading* blank lines of an assistant turn are stripped."
       (should (string= (nth 1 (nth 0 deltas)) "hi"))
       (should (string= (nth 1 (nth 1 deltas)) "\n\n")))))
 
+(ert-deftest quoth-test/openai-sse-drops-empty-content-delta ()
+  "An empty-string content delta is dropped, not emitted.
+Ollama puts `\"content\":\"\"' on every reasoning chunk; emitting it
+would emit a content event with no text, ending the reasoning region
+before the CoT arrives."
+  (let ((quoth-openai-strip-leading-blank-lines t)
+        (state (quoth-test-openai--sse-state)))
+    (let* ((result
+            (quoth-openai-sse-feed
+             state
+             "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"Goal\"}}]}\n\n"))
+           (deltas (car result))
+           (new-state (cdr result)))
+      (should (= (length deltas) 1))
+      (should (eq (nth 0 (car deltas)) 'reasoning))
+      (should (string= (nth 1 (car deltas)) "Goal"))
+      ;; Dropped empties must not count as the start of the answer.
+      (should-not (plist-get new-state :content-started)))))
+
+(ert-deftest quoth-test/openai-sse-empty-content-keeps-reasoning-unsplit ()
+  "A whole ollama-shaped stream emits only reasoning then content deltas.
+The reasoning chunks carry `\"content\":\"\"' alongside `reasoning`; the
+empties are dropped, so no content event fires between the CoT chunks
+and the stream stays reasoning-until-answer."
+  (let ((quoth-openai-strip-leading-blank-lines t)
+        (state (quoth-openai-sse-new-state)))
+    (let* ((result
+            (quoth-openai-sse-feed
+             state
+             "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning\":\"Goal\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\":\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\" respond\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n"))
+           (deltas (car result)))
+      ;; One delta per chunk, none of them the dropped empties.
+      (should (= (length deltas) 4))
+      (dolist (d deltas)
+        (should (memq (nth 0 d) '(reasoning content))))
+      (should (eq (nth 0 (car (last deltas))) 'content))
+      (should (string= (nth 1 (car (last deltas))) "Hello")))))
+
 (ert-deftest quoth-test/openai-sse-parser-done ()
   "[DONE] marks the stream finished."
   (let* ((state (quoth-test-openai--sse-state))

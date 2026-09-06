@@ -886,6 +886,49 @@ line's background to the end of the screen line."
        (should (overlayp ov))
        (should (eq (char-before (overlay-end ov)) ?\n))))))
 
+(ert-deftest quoth-test/reasoning-only-finalize-closes-overlay-boundary ()
+  "A reasoning-only turn (no content delta) closes the CoT at finalize.
+The close path runs `quoth--reasoning-stop' before tagging, so the
+overlay ends on its separator newline, the tagged reasoning span stays
+inside the response, and the note/blank-line noise after the CoT stays
+outside the fold — the boundary the overlay's `:extend t' face and the
+fold marker rely on."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (save-excursion (goto-char (point-max)) (newline))
+          (setq-local quoth--response-start (point-marker))
+          (let ((proc (make-pipe-process :name "quoth-hyper-test-ro"
+                                         :noquery t
+                                         :coding 'binary)))
+            (process-put proc :quoth-target (current-buffer))
+            (unwind-protect
+                (progn
+                  (quoth--append-delta "think hard" 'reasoning)
+                  ;; No content delta ever arrives; the turn ends.
+                  (quoth--finalize-response))
+              (delete-process proc)))
+          ;; Finalize reset the reasoning state; find the overlay by face.
+          (let ((ov (cl-find-if
+                     (lambda (o) (and (eq (overlay-get o 'face)
+                                          'quoth-reasoning-face)
+                                      (overlay-get o 'quoth-overlay)))
+                     (overlays-in (point-min) (point-max))))
+                (start (save-excursion
+                         (goto-char (point-min))
+                         (search-forward "think")
+                         (match-beginning 0))))
+            ;; The reasoning span is tagged inside the response.
+            (should (eq (get-text-property start 'quoth-region-type)
+                        'reasoning))
+            ;; The overlay ends on the stop separator's newline.
+            (should (overlayp ov))
+            (should (eq (char-before (overlay-end ov)) ?\n))
+            (should (string= (buffer-substring-no-properties
+                              (overlay-start ov) (overlay-end ov))
+                             "think hard\n"))))
+      (quoth-test--cleanup))))
+
 (ert-deftest quoth-test/fold-before-string-on-own-line ()
   "The fold before-string marker must start on its own line.
 `preview-end' must be past the newline after the last preview line

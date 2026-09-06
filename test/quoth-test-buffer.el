@@ -588,7 +588,8 @@ It is not the prompt fallback, even though it carries `quoth-prompt-id'."
   "Test that the effective model falls back to the hyper default.
 This is `quoth-openai-default-model' for hyper providers with a nil
 model slot."
-  (let ((quoth-model nil))
+  (let ((quoth-default-model nil)
+        (quoth-model-by-provider nil))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
@@ -608,41 +609,46 @@ model slot."
 
 (ert-deftest quoth-test/header-model-uses-provider-slot ()
   "`quoth--header-model' reads the provider model slot set at init."
-  (let ((quoth-model "claude-sonnet-4-20250514"))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (should (string= (quoth--header-model) "claude-sonnet-4-20250514"))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "claude-sonnet-4-20250514")
+          (setf (quoth-hyper-provider-model quoth-active-provider)
+                "claude-sonnet-4-20250514")
+          (should (string= (quoth--header-model)
+                           "claude-sonnet-4-20250514"))))
+    (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-model-and-region ()
   "Test that the header line shows both the model and the region type.
 Both the current model and the region type at point appear."
-  (let ((quoth-model "my-model"))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (goto-char (point-max))
-            (let ((start (point)))
-              (insert "typed")
-              (put-text-property start (point) 'quoth-region-type 'user))
-            (goto-char (1- (point)))
-            (quoth--update-header-line)
-            (let ((h (format "%s" header-line-format)))
-              (should (string= h "(my-model  user)")))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "my-model")
+          (setf (quoth-hyper-provider-model quoth-active-provider) "my-model")
+          (goto-char (point-max))
+          (let ((start (point)))
+            (insert "typed")
+            (put-text-property start (point) 'quoth-region-type 'user))
+          (goto-char (1- (point)))
+          (quoth--update-header-line)
+          (let ((h (format "%s" header-line-format)))
+            (should (string= h "(my-model  user)")))))
+    (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-dash-for-nil-region ()
   "Untagged space renders `region: -' in the header line."
-  (let ((quoth-model "my-model"))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (goto-char (point-max))
-            (quoth--update-header-line)
-            (let ((h (format "%s" header-line-format)))
-              (should (string= h "(my-model  -)")))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "my-model")
+          (setf (quoth-hyper-provider-model quoth-active-provider) "my-model")
+          (goto-char (point-max))
+          (quoth--update-header-line)
+          (let ((h (format "%s" header-line-format)))
+            (should (string= h "(my-model  -)")))))
+    (quoth-test--cleanup)))
 
 ;;; 19. Input separator has prompt-id property
 
@@ -2162,28 +2168,28 @@ text."
                              "step one\nstep two"))))))
     (quoth-test--cleanup)))
 (ert-deftest quoth-test/history-limit-caps-turns ()
-  "`quoth-hyper-history-limit' caps the prior exchanges; the tail stays."
-  (let ((quoth-hyper-history-limit 1))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (let ((_id1 (quoth-test--seed-exchange "first" "one")))
-              (let ((_id2 (quoth-test--seed-exchange "second" "two")))
-                (let ((msgs (quoth--history-turns quoth--prompt-id)))
-                  (should (= (length msgs) 2))
-                  (should (equal (quoth-test--msg-content (car msgs)) "second"))
-                  (should (equal (quoth-test--msg-content (cadr msgs)) "two")))))))
-      (quoth-test--cleanup))))
+  "`quoth-history-limit' caps the prior exchanges; the tail stays."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth-history-limit 1)
+          (let ((_id1 (quoth-test--seed-exchange "first" "one")))
+            (let ((_id2 (quoth-test--seed-exchange "second" "two")))
+              (let ((msgs (quoth--history-turns quoth--prompt-id)))
+                (should (= (length msgs) 2))
+                (should (equal (quoth-test--msg-content (car msgs)) "second"))
+                (should (equal (quoth-test--msg-content (cadr msgs)) "two")))))))
+    (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/history-limit-zero-disables ()
-  "`quoth-hyper-history-limit' 0 means no history at all."
-  (let ((quoth-hyper-history-limit 0))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (let ((_id1 (quoth-test--seed-exchange "first" "one")))
-              (should (null (quoth--history-turns quoth--prompt-id))))))
-      (quoth-test--cleanup))))
+  "`quoth-history-limit' 0 means no history at all."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth-history-limit 0)
+          (let ((_id1 (quoth-test--seed-exchange "first" "one")))
+            (should (null (quoth--history-turns quoth--prompt-id))))))
+    (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/history-turns-always-fresh ()
   "Extraction reads the live buffer; no cache can go stale."
@@ -2481,91 +2487,96 @@ The only reset is `quoth-clear-buffer'."
 
 (ert-deftest quoth-test/header-line-shows-no-usage-before-response ()
   "Before any response, the header has no usage segment."
-  (let ((quoth-model "my-model"))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (setq-local quoth--usage-acc nil)
-            (quoth--update-header-line)
-            (let ((h (format "%s" header-line-format)))
-              (should (string= h "(my-model  -)")))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "my-model")
+          (setf (quoth-hyper-provider-model quoth-active-provider) "my-model")
+          (setq-local quoth--usage-acc nil)
+          (quoth--update-header-line)
+          (let ((h (format "%s" header-line-format)))
+            (should (string= h "(my-model  -)")))))
+    (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-usage-after-accumulation ()
   "The header shows in/out tokens, cost, and cache percentage after use.
 Input and output tokens are shown separately \(\='^\=' prefixed
 arrows), and the cache percentage divides cached by INPUT tokens only."
-  (let ((quoth-model "my-model"))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (setq-local quoth--usage-acc
-                        (list :input-tokens 8923
-                              :output-tokens 68
-                              :cached-tokens 8320
-                              :cost-unit "hc"
-                              :cost-value 0.0432696))
-            (quoth--update-header-line)
-            (let ((h (format "%s" header-line-format)))
-              ;; `%%' is the mode-line escape for a literal `%' (the raw
-              ;; header-line-format string stores the escaped form).
-              (should (string= h
-                               "(my-model  \u21918.9k \u219368 hc0.043 93%%  -)")))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "my-model")
+          (setf (quoth-hyper-provider-model quoth-active-provider) "my-model")
+          (setq-local quoth--usage-acc
+                      (list :input-tokens 8923
+                            :output-tokens 68
+                            :cached-tokens 8320
+                            :cost-unit "hc"
+                            :cost-value 0.0432696))
+          (quoth--update-header-line)
+          (let ((h (format "%s" header-line-format)))
+            ;; `%%' is the mode-line escape for a literal `%' (the raw
+            ;; header-line-format string stores the escaped form).
+            (should (string= h
+                             "(my-model  \u21918.9k \u219368 hc0.043 93%%  -)")))))
+    (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-dollars-when-currency-dollars ()
   "With dollars currency, the header shows $ instead of hc."
-  (let ((quoth-model "my-model"))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (setq-local quoth--usage-acc
-                        (list :input-tokens 8846
-                              :output-tokens 311
-                              :cached-tokens 0
-                              :cost-unit "$"
-                              :cost-value 0.013926))
-            (quoth--update-header-line)
-            (let ((h (format "%s" header-line-format)))
-              (should (string= h
-                               "(my-model  \u21918.8k \u2193311 $0.0139 0%%  -)")))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "my-model")
+          (setf (quoth-hyper-provider-model quoth-active-provider) "my-model")
+          (setq-local quoth--usage-acc
+                      (list :input-tokens 8846
+                            :output-tokens 311
+                            :cached-tokens 0
+                            :cost-unit "$"
+                            :cost-value 0.013926))
+          (quoth--update-header-line)
+          (let ((h (format "%s" header-line-format)))
+            (should (string= h
+                             "(my-model  \u21918.8k \u2193311 $0.0139 0%%  -)")))))
+    (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-cache-percent-divides-input-only ()
   "Cache percentage is cached/input, not cached/(input+output).
 The input-based percentage is 50%."
-  (let ((quoth-model "my-model"))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (setq-local quoth--usage-acc
-                        (list :input-tokens 1000
-                              :output-tokens 5000
-                              :cached-tokens 500
-                              :cost-unit "hc"
-                              :cost-value 0.01))
-            (quoth--update-header-line)
-            (let ((h (format "%s" header-line-format)))
-              (should (string-match-p "50%%" h))
-              (should-not (string-match-p "8%%" h)))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "my-model")
+          (setf (quoth-hyper-provider-model quoth-active-provider) "my-model")
+          (setq-local quoth--usage-acc
+                      (list :input-tokens 1000
+                            :output-tokens 5000
+                            :cached-tokens 500
+                            :cost-unit "hc"
+                            :cost-value 0.01))
+          (quoth--update-header-line)
+          (let ((h (format "%s" header-line-format)))
+            (should (string-match-p "50%%" h))
+            (should-not (string-match-p "8%%" h)))))
+    (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-no-cache-key-omits-cache-segment ()
   "A usage plist without :cached-tokens omits the cache percentage."
-  (let ((quoth-model "my-model"))
-    (unwind-protect
-        (let ((buf (quoth-test--fresh-buffer)))
-          (with-current-buffer buf
-            (setq-local quoth--usage-acc
-                        (list :input-tokens 100
-                              :output-tokens 20
-                              :cost-unit "hc"
-                              :cost-value 0.01))
-            (quoth--update-header-line)
-            (let ((h (format "%s" header-line-format)))
-              (should (string= h
-                               "(my-model  \u2191100 \u219320 hc0.010  -)")))))
-      (quoth-test--cleanup))))
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "my-model")
+          (setf (quoth-hyper-provider-model quoth-active-provider) "my-model")
+          (setq-local quoth--usage-acc
+                      (list :input-tokens 100
+                            :output-tokens 20
+                            :cost-unit "hc"
+                            :cost-value 0.01))
+          (quoth--update-header-line)
+          (let ((h (format "%s" header-line-format)))
+            (should (string= h
+                             "(my-model  \u2191100 \u219320 hc0.010  -)"))))
+        (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/group-number-compact-formats ()
   "`quoth--group-number-compact' formats with k/M suffixes."

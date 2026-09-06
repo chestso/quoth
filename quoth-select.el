@@ -61,6 +61,14 @@
 
 (defvar transient--original-buffer)
 
+;; The selector calls core functions defined in `quoth.el' and the
+;; provider protocol; the declarations keep the byte-compiler happy
+;; without loading the core from here.
+(declare-function quoth--provider-default-model "quoth.el" (name))
+(declare-function quoth--instantiate-provider "quoth.el" (name buf dir))
+(declare-function quoth--seed-session-model "quoth.el" ())
+(declare-function quoth-provider-cleanup "quoth-provider" (provider &rest _))
+
 (defmacro quoth--select-in-origin (&rest body)
   "Evaluate BODY in the buffer that invoked the transient."
   `(with-current-buffer (or transient--original-buffer
@@ -145,11 +153,12 @@ with two spaces."
 
 ;;; Transient menu
 (defun quoth--select-current-model ()
-  "Return the effective model id for the current buffer, or nil."
-  (or (and quoth-active-provider
-           (quoth-provider-p quoth-active-provider)
-           (quoth-provider-model quoth-active-provider))
-      quoth-openai-default-model))
+  "Return the effective model id for the current buffer, or nil.
+Reads the buffer's session model slot; when nil, the resolved
+provider-chain default (sticky entry, registry :default-model, global
+default)."
+  (or quoth--session-model
+      (quoth--provider-default-model quoth--session-provider)))
 
 (defun quoth--select-effective-model-entry ()
   "Return the model plist for the effective model, or nil.
@@ -181,9 +190,10 @@ it)."
   "Return the reasoning outcome cell for THINKING with EFFORT-P.
 THINKING is `off', `on', or `unset'; EFFORT-P is non-nil when a
 `reasoning_effort' would be sent.  Behavior is provider specific
-\(validated on the hyper provider with `deepseek-v4-pro-0813'):
-`thinking: false' suppresses reasoning when sent alone, but sending
-`reasoning_effort' alongside re-enables the reasoning trace."
+\(the matrix wording was validated on the hyper provider with
+`deepseek-v4-pro-0813'): `thinking: false' suppresses reasoning when
+sent alone, but sending `reasoning_effort' alongside re-enables the
+reasoning trace."
   (pcase thinking
     ('off (if effort-p "reasoning" "direct (no reason)"))
     ('on "reasoning")
@@ -192,9 +202,11 @@ THINKING is `off', `on', or `unset'; EFFORT-P is non-nil when a
 
 (defun quoth--select-info-reasoning-matrix (&rest _)
   "Return a compact visual matrix of the thinking/effort interplay.
-Validated on the hyper provider (`deepseek-v4-pro-0813'): `thinking:
-false' suppresses reasoning only when sent without `reasoning_effort';
-sending one re-enables the reasoning trace."
+The wording is validated on the hyper provider
+\(`deepseek-v4-pro-0813'): `thinking: false' suppresses reasoning only
+when sent without `reasoning_effort'; sending one re-enables the
+reasoning trace.  Other providers may differ — the server decides what
+the keys mean."
   (quoth--select-in-origin
    (let* ((headers '("" "effort unset" "effort set"))
           (rows (list
@@ -217,7 +229,7 @@ sending one re-enables the reasoning trace."
                        (number-to-string (nth 1 widths)) "s   %-"
                        (number-to-string (nth 2 widths)) "s")))
      (concat
-      "Reasoning outcome (hyper; tested on deepseek-v4-pro-0813):"
+      "Reasoning outcome (hyper-tested; provider-dependent):"
       "\n"
       (mapconcat (lambda (row) (apply #'format fmt row)) all "\n")))))
 
@@ -227,17 +239,19 @@ Reads the catalog from the protocol's global cache; a cold cache is
 usually seeded from the bundled snapshot first
 \(`quoth-provider--models-seed'), and the static fallback covers the
 seed-less cases while a background refresh runs, with the message
-noting it."
+noting it.  The choice writes the buffer's session model (and the
+provider's model slot cache) plus the sticky
+`quoth-model-by-provider' entry; `default' clears all three."
   (interactive)
   (let* ((models (and quoth-active-provider
 		      (quoth-provider-p quoth-active-provider)
 		      (quoth-provider-models-cached quoth-active-provider)))
 	 (cold (null models))
+	 (fallback (quoth--select-current-model))
 	 (choices (if models
 		      (quoth--model-choices models)
-		    (list (cons quoth-openai-default-model
-				(format "%s (default)"
-					quoth-openai-default-model)))))
+		    (list (cons fallback
+				(format "%s (default)" fallback)))))
 	 (choice (completing-read
 		  "Model: "
 		  (cons (cons "default" "default (provider default)")
@@ -245,12 +259,19 @@ noting it."
 		  nil t nil)))
     (if (string= choice "default")
 	(progn
-	  (setq quoth-model nil)
+	  (setq-local quoth--session-model nil)
+	  (setq quoth-model-by-provider
+		(assq-delete-all (intern quoth--session-provider)
+				 quoth-model-by-provider))
 	  (when (and quoth-active-provider
 		     (quoth-provider-p quoth-active-provider))
 	    (quoth-provider--apply-model
 	     quoth-active-provider '(:id nil))))
-      (setq quoth-model choice)
+      (setq-local quoth--session-model choice)
+      (setq quoth-model-by-provider
+	    (cons (cons (intern quoth--session-provider) choice)
+		  (assq-delete-all (intern quoth--session-provider)
+				   quoth-model-by-provider)))
       (when (and quoth-active-provider
 		 (quoth-provider-p quoth-active-provider))
 	(quoth-provider--apply-model
@@ -260,9 +281,7 @@ noting it."
     (when cold
       (quoth-provider-models-refresh quoth-active-provider)
       (message "fetching model catalog..."))
-    (message "Model: %s"
-	     (or (and (not (string= choice "default")) choice)
-		 quoth-openai-default-model))))
+    (message "Model: %s" (or quoth--session-model fallback))))
 
 (defun quoth--select-thinking-toggle (&rest _)
   "Toggle thinking on/off for the current buffer.
@@ -344,7 +363,8 @@ as a hint when available."
 (defun quoth--select-info-provider (&rest _)
   "Return the active provider name as a suffix description."
   (quoth--select-in-origin
-   (format "%s%s" (quoth--select-label "provider") (or quoth-active-provider-name "hyper"))))
+   (format "%s%s" (quoth--select-label "provider")
+           (or quoth--session-provider "hyper"))))
 
 (defun quoth--select-info-model (&rest _)
   "Return the current model with pricing detail as a suffix description."
@@ -361,12 +381,39 @@ as a hint when available."
               (if prices (format "  (%s)" prices) ""))))))
 
 (defun quoth--select-provider-switch (&rest _)
-  "Switch the active provider (placeholder — only hyper is registered)."
+  "Switch the active provider for the current buffer.
+Buffer-local only: writes `quoth--session-provider', aborts any active
+request, reinstantiates `quoth-active-provider' from the new name,
+re-seeds the session model from the new provider's chain (sticky
+`quoth-model-by-provider' entry, registry `:default-model', global
+default), keeps thinking/effort \(provider-agnostic), prefetches the
+catalog, and refreshes the header line through
+`quoth-after-model-change-hook'.  Never writes a global: the default
+for new buffers is `quoth-default-provider' and changes only through
+Customize or `setq'."
   (interactive)
   (let* ((names (mapcar (lambda (e) (plist-get e :name)) quoth-providers))
 	 (choice (completing-read "Provider: " names nil t)))
-    (when choice
-      (setq quoth-active-provider-name choice)
+    (when (and choice (not (string-empty-p choice))
+	       (not (string= choice quoth--session-provider)))
+      (setq-local quoth--session-provider choice)
+      ;; Abort any in-flight request on the old provider.
+      (when (and quoth-active-provider
+		 (quoth-provider-p quoth-active-provider))
+	(quoth-provider-cleanup quoth-active-provider))
+      (setq-local quoth-active-provider
+		  (quoth--instantiate-provider
+		   choice (current-buffer) default-directory))
+      (quoth--seed-session-model)
+      (when (and quoth-active-provider
+		 (quoth-provider-p quoth-active-provider))
+	(quoth-provider--apply-model
+	 quoth-active-provider
+	 (list :id quoth--session-model)))
+      (run-hooks 'quoth-after-model-change-hook)
+      (when (and quoth-active-provider
+		 (quoth-provider-p quoth-active-provider))
+	(quoth-provider-models-refresh quoth-active-provider))
       (message "Provider: %s" choice))))
 
 (defun quoth--select-refresh-catalog (&rest _)

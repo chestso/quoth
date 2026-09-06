@@ -22,22 +22,23 @@ fixed prompt area with a fixed set of keys.
 ## Goal
 
 Quoth's primary mode of operation is **direct provider interaction**: it talks
-to the [Charm Hyper gateway](HYPER-API.md) over HTTP+SSE (no separate CLI binary
-needed). A dedicated Emacs buffer sends prompts and streams the model's
-response, including chain-of-thought reasoning. On top of that, any buffer
-selection can be used as context: the selection is formatted as a markdown
-fenced code block with the file path and line numbers (relative to the project
-root), then inserted into the quoth buffer as plain user input and sent as part
-of the prompt.
+to AI providers over HTTP+SSE (no separate CLI binary needed) — the
+[Charm Hyper gateway](HYPER-API.md) by default, or
+[Ollama Cloud](OLLAMA-CLOUD-API.md). A dedicated Emacs buffer sends prompts and
+streams the model's response, including chain-of-thought reasoning. On top of
+that, any buffer selection can be used as context: the selection is formatted as
+a markdown fenced code block with the file path and line numbers (relative to
+the project root), then inserted into the quoth buffer as plain user input and
+sent as part of the prompt.
 
-Internally, providers plug in through a small provider protocol; the hyper
-provider (the default) is built on a reusable OpenAI client for request
-composition and streaming, plus a set of local tools (`exec_command`,
-`write_stdin`, `write_file`, `read_file`, `edit_file`, `web_search`). The chat
-buffer behaves identically whichever provider is active. How requests are
-composed and streamed, session continuity, tool-call replay, buffer metadata
-internals, and a hacking guide are documented in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+Internally, providers plug in through a small provider protocol. Two ship with
+the package — hyper (the default) and ollama — and both are thin shims over a
+reusable OpenAI client for request composition and streaming, plus a set of
+local tools (`exec_command`, `write_stdin`, `write_file`, `read_file`,
+`edit_file`, `web_search`). The chat buffer behaves identically whichever
+provider is active. How requests are composed and streamed, session continuity,
+tool-call replay, buffer metadata internals, and a hacking guide are documented
+in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Each project gets its own quoth buffer (see
 [Per-Project Buffers](#per-project-buffers)), so work in different projects
@@ -94,10 +95,10 @@ Then load with `load-path`:
 ```
 
 Requires Emacs 28.1+. The package spans several files (`quoth.el` plus
-`quoth-provider.el`, `quoth-openai.el`, `quoth-hyper-provider.el` +
-`quoth-tools.el`), so point `load-path` at the package directory. For manual
-`require`s, load `quoth` last to get the full file set loaded. The provider
-requires only `curl`.
+`quoth-provider.el`, `quoth-openai.el`, `quoth-hyper-provider.el`,
+`quoth-ollama-provider.el`, `quoth-tools.el`), so point `load-path` at the
+package directory. For manual `require`s, load `quoth` last to get the full file
+set loaded. The providers require only `curl`.
 
 ## Configuration
 
@@ -107,17 +108,18 @@ Most of Quoth's behavior is configurable through Emacs customization:
 M-x customize-group RET quoth
 ```
 
-The `quoth` group covers the essentials — working directory, request tuning
-(`quoth-openai-timeout`, `-max-tokens`, `-temperature`, `-thinking`,
-`-reasoning-effort`), history replay (`quoth-hyper-history-limit`,
+The `quoth` group covers the essentials — the provider defaults for new buffers
+(`quoth-default-provider`, `quoth-default-model`, `quoth-default-thinking`,
+`quoth-default-reasoning-effort`), history replay (`quoth-history-limit`,
 `quoth-hyper-history-include-reasoning`), reasoning display
 (`quoth-reasoning-preview-lines`), image attachments
 (`quoth-image-max-raw-bytes`), the system prompt (`quoth-openai-system-prompt`),
-debug logging, and the hyper provider settings (`quoth-hyper-base-url`,
-`quoth-hyper-token`). Process handling lives in the `quoth-process` group and
-tool behavior in the `quoth-tool` group.
+request tuning (`quoth-openai-timeout`, `-max-tokens`, `-temperature`), debug
+logging, and the provider settings (`quoth-hyper-base-url`, `quoth-hyper-token`,
+`quoth-ollama-base-url`, `quoth-ollama-token`). Process handling lives in the
+`quoth-process` group and tool behavior in the `quoth-tool` group.
 
-One setting needs setup beyond `M-x customize`: the token.
+One setting needs setup beyond `M-x customize`: the provider token.
 
 ### quoth-hyper-token
 
@@ -141,6 +143,42 @@ returning the token (or another function):
 Set it to `nil` to request without a token (useful for local gateways). A
 missing authinfo entry signals an error with setup instructions rather than
 silently sending no token.
+
+### Ollama Cloud (quoth-ollama-token)
+
+The ollama provider targets Ollama Cloud (`https://ollama.com/v1`, the
+OpenAI-compatible surface; see [OLLAMA-CLOUD-API.md](OLLAMA-CLOUD-API.md)).
+Create an API key at `https://ollama.com/settings/keys` and add an authinfo
+line, the same pattern as hyper:
+
+```text
+machine ollama.com login apikey password <your-ollama-key>
+```
+
+The `quoth-ollama-token` default looks that entry up; it also accepts a string
+or a function, or `nil` to send no token. `quoth-ollama-base-url` overrides the
+server (also honored: the `OLLAMA_URL` environment variable) — pointing it at a
+local daemon such as `http://localhost:11434/v1` makes the provider talk to that
+server instead of the cloud, a plain configuration change since the local daemon
+speaks the same protocol.
+
+### Providers and sessions
+
+Each quoth buffer holds its own session: the active provider, model, thinking,
+and reasoning-effort are buffer-local, seeded at buffer creation from the global
+defaults (`quoth-default-provider`, `quoth-default-model`,
+`quoth-default-thinking`, `quoth-default-reasoning-effort`). Switching provider
+inside a buffer is `p` in the model selector (`C-c " m`): it changes only that
+buffer, aborts any running request on the old provider, and re-seeds the model
+from the new provider's chain (the last model you used on it, else the
+provider's built-in default, else the global default). Thinking and effort carry
+over — they are provider-agnostic.
+
+The model you pick is remembered per provider across Emacs restarts via
+`savehist` (when `savehist-mode` is enabled), so a new buffer on a provider
+starts with the model you last used there. The provider default for new buffers
+changes only through Customize or `setq` (`quoth-default-provider`), never from
+inside a chat buffer.
 
 ### Web Search (SearXNG)
 
@@ -176,8 +214,9 @@ To change the server URL:
 - `M-p` / `M-n` — navigate input history (previous/next input)
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point;
   otherwise normal TAB
-- `C-c " m` — open the model selector (choose a model; toggle thinking, set
-  reasoning effort, or reset to provider defaults)
+- `C-c " m` — open the model selector: pick a model, switch the active provider
+  (`p`), toggle thinking, set a reasoning-effort level, or use `d` to reset the
+  per-session attributes to the provider defaults
 - `C-c " i` — interrupt the running quoth process
 - `C-c " k` — clear the quoth buffer (also starts a fresh session and rotates
   the session UUID)
@@ -308,28 +347,31 @@ session usage, and the region type at point.
 deepseek-v4-flash  ↑9.0k ↓1.2k $0.0123 42%  response
 ```
 
-The model is the active provider's model (set from `quoth-model` when the buffer
-is created, updated by the model selector). Usage — input (`↑`) and output (`↓`)
-tokens, accumulated cost, and cache percentage — appears after the first
-response completes and totals the whole session (tokens, cost, and cache
-percentage across all prompts and tool rounds; cleared by `C-c " k`). The third
-cluster is the region type at point, or `-` on untagged text, which includes the
-input area before its first send.
+The model is the active provider's model (the buffer's session model, set at
+buffer creation from the provider's model chain and updated by the model
+selector). Usage — input (`↑`) and output (`↓`) tokens, accumulated cost, and
+cache percentage — appears after the first response completes and totals the
+whole session (tokens, cost, and cache percentage across all prompts and tool
+rounds; cleared by `C-c " k`). Providers that report no cost (ollama does not)
+show tokens only. The third cluster is the region type at point, or `-` on
+untagged text, which includes the input area before its first send.
 
 ### Model selection and persistence
 
 `C-c " m` opens a transient selector: pick a model from the active provider's
-catalog, toggle thinking on/off, set a reasoning-effort level, or use `d` to
-reset the per-session attributes to the provider defaults. The catalog is seeded
-from a bundled snapshot of the gateway's model list, so prices and context
+catalog, switch the buffer to another provider (`p`), toggle thinking on/off,
+set a reasoning-effort level, or use `d` to reset the per-session attributes to
+the provider defaults. The catalog is seeded from a bundled snapshot of the
+provider's model list (regenerated by `make models`), so prices and context
 windows show for each model even before the first fetch, and a live refresh (`g`
 in the selector) keeps it current.
 
-The selected model persists across Emacs restarts via `savehist` when
-`savehist-mode` is enabled. Savehist is opt-in, so enable it in your init
-(`(savehist-mode 1)`) if you want the choice to persist. Users who want a fixed
-default instead of a per-session choice can `(setq quoth-model "...")` in their
-init after quoth loads, or customize `quoth-openai-default-model`.
+The last model used on each provider persists across Emacs restarts via
+`savehist` when `savehist-mode` is enabled. Savehist is opt-in, so enable it in
+your init (`(savehist-mode 1)`) if you want the choice to persist. Users who
+want a fixed default instead of the per-provider memory can set
+`quoth-default-model`, the cross-provider fallback for buffers that have not
+chosen a model.
 
 ## Rendering
 
@@ -369,8 +411,8 @@ token. Disable with:
 ```
 
 Errors are surfaced in the chat buffer itself: a failed request shows a
-`[quoth-hyper error: HTTP <code> from <url>]` note instead of a generic
-connection error.
+`> **Error:** HTTP <code> from <url>` note instead of a generic connection
+error.
 
 ## Contributing
 

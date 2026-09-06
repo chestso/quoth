@@ -225,14 +225,6 @@ the cold fallback path."
                            (append models nil))))))
          (error nil))))
 
-(defcustom quoth-hyper-history-limit 200
-  "Maximum number of prior prompts sent as history by the hyper provider.
-0 disables history entirely (each prompt is a single request).  Only
-the last LIMIT complete exchanges are sent; the current turn is always
-sent in full."
-  :type 'integer
-  :group 'quoth-hyper)
-
 (defcustom quoth-hyper-history-include-reasoning nil
   "Non-nil re-sends streamed reasoning (CoT) with assistant turns.
 The reasoning is emitted as `reasoning_content' (per HYPER-API.md
@@ -341,7 +333,7 @@ sent as the x-session-id / x-session-affinity cache-affinity headers.
 The prior conversation is read from BUFFER via the core's
 `quoth--history-for', which enters the buffer itself, and re-sent as
 message alists; `quoth-hyper-history-include-reasoning' controls whether
-reasoning is replayed, and the core's `quoth-hyper-history-limit'
+reasoning is replayed, and the core's `quoth-history-limit'
 decides whether history exists.  CONTINUATION, when non-nil, is a list
 of message alists (user, assistant with `tool_calls', `role: \"tool\"')
 that replace the user message — used by the tool loop to send follow-up

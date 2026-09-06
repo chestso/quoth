@@ -307,22 +307,21 @@ see no models and no fetch fires."
              (let ((quoth-active-provider
                     (quoth-make-hyper-provider :buffer buf
                                                :base-url "http://example/v1"))
-                   (transient--original-buffer buf))
-               (cl-letf (((symbol-function 'quoth-provider-model)
-                          (lambda (&rest _) "m")))
-                 (quoth-test--with-models
-                  (quoth-test--models "m")
-                  (lambda (fetches)
-                    (should (null (quoth--select-effective-model-entry)))
-                    (should-not (quoth--select-can-reason-p))
-                    (should-not (quoth--select-has-reasoning-levels-p))
-                    (should (= (funcall fetches) 0))
-                    ;; Warm the cache: the entry appears without fetching.
-                    (quoth-provider-models-refresh quoth-active-provider)
-                    (should (equal
-                             (quoth--select-effective-model-entry)
-                             (car (quoth-test--models "m"))))
-                    (should (= (funcall fetches) 1)))))))
+                   (transient--original-buffer buf)
+                   (quoth--session-model "m"))
+               (quoth-test--with-models
+                (quoth-test--models "m")
+                (lambda (fetches)
+                  (should (null (quoth--select-effective-model-entry)))
+                  (should-not (quoth--select-can-reason-p))
+                  (should-not (quoth--select-has-reasoning-levels-p))
+                  (should (= (funcall fetches) 0))
+                  ;; Warm the cache: the entry appears without fetching.
+                  (quoth-provider-models-refresh quoth-active-provider)
+                  (should (equal
+                           (quoth--select-effective-model-entry)
+                           (car (quoth-test--models "m"))))
+                  (should (= (funcall fetches) 1))))))
          (when (buffer-live-p buf) (kill-buffer buf)))))))
 
 ;;; 4. The bundled seed

@@ -58,16 +58,24 @@
 
 ;;; 101. Provider registry
 
-(ert-deftest quoth-test/registry-has-hyper-by-default ()
-  "The default `quoth-providers' registry contains one entry: hyper."
-  (let ((quoth-providers nil))
-    (should (string= (plist-get (car quoth-providers-default) :name) "hyper"))
-    (should (eq (plist-get (car quoth-providers-default) :type) 'hyper))
-    (should (functionp (plist-get (car quoth-providers-default) :factory)))))
+(ert-deftest quoth-test/registry-builtin-shape ()
+  "The `quoth-builtin-providers' registry lists hyper first, then ollama.
+Each entry carries :name, :type, and a callable :factory; the ollama
+entry seeds new buffers with its :default-model."
+  (should (= (length quoth-builtin-providers) 2))
+  (let ((hyper (nth 0 quoth-builtin-providers))
+        (ollama (nth 1 quoth-builtin-providers)))
+    (should (string= (plist-get hyper :name) "hyper"))
+    (should (eq (plist-get hyper :type) 'hyper))
+    (should (functionp (plist-get hyper :factory)))
+    (should (string= (plist-get ollama :name) "ollama"))
+    (should (eq (plist-get ollama :type) 'ollama))
+    (should (functionp (plist-get ollama :factory)))
+    (should (string= (plist-get ollama :default-model) "gpt-oss:20b"))))
 
 (ert-deftest quoth-test/registry-default-provider-name ()
-  "`quoth-active-provider-name' defaults to \"hyper\"."
-  (should (string= (default-value (quote quoth-active-provider-name)) "hyper")))
+  "`quoth-default-provider' defaults to \"hyper\"."
+  (should (string= (default-value 'quoth-default-provider) "hyper")))
 
 (ert-deftest quoth-test/instantiate-provider-returns-hyper ()
   "`quoth--instantiate-provider' builds a hyper provider from the registry."
@@ -234,9 +242,11 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
 
 (ert-deftest quoth-test/select-model-applies-via-provider-generic ()
   "`quoth-select-model' applies the chosen model through the provider.
-The choice goes through `quoth-provider--apply-model', not a direct
-setf."
-  (let ((quoth-model nil))
+The choice lands in the buffer's session slot and the provider's model
+slot via `quoth-provider--apply-model', and the sticky
+`quoth-model-by-provider' entry for the session provider is written
+so the next buffer on it starts there."
+  (let ((quoth-model-by-provider nil))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
@@ -250,17 +260,25 @@ setf."
                       ((symbol-function 'completing-read)
                        (lambda (&rest _) "qwen3.7-plus")))
               (quoth-select-model))
+            (should (string= quoth--session-model "qwen3.7-plus"))
             (should (string= (quoth-hyper-provider-model quoth-active-provider)
                              "qwen3.7-plus"))
-            (should (string= quoth-model "qwen3.7-plus"))))
+            (should (string= (cdr (assq 'hyper quoth-model-by-provider))
+                             "qwen3.7-plus"))))
+      (setq quoth-model-by-provider nil)
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/select-model-default-clears-slot ()
-  "Choosing 'default' clears the provider model slot."
-  (let ((quoth-model "qwen3.7-plus"))
+  "Choosing 'default' clears the session model, provider slot, and sticky.
+The buffer's session slot, the provider's model slot cache, and the
+sticky `quoth-model-by-provider' entry for the session provider are
+all cleared, so a new buffer on the provider starts from the
+provider default again."
+  (let ((quoth-model-by-provider (list (cons 'hyper "qwen3.7-plus"))))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
+            (setq-local quoth--session-model "qwen3.7-plus")
             (setf (quoth-hyper-provider-model quoth-active-provider) "qwen3.7-plus")
             (cl-letf (((symbol-function 'quoth-provider-models-cached)
                        (lambda (&rest _) nil))
@@ -269,16 +287,23 @@ setf."
                       ((symbol-function 'completing-read)
                        (lambda (&rest _) "default")))
               (quoth-select-model))
+            (should (null quoth--session-model))
             (should (null (quoth-hyper-provider-model quoth-active-provider)))
-            (should (null quoth-model))))
+            (should (null (assq 'hyper quoth-model-by-provider)))))
+      (setq quoth-model-by-provider nil)
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/select-model-fallback-on-no-models ()
-  "When the catalog fetch returns nil, a fallback list is offered."
-  (let ((quoth-model nil))
+  "A cold catalog offers the resolved default as the fallback choice.
+With no session model, sticky entry, registry :default-model, or
+global default, the fallback bottoms out at
+`quoth-openai-default-model'; picking from it still writes the
+session slot, the provider slot, and the sticky entry."
+  (let ((quoth-model-by-provider nil))
     (unwind-protect
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
+            (should (null quoth--session-model))
             (cl-letf (((symbol-function 'quoth-provider-models-cached)
                        (lambda (&rest _) nil))
                       ((symbol-function 'quoth-provider-models-refresh)
@@ -288,21 +313,24 @@ setf."
                          (should (assoc quoth-openai-default-model coll))
                          "qwen3.7-plus")))
               (quoth-select-model))
+            (should (string= quoth--session-model "qwen3.7-plus"))
             (should (string= (quoth-hyper-provider-model quoth-active-provider)
                              "qwen3.7-plus"))
-            (should (string= quoth-model "qwen3.7-plus"))))
+            (should (string= (cdr (assq 'hyper quoth-model-by-provider))
+                             "qwen3.7-plus"))))
+      (setq quoth-model-by-provider nil)
       (quoth-test--cleanup))))
 
 ;;; 105. Persistence: savehist registration
 
 (ert-deftest quoth-test/savehist-registers-provider-and-model ()
-  "Savehist registers the provider name and model after loading.
-`quoth-active-provider-name' and `quoth-model' are registered with
-`savehist-additional-variables'."
+  "Savehist registers the provider default and the sticky model alist.
+`quoth-default-provider' and `quoth-model-by-provider' are registered
+with `savehist-additional-variables' so both survive restarts."
   (require 'savehist)
-  (should (memq 'quoth-active-provider-name
+  (should (memq 'quoth-default-provider
                 (default-value 'savehist-additional-variables)))
-  (should (memq 'quoth-model
+  (should (memq 'quoth-model-by-provider
                 (default-value 'savehist-additional-variables))))
 
 (provide 'quoth-test-select)
@@ -393,20 +421,21 @@ setf."
 ;;; 107. Conditional visibility predicates
 
 (ert-deftest quoth-test/select-can-reason-p-with-reasoning-model ()
-  "`quoth--select-can-reason-p' returns non-nil for a reasoning model."
+  "`quoth--select-can-reason-p' returns non-nil for a reasoning model.
+The effective model comes from the buffer's session slot, so a model
+with `:can-reason' t enables the predicate."
   (let ((buf (generate-new-buffer " *quoth-test-pred*")))
     (with-current-buffer buf
       (let ((quoth-active-provider (make-quoth-provider))
+            (quoth--session-model "m")
             (transient--original-buffer (current-buffer)))
-	(cl-letf (((symbol-function 'quoth-provider-p)
-		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-provider-models-cached)
-		   (lambda (&rest _)
-		     (list '(:id "m" :can-reason t
-				 :reasoning-levels ("low" "high")))))
-		  ((symbol-function 'quoth-provider-model)
-		   (lambda (&rest _) "m")))
-	  (should (quoth--select-can-reason-p)))))
+        (cl-letf (((symbol-function 'quoth-provider-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'quoth-provider-models-cached)
+                   (lambda (&rest _)
+                     (list '(:id "m" :can-reason t
+                                 :reasoning-levels ("low" "high"))))))
+          (should (quoth--select-can-reason-p)))))
     (when (buffer-live-p buf) (kill-buffer buf))))
 
 (ert-deftest quoth-test/select-can-reason-p-with-non-reasoning-model ()
@@ -427,20 +456,21 @@ setf."
     (when (buffer-live-p buf) (kill-buffer buf))))
 
 (ert-deftest quoth-test/select-has-reasoning-levels-p-with-levels ()
-  "`quoth--select-has-reasoning-levels-p' returns non-nil when levels exist."
+  "`quoth--select-has-reasoning-levels-p' returns non-nil when levels exist.
+The effective model comes from the buffer's session slot, so a model
+with reasoning levels enables the predicate."
   (let ((buf (generate-new-buffer " *quoth-test-pred*")))
     (with-current-buffer buf
       (let ((quoth-active-provider (make-quoth-provider))
+            (quoth--session-model "m")
             (transient--original-buffer (current-buffer)))
-	(cl-letf (((symbol-function 'quoth-provider-p)
-		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-provider-models-cached)
-		   (lambda (&rest _)
-		     (list '(:id "m" :can-reason t
-				 :reasoning-levels ("low" "high")))))
-		  ((symbol-function 'quoth-provider-model)
-		   (lambda (&rest _) "m")))
-	  (should (quoth--select-has-reasoning-levels-p)))))
+        (cl-letf (((symbol-function 'quoth-provider-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'quoth-provider-models-cached)
+                   (lambda (&rest _)
+                     (list '(:id "m" :can-reason t
+                                 :reasoning-levels ("low" "high"))))))
+          (should (quoth--select-has-reasoning-levels-p)))))
     (when (buffer-live-p buf) (kill-buffer buf))))
 
 (ert-deftest quoth-test/select-has-reasoning-levels-p-without-levels ()

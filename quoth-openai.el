@@ -97,20 +97,12 @@ miss: context-file change, `quoth-clear-buffer', or a new buffer."
   :type 'string
   :group 'quoth-openai)
 
-(defvar quoth-model nil
-  "Model to use for Quoth requests (runtime selection, not a defcustom).
-When nil, the provider falls back to `quoth-openai-default-model'.  The
-core passes this into the provider's model slot at buffer
-initialization.  Should be a model name like
-`claude-sonnet-4-20250514' or `gpt-4o'.
-
-A plain defvar: it is the runtime selection persisted by savehist, not
-a user option owned by Customize.  To set a default, put `(setq
-quoth-model ...)' in your init after quoth loads, or customize
-`quoth-openai-default-model'.")
-
 (defconst quoth-openai-default-model "deepseek-v4-flash"
-  "Model used when the provider model slot and `quoth-model' are both nil.")
+  "Model used when no model is resolved anywhere else.
+The last-resort fallback for the hyper provider: the session model
+slot, `quoth-model-by-provider', the registry's `:default-model', and
+`quoth-default-model' are all consulted first \(see
+`quoth--header-model' and `quoth-openai-compose-request').")
 
 (defcustom quoth-openai-git-status-limit 20
   "Maximum lines of `git status --short' output in the <env> block.
@@ -604,9 +596,9 @@ PROMPT is the new user message's content: a plain string, or an
 OpenAI content-parts vector (text and `image_url' parts) when the
 turn carries image attachments — both ride the `content' field
 verbatim, the gateway's only image mechanism.  MODEL is the resolved
-model (the caller passes the provider's model
-slot, already derived from the shared `quoth-model' variable).  Falls
-back to `quoth-openai-default-model'.  The system prompt is the
+model (the caller passes the provider's model slot, already derived
+from the buffer's session state).  Falls back to `quoth-default-model',
+then `quoth-openai-default-model'.  The system prompt is the
 buffer's cached one (the staged send guarantees it is built before the
 request composes); falls back to `quoth-openai--build-system-prompt-uncached'
 when the cache is empty (a direct compose without a prior stage).
@@ -614,7 +606,7 @@ HISTORY is a list of message alists (already reconstructed from the
 buffer by `quoth--history-for'); they ride between the system prompt
 and the new user message.  With no history the body carries exactly
 system + user (`stream: t', no tools).  History is disabled by the
-caller passing nil (`quoth-hyper-history-limit 0 means the core
+caller passing nil (`quoth-history-limit' 0 means the core
 extracts none).  CONTINUATION, when non-nil, is a list of message
 alists (user, assistant with `tool_calls', `role: \"tool\"') that
 replace the user message; used by the tool loop to send follow-up
@@ -622,7 +614,7 @@ requests with tool results.  Both inputs are message alists, never
 \(ROLE . TEXT) conses.  When `quoth-tools-enabled' is non-nil (the
 default), the request announces the `bash' tool and
 `tool_choice: \"auto\"'."
-  (let* ((model (or model quoth-openai-default-model))
+  (let* ((model (or model quoth-default-model quoth-openai-default-model))
          (sys-prompt (or quoth-openai--cached-system-prompt
                          (quoth-openai--build-system-prompt-uncached)))
          (user-content prompt)
@@ -892,6 +884,15 @@ KEY is stored as a string to match `json-read-from-string' convention."
              (aref raw-choices 0))
       (car-safe raw-choices))))
 
+(defun quoth--openai-delta-reasoning (delta)
+  "Return the reasoning text carried by a SSE DELTA alist, or nil.
+OpenAI-compatible servers name the reasoning field
+`reasoning_content' (the OpenAI convention) or `reasoning' (the
+Ollama-compat extension).  Whichever is present wins; when both
+appear, `reasoning_content' is preferred."
+  (or (quoth--openai-alist-get "reasoning_content" delta)
+      (quoth--openai-alist-get "reasoning" delta)))
+
 (defun quoth--openai-sse-extract-deltas (obj)
   "Return typed deltas from SSE JSON object OBJ.
 Each delta is a list (KIND TEXT ORIG) where KIND is `content',
@@ -903,12 +904,16 @@ tool_calls); ORIG is the parsed JSON object (nil when OBJ is nil)."
                        (quoth--openai-alist-get "delta" first-choice)))
            (content (and delta
                          (quoth--openai-alist-get "content" delta)))
-           (reasoning (and delta
-                           (quoth--openai-alist-get "reasoning_content" delta)))
+           ;; An empty content delta carries no text.  Some OpenAI-compatible
+           ;; gateways (ollama) put `"content":""` on every reasoning chunk;
+           ;; emitting it would end the reasoning region before the CoT
+           ;; arrives and mark content as started, so it is dropped here.
+           (content (and (stringp content) (> (length content) 0) content))
+           (reasoning (and delta (quoth--openai-delta-reasoning delta)))
            (tool-calls (and delta
                             (quoth--openai-alist-get "tool_calls" delta))))
       (delq nil
-            (list (when (stringp content)
+            (list (when content
                     (list 'content content obj))
                   (when (stringp reasoning)
                     (list 'reasoning reasoning obj))
@@ -1126,9 +1131,9 @@ compact to bound the debug log during long streams."
                (usage (quoth--openai-alist-get "usage" obj))
                (content (and delta
                              (quoth--openai-alist-get "content" delta)))
-               (reasoning (and delta
-                               (quoth--openai-alist-get "reasoning_content" delta)))
-               (text (or content reasoning)))
+               (reasoning (and delta (quoth--openai-delta-reasoning delta)))
+               (text (or (and (stringp content) (> (length content) 0) content)
+                         reasoning)))
           (or finish usage
               (and (stringp text)
                    (>= (length text) 40))))))))

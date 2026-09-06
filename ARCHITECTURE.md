@@ -43,8 +43,8 @@ new code must too.
 5. **Providers are abstracted and reuse the protocols.** Every provider is a
    self-contained file implementing the `quoth-provider-*` generics. The shared
    wire work (request composition, SSE parsing, curl transport, tool dispatch)
-   is implemented once in `quoth-openai.el`; the concrete hyper provider is a
-   thin shim that maps its configuration onto that client.
+   is implemented once in `quoth-openai.el`; each concrete provider (hyper,
+   ollama) is a thin shim that maps its configuration onto that client.
 
 6. **Buffer-unaware, presentation-agnostic layers.** The process handler
    (`quoth-process.el`) and all providers never read or write the quoth buffer.
@@ -77,9 +77,10 @@ new code must too.
 ```
 quoth/                  # Package root
   quoth.el              # Core: config, buffer orchestration, chat mode, helpers, commands
-  quoth-provider.el     # Provider protocol: base struct + quoth-provider-* generics
+  quoth-provider.el     # Provider protocol: base struct, session slots, registry, quoth-provider-* generics
   quoth-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
   quoth-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over quoth-openai)
+  quoth-ollama-provider.el  # Ollama Cloud provider (thin shim over quoth-openai; native /api for the catalog)
   quoth-select.el      # Transient model selector (UI only; depends on the protocol, not quoth.el)
   quoth-process.el      # Process handler: PTY sessions, output buffering, exit/running reporting, stdin, cleanup
   quoth-tools.el        # Local tool implementations: exec_command, write_stdin, write_file, read_file, edit_file
@@ -90,26 +91,28 @@ quoth/                  # Package root
 ```
 
 Dependency direction: `quoth-provider.el` has no `require`s (it owns the shared
-session slots, the active-provider state, and the `quoth-provider-*` generics,
-so the OpenAI client and the selector depend on the protocol, not on
-`quoth.el`); `quoth-json.el` requires only `json` (a fallback); it exposes
-`quoth-json-read` and `quoth-json-write`, preferring the native C
-`json-parse-string` when `json-available-p` and keeping `json.el`'s
-representation contract. Every file that parses or emits JSON (`quoth-openai`,
-`quoth-hyper-provider`, `quoth-searxng`) calls through it. `quoth-openai.el`
+session slots, the global defaults that seed them, the provider registry, the
+active-provider state, and the `quoth-provider-*` generics, so the OpenAI client
+and the selector depend on the protocol, not on `quoth.el`); `quoth-json.el`
+requires only `json` (a fallback); it exposes `quoth-json-read` and
+`quoth-json-write`, preferring the native C `json-parse-string` when
+`json-available-p` and keeping `json.el`'s representation contract. Every file
+that parses or emits JSON (`quoth-openai`, `quoth-hyper-provider`,
+`quoth-ollama-provider`, `quoth-searxng`) calls through it. `quoth-openai.el`
 requires only `quoth-provider` (for the session slots); `quoth-xxh3.el` has no
 dependencies (pure math); `quoth-process.el` requires only `cl-lib` and
-`subr-x`; `quoth-hyper-provider.el` requires `quoth-provider` + `quoth-openai` +
-`quoth-xxh3`; `quoth-tools.el` requires `quoth-openai` + `quoth-process` and
-registers its tools at load; `quoth-select.el` requires `quoth-provider` +
-`quoth-openai` (both leaves) and refreshes the UI through
-`quoth-after-model-change-hook` rather than calling core functions — it never
-requires `quoth.el`; `quoth.el` requires all of them (including `quoth-select`,
-for the `C-c " m` keybinding). Stream state, buffer rendering, and error
-handling (`quoth--append-delta`, `quoth--record-error`,
-`quoth--stream-transition`, `quoth--debug-log`) all live in `quoth.el` — the
-providers call them through buffer-local process references and
-`declare-function` stubs.
+`subr-x`; `quoth-hyper-provider.el` requires `quoth-provider`, `quoth-openai`,
+and `quoth-xxh3`; `quoth-ollama-provider.el` requires `quoth-provider` and
+`quoth-openai` (no xxh3 — it sends no session-affinity headers);
+`quoth-tools.el` requires `quoth-openai` + `quoth-process` and registers its
+tools at load; `quoth-select.el` requires `quoth-provider` and `quoth-openai`
+(both leaves) and refreshes the UI through `quoth-after-model-change-hook`
+rather than calling core functions — it never requires `quoth.el`; `quoth.el`
+requires all of them (including `quoth-select`, for the `C-c " m` keybinding).
+Stream state, buffer rendering, and error handling (`quoth--append-delta`,
+`quoth--record-error`, `quoth--stream-transition`, `quoth--debug-log`) all live
+in `quoth.el` — the providers call them through buffer-local process references
+and `declare-function` stubs.
 
 ## Provider Abstraction
 
@@ -119,28 +122,100 @@ methods `quoth-provider-send-prompt`, `quoth-provider-interrupt`,
 `quoth-provider-grant-permission`, `quoth-provider-model`, and the internal
 `quoth-provider--models-async` + `quoth-provider--models-key` (the async catalog
 fetch and its cache key — see the catalog cache below),
-`quoth-provider--apply-model`, and `quoth-provider--tool-calls` (reading the SSE
-stream's accumulated tool calls off the finished transport). The protocol and
-the shared `quoth-provider` base struct live in `quoth-provider.el`; each
-concrete provider is a dedicated, buffer-unaware file:
+`quoth-provider--apply-model`, `quoth-provider--usage` (the per-round usage
+plist), and `quoth-provider--tool-calls` (reading the SSE stream's accumulated
+tool calls off the finished transport). The protocol and the shared
+`quoth-provider` base struct live in `quoth-provider.el`; each concrete provider
+is a dedicated, buffer-unaware file:
 
 - `quoth-hyper-provider.el` — the default implementation: direct HTTP to the
   Charm Hyper gateway (see below).
+- `quoth-ollama-provider.el` — Ollama Cloud over its OpenAI-compatible surface,
+  with the native `/api` surface used for the model catalog (see the ollama
+  provider section below).
+
+### Registry
+
+`quoth-builtin-providers` (a `defvar` in `quoth-provider.el`) lists every
+shipped provider in priority order — hyper first, ollama second — and
+`quoth-providers` (a defcustom) defaults to it, so users override, reorder, or
+prune the list without the protocol changing. Each entry is a plist: `:name`
+(string, display + id), `:type` (symbol), `:factory` (a function of buffer +
+working directory returning a configured provider instance, resolved at
+`funcall` time so the protocol file does not require `quoth.el`), and the
+optional `:default-model` (string) — the model a new buffer on this provider
+starts with when no sticky `quoth-model-by-provider` entry exists (ollama
+carries `gpt-oss:20b`; hyper has no key and defers to the global fallback).
+Adding a provider is appending an entry with its own `:factory`. The first entry
+is the fallback active provider for new buffers when `quoth-default-provider`
+names nothing.
+
+### Session slots and defaults
+
+Every transient selection is **buffer-local**; globals exist only as defaults
+for new buffers. The session slots — `quoth--session-provider` (name string),
+`quoth--session-model` (id or nil), `quoth--session-thinking` (nil / `t` /
+`:json-false`), `quoth--session-reasoning-effort` (string or nil), and
+`quoth-history-limit` — live in `quoth-provider.el` (protocol-owned, so the
+client and the selector need no `quoth.el` dependency) and are seeded at
+`quoth--init-buffer` from the global defaults: `quoth-default-provider`,
+`quoth-default-model`, `quoth-default-thinking`,
+`quoth-default-reasoning-effort`, and the `quoth-history-limit` defcustom. The
+session model seeds from a provider chain instead: the sticky
+`quoth-model-by-provider` entry for the session provider (the last-used model on
+it, a plain `defvar` persisted by savehist), else the registry entry's
+`:default-model`, else `quoth-default-model`.
+
+The **provider instance** (`quoth-active-provider`, buffer-local) is derived
+state, not session state: it is (re)instantiated from
+`quoth--session-provider` + `quoth--session-model` whenever either changes or
+the buffer initializes, and its model slot is a cache of the session value
+(`quoth--sync-provider-model` re-syncs it). Requests always read the model from
+the buffer's session slot at compose time, so nothing session-shaped lives only
+on the provider struct. No transient action ever writes a global: the selector's
+provider switch and model picker write the session slots (and the sticky
+per-provider entry), and the global defaults change only through
+Customize/`setq`.
+
+This shape is deliberate groundwork for persisting the session with the chat
+buffer itself (gptel-style file-local variables, the Phase 2 roadmap item):
+every session slot is a named buffer-local variable seeded from a global, and
+the instance is reconstructible from the slots alone.
 
 ### Model catalog cache
 
 The protocol module owns a **global** catalog cache:
 `quoth-provider--models-cache`, keyed by `quoth-provider--models-key` (provider
-type + resolved base URL for hyper), shared across buffers of the same provider.
-All UI reads go through `quoth-provider-models-cached` (never a fetch); a fresh
-entry (inside `quoth-provider-models-ttl`, default 600 s) returns directly, a
-stale entry returns immediately and kicks exactly one background refresh
-(stale-while-revalidate, deduplicated in flight), and a successful refresh runs
-`quoth-provider-models-hook`. Refreshes ride the async
+type + resolved base URL), shared across buffers of the same provider and
+catalog source. All UI reads go through `quoth-provider-models-cached` (never a
+fetch); a fresh entry (inside `quoth-provider-models-ttl`, default 600 s)
+returns directly, a stale entry returns immediately and kicks exactly one
+background refresh (stale-while-revalidate, deduplicated in flight), and a
+successful refresh runs `quoth-provider-models-hook`. Refreshes ride the async
 `quoth-provider--models-async` generic; a failed fetch keeps the cached entry.
 The selector's `g` suffix force-refreshes, buffer initialization prefetches
 (`quoth-provider-models-prefetch`), and `quoth-select-model` falls back to the
 static list when the cache is cold and no seed applies.
+
+Each provider assembles its catalog its own way behind the generic — the cache,
+seed-stamping, TTL, and hook mechanics are shared:
+
+- **hyper** fetches `GET /v1/provider` (one request) and normalizes the payload
+  through `quoth-hyper--catalog-parse` + `quoth-hyper--normalize-model`.
+- **ollama** runs a two-step fan-out on the native `/api` surface:
+  `GET /api/tags` yields the model names (membership — the OpenAI-compatible
+  `/v1/models` is bare, `data[].id` only, so it cannot serve the catalog), then
+  one `POST /api/show` per name, all spawned in parallel, contributes
+  `capabilities` and `model_info`. The join is all-or-nothing: every show must
+  land or the whole fetch delivers nil, keeping the previous cache entry (a
+  single flaky show must not half-replace the catalog). Each entry normalizes
+  through `quoth-ollama--normalize-model`, shared by the seed reader and the
+  live refresh so the two are byte-compatible: `:context-window` from
+  `model_info`'s architecture-prefixed `<arch>.context_length` key (matched on
+  the `.context_length` suffix), `:can-reason` from the `thinking` capability,
+  `:supports-attachments` from `vision`. The cloud reports no pricing or default
+  max-tokens, so those keys stay nil and the selector renders its `?`
+  placeholders.
 
 A **bundled seed** fills the cold window before the first network refresh: on a
 cache miss, `quoth-provider-models-cached` stores the
@@ -150,16 +225,35 @@ kicked refresh overrides the seed with live data. The hyper seed reads the
 tracked `quoth-hyper-models.json` snapshot (the verbatim `/v1/provider` payload,
 regenerated by `make models`, shipped in the tarball) through the same
 `quoth-hyper--catalog-parse` + `quoth-hyper--normalize-model` pipeline as the
-live fetch, so seed and live entries are byte-compatible. The seed fires only
-for the default gateway base URL — a custom `HYPER_URL` points at another server
-and gets no snapshot — and yields nil (absent, never an error) when the file is
-missing or unparseable.
+live fetch; the ollama seed reads `quoth-ollama-models.json` (one object per
+model — `id`, `capabilities`, `context_length`, `parameter_size`,
+`quantization_level` — assembled from the same tags + show fan-out by
+`make models`) through `quoth-ollama--normalize-model`. In both cases seed and
+live entries are byte-compatible. The seed fires only for the default server — a
+custom base URL (`HYPER_URL` / `OLLAMA_URL` or the defcustom) points at another
+server and gets no snapshot — and yields nil (absent, never an error) when the
+file is missing or unparseable.
 
 The shared `quoth-provider` base struct has slots `buffer`, `completion-action`,
 `working-directory`, `request` (the request handle owned by the provider, set by
 `send-prompt`; see the staged send below), `application-count` (default 1), and
-`type`. The hyper provider subclasses it and adds its own slots (base URL,
-token, model, session-affinity hash, x-crush-id).
+`type`. Both concrete providers subclass it and add their own slots (base URL,
+token, model, plus the session-affinity hash and x-crush-id on hyper).
+
+### Usage contract
+
+`quoth-provider--usage` returns one round's usage as a normalized plist, or nil.
+The core (`quoth--accumulate-usage` → `quoth--usage-acc` → the header line)
+renders **only the keys that are present**, so a provider reports what it has
+and the header adapts: hyper carries `:input-tokens`, `:output-tokens`,
+`:cached-tokens`, and `:cost-unit`/`:cost-value`; ollama carries
+`:input-tokens`, `:output-tokens`, and `:cached-tokens` 0 only — it reports no
+per-request cost, so the header shows tokens and no cost segment. `:cached`
+tokens apply to input only and never exceed `:input-tokens`. `:accumulated`
+non-nil means the provider already summed the values across the session and the
+core renders them verbatim (skipping its own summation); nil (the current shape
+for both providers) means the values describe exactly the last request and the
+core sums them across tool-loop rounds itself.
 
 Process control is a provider responsibility, routed through the protocol:
 `quoth-send-input` consults `quoth-provider-active-p` for its "still running"
@@ -259,17 +353,17 @@ writing a new consumer, not touching the wire layer:
 In every case the provider protocol, SSE parsing, curl transport, and tool
 dispatch are reused unchanged; only the buffer-aware consumer differs.
 
-## Hyper provider (primary)
+## Hyper provider (default)
 
-The hyper provider (default) is Quoth's **primary mode of operation**: it posts
-the prompt to Hyper's OpenAI-compatible chat-completions endpoint
-(`POST {base-url}/chat/completions`, base URL defaulting to
-`https://hyper.charm.land/v1`) and streams the response directly. It needs no
-`quoth` binary — only `curl` (used the same way gptel and plz.el use it). The
-HTTP+SSE wire work is implemented once in the reusable OpenAI client
-`quoth-openai.el`; the provider is a thin shim supplying hyper config (base URL,
-token, session-affinity hash, x-crush-id) and mapping the provider protocol onto
-the client's `quoth-openai-compose-request` and `quoth-openai-request`.
+The hyper provider is Quoth's default: it posts the prompt to Hyper's
+OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`,
+base URL defaulting to `https://hyper.charm.land/v1`) and streams the response
+directly. It needs no `quoth` binary — only `curl` (used the same way gptel and
+plz.el use it). The HTTP+SSE wire work is implemented once in the reusable
+OpenAI client `quoth-openai.el`; the provider is a thin shim supplying hyper
+config (base URL, token, session-affinity hash, x-crush-id) and mapping the
+provider protocol onto the client's `quoth-openai-compose-request` and
+`quoth-openai-request`.
 
 ### How it works
 
@@ -301,9 +395,9 @@ The hyper provider is stateful: prior conversation from the buffer's tagged
 regions is folded into each request's messages array as
 `[system, prior-user, prior-assistant, prior-tool, ..., current-user]` (tool
 rounds interleave as assistant `tool_calls` + `role: "tool"` result pairs). Set
-`quoth-hyper-history-limit` to `0` for stateless per-prompt requests. Because
-the buffer is the source of truth, `C-c " k` (clear) starts a fresh conversation
-naturally.
+the buffer's `quoth-history-limit` to `0` for stateless per-prompt requests (the
+global defcustom seeds the buffer-local value at init). Because the buffer is
+the source of truth, `C-c " k` (clear) starts a fresh conversation naturally.
 
 Tool calls replay in the OpenAI function-calling shape: an assistant
 `tool_calls` declaration (content `null`) followed by a `role: "tool"` result
@@ -540,6 +634,53 @@ a later `write_stdin` poll still collects the final output.
 - Manual token only (`quoth-hyper-token`); OAuth device flow is planned.
 - `quoth-provider-grant-permission` is a no-op (tools run without confirmation).
 
+## Ollama provider
+
+The ollama provider (`quoth-ollama-provider.el`) targets Ollama Cloud's
+OpenAI-compatible surface — `POST {base-url}/chat/completions`, base URL
+defaulting to `https://ollama.com/v1` (the `OLLAMA_URL` environment variable or
+the `quoth-ollama-base-url` defcustom overrides it; pointing either at a local
+daemon such as `http://localhost:11434/v1` is a plain configuration change,
+since the daemon speaks the same protocol). It is the same thin-shim shape as
+hyper: the shared `quoth-openai.el` client does the wire work, and the provider
+supplies config (base URL, token via `quoth-ollama-token`, auth-source default
+`machine ollama.com login apikey`) and maps the protocol onto the client.
+
+Differences from hyper, all flowing from the wire facts in
+[OLLAMA-CLOUD-API.md](OLLAMA-CLOUD-API.md):
+
+- **No session-affinity or machine-id headers.** Ollama has no prefix-cache
+  protocol; session continuity rides the re-sent history alone, so the
+  buffer-rebuild principle holds with no extra headers.
+- **One provider extra on the body.** `send-prompt` appends
+  `stream_options: {include_usage: true}` to the composed alist before the
+  request fires — providers appending keys to the composed alist is the
+  documented extension mechanism, with no `quoth-openai-compose-request`
+  signature change. The final SSE chunk then carries `usage` with an **empty
+  `choices` array**; the parser tolerates it (the usage capture path is
+  choice-independent).
+- **Reasoning arrives as `reasoning`, not `reasoning_content`.** This is a
+  generic client behavior, not an ollama branch: the shared delta extractor
+  reads `reasoning` as an alias for `reasoning_content` (whichever is present
+  wins, `reasoning_content` preferred when both appear), so the reasoning fold
+  works identically on both providers.
+- **Usage has no cost.** `quoth-provider--usage` maps
+  `prompt_tokens`/`completion_tokens` to `:input-tokens`/`:output-tokens` with
+  `:cached-tokens` 0 and no `:cost` keys — the header line renders tokens only
+  (see the usage contract above).
+- **The catalog rides the native `/api` surface** (tags + show fan-out — see the
+  catalog cache section above), because `/v1/models` is bare.
+- **Tier ignorance.** No free/paid gating logic anywhere: the catalog lists what
+  the server lists, and a gated model surfaces the server's own HTTP 402 error
+  body through the existing error path.
+
+Thinking stays tri-state with no provider-specific code:
+`quoth-openai-compose-request` keeps emitting `thinking`/`reasoning_effort` from
+the session slots, and the server accepts unknown params silently (HTTP 200).
+The selector's reasoning matrix keeps its hyper-validated wording with the
+provider-dependent caveat already in place — ollama currently ignores both keys,
+so "off" is a no-op rather than a suppression there.
+
 ## Chat Buffer Composition
 
 The quoth buffer's major mode is the parent mode (`markdown-mode` if available,
@@ -631,16 +772,17 @@ process-filter callback where `post-command-hook` never fires between rounds.
 
 ### Model persistence
 
-`quoth-model` is a plain `defvar`, not a defcustom: it is the runtime selection
-owned by savehist, not a user option owned by Customize, so the two never fight
-over it at startup. It is registered on `savehist-additional-variables`
-(alongside `quoth-active-provider-name`) inside
-`with-eval-after-load 'savehist`, so savehist is never required at load time:
-when `savehist-mode` is on, the value is restored on startup and written back on
-exit, persisting the model choice across Emacs restarts. (The input history ring
-persists through its own file, `quoth--input-ring-file-name`, not savehist.)
-`quoth-openai-default-model` remains the Customize-level default for buffers
-that have not selected a model.
+`quoth-model-by-provider` is a plain `defvar`, not a defcustom: it is runtime
+state (the sticky last-used-model-per-provider memory) owned by savehist, not a
+user option owned by Customize, so the two never fight over it at startup. It is
+registered on `savehist-additional-variables` (alongside the
+`quoth-default-provider` defcustom) inside `with-eval-after-load 'savehist`, so
+savehist is never required at load time: when `savehist-mode` is on, the values
+are restored on startup and written back on exit, persisting the per-provider
+model memory and the default-provider choice across Emacs restarts. (The input
+history ring persists through its own file, `quoth--input-ring-file-name`, not
+savehist.) `quoth-default-model` is the Customize-level cross-provider fallback
+for buffers whose provider chain yields no model.
 
 ### Debug log
 
@@ -707,8 +849,9 @@ Always run it before committing.
 - Region/tagging bugs: check which text properties (`quoth-region-type`,
   `quoth-prompt-id`, `quoth-response-to`) are applied where, using
   `get-text-property` or the header line's `region:` label.
-- Backend wire tests use `test/hyper-server.py` (started as a subprocess per
-  test) — inspect the capture file for request bodies.
+- Backend wire tests use `test/hyper-server.py` and `test/ollama-server.py`
+  (started as a subprocess per test) — inspect the capture file for request
+  bodies.
 - Lisp paren issues: never hand-count — use
   `parinfer-rust -l lisp -m paren FILE` to validate and `-m indent` to repair
   from indentation.
@@ -718,7 +861,7 @@ Always run it before committing.
 - `quoth-` prefix: public commands, defcustoms, defgroup, faces.
 - `quoth--` prefix: internal functions, state variables, markers.
 - Provider protocol names: `quoth-provider-*` generics; the concrete provider
-  struct is `quoth-hyper-provider`.
+  structs are `quoth-hyper-provider` and `quoth-ollama-provider`.
 - Test names: `quoth-test/<topic>` under `ert-deftest`; helpers
   `quoth-test--...`, traveling with their topic file.
 - Docstrings follow checkdoc conventions.
