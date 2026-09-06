@@ -2325,6 +2325,81 @@ stale tags (e.g. yank, undo) from the divider."
 
 ;;; 20b. Usage accumulation
 
+(ert-deftest quoth-test/accumulate-usage-records-last-round ()
+  "`quoth--accumulate-usage' also stores the raw last round.
+`quoth--usage-last' holds the provider's per-request plist verbatim;
+each accumulate overwrites it, it never sums."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (let* ((proc (make-pipe-process :name "fake" :noquery t))
+                 (provider quoth-active-provider))
+            (process-put proc :quoth-sse
+                         (list :usage (list (cons "prompt_tokens" 60)
+                                            (cons "completion_tokens" 40))))
+            (setf (quoth-provider-request provider)
+                  (list :stage-process nil :curl proc :done-p t))
+            (setq-local quoth--usage-acc nil)
+            (setq-local quoth--usage-last nil)
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-last :input-tokens) 60))
+            (should (= (plist-get quoth--usage-last :output-tokens) 40))
+            (process-put proc :quoth-sse
+                         (list :usage (list (cons "prompt_tokens" 150)
+                                            (cons "completion_tokens" 110))))
+            (quoth--accumulate-usage)
+            (should (= (plist-get quoth--usage-last :input-tokens) 150))
+            (should (= (plist-get quoth--usage-last :output-tokens) 110))
+            (delete-process proc)))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/models-hook-refreshes-header-line ()
+  "A landing catalog refresh re-renders the chat buffer's header.
+The hook runs in whatever buffer was current at delivery, so the
+subscriber must switch to the chat buffer before updating.  A
+refresh landing after a response finished turns the capacity
+cluster on without waiting for user input."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (quoth-test--with-models-cache
+         (lambda ()
+           (with-current-buffer (quoth-test--fresh-buffer)
+             (setq-local quoth--session-model "my-model")
+             (setf (quoth-hyper-provider-model quoth-active-provider)
+                   "my-model")
+             (setq-local quoth--usage-acc
+                         (list :input-tokens 6000 :output-tokens 4000))
+             (setq-local quoth--usage-last
+                         (list :input-tokens 6000 :output-tokens 4000))
+             ;; Cold catalog: the capacity cluster is absent.
+             (quoth--update-header-line)
+             (should-not (string-match-p "ctx"
+                                         (format "%s"
+                                                 header-line-format)))
+             ;; The refresh lands (cache written from the delivery
+             ;; buffer) and its hook fires: the header gains ctx.
+             (puthash (quoth-provider--models-key quoth-active-provider)
+                      (cons (list (list :id "my-model"
+                                        :context-window 100000))
+                            0.0)
+                      quoth-provider--models-cache)
+             (with-temp-buffer
+               (run-hooks 'quoth-provider-models-hook))
+             (should (string-match-p
+                      "ctx"
+                      (format "%s" header-line-format))))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/clear-buffer-resets-usage-last ()
+  "`quoth-clear-buffer' clears the last-round usage along with the acc."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (setq-local quoth--usage-last (list :input-tokens 60))
+          (quoth-clear-buffer)
+          (should-not quoth--usage-last))
+      (quoth-test--cleanup))))
+
 (ert-deftest quoth-test/merge-usage-sums-two-rounds ()
   "Two per-request usage plists accumulate into one.
 The the core sums :input-tokens, :output-tokens, :cached-tokens, and
@@ -2539,6 +2614,50 @@ arrows), and the cache percentage divides cached by INPUT tokens only."
             (should (string= h
                              "(my-model  \u21918.8k \u2193311 $0.0139 0%%  -)")))))
     (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/header-line-shows-capacity-after-round ()
+  "A completed round with a known window shows the capacity cluster.
+The percentage divides the last round's input+output tokens by the
+model's context window, labeled `ctx' to distinguish it from the
+cache percentage."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (quoth-test--with-models-cache
+         (lambda ()
+           (with-current-buffer (quoth-test--fresh-buffer)
+             (setq-local quoth--session-model "my-model")
+             (setf (quoth-hyper-provider-model quoth-active-provider)
+                   "my-model")
+             (puthash (quoth-provider--models-key quoth-active-provider)
+                      (cons (list (list :id "my-model"
+                                        :context-window 100000))
+                            0.0)
+                      quoth-provider--models-cache)
+             (setq-local quoth--usage-acc
+                         (list :input-tokens 6000 :output-tokens 4000))
+             (setq-local quoth--usage-last
+                         (list :input-tokens 6000 :output-tokens 4000))
+             (quoth--update-header-line)
+             (let ((h (format "%s" header-line-format)))
+               (should (string-match-p "ctx 10%%" h))))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/header-line-omits-capacity-without-catalog ()
+  "Without a cached catalog the capacity cluster is simply absent.
+`unknown' capacity means omit, never a fabricated default."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (setq-local quoth--session-model "my-model")
+          (setf (quoth-hyper-provider-model quoth-active-provider) "my-model")
+          (setq-local quoth--usage-acc
+                      (list :input-tokens 6000 :output-tokens 4000))
+          (setq-local quoth--usage-last
+                      (list :input-tokens 6000 :output-tokens 4000))
+          (quoth--update-header-line)
+          (should-not (string-match-p "ctx"
+                                      (format "%s" header-line-format))))
+      (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-cache-percent-divides-input-only ()
   "Cache percentage is cached/input, not cached/(input+output).

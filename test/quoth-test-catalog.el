@@ -510,6 +510,30 @@ truthful labels (write and hit); segments join with two spaces."
       (should-not (string-match-p "cache-write" detail))
       (should-not (string-match-p "cache-hit" detail)))))
 
+(ert-deftest quoth-test/catalog-context-window-known-model ()
+  "A cached catalog entry with a window returns its integer value."
+  (quoth-test--with-models-cache
+   (lambda ()
+     (let ((provider (quoth-make-hyper-provider
+                      :buffer (current-buffer)
+                      :base-url "http://example/v1")))
+       (puthash (quoth-provider--models-key provider)
+                (cons (list (list :id "m1" :context-window 128000)) 0.0)
+                quoth-provider--models-cache)
+       (setf (quoth-hyper-provider-model provider) "m1")
+       (should (= (quoth-provider-model-context-window provider)
+                  128000))))))
+
+(ert-deftest quoth-test/catalog-context-window-unknown-without-catalog ()
+  "No cached catalog yields the `unknown' symbol, never an error."
+  (quoth-test--with-models-cache
+   (lambda ()
+     (let ((provider (quoth-make-hyper-provider
+                      :buffer (current-buffer)
+                      :base-url "http://example/v1")))
+       (should (eq (quoth-provider-model-context-window provider)
+                   'unknown))))))
+
 (ert-deftest quoth-test/catalog-hyper-seed-read-real-snapshot ()
   "The tracked snapshot parses and normalizes to a non-empty model list.
 An :id is present on every entry.  No hardcoded model ids — the

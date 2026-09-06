@@ -612,6 +612,16 @@ interrupting, clearing, and session management.
 ;; transition (not only on user commands, which drive post-command-hook).
 (add-hook 'quoth-phase-change-hook
           (lambda (&rest _) (quoth--update-header-line)))
+;; A catalog refresh landing after a response finished re-renders the
+;; header so the capacity cluster appears without user input.  The hook
+;; runs in whatever buffer was current at delivery; visit live chat
+;; buffers and update in place.
+(add-hook 'quoth-provider-models-hook
+          (lambda ()
+            (dolist (buf (buffer-list))
+              (when (buffer-live-p buf)
+                (with-current-buffer buf
+                  (quoth--update-header-line))))))
 
 ;;; Internal helpers
 
@@ -732,6 +742,12 @@ Session usage (tokens, cost, cache%); nil until the first response."
 The region type at point; the right-most cluster."
   (or (quoth--region-label-at-point) "-"))
 
+(defun quoth--header-capacity-segment ()
+  "Return the capacity cluster for the header line, or nil.
+The last request's share of the model's context window; nil until a
+response has finished with a known window."
+  (quoth--capacity-header-segment))
+
 (defun quoth--update-header-line ()
   "Update the header line from its model, usage, and buffer clusters.
 Each cluster is built by a dedicated segment function; non-nil segments
@@ -739,6 +755,7 @@ are joined by two spaces so related info stays adjacent."
   (let ((segments (delq nil
                         (list (quoth--header-model-segment)
                               (quoth--header-usage-segment)
+                              (quoth--header-capacity-segment)
                               (quoth--header-buffer-segment)))))
     (setq header-line-format
           (list (propertize (mapconcat #'identity segments "  ")
@@ -2251,6 +2268,13 @@ when the provider is per-request.  Caching applies to input tokens
 only, so :cached-tokens never exceeds :input-tokens.  Reset only on
 `quoth-clear-buffer'.")
 
+(defvar-local quoth--usage-last nil
+  "The last round's per-request usage plist, or nil.
+Holds the provider's normalized plist verbatim (:input-tokens,
+:output-tokens, ...), never summed, so the header can show the last
+request's share of the model's context window.  nil before the first
+response.  Buffer-local; reset only by `quoth-clear-buffer'.")
+
 (defun quoth--merge-usage (acc usage)
   "Merge one round's USAGE plist into ACC, summing numeric fields.
 Sums :input-tokens, :output-tokens, :cached-tokens, and :cost-value.
@@ -2278,6 +2302,8 @@ verbatim; otherwise sum into the accumulator."
     (let ((u (quoth-provider--usage
               quoth-active-provider
               (quoth-provider-request quoth-active-provider))))
+      (when (and u (not (plist-get u :accumulated)))
+        (setq-local quoth--usage-last u))
       (when u
         (if (plist-get u :accumulated)
             (setq-local quoth--usage-acc
@@ -2287,13 +2313,13 @@ verbatim; otherwise sum into the accumulator."
                               :cost-unit      (plist-get u :cost-unit)
                               :cost-value     (plist-get u :cost-value)))
           (setq-local quoth--usage-acc
-                      (quoth--merge-usage quoth--usage-acc u)))
-        ;; Refresh the header immediately so mid-tool-loop rounds show
-        ;; up live.  The tool loop runs synchronously inside a single
-        ;; process-filter callback, so `post-command-hook' never fires
-        ;; between rounds; without this the usage display stays frozen
-        ;; at the pre-loop value until the whole chain unwinds.
-        (quoth--update-header-line)))))
+                      (quoth--merge-usage quoth--usage-acc u))))
+      ;; Refresh the header immediately so mid-tool-loop rounds show
+      ;; up live.  The tool loop runs synchronously inside a single
+      ;; process-filter callback, so `post-command-hook' never fires
+      ;; between rounds; without this the usage display stays frozen
+      ;; at the pre-loop value until the whole chain unwinds.
+      (quoth--update-header-line))))
 
 (defun quoth--group-number-compact (n)
   "Format integer N compactly with a k/M suffix and one decimal.
@@ -2333,6 +2359,25 @@ model."
         (let ((pct (if (> input 0) (round (* 100.0 (/ (float cached) (float input)))) 0)))
           (push (format "%d%%%%" pct) parts)))
       (mapconcat #'identity (nreverse parts) " "))))
+
+(defun quoth--capacity-header-segment ()
+  "Return the compact capacity string for the header, or nil.
+The cluster shows the LAST request's share of the active model's
+context window: `ctx N%%', where N divides the last round's
+input+output tokens (from `quoth--usage-last') by the window.  Nil
+when either input is unknown: no round has finished, the provider
+reports accumulated totals only (its per-request split is not
+reported), or the catalog carries no window."
+  (when (and quoth--usage-last
+             (numberp (plist-get quoth--usage-last :input-tokens))
+             (numberp (plist-get quoth--usage-last :output-tokens)))
+    (let ((window (quoth-provider-model-context-window
+                   quoth-active-provider)))
+      (when (and (numberp window) (> window 0))
+        (let ((total (+ (plist-get quoth--usage-last :input-tokens)
+                        (plist-get quoth--usage-last :output-tokens))))
+          (format "ctx %d%%%%"
+                  (round (* 100.0 (/ (float total) (float window))))))))))
 
 (defun quoth--finalize-if-live (buf)
   "Run the unified finalizer in BUF when its turn is still in flight.
@@ -3246,6 +3291,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
       (delete-overlay ov)))
   (quoth--reasoning-reset)
   (setq-local quoth--usage-acc nil)
+  (setq-local quoth--usage-last nil)
   (erase-buffer)
   (quoth--insert-input-separator)
   (setq-local buffer-undo-list nil))

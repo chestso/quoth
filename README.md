@@ -340,11 +340,11 @@ How attachments travel to the provider is documented in
 
 ### Header Line Display
 
-The header line shows three clusters joined by two spaces: the model name,
-session usage, and the region type at point.
+The header line shows up to four clusters joined by two spaces: the model name,
+session usage, capacity, and the region type at point.
 
 ```
-deepseek-v4-flash  ↑9.0k ↓1.2k $0.0123 42%  response
+deepseek-v4-flash  ↑9.0k ↓1.2k $0.0123 42%  ctx 7%  response
 ```
 
 The model is the active provider's model (the buffer's session model, set at
@@ -353,8 +353,12 @@ selector). Usage — input (`↑`) and output (`↓`) tokens, accumulated cost, 
 cache percentage — appears after the first response completes and totals the
 whole session (tokens, cost, and cache percentage across all prompts and tool
 rounds; cleared by `C-c " k`). Providers that report no cost (ollama does not)
-show tokens only. The third cluster is the region type at point, or `-` on
-untagged text, which includes the input area before its first send.
+show tokens only. The capacity cluster (`ctx 7%` in the example) shows the
+**last request's** share of the model's context window — its input and output
+tokens divided by the window from the model catalog. It appears once a round has
+finished and the catalog reports the window, and it disappears for models the
+catalog knows no window for. The last cluster is the region type at point, or
+`-` on untagged text, which includes the input area before its first send.
 
 ### Model selection and persistence
 

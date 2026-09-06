@@ -369,6 +369,25 @@ than erroring) and stay silent rather than blocking."
           (if (plist-get entry :supports-attachments) t nil)
         'unknown))))
 
+(defun quoth-provider-model-context-window (provider)
+  "Return PROVIDER's active model context window in tokens.
+Reads the model id through `quoth-provider-model' and looks it up in
+the cached catalog (never a fetch).  Returns an integer when the
+catalog reports `:context-window' for the model, or `unknown' when
+the provider has no model selected, the catalog has not loaded, or
+the entry carries no window — callers treat `unknown' as \"omit the
+display\" rather than guessing a default."
+  (if (not (and provider (quoth-provider-p provider)))
+      'unknown
+    (let* ((model (quoth-provider-model provider))
+           (models (and model (quoth-provider-models-cached provider)))
+           (entry (and models
+                       (cl-find model models
+                                :test #'string=
+                                :key (lambda (m) (plist-get m :id))))))
+      (or (and entry (plist-get entry :context-window))
+          'unknown))))
+
 (defun quoth-provider-models-cached (provider)
   "Return PROVIDER's cached catalog, or nil when never fetched.
 A fresh entry (inside `quoth-provider-models-ttl') returns directly.

@@ -768,21 +768,29 @@ that a prior turn was cut off.
 
 ### Header line
 
-`quoth--update-header-line` joins three cluster segments with two spaces, each
+`quoth--update-header-line` joins four cluster segments with two spaces, each
 built by a dedicated function: the model (`quoth--header-model-segment`, the
 active provider's model), session usage (`quoth--header-usage-segment` →
 `quoth--usage-header-segment`: input/output tokens with k/M suffixes and `↑`/`↓`
 arrows, accumulated cost, and the cache percentage — cached ÷ **input** tokens
 only, since caching applies to the prompt side — from the session-scoped
-`quoth--usage-acc`, nil until the first response completes), and the region type
-at point (`quoth--header-buffer-segment` → `quoth--region-label-at-point`, the
+`quoth--usage-acc`, nil until the first response completes), capacity
+(`quoth--header-capacity-segment` → `quoth--capacity-header-segment`: the **last
+request's** share of the active model's context window, `ctx N%`, from the
+per-request `quoth--usage-last` and the cached catalog's `:context-window` via
+`quoth-provider-model-context-window`; omitted when either input is unknown — no
+finished round, an `:accumulated` provider whose per-request split is not
+reported, or a model the catalog carries no window for), and the region type at
+point (`quoth--header-buffer-segment` → `quoth--region-label-at-point`, the
 `quoth-region-type` symbol as a string, `-` on untagged text).
 
 `header-line-format` is a mode-line construct: `%`-specifications are
 escape-processed at display, so the segment stores `42%%` and the user sees
-`42%`. The header refreshes on `post-command-hook` and at finalize; the tool
-loop refreshes it explicitly because it runs synchronously inside one
-process-filter callback where `post-command-hook` never fires between rounds.
+`42%`. The header refreshes on `post-command-hook`, at finalize, and when a
+model-catalog refresh lands (`quoth-provider-models-hook`, so a late catalog
+fills the capacity cluster without user input); the tool loop refreshes it
+explicitly because it runs synchronously inside one process-filter callback
+where `post-command-hook` never fires between rounds.
 
 ### Model persistence
 
