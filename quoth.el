@@ -622,7 +622,8 @@ interrupting, clearing, and session management.
             (dolist (buf (buffer-list))
               (when (buffer-live-p buf)
                 (with-current-buffer buf
-                  (quoth--update-header-line))))))
+                  (when quoth--initialized
+                    (quoth--update-header-line)))))))
 
 ;;; Internal helpers
 
