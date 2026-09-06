@@ -1580,7 +1580,7 @@ the name is not found."
                  (plist-get entry :name)))))))
 
 (defun quoth--provider-default-model (name)
-  "Return the model a fresh buffer on provider NAME starts with.
+  "Return the initial model for a fresh buffer on provider NAME.
 The chain: the sticky `quoth-model-by-provider' entry for NAME, else
 the registry entry's :default-model, else `quoth-default-model'.
 nil when nothing applies — the request then falls back to the
