@@ -1,19 +1,27 @@
-# Ollama: Full Story & API Integration Guide
+# Ollama Cloud API Reference
 
-## 1. What Is Ollama?
+## 1. Overview
 
-Ollama is a tool for running large language models (LLMs) locally and in the
-cloud. It was created in 2023 by Jeffrey Morgan and Michael Chiang. Think of it
-like Docker, but for AI models — you pull a model, run it, and interact with it
-via a REST API.
+This document specifies the **HTTP API of Ollama Cloud** (`https://ollama.com`)
+— the hosted fleet behind the subscription tiers — as consumed by the ollama
+provider in Quoth. The local daemon (`http://localhost:11434`, no auth) speaks
+the same protocol, so pointing `quoth-ollama-base-url` at it is a user-side
+configuration; this reference keeps cloud-verified behavior in the foreground.
+
+Quoth consumes the **OpenAI-compatible surface** (`/v1/chat/completions`, usage
+streaming, vision content-parts) through the shared client `quoth-openai.el`,
+and the **native `/api` surface** for exactly one thing the OpenAI protocol
+cannot do: the model catalog, assembled from `GET /api/tags` (membership) plus a
+parallel `POST /api/show` fan-out (capabilities, context length). See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the provider wiring and
+`test/ollama-server.py` for the wire-test fixture.
+
+Every claim marked "live test" or "verified" below was probed against the live
+cloud with a free-tier key (Sep 2026), not derived from upstream docs.
 
 - **Website:** https://ollama.com/
-- **GitHub:** https://github.com/ollama/ollama
 - **Docs:** https://docs.ollama.com/
-
-Ollama lets you run popular open-weight models like Llama 3, Mistral, Phi,
-Gemma, DeepSeek, GLM, Qwen, and many others without needing to manually set up
-inference engines like llama.cpp.
+- **API keys:** https://ollama.com/settings/keys
 
 ---
 
@@ -149,9 +157,6 @@ using `https://ollama.com/api` (native) and `https://ollama.com/v1`
 | Native Ollama | `https://ollama.com/api` | `Authorization: Bearer <KEY>` |
 | OpenAI-compat | `https://ollama.com/v1`  | `Authorization: Bearer <KEY>` |
 | Local daemon  | `http://localhost:11434` | None required                 |
-
-> **Correction from earlier sections:** The OpenAI-compatible base URL is
-> `https://ollama.com/v1` (NOT `https://ollama.com/api/v1`).
 
 > **Auth enforcement is per-endpoint on the cloud (verified Sep 2026):**
 > generation endpoints (`/v1/chat/completions`, `/v1/completions`, `/api/chat`,
@@ -951,7 +956,7 @@ curl -H "Authorization: Bearer $OLLAMA_API_KEY" \
 > (section 6.4). This endpoint also works **without authentication** (HTTP 200
 > with no API key); only chat/generate requests enforce auth. As of Sep 2026 the
 > cloud lists 19 models, several of which are gated behind a subscription (see
-> the 402 note in section 6.1).
+> the 402 note in section 6.16).
 
 #### GET /v1/models/{model}
 
@@ -1091,7 +1096,7 @@ data: [DONE]
 
 ## 7. Streaming
 
-Streaming is covered in detail in the full API spec above:
+Streaming is specified in detail in the endpoint sections above:
 
 - **Native streaming:** Section 6.1 — set `"stream": true` on `/api/chat` or
   `/api/generate`
@@ -1238,297 +1243,3 @@ curl -H "Authorization: Bearer $OLLAMA_API_KEY" \
 curl http://localhost:11434/api/chat \
   -d '{"model":"llama3.1","messages":[{"role":"user","content":"Hi"}],"stream":false}'
 ```
-
----
-
-## 9. Available Models
-
-Browse all models at https://ollama.com/library
-
-Popular choices:
-
-| Model              | Size    | Good for          |
-| ------------------ | ------- | ----------------- |
-| llama3.1           | 8B      | General chat      |
-| llama3.1:70b       | 70B     | High-quality chat |
-| mistral            | 7B      | General chat      |
-| phi3               | 3.8B    | Lightweight, fast |
-| gemma2             | 9B/27B  | General chat      |
-| deepseek-r1        | 7B-671B | Reasoning         |
-| qwen2.5-coder      | 7B-32B  | Coding            |
-| nomic-embed-text   | 137M    | Embeddings        |
-| gpt-oss:120b-cloud | 120B    | Cloud-only, large |
-
-On the local daemon, cloud-hosted models carry a `-cloud` suffix (e.g.
-`gpt-oss:120b-cloud`) and proxy through Ollama Cloud. On the **direct cloud
-API** the suffix is not used — the plain name (`gpt-oss:120b`) works, and the
-suffixed name is also accepted (both verified live, Sep 2026).
-
-> **Live testing note (Sep 2026):** the cloud catalog returned by `/v1/models`
-> and `/api/tags` (19 models) contains no `-cloud` names; it lists models like
-> `gpt-oss:20b`, `gemma4:31b`, `glm-5.3`, `deepseek-v4-pro:0813`, `kimi-k3`,
-> `mistral-large-3:675b`, `qwen3.5:397b` — i.e. the hosted fleet, not the
-> local-pullable library. Some require a subscription (HTTP 402; see section
-> 6.16).
-
-To pull a model locally:
-
-```bash
-ollama pull llama3.1
-ollama pull deepseek-r1:8b
-```
-
----
-
-## 10. Quick Start: Cloud API Only (No Local Install)
-
-```bash
-# 1. Sign up at https://ollama.com
-# 2. Create an API key at https://ollama.com/settings/keys
-# 3. Set it as an environment variable
-export OLLAMA_API_KEY="your-api-key-here"
-
-# 4. Test it
-curl -H "Authorization: Bearer $OLLAMA_API_KEY" \
-  https://ollama.com/api/chat \
-  -d '{
-    "model": "llama3.1",
-    "messages": [{"role": "user", "content": "Say hello!"}],
-    "stream": false
-  }'
-
-# 5. List available models
-curl -H "Authorization: Bearer $OLLAMA_API_KEY" \
-  https://ollama.com/api/tags
-```
-
----
-
-## 11. Quick Start: Local Daemon (Free)
-
-```bash
-# 1. Install Ollama CLI (MIT licensed, open source)
-#    macOS:   brew install ollama
-#    Linux:   curl -fsSL https://ollama.com/install.sh | sh
-#    Windows: Download from https://github.com/ollama/ollama/releases
-
-# 2. Start the server
-ollama serve
-
-# 3. Pull a model
-ollama pull llama3.1
-
-# 4. Test the API (no auth needed for local)
-curl http://localhost:11434/api/chat \
-  -d '{
-    "model": "llama3.1",
-    "messages": [{"role": "user", "content": "Say hello!"}],
-    "stream": false
-  }'
-
-# 5. List models
-curl http://localhost:11434/api/tags
-```
-
----
-
-## 12. Key Takeaways
-
-1. **You do NOT need to install Ollama locally** to use their cloud API. Sign
-   up, get an API key, and call `https://ollama.com/api` directly.
-
-2. **The core CLI/daemon is MIT licensed** (open source, permissive, commercial
-   use OK). The desktop GUI app is proprietary/closed source — but you don't
-   need it for API integration.
-
-3. **The API is identical** whether local or cloud — same endpoints, same
-   request/response format. Only the base URL and auth header differ.
-
-4. **OpenAI-compatible endpoints** are available (`/v1/chat/completions`) so any
-   existing OpenAI client library works with minimal changes.
-
-5. **Pricing:** Free tier for light cloud + unlimited local use. Pro
-   ($20/mo)
-   for heavier cloud workloads. Max ($100/mo, currently paused for
-   new signups).
-
-6. **For your app:** Use the direct cloud API with a Bearer token if you want a
-   hosted provider. Use the local daemon if you want free, private, on-device
-   inference. Switch between them by changing the base URL and auth header.
-
----
-
-## 13. Why Did They Make the Desktop App Proprietary?
-
-When Ollama launched in 2023, everything was MIT-licensed open source. In
-mid-2025, they introduced a new desktop GUI app — and kept it closed source. The
-community noticed and pushed back. Here's why they likely did it:
-
-### A. Monetization strategy
-
-Ollama is a company, not just a project. They need to make money. The sequence
-suggests a deliberate strategy:
-
-1. Build an open-source tool that gains massive adoption (the CLI/daemon)
-2. Once you have users, introduce cloud services (the monetization vector)
-3. Make the GUI app the primary gateway to those cloud services
-4. Keep the GUI closed source so competitors can't easily replicate the polished
-   onboarding, cloud billing, and account management experience
-
-The GUI is effectively the **productized layer** on top of the open-source core.
-By keeping it proprietary, Ollama controls the user experience, cloud
-authentication, subscription management, and billing — the parts that generate
-revenue.
-
-### B. Controlling the cloud funnel
-
-The GUI app is tightly integrated with ollama.com accounts, cloud model access,
-and subscription tiers. If the GUI were open source, competitors could fork it,
-strip out the cloud billing, and redirect users to their own services —
-undercutting Ollama's business model.
-
-### C. Common industry pattern
-
-This is a well-known strategy: **open-source the core, proprietary the
-product.** Examples:
-
-| Project | Open core     | Proprietary layer           |
-| ------- | ------------- | --------------------------- |
-| Docker  | Docker Engine | Docker Desktop (later)      |
-| MongoDB | Core DB       | Cloud / Enterprise features |
-| GitLab  | CE            | Premium / Ultimate tiers    |
-| Ollama  | CLI + daemon  | Desktop GUI + Cloud         |
-
-### D. Community reaction
-
-The decision was controversial:
-
-- **Supporters** argue: the CLI/daemon is still MIT, the GUI is a convenience
-  layer, and companies need to monetize to survive. Nobody is forced to use the
-  GUI.
-- **Critics** argue: it's a bait-and-switch. Ollama built adoption on an
-  open-source ethos, then introduced closed-source components and cloud lock-in.
-  Some have called for migration to fully open alternatives like `llama.cpp`
-  directly, or tools like Jan.
-
-Relevant discussions:
-
-- Reddit: https://www.reddit.com/r/LocalLLaMA/comments/1meeyee/
-- Hacker News: https://news.ycombinator.com/item?id=44739632
-- Sleeping Robots critique: https://sleepingrobots.com/dreams/stop-using-ollama/
-
-### E. What this means for developers
-
-The good news: **you don't need the proprietary GUI.** The MIT-licensed CLI and
-daemon are all you need to:
-
-- Run models locally (free)
-- Expose the REST API
-- Proxy to Ollama Cloud if you sign in via CLI
-
-The proprietary GUI is an end-user convenience tool, not a developer
-requirement.
-
----
-
-## 14. Why Does Ollama Need My Phone Number?
-
-Ollama requires phone number verification when creating an ollama.com account
-(for cloud access). This is an **anti-abuse measure**, not a developer
-requirement.
-
-### A. Preventing free-tier abuse
-
-Ollama Cloud has a free tier with limited compute. Without phone verification,
-anyone could create unlimited accounts to bypass usage limits and hoard free
-cloud GPU time. Phone verification raises the cost of creating fake accounts.
-
-A security researcher documented this exact vulnerability (GitHub issue
-[#15840](https://github.com/ollama/ollama/issues/15840)): Ollama's phone
-verification was sporadic and could be bypassed, allowing unlimited account
-registration and cloud resource abuse.
-
-### B. Standard cloud provider practice
-
-Phone verification is common among cloud providers with free tiers:
-
-| Service      | Phone verification? |
-| ------------ | ------------------- |
-| OpenAI       | Yes                 |
-| Google Cloud | Yes                 |
-| AWS          | Yes                 |
-| Azure        | Yes                 |
-| Ollama Cloud | Yes                 |
-
-It's not unique to Ollama — it's the industry norm for services offering free
-compute.
-
-### C. Current limitation: inconsistent international number support
-
-As of 2026, Ollama's phone verification is **inconsistent across countries**. It
-is not accurate to say "US numbers only" — some international numbers work (e.g.
-Thai numbers have been confirmed to work), while many others do not. The
-behavior appears to depend on the underlying SMS provider (WorkOS's Radar SMS)
-rather than a deliberate country allowlist on Ollama's part.
-
-GitHub issue [#16060](https://github.com/ollama/ollama/issues/16060) tracks this
-problem. As of August 2026 it is still open, with users from Germany, UK, Spain,
-Israel, Australia, Iran, France, Vietnam, Zimbabwe, Pakistan, and others all
-reporting blocked signups — yet some non-US numbers (e.g. Thai) do go through.
-The inconsistency makes it hard to predict whether any given country will work.
-
-- This is a known limitation that Ollama has not yet resolved.
-- Workarounds (like SMS verification services) exist but are fragile and against
-  the spirit of the verification.
-
-### D. Do you need a phone number?
-
-| Use case                            | Phone number required?  |
-| ----------------------------------- | ----------------------- |
-| Local daemon only (free)            | No                      |
-| Direct cloud API (free tier)        | Yes (to create account) |
-| Direct cloud API (paid tier)        | Yes (to create account) |
-| Local daemon + CLI sign-in to cloud | Yes (to create account) |
-
-You only need a phone number if you want to use **Ollama Cloud**. If you're
-running models locally with the MIT-licensed CLI, no account or phone number is
-needed at all.
-
----
-
-## 15. Summary: Should You Use Ollama as a Provider?
-
-### Use Ollama if:
-
-- You want a free, local, private LLM provider (CLI/daemon, MIT licensed)
-- You want a cloud provider with generous free tier and OpenAI-compatible API
-- You want to switch between local and cloud with minimal code changes
-- You're OK with phone verification for cloud access (inconsistent international
-  support — some countries work, many don't, as of 2026)
-
-### Consider alternatives if:
-
-- You need a fully open-source stack (GUI included) — look at Jan, Open WebUI
-- You're in a country whose phone numbers are rejected by Ollama's SMS
-  verification — check GitHub issue #16060 for reports from your country, or
-  test it yourself; coverage is inconsistent, not US-only
-- You're uncomfortable with the closed-source GUI direction — use the CLI only,
-  or use `llama.cpp` directly
-- You need guaranteed SLA / enterprise support — look at OpenAI, Anthropic, or
-  cloud providers like Together AI, Groq, Fireworks
-
-### Bottom line for app developers
-
-Ollama's **API is excellent and easy to integrate**. The MIT-licensed CLI/daemon
-is fully open source and works great as a local provider. The cloud API is a
-viable hosted option with a free tier. The proprietary GUI and phone
-verification are end-user/consumer concerns that don't affect API integration.
-
-For your app:
-
-1. **Start local** — install the MIT CLI, run `ollama serve`, call
-   `localhost:11434`. Free, private, no account needed.
-2. **Add cloud when needed** — sign up at ollama.com, get an API key, point your
-   app at `https://ollama.com/api`. Same API, just different base URL and a
-   Bearer token.
-3. **Skip the GUI** — you don't need it. The CLI and API are all you need.
