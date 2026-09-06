@@ -20,7 +20,7 @@ Before opening an issue:
    - `Quoth` version or the commit you're on
    - Whether `markdown-mode` is installed (many font rendering bugs only
      reproduce with it)
-   - The provider in use (hyper, via the Charm Hyper gateway)
+   - The provider in use (hyper or ollama) and the model
    - A minimal repro: steps, expected behavior, actual behavior
    - If a request failed, the request/response log (attach the `*quoth-debug*`
      buffer contents; never paste tokens)
@@ -48,12 +48,16 @@ make models     # regenerate the bundled model-catalog snapshot
 
 `make test` / `make check` run the fast default suite, which skips the
 live-server `:integration` wire tests (they need emacs+curl plus the dummy HTTP
-servers and are opt-in via `make test-wire`).
+servers — `test/hyper-server.py`, `test/ollama-server.py`,
+`test/searxng-server.py` — and are opt-in via `make test-wire`).
 
-`make models` refreshes `quoth-hyper-models.json`, the bundled `/v1/provider`
-snapshot that seeds the model-catalog cache before the first network fetch; run
-it before a release (or whenever the gateway's model list has visibly changed)
-and commit the result — it is a tracked data file, not a generated artifact.
+`make models` refreshes both bundled model-catalog seeds —
+`quoth-hyper-models.json` (the verbatim `/v1/provider` payload) and
+`quoth-ollama-models.json` (assembled from `GET /api/tags` plus a parallel
+`POST /api/show` fan-out) — that prime the catalog cache before the first
+network fetch; run it before a release (or whenever a provider's model list has
+visibly changed) and commit the result — they are tracked data files, not
+generated artifacts.
 
 The test runner treats byte-compiler warnings as errors-in-waiting: do not
 introduce new ones. `make format` must produce no further changes before you
@@ -64,9 +68,9 @@ push.
 - Write a failing test first, confirm it fails, then implement, then confirm the
   full suite is green (the package follows this flow strictly).
 - Tests are ERT, organized by topic under `test/` (`quoth-test-buffer.el`,
-  `quoth-test-hyper.el`, `quoth-test-openai.el`, `quoth-test-tools.el`, ...).
-  Harness helpers (`quoth-test--with-hyper-server`) travel with their topic
-  file.
+  `quoth-test-hyper.el`, `quoth-test-ollama.el`, `quoth-test-openai.el`,
+  `quoth-test-tools.el`, ...). Harness helpers (`quoth-test--with-hyper-server`)
+  travel with their topic file.
 - New behavior gets a test. Default `make test` (skipping `:integration`) is
   fast; `make test-wire` runs only the live-server tests.
 

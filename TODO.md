@@ -13,7 +13,7 @@ It works like this:
    streamed responses (including chain-of-thought reasoning and tool-call
    rounds) accumulate as ordinary editable markdown. The buffer is the
    conversation: history is re-sent from its tagged regions on every request, so
-   nothing needs to be saved separately (`quoth-hyper-history-limit` 0 restores
+   nothing needs to be saved separately (`quoth-history-limit` 0 restores
    stateless per-prompt requests).
 
 2. **Context insertion**: `quoth-minor-mode` commands push context from any
@@ -25,22 +25,26 @@ It works like this:
 ## Provider Strategy
 
 Quoth talks to providers through a provider abstraction (`quoth-provider-*`
-generic methods over `cl-defstruct` providers). The protocol and shared base
-struct live in `quoth-provider.el`; the HTTP+SSE wire work lives once in the
-reusable OpenAI client `quoth-openai.el`; the concrete provider is a dedicated,
-self-contained, **buffer-unaware** file:
+generic methods over `cl-defstruct` providers). The protocol, shared base
+struct, buffer-local session slots, and the provider registry live in
+`quoth-provider.el`; the HTTP+SSE wire work lives once in the reusable OpenAI
+client `quoth-openai.el`; each concrete provider is a dedicated, self-contained,
+**buffer-unaware** file:
 
 - **Charm Hyper provider (`quoth-hyper-provider.el`, default)** — direct HTTP
   calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), streaming
   chat completions, delegating request composition and transport to
-  `quoth-openai.el`. This is the **primary** provider.
+  `quoth-openai.el`.
+- **Ollama Cloud provider (`quoth-ollama-provider.el`)** — Ollama Cloud over its
+  OpenAI-compatible surface ([OLLAMA-CLOUD-API.md](OLLAMA-CLOUD-API.md)), the
+  same shim shape over `quoth-openai.el`; the native `/api` surface serves the
+  model catalog (`/api/tags` membership + a parallel `/api/show` fan-out).
 
 ## Interaction Model
 
-- **Per-prompt calling (hyper)**: Each prompt is a single streaming chat
-  completion against the provider. The hyper provider keeps no conversation
-  state of its own; history round trips are handled by re-sending the buffer's
-  prior turns.
+- **Per-prompt calling**: Each prompt is a single streaming chat completion
+  against the provider. Providers keep no conversation state of their own;
+  history round trips are handled by re-sending the buffer's prior turns.
 - **Per-root buffers**: Each project (or directory when none) gets its own quoth
   buffer, named after the root's basename (`*quoth:name*`, suffix `(2)` on
   collisions). `quoth-minor-mode` commands always target the buffer for the
@@ -79,7 +83,8 @@ self-contained, **buffer-unaware** file:
 - [x] Context sent as literal markdown inside the user message
 - [x] Shared buffer init helper (`quoth--init-buffer`)
 - [x] Formatting pipeline (`make format`, scripts under `scripts/`)
-- [x] Model selection via `quoth-model` (runtime selection, savehist-persisted)
+- [x] Model selection via the session slots (buffer-local, seeded from global
+      defaults; the per-provider sticky memory rides savehist)
 - [x] Tool execution policy (`quoth-tool-policy`, `yolo` in v1)
 
 ### Phase 1b: Buffer-native rewrite (complete)
@@ -165,7 +170,7 @@ Quoth's primary mode of operation.
       `[user, assistant (and tool)]` turns are read from the buffer's tagged
       regions and re-sent with each request (tool calls replay as the
       OpenAI-conformant assistant `tool_calls` + tool result pair with the real
-      `tool_call_id`) (`quoth-hyper-history-limit` caps the tail; 0 disables;
+      `tool_call_id`) (`quoth-history-limit` caps the tail; 0 disables;
       `quoth-hyper-history-include-reasoning` opts the CoT back in as
       `reasoning_content`)
 - [x] `x-session-id` / `x-session-affinity` headers for server-side prefix/token
@@ -252,9 +257,28 @@ Quoth's primary mode of operation.
       cached input replays bill; recorded in [HYPER-API.md §5](HYPER-API.md)).
       No endpoint or normalizer change was needed — both fields ride
       `/v1/provider`.
-- [x] Interrupt support for in-flight hyper requests (`quoth-interrupt` aborts
-      the provider transport; `quoth-send-input` blocks while the provider is
-      active)
+- [x] Provider registry with buffer-local sessions — `quoth-builtin-providers`
+      lists every shipped provider (hyper, ollama; `quoth-providers` defaults to
+      it, users override/reorder/prune); every transient selection
+      (`quoth--session-provider`/`-model`/`-thinking`/`-reasoning-effort`,
+      `quoth-history-limit`) is buffer-local, seeded at buffer init from global
+      defaults (`quoth-default-provider`, `quoth-default-model`,
+      `quoth-default-thinking`, `quoth-default-reasoning-effort`), and no
+      transient action writes a global; `C-c " m p` switches the buffer's
+      provider only; the sticky per-provider model memory
+      (`quoth-model-by-provider`) rides savehist
+- [x] Ollama Cloud provider (`quoth-ollama-provider.el`) over the shared
+      OpenAI-compatible client: streamed chat completions against
+      `https://ollama.com/v1`, token via auth-source
+      (`machine ollama.com login apikey`),
+      `stream_options: {include_usage: true}` body extra, the `reasoning` field
+      alias in the shared SSE delta extractor, usage with no cost keys, catalog
+      from `/api/tags` + `/api/show` fan-out with the bundled
+      `quoth-ollama-models.json` seed (regenerated by `make models`, wire facts
+      in [OLLAMA-CLOUD-API.md](OLLAMA-CLOUD-API.md))
+- [x] Interrupt support for in-flight provider requests (`quoth-interrupt`
+      aborts the provider transport; `quoth-send-input` blocks while the
+      provider is active)
 - [x] Tool call visibility in responses
 - [ ] Conversation persistence to plain-text files (gptel-style, deferred): save
       `quoth-region-type`/`quoth-response-to`/image-link bounds plus
@@ -282,3 +306,5 @@ Quoth's primary mode of operation.
 
 - [HYPER-API.md](HYPER-API.md) — Charm Hyper gateway HTTP API (auth, chat
   completions, model catalog)
+- [OLLAMA-CLOUD-API.md](OLLAMA-CLOUD-API.md) — Ollama Cloud HTTP API (chat
+  completions, the native catalog surface, subscription gating)
