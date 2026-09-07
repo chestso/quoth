@@ -185,8 +185,18 @@ client and the selector need no `quoth.el` dependency) and are seeded at
 `quoth-default-reasoning-effort`, and the `quoth-history-limit` defcustom. The
 session model seeds from a provider chain instead: the sticky
 `quoth-model-by-provider` entry for the session provider (the last-used model on
-it, a plain `defvar` persisted by savehist), else the registry entry's
-`:default-model`, else `quoth-default-model`.
+it, a plain `defvar` persisted by savehist), else — when `quoth-default-model`
+is provider-qualified and names the session provider — its bare model (an
+explicit user default outranks the registry's), else the registry entry's
+`:default-model`, else the bare `quoth-default-model` (a qualified one
+contributes nothing to any other provider's chain).
+
+The sticky memory has a two-sided lifecycle: an explicit model pick
+(`quoth--set-model-spec`) writes the entry — under the target provider, bare —
+and the picker's `default` entry deletes it (`quoth--set-model-default`), so the
+next buffer on the provider starts from its chain again. A provider switch alone
+touches neither: switching re-seeds from the target's chain and preserves
+whatever the last pick left there.
 
 The **provider instance** (`quoth-active-provider`, buffer-local) is derived
 state, not session state: it is (re)instantiated from
