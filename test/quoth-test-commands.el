@@ -441,8 +441,8 @@ It sets quoth-region-type 'user."
 (ert-deftest quoth-test/chat-mode-has-keymap ()
   "Quoth-chat-mode-map should have the expected keybindings.
 All chat commands live in `quoth-chat-command-map', hung under the
-`C-c \"' prefix; the mode map also binds the fold TAB, the send keys,
-and the input history keys."
+`C-c \"' prefix; the mode map itself adds only the fold TAB and the
+send key, and binds no `M-' keys."
   (let ((map (symbol-value 'quoth-chat-mode-map))
         (cmd (symbol-value 'quoth-chat-command-map)))
     (should (keymapp map))
@@ -454,10 +454,12 @@ and the input history keys."
     (should (eq (lookup-key cmd (kbd "m")) #'quoth-select-model-menu))
     (should (eq (lookup-key cmd (kbd "a")) #'quoth-attach-image))
     (should (eq (lookup-key cmd (kbd "t")) #'quoth-toggle-image-attach))
+    (should (eq (lookup-key cmd (kbd "p")) #'quoth-input-previous))
+    (should (eq (lookup-key cmd (kbd "n")) #'quoth-input-next))
     (should (eq (lookup-key map (kbd "TAB")) #'quoth--reasoning-tab))
     (should (eq (lookup-key map (kbd "<C-return>")) #'quoth-send-input))
-    (should (eq (lookup-key map (kbd "M-p")) #'quoth--input-previous))
-    (should (eq (lookup-key map (kbd "M-n")) #'quoth--input-next))))
+    (should-not (lookup-key map (kbd "M-p")))
+    (should-not (lookup-key map (kbd "M-n")))))
 
 (ert-deftest quoth-test/chat-mode-c-c-quote-s-sends-input ()
   "`C-c \" s' in a quoth buffer should resolve to quoth-send-input."

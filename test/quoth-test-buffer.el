@@ -1320,7 +1320,7 @@ caller, `quoth--append-as-user-input' must route through
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/input-previous-inserts-from-ring ()
-  "\\[quoth--input-previous] inserts the previous ring input."
+  "\\[quoth-input-previous] inserts the previous ring input."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1328,7 +1328,7 @@ caller, `quoth--append-as-user-input' must route through
           (quoth--input-ring-add "old prompt two")
           (setq-local quoth--input-ring-index 0)
           (goto-char (point-max))
-          (quoth--input-previous)
+          (quoth-input-previous)
           (should (string= "old prompt two"
                            (buffer-substring-no-properties
                             (marker-position quoth--input-start-marker)
@@ -1336,7 +1336,7 @@ caller, `quoth--append-as-user-input' must route through
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/input-next-inserts-from-ring ()
-  "\\[quoth--input-next] inserts the next (more recent) ring input."
+  "\\[quoth-input-next] inserts the next (more recent) ring input."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -1345,7 +1345,7 @@ caller, `quoth--append-as-user-input' must route through
           (quoth--input-ring-add "old prompt two")
           (setq-local quoth--input-ring-index 1)
           (goto-char (point-max))
-          (quoth--input-next)
+          (quoth-input-next)
           (should (string= "old prompt two"
                            (buffer-substring-no-properties
                             (marker-position quoth--input-start-marker)

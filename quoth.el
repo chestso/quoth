@@ -445,7 +445,7 @@ Buffer-local.")
 
 (defvar quoth--input-ring-index 0
   "Position in `quoth--input-ring' for previously-entered inputs.
-Navigated with `quoth--input-previous' / `quoth--input-next'.
+Navigated with `quoth-input-previous' / `quoth-input-next'.
 Buffer-local.")
 
 (defvar quoth--input-ring-file-name
@@ -575,6 +575,8 @@ Uses `markdown-mode' if available, otherwise `text-mode'.")
     (define-key map (kbd "m") #'quoth-select-model-menu)
     (define-key map (kbd "a") #'quoth-attach-image)
     (define-key map (kbd "t") #'quoth-toggle-image-attach)
+    (define-key map (kbd "p") #'quoth-input-previous)
+    (define-key map (kbd "n") #'quoth-input-next)
     map)
   "Letter-only keymap for `quoth-chat-mode' commands.
 It hangs under the `C-c \"' prefix in `quoth-chat-mode-map'; rebind or
@@ -588,8 +590,6 @@ re-parent it there to move the whole chat prefix.")
     ;; `C-c \" s' remains the portable send binding.
     (define-key map (kbd "<C-return>") #'quoth-send-input)
     (define-key map (kbd "C-c \"") quoth-chat-command-map)
-    (define-key map (kbd "M-p") #'quoth--input-previous)
-    (define-key map (kbd "M-n") #'quoth--input-next)
     map)
   "Keymap for `quoth-chat-mode'.")
 
@@ -682,7 +682,7 @@ Only logs when `quoth-debug-mode' is non-nil."
                  (string= input (ring-ref quoth--input-ring 0)))
       (ring-insert quoth--input-ring input))))
 
-(defun quoth--input-previous ()
+(defun quoth-input-previous ()
   "Insert the previous input from the input ring."
   (interactive)
   (when (and quoth--input-ring (ring-p quoth--input-ring)
@@ -696,7 +696,7 @@ Only logs when `quoth-debug-mode' is non-nil."
                     (min (1+ quoth--input-ring-index)
                          (1- (ring-length quoth--input-ring))))))))
 
-(defun quoth--input-next ()
+(defun quoth-input-next ()
   "Insert the next input from the input ring."
   (interactive)
   (when (and quoth--input-ring (ring-p quoth--input-ring)

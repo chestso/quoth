@@ -222,7 +222,7 @@ To change the server URL:
 - Type a prompt and press `C-c " s` (or `C-return` in graphical Emacs and in
   terminals that report it, e.g. portty/xterm) to send it to the active
   provider; `RET` (or `C-j`) inserts a newline for multiline prompts
-- `M-p` / `M-n` — navigate input history (previous/next input)
+- `C-c " p` / `C-c " n` — navigate input history (previous/next input)
 - `TAB` — expand/collapse the reasoning (chain-of-thought) fold at point;
   otherwise normal TAB
 - `C-c " m` — open the model selector: pick a model, switch the active provider
@@ -284,7 +284,7 @@ variables, one per mode:
 
 - `quoth-chat-command-map` — chat-buffer commands (`s` send, `i` interrupt, `k`
   clear, `r` reasoning fold, `m` model selector, `a` attach image, `t` toggle
-  image link)
+  image link, `p`/`n` input history)
 - `quoth-minor-command-map` — source-buffer commands (`f` selection, `b` buffer,
   `p` file path, `a` attach image, `"` open the quoth buffer)
 
@@ -307,6 +307,17 @@ Single keys can be rebound the usual way, e.g.:
 
 ```elisp
 (define-key quoth-chat-command-map (kbd "S") #'quoth-send-input)
+```
+
+History navigation lives on `C-c " p` / `C-c " n` so the minor mode never
+shadows the parent mode's `M-p`/`M-n` (in `markdown-mode` those follow the
+previous/next link). If you would rather have the comint-style keys, bind the
+history commands directly on the mode map:
+
+```elisp
+(with-eval-after-load 'quoth
+  (define-key quoth-chat-mode-map (kbd "M-p") #'quoth-input-previous)
+  (define-key quoth-chat-mode-map (kbd "M-n") #'quoth-input-next))
 ```
 
 One caveat: org-mode binds `C-c " a` and `C-c " g` for table plotting, so pick a
@@ -414,9 +425,10 @@ back to `plaintext` for unknown extensions).
 ## Input History
 
 Each prompt you send is stored in a custom input ring (`quoth-input-ring-size`,
-default 32) and persisted to `~/.emacs.d/quoth-history`. Use `M-p` and `M-n` to
-navigate previous inputs; the ring is loaded when the quoth buffer is created
-and written back after each prompt.
+default 32) and persisted to `~/.emacs.d/quoth-history`. Use `C-c " p` and
+`C-c " n` to navigate previous inputs; the ring is loaded when the quoth buffer
+is created and written back after each prompt. If you prefer the comint-style
+`M-p`/`M-n` keys, [rebind them](#customizing-the-keybindings).
 
 ## Stderr Handling
 
