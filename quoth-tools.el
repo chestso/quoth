@@ -54,7 +54,7 @@
 ;;
 ;; The tool *protocol* (the `quoth-openai-tool-call' struct, registry,
 ;; dispatch, arg parsing, and the execution policy) lives in
-;; `quoth-openai.el'; this file implements the concrete tools and
+;; `quoth-openai-client.el'; this file implements the concrete tools and
 ;; registers them into `quoth-openai-tool-registry' at load time.
 ;; Entries report to ON-DONE exactly once: `exec_command' and
 ;; `write_stdin' through the event-driven session layer (window timer
@@ -71,7 +71,7 @@
 ;;; Prefer `require'; fall back to loading the sibling from this file's
 ;;; own directory so both flycheck and package-installed loads work.
 (eval-and-compile
-  (dolist (dep '("quoth-json" "quoth-provider" "quoth-openai" "quoth-process"))
+  (dolist (dep '("quoth-json" "quoth-provider" "quoth-openai-client" "quoth-process"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -116,8 +116,8 @@ declares the binding so this file byte-compiles and loads
 standalone.  A `defvar' never overwrites an existing binding, so
 when `quoth.el' loads this file first the later `defcustom' (and
 the user's Customize value) still wins.")
-(declare-function quoth-openai-tool-error-result "quoth-openai" (message))
-(declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
+(declare-function quoth-openai-tool-error-result "quoth-openai-client" (message))
+(declare-function quoth-openai-tool-call-args "quoth-openai-client" (tool-call))
 (declare-function quoth-process--start "quoth-process" (command working-directory owner &optional shell login on-exit))
 (declare-function quoth-process--arm-window "quoth-process" (session ms callback))
 (declare-function quoth-process--write-stdin "quoth-process" (session input))

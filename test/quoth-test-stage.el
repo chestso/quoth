@@ -3,7 +3,7 @@
 ;;; Commentary:
 
 ;; Phase E topic tests: the async git stage behind
-;; `quoth-openai--system-prompt-async', the request handle covering
+;; `quoth-context-async', the request handle covering
 ;; both stages of a send, the preparing/streaming phase handoff, and
 ;; the banned-blocking-primitive lint.
 
@@ -13,7 +13,7 @@
 (require 'subr-x)
 (require 'ert)
 (require 'quoth)
-(require 'quoth-openai)
+(require 'quoth-context)
 (require 'quoth-provider)
 (require 'quoth-hyper-provider)
 
@@ -51,28 +51,28 @@ delivers twice)."
 Deletes PROC first: sentinels only run once the process is not live,
 and the real sentinel is invoked by hand so delivery is exactly once."
   (should (processp proc))
-  (quoth-openai--stage-filter proc raw)
+  (quoth-context--stage-filter proc raw)
   (delete-process proc)
   (funcall (process-get proc :quoth-stage-sentinel) proc "deleted\n"))
 
 (defmacro quoth-test--with-fake-stage (&rest body)
-  "Run BODY with `quoth-openai--system-prompt-stage' stubbed.
+  "Run BODY with `quoth-context--system-prompt-stage' stubbed.
 The stage is a fake pipe process (no git subprocess) whose sentinel
 parses RAW through the real marker parser and delivers the assembled
 prompt to the captured ON-READY — the real stage's delivery contract
 without the git side."
   (declare (indent 0))
-  `(cl-letf (((symbol-function 'quoth-openai--system-prompt-stage)
+  `(cl-letf (((symbol-function 'quoth-context--system-prompt-stage)
               (lambda (_buf _key on-ready)
                 (let ((proc (make-pipe-process
                              :name "quoth-test-stage"
                              :noquery t :coding 'binary)))
                   (process-put
                    proc :quoth-stage-sentinel
-                   (quoth-openai--make-stage-sentinel
+                   (quoth-context--make-stage-sentinel
                     (lambda (git-section)
                       (funcall on-ready
-                               (quoth-openai--assemble-stage-prompt
+                               (quoth-context--assemble-stage-prompt
                                 git-section)))))
                   proc))))
      ,@body))
@@ -96,10 +96,10 @@ spawns) with context discovery disabled and the prompt cache empty."
   (declare (indent 0))
   `(with-temp-buffer
      (setq-local default-directory (quoth-test--stage-repo-root))
-     (setq-local quoth-openai-context-paths nil)
-     (setq-local quoth-openai-global-context-paths nil)
-     (setq-local quoth-openai--cached-system-prompt nil)
-     (setq-local quoth-openai--cache-key nil)
+     (setq-local quoth-context-paths nil)
+     (setq-local quoth-context-global-paths nil)
+     (setq-local quoth-context--cached-system-prompt nil)
+     (setq-local quoth-context--cache-key nil)
      ,@body))
 
 ;;; 1. Cache hit: delivery is inline, no stage spawns
@@ -109,13 +109,13 @@ spawns) with context discovery disabled and the prompt cache empty."
 The delivery is synchronous."
   (quoth-test--with-stage
    (quoth-test--with-prompt-buffer
-    (setq-local quoth-openai--cached-system-prompt "CACHED")
-    (setq-local quoth-openai--cache-key
-                (quoth-openai--stage-prompt-key))
+    (setq-local quoth-context--cached-system-prompt "CACHED")
+    (setq-local quoth-context--cache-key
+                (quoth-context--stage-prompt-key))
     (let ((calls 0)
           (stage nil))
       (setq stage
-            (quoth-openai--system-prompt-async
+            (quoth-context-async
              (current-buffer)
              (lambda (prompt)
                (setq calls (1+ calls))
@@ -133,13 +133,13 @@ the prompt cache."
   (quoth-test--with-stage
    (quoth-test--with-prompt-buffer
     (let ((delivered nil))
-      (let ((stage (quoth-openai--system-prompt-async
+      (let ((stage (quoth-context-async
                     (current-buffer)
                     (lambda (prompt) (setq delivered prompt)))))
         (should (processp stage))
         (should (equal quoth-test--stage--git-commands
                        (list (list shell-file-name shell-command-switch
-                                   (quoth-openai--git-command)))))
+                                   (quoth-context--git-command)))))
         (should-not delivered)
         (quoth-test--fill-stage
          stage
@@ -147,7 +147,7 @@ the prompt cache."
         (should (string-match-p "Current branch: master" delivered))
         (should (string-match-p "M file" delivered))
         (should (string-match-p "abc def" delivered))
-        (should (string= delivered quoth-openai--cached-system-prompt))
+        (should (string= delivered quoth-context--cached-system-prompt))
         (should-not (process-live-p stage)))))))
 
 (ert-deftest quoth-test/stage-garbage-output-degrades ()
@@ -158,7 +158,7 @@ rather than erroring."
    (quoth-test--with-prompt-buffer
     (let ((calls 0)
           (delivered nil))
-      (let ((stage (quoth-openai--system-prompt-async
+      (let ((stage (quoth-context-async
                     (current-buffer)
                     (lambda (prompt)
                       (setq calls (1+ calls))
@@ -166,7 +166,7 @@ rather than erroring."
         (quoth-test--fill-stage stage "fatal: not a git repository\n")
         (should (= calls 1))
         (should (stringp delivered))
-        (should (string= delivered quoth-openai--cached-system-prompt)))))))
+        (should (string= delivered quoth-context--cached-system-prompt)))))))
 
 (ert-deftest quoth-test/stage-no-git-dir-delivers-gitless ()
   "A non-git directory delivers the gitless prompt synchronously.
@@ -174,28 +174,28 @@ No stage process, no git section."
   (quoth-test--with-stage
    (with-temp-buffer
      (setq-local default-directory "/tmp/")
-     (setq-local quoth-openai-context-paths nil)
-     (setq-local quoth-openai-global-context-paths nil)
-     (setq-local quoth-openai--cached-system-prompt nil)
-     (setq-local quoth-openai--cache-key nil)
+     (setq-local quoth-context-paths nil)
+     (setq-local quoth-context-global-paths nil)
+     (setq-local quoth-context--cached-system-prompt nil)
+     (setq-local quoth-context--cache-key nil)
      (let ((delivered nil))
        (should-not
-        (quoth-openai--system-prompt-async
+        (quoth-context-async
          (current-buffer)
          (lambda (prompt) (setq delivered prompt))))
        (should (stringp delivered))
-       (should (string= delivered quoth-openai--cached-system-prompt))
+       (should (string= delivered quoth-context--cached-system-prompt))
        (should-not (string-match-p "Git status" delivered))
        (should-not quoth-test--stage--git-commands)))))
 
 (ert-deftest quoth-test/stage-timeout-delivers-gitless ()
-  "A stage past `quoth-openai-git-timeout' is aborted.
+  "A stage past `quoth-context-git-timeout' is aborted.
 The delivery goes through without waiting for git."
-  (let ((quoth-openai-git-timeout 0.01))
+  (let ((quoth-context-git-timeout 0.01))
     (quoth-test--with-stage
      (quoth-test--with-prompt-buffer
       (let ((delivered nil))
-        (let ((stage (quoth-openai--system-prompt-async
+        (let ((stage (quoth-context-async
                       (current-buffer)
                       (lambda (_prompt) (setq delivered t)))))
           (should (processp stage))
@@ -212,8 +212,8 @@ The delivery goes through without waiting for git."
   "A send returns a handle covering both stages, not a raw process.
 The handle covers :stage-process, :curl, :done-p; cleanup clears it."
   (let ((default-directory quoth-test--root)
-        (quoth-openai-context-paths nil)
-        (quoth-openai-global-context-paths nil))
+        (quoth-context-paths nil)
+        (quoth-context-global-paths nil))
     (with-current-buffer (get-buffer-create "*quoth-test-stage-handle*")
       (quoth-test--with-fake-stage
        (let* ((provider (quoth-make-hyper-provider
@@ -236,8 +236,8 @@ The handle covers :stage-process, :curl, :done-p; cleanup clears it."
 It is true with only the stage live, true again once the curl
 transport takes over; with both dead it is nil."
   (let ((default-directory quoth-test--root)
-        (quoth-openai-context-paths nil)
-        (quoth-openai-global-context-paths nil))
+        (quoth-context-paths nil)
+        (quoth-context-global-paths nil))
     (with-current-buffer (get-buffer-create "*quoth-test-stage-active*")
       (quoth-test--with-fake-stage
        (let* ((curl (make-pipe-process :name "quoth-test-curl" :noquery t))
@@ -268,8 +268,8 @@ transport takes over; with both dead it is nil."
   "`quoth-provider-interrupt' kills the live stage and aborts the curl.
 The transport abort clears the handle and the completion action."
   (let ((default-directory quoth-test--root)
-        (quoth-openai-context-paths nil)
-        (quoth-openai-global-context-paths nil))
+        (quoth-context-paths nil)
+        (quoth-context-global-paths nil))
     (with-current-buffer (get-buffer-create "*quoth-test-stage-interrupt*")
       (quoth-test--with-fake-stage
        (let* ((provider (quoth-make-hyper-provider
@@ -302,13 +302,13 @@ The transport abort clears the handle and the completion action."
 When the stage delivers, the phase moves to `streaming' and the curl
 transport sits in the handle."
   (let ((default-directory quoth-test--root)
-        (quoth-openai-context-paths nil)
-        (quoth-openai-global-context-paths nil))
+        (quoth-context-paths nil)
+        (quoth-context-global-paths nil))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (setq-local quoth-openai--cached-system-prompt nil)
-          (setq-local quoth-openai-context-paths nil)
-          (setq-local quoth-openai-global-context-paths nil)
+          (setq-local quoth-context--cached-system-prompt nil)
+          (setq-local quoth-context-paths nil)
+          (setq-local quoth-context-global-paths nil)
           (setq-local quoth-active-provider
                       (quoth-make-hyper-provider
                        :buffer (current-buffer)
@@ -335,13 +335,13 @@ transport sits in the handle."
   "The staged delivery moves a busy buffer to `streaming'.
 A buffer that went idle meanwhile (interrupted mid-stage) stays idle."
   (let ((default-directory quoth-test--root)
-        (quoth-openai-context-paths nil)
-        (quoth-openai-global-context-paths nil))
+        (quoth-context-paths nil)
+        (quoth-context-global-paths nil))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
-          (setq-local quoth-openai--cached-system-prompt nil)
-          (setq-local quoth-openai-context-paths nil)
-          (setq-local quoth-openai-global-context-paths nil)
+          (setq-local quoth-context--cached-system-prompt nil)
+          (setq-local quoth-context-paths nil)
+          (setq-local quoth-context-global-paths nil)
           (setq-local quoth-active-provider
                       (quoth-make-hyper-provider
                        :buffer (current-buffer)
@@ -411,7 +411,7 @@ process where the handle belongs reads as no request."
   "Buffer init prefetches the staged system prompt.
 The first send then hits the prompt cache."
   (let ((calls 0))
-    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+    (cl-letf (((symbol-function 'quoth-context-async)
                (lambda (_buf _on-ready) (setq calls (1+ calls)) nil)))
       (unwind-protect
           (let ((quoth-provider-models-prefetch nil))
@@ -424,8 +424,10 @@ The first send then hits the prompt cache."
 
 (defun quoth-test--lint-sources ()
   "Return the runtime source files for the banned-primitive lint."
-  '("quoth.el" "quoth-provider.el" "quoth-openai.el"
-    "quoth-hyper-provider.el" "quoth-tools.el" "quoth-process.el"
+  '("quoth.el" "quoth-provider.el" "quoth-openai-client.el"
+    "quoth-context.el" "quoth-openai-provider.el"
+    "quoth-hyper-provider.el" "quoth-ollama-provider.el"
+    "quoth-tools.el" "quoth-process.el"
     "quoth-searxng.el" "quoth-select.el" "quoth-json.el"
     "quoth-xxh3.el"))
 

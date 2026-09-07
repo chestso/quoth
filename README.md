@@ -95,7 +95,8 @@ Then load with `load-path`:
 ```
 
 Requires Emacs 28.1+. The package spans several files (`quoth.el` plus
-`quoth-provider.el`, `quoth-openai.el`, `quoth-hyper-provider.el`,
+`quoth-provider.el`, `quoth-openai-client.el`, `quoth-context.el`,
+`quoth-openai-provider.el`, `quoth-hyper-provider.el`,
 `quoth-ollama-provider.el`, `quoth-tools.el`), so point `load-path` at the
 package directory. For manual `require`s, load `quoth` last to get the full file
 set loaded. The providers require only `curl`.
@@ -113,11 +114,12 @@ The `quoth` group covers the essentials — the provider defaults for new buffer
 `quoth-default-reasoning-effort`), history replay (`quoth-history-limit`,
 `quoth-hyper-history-include-reasoning`), reasoning display
 (`quoth-reasoning-preview-lines`), image attachments
-(`quoth-image-max-raw-bytes`), the system prompt (`quoth-openai-system-prompt`),
-request tuning (`quoth-openai-timeout`, `-max-tokens`, `-temperature`), debug
-logging, and the provider settings (`quoth-hyper-base-url`, `quoth-hyper-token`,
-`quoth-ollama-base-url`, `quoth-ollama-token`). Process handling lives in the
-`quoth-process` group and tool behavior in the `quoth-tool` group.
+(`quoth-image-max-raw-bytes`), the system prompt
+(`quoth-context-system-prompt`), request tuning (`quoth-openai-timeout`,
+`-max-tokens`, `-temperature`), debug logging, and the provider settings
+(`quoth-hyper-base-url`, `quoth-hyper-token`, `quoth-ollama-base-url`,
+`quoth-ollama-token`). Process handling lives in the `quoth-process` group and
+tool behavior in the `quoth-tool` group.
 
 One setting needs setup beyond `M-x customize`: the provider token.
 

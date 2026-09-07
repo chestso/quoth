@@ -28,17 +28,19 @@ Quoth talks to providers through a provider abstraction (`quoth-provider-*`
 generic methods over `cl-defstruct` providers). The protocol, shared base
 struct, buffer-local session slots, and the provider registry live in
 `quoth-provider.el`; the HTTP+SSE wire work lives once in the reusable OpenAI
-client `quoth-openai.el`; each concrete provider is a dedicated, self-contained,
-**buffer-unaware** file:
+client `quoth-openai-client.el`; the staged send, token plumbing, and catalog
+fetch live once in the shared base `quoth-openai-provider.el`; each concrete
+provider is a dedicated, self-contained, **buffer-unaware** file:
 
 - **Charm Hyper provider (`quoth-hyper-provider.el`, default)** — direct HTTP
   calls to the Charm Hyper gateway ([HYPER-API.md](HYPER-API.md)), streaming
-  chat completions, delegating request composition and transport to
-  `quoth-openai.el`.
+  chat completions, a thin subclass of `quoth-openai-provider.el` overriding the
+  affinity/crush-id request extras and its catalog.
 - **Ollama Cloud provider (`quoth-ollama-provider.el`)** — Ollama Cloud over its
   OpenAI-compatible surface ([OLLAMA-CLOUD-API.md](OLLAMA-CLOUD-API.md)), the
-  same shim shape over `quoth-openai.el`; the native `/api` surface serves the
-  model catalog (`/api/tags` membership + a parallel `/api/show` fan-out).
+  same subclass shape over `quoth-openai-provider.el`; the native `/api` surface
+  serves the model catalog (`/api/tags` membership + a parallel `/api/show`
+  fan-out).
 
 ## Interaction Model
 
@@ -206,8 +208,8 @@ Quoth's primary mode of operation.
   - [ ] Long-running command lifecycle: explicit session close/kill and
         idle-session reaping beyond `write_stdin`
 - [x] Event-driven sends end to end: the system prompt stages asynchronously
-      (`quoth-openai--system-prompt-async` — one marker-delimited git process
-      with `quoth-openai-git-timeout` abort-and-degrade, cache hit inline,
+      (`quoth-context-async` — one marker-delimited git process with
+      `quoth-context-git-timeout` abort-and-degrade, cache hit inline,
       buffer-init prefetch), the send enters `preparing` until the staged prompt
       delivers and curl fires, and the provider returns a request handle
       `(:stage-process/:curl/:done-p)` stored in the `request` slot so

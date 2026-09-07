@@ -203,14 +203,14 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
   "Session thinking + effort land in the request body when set."
   (let ((quoth--session-thinking t)
         (quoth--session-reasoning-effort "high"))
-    (let ((req (quoth-openai-compose-request "P" "my-model")))
+    (let ((req (quoth-openai-compose-request "P" "my-model" "sys")))
       (should (eq (alist-get 'thinking req) t))
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 
 (ert-deftest quoth-test/compose-defaults-omit-attrs ()
   "With session slots nil, neither thinking nor effort appears in the body."
   (let (quoth--session-thinking quoth--session-reasoning-effort)
-    (let ((req (quoth-openai-compose-request "P" "m")))
+    (let ((req (quoth-openai-compose-request "P" "m" "sys")))
       (should-not (assq 'thinking req))
       (should-not (assq 'reasoning_effort req)))))
 
@@ -218,7 +218,7 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
   "Thinking on, effort nil: body has thinking, no reasoning_effort."
   (let ((quoth--session-thinking t)
         quoth--session-reasoning-effort)
-    (let ((req (quoth-openai-compose-request "P" "m")))
+    (let ((req (quoth-openai-compose-request "P" "m" "sys")))
       (should (eq (alist-get 'thinking req) t))
       (should-not (assq 'reasoning_effort req)))))
 
@@ -226,7 +226,7 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
   "Effort set but thinking unset: no thinking key, but effort is sent."
   (let (quoth--session-thinking
         (quoth--session-reasoning-effort "high"))
-    (let ((req (quoth-openai-compose-request "P" "m")))
+    (let ((req (quoth-openai-compose-request "P" "m" "sys")))
       (should-not (assq 'thinking req))
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 
@@ -234,7 +234,7 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
   "Thinking off (:json-false) sends `thinking: false'; effort still sent."
   (let ((quoth--session-thinking :json-false)
         (quoth--session-reasoning-effort "high"))
-    (let ((req (quoth-openai-compose-request "P" "m")))
+    (let ((req (quoth-openai-compose-request "P" "m" "sys")))
       (should (eq (alist-get 'thinking req) :json-false))
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 

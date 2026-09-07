@@ -45,7 +45,7 @@
 ;;; `require'; fall back to loading each dep from this file's directory
 ;;; or its parent (the package root) so flycheck and package loads work.
 (eval-and-compile
-  (dolist (dep '("quoth" "quoth-provider" "quoth-openai" "quoth-ollama-provider"))
+  (dolist (dep '("quoth" "quoth-provider" "quoth-openai-client" "quoth-openai-provider" "quoth-ollama-provider"))
     (unless (require (intern dep) nil t)
       (let* ((base (file-name-directory
                     (or buffer-file-name load-file-name default-directory)))

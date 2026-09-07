@@ -8,8 +8,8 @@ OpenAI-compatible chat-completions API lives under `/v1`; tokens (`sk-hyper-`
 prefixed) come from the Hyper Dashboard.
 
 Quoth consumes this API through the hyper provider: the reusable OpenAI client
-(`quoth-openai.el`) runs a curl subprocess transport with SSE parsed in the
-process filter (see the integration fixture `test/hyper-server.py`).
+(`quoth-openai-client.el`) runs a curl subprocess transport with SSE parsed in
+the process filter (see the integration fixture `test/hyper-server.py`).
 
 Source of truth:
 [`internal/agent/hyper/`](https://github.com/charmbracelet/crush/tree/main/internal/agent/hyper),

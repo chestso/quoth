@@ -429,7 +429,7 @@ a custom base URL gets no snapshot."
   (let ((file (make-temp-file "quoth-seed-" nil ".json"
                               "{\"name\":\"Charm Hyper\",\"models\":[]}")))
     (unwind-protect
-        (let ((quoth-hyper--models-seed-directory
+        (let ((quoth-openai-provider--models-seed-directory
                (file-name-directory file))
               (quoth-hyper--models-seed-file
                (file-name-nondirectory file))

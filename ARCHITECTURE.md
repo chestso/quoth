@@ -34,16 +34,18 @@ new code must too.
 
 4. **Protocols live in their own files.** The provider protocol
    (`quoth-provider.el`), the OpenAI chat-completions + tool protocol
-   (`quoth-openai.el`), and the process-handler session protocol
+   (`quoth-openai-client.el`), and the process-handler session protocol
    (`quoth-process.el`) are each a dedicated, self-contained file with a single
    dependency direction. `quoth.el` only orchestrates the buffer and calls into
    them.
 
 5. **Providers are abstracted and reuse the protocols.** Every provider is a
-   self-contained file implementing the `quoth-provider-*` generics. The shared
-   wire work (request composition, SSE parsing, curl transport, tool dispatch)
-   is implemented once in `quoth-openai.el`; each concrete provider (hyper,
-   ollama) is a thin shim that maps its configuration onto that client.
+   self-contained file implementing the `quoth-provider-*` generics. The wire
+   work (request composition, SSE parsing, curl transport, tool dispatch) is
+   implemented once in `quoth-openai-client.el`; the staged send, token
+   plumbing, and catalog fetch ride the shared base `quoth-openai-provider.el`;
+   each concrete provider (hyper, ollama) subclasses that base and overrides
+   only what its endpoint does differently.
 
 6. **Buffer-unaware, presentation-agnostic layers.** The process handler
    (`quoth-process.el`) and all providers never read or write the quoth buffer.
@@ -74,19 +76,21 @@ new code must too.
 ## Project Layout
 
 ```
-quoth/                  # Package root
-  quoth.el              # Core: config, buffer orchestration, chat mode, helpers, commands
-  quoth-provider.el     # Provider protocol: base struct, session slots, registry, quoth-provider-* generics
-  quoth-openai.el       # Reusable OpenAI chat-completions client (compose, SSE, curl transport, tool protocol)
-  quoth-hyper-provider.el  # Charm Hyper provider (config + provider methods, thin shim over quoth-openai)
-  quoth-ollama-provider.el  # Ollama Cloud provider (thin shim over quoth-openai; native /api for the catalog)
-  quoth-select.el      # Transient model selector (UI only; depends on the protocol, not quoth.el)
-  quoth-process.el      # Process handler: PTY sessions, output buffering, exit/running reporting, stdin, cleanup
-  quoth-tools.el        # Local tool implementations: exec_command, write_stdin, write_file, read_file, edit_file
-  quoth-xxh3.el         # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
-  quoth-json.el        # JSON decode/encode abstraction: native C parser when available, json.el fallback
-  quoth-debug-tools.el  # On-demand debug commands (region dump, history reconstruction; not loaded by default)
-  test/                 # ERT test suite (see "Hacking" below)
+quoth/                      # Package root
+  quoth.el                  # Core: config, buffer orchestration, chat mode, helpers, commands
+  quoth-provider.el         # Provider protocol: base struct, session slots, registry, quoth-provider-* generics
+  quoth-openai-client.el    # Reusable OpenAI chat-completions wire client (compose, SSE, curl transport, tool protocol)
+  quoth-context.el          # System-prompt context assembly (env/git/context blocks, staging + cache)
+  quoth-openai-provider.el  # Shared base for OpenAI-compatible providers (struct, tokens, catalog fetch, staged send)
+  quoth-hyper-provider.el   # Charm Hyper provider (subclass of the base: affinity, crush-id, catalog)
+  quoth-ollama-provider.el  # Ollama Cloud provider (subclass; native /api tags+show catalog)
+  quoth-select.el           # Transient model selector (UI only; depends on the protocol, not quoth.el)
+  quoth-process.el          # Process handler: PTY sessions, output buffering, exit/running reporting, stdin, cleanup
+  quoth-tools.el            # Local tool implementations: exec_command, write_stdin, write_file, read_file, edit_file
+  quoth-xxh3.el             # Pure-Elisp XXH3-64 (seed 0): x-session-id / x-session-affinity hashing
+  quoth-json.el             # JSON decode/encode abstraction: native C parser when available, json.el fallback
+  quoth-debug-tools.el      # On-demand debug commands (region dump, history reconstruction; not loaded by default)
+  test/                     # ERT test suite (see "Hacking" below)
 ```
 
 Dependency direction: `quoth-provider.el` has no `require`s (it owns the shared
@@ -96,22 +100,27 @@ and the selector depend on the protocol, not on `quoth.el`); `quoth-json.el`
 requires only `json` (a fallback); it exposes `quoth-json-read` and
 `quoth-json-write`, preferring the native C `json-parse-string` when
 `json-available-p` and keeping `json.el`'s representation contract. Every file
-that parses or emits JSON (`quoth-openai`, `quoth-hyper-provider`,
-`quoth-ollama-provider`, `quoth-searxng`) calls through it. `quoth-openai.el`
-requires only `quoth-provider` (for the session slots); `quoth-xxh3.el` has no
-dependencies (pure math); `quoth-process.el` requires only `cl-lib` and
-`subr-x`; `quoth-hyper-provider.el` requires `quoth-provider`, `quoth-openai`,
-and `quoth-xxh3`; `quoth-ollama-provider.el` requires `quoth-provider` and
-`quoth-openai` (no xxh3 — it sends no session-affinity headers);
-`quoth-tools.el` requires `quoth-openai` + `quoth-process` and registers its
-tools at load; `quoth-select.el` requires `quoth-provider` and `quoth-openai`
-(both leaves) and refreshes the UI through `quoth-after-model-change-hook`
-rather than calling core functions — it never requires `quoth.el`; `quoth.el`
-requires all of them (including `quoth-select`, for the `C-c " m` keybinding).
-Stream state, buffer rendering, and error handling (`quoth--append-delta`,
-`quoth--record-error`, `quoth--stream-transition`, `quoth--debug-log`) all live
-in `quoth.el` — the providers call them through buffer-local process references
-and `declare-function` stubs.
+that parses or emits JSON (`quoth-openai-client`, `quoth-openai-provider`,
+`quoth-hyper-provider`, `quoth-ollama-provider`, `quoth-searxng`) calls through
+it. `quoth-openai-client.el` requires only `quoth-provider` (for the session
+slots); `quoth-context.el` requires only the core's
+`quoth--schedule` (declared); `quoth-openai-provider.el` requires the protocol,
+the wire client, and the context module — it is the layer concrete
+OpenAI-compatible providers subclass; `quoth-xxh3.el` has no dependencies (pure
+math); `quoth-process.el` requires only `cl-lib` and `subr-x`;
+`quoth-hyper-provider.el` requires `quoth-openai-provider` and `quoth-xxh3`
+(for the affinity hash); `quoth-ollama-provider.el` requires
+`quoth-openai-provider` (no xxh3 — it sends no session-affinity headers);
+`quoth-tools.el` requires `quoth-openai-client` + `quoth-process` and registers
+its tools at load; `quoth-select.el` requires `quoth-provider` and
+`quoth-openai-client` (both leaves) and refreshes the UI through
+`quoth-after-model-change-hook` rather than calling core functions — it never
+requires `quoth.el`; `quoth.el` requires all of them (including `quoth-select`,
+for the `C-c " m` keybinding). Stream state, buffer rendering, and error
+handling (`quoth--append-delta`, `quoth--record-error`,
+`quoth--stream-transition`, `quoth--debug-log`) all live in `quoth.el` — the
+providers call them through buffer-local process references and
+`declare-function` stubs.
 
 ## Provider Abstraction
 
@@ -234,8 +243,8 @@ only by event handlers through the single writer `quoth--phase-set`.
 
 **Derived state** — rebuilt from the families above, never seeded, so killing
 and reopening a buffer reconstructs it: `quoth-active-provider`, the provider
-instance (re)instantiated from the session slots, and the OpenAI client's
-`quoth-openai--cached-system-prompt` + `quoth-openai--cache-key` (the staged
+instance (re)instantiated from the session slots, and the context module's
+`quoth-context--cached-system-prompt` + `quoth-context--cache-key` (the staged
 system prompt, rebuilt when the working directory or a context file's modtime
 changes). The **provider instance** is derived state, not session state: it is
 (re)instantiated from `quoth--session-provider` + `quoth--session-model`
@@ -343,14 +352,14 @@ the **single place that owns the buffer** and drives the lifecycle of one prompt
 
 ### The staged send
 
-A send is two stages. First the **system-prompt stage**
-(`quoth-openai--system-prompt-async`): on a cache hit (working dir +
-context-file modtimes unchanged) the cached prompt delivers inline; on a miss
-one marker-delimited git process gathers the branch/status/commits sections and
-the assembled prompt is cached and delivered on the `quoth--schedule` hop. Git
-failure, a non-git directory, and a stage past `quoth-openai-git-timeout` all
-degrade to the gitless prompt — a send never blocks on git. Buffer
-initialization prefetches the stage so the first send is usually a cache hit.
+A send is two stages. First the **system-prompt stage** (`quoth-context-async`,
+in `quoth-context.el`): on a cache hit (working dir + context-file modtimes
+unchanged) the cached prompt delivers inline; on a miss one marker-delimited git
+process gathers the branch/status/commits sections and the assembled prompt is
+cached and delivered on the `quoth--schedule` hop. Git failure, a non-git
+directory, and a stage past `quoth-context-git-timeout` all degrade to the
+gitless prompt — a send never blocks on git. Buffer initialization prefetches
+the stage so the first send is usually a cache hit.
 
 Second, the curl transport fires in the provider's on-ready, running in the chat
 buffer (the phase machine moves `preparing` → `streaming` there, guarded by
@@ -432,23 +441,24 @@ The hyper provider is Quoth's default: it posts the prompt to Hyper's
 OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`,
 base URL defaulting to `https://hyper.charm.land/v1`) and streams the response
 directly. It needs no `quoth` binary — only `curl` (used the same way gptel and
-plz.el use it). The HTTP+SSE wire work is implemented once in the reusable
-OpenAI client `quoth-openai.el`; the provider is a thin shim supplying hyper
-config (base URL, token, session-affinity hash, x-crush-id) and mapping the
-provider protocol onto the client's `quoth-openai-compose-request` and
-`quoth-openai-request`.
+plz.el use it). The HTTP+SSE wire work lives in the reusable client
+`quoth-openai-client.el`, and the staged send + token plumbing live once in the
+shared base `quoth-openai-provider.el`; the provider is a thin subclass
+supplying hyper config (base URL, token, session-affinity hash, x-crush-id) and
+its catalog, overriding `quoth-provider--request-extras` for the affinity and
+crush-id headers.
 
 ### How it works
 
-1. `quoth-provider-send-prompt` composes the request body via
-   `quoth-openai-compose-request` (messages array with a minimal system prompt,
-   the user prompt, model, and `stream: t`) and fires a `curl --config -`
-   subprocess; the config (URL, `request = POST`, JSON content-type, bearer auth
-   header, and `data-binary = @-`) plus the JSON body go to curl over stdin.
-   `data-binary = @-` is the **last** config line so curl reads the rest of
-   stdin as the body.
+1. `quoth-provider-send-prompt` (the shared base method) composes the request
+   body via `quoth-openai-compose-request` (messages array with the staged
+   system prompt, the user prompt, model, and `stream: t`) and fires a
+   `curl --config -` subprocess; the config (URL, `request = POST`, JSON
+   content-type, bearer auth header, and `data-binary = @-`) plus the JSON body
+   go to curl over stdin. `data-binary = @-` is the **last** config line so curl
+   reads the rest of stdin as the body.
 2. SSE frames are parsed incrementally in the process filter
-   (`quoth--hyper-curl-filter` → `quoth-openai-sse-feed`); content deltas are
+   (`quoth--openai-curl-filter` → `quoth-openai-sse-feed`); content deltas are
    emitted to the `:on-delta` callback (`quoth--append-delta`), which appends
    them in order and drives the reasoning overlay.
 3. A final `[DONE]` event, or the process exiting, runs the injected completion
@@ -651,12 +661,12 @@ never the rendered markup.
 
 The tool _protocol_ — the `quoth-openai-tool-call` struct, the registry
 (`quoth-openai-tool-registry`), dispatch (`quoth-openai-execute-tool`), argument
-parsing, and the execution policy — lives in `quoth-openai.el`; `quoth-tools.el`
-only implements the concrete tools and registers them at load. A registry entry
-takes a tool call and an `on-done` reporter, delivering `(RESULT . EXIT-OR-NIL)`
-exactly once — inline for immediate tools (`read_file`, `write_file`,
-`edit_file`), from a window timer or the session sentinel for process-backed
-ones — and returns a cancel thunk (abandon the wait) or nil.
+parsing, and the execution policy — lives in `quoth-openai-client.el`;
+`quoth-tools.el` only implements the concrete tools and registers them at load.
+A registry entry takes a tool call and an `on-done` reporter, delivering
+`(RESULT . EXIT-OR-NIL)` exactly once — inline for immediate tools (`read_file`,
+`write_file`, `edit_file`), from a window timer or the session sentinel for
+process-backed ones — and returns a cancel thunk (abandon the wait) or nil.
 
 The **round orchestrator** in `quoth.el` owns the event chain: on finalize with
 pending calls it moves the phase to `tools`, inserts a placeholder block
@@ -728,10 +738,11 @@ OpenAI-compatible surface — `POST {base-url}/chat/completions`, base URL
 defaulting to `https://ollama.com/v1` (the `OLLAMA_URL` environment variable or
 the `quoth-ollama-base-url` defcustom overrides it; pointing either at a local
 daemon such as `http://localhost:11434/v1` is a plain configuration change,
-since the daemon speaks the same protocol). It is the same thin-shim shape as
-hyper: the shared `quoth-openai.el` client does the wire work, and the provider
-supplies config (base URL, token via `quoth-ollama-token`, auth-source default
-`machine ollama.com login apikey`) and maps the protocol onto the client.
+since the daemon speaks the same protocol). It is the same subclass shape as
+hyper: the shared `quoth-openai-provider.el` base does the staged send and token
+plumbing, and the provider supplies config (base URL, token via
+`quoth-ollama-token`, auth-source default `machine ollama.com login apikey`),
+its catalog, and the body extras below.
 
 Differences from hyper, all flowing from the wire facts in
 [OLLAMA-CLOUD-API.md](OLLAMA-CLOUD-API.md):
@@ -739,9 +750,9 @@ Differences from hyper, all flowing from the wire facts in
 - **No session-affinity or machine-id headers.** Ollama has no prefix-cache
   protocol; session continuity rides the re-sent history alone, so the
   buffer-rebuild principle holds with no extra headers.
-- **One provider extra on the body.** `send-prompt` appends
-  `stream_options: {include_usage: true}` to the composed alist before the
-  request fires — providers appending keys to the composed alist is the
+- **One provider extra on the body.** The base send appends the
+  `quoth-provider--body-extras` value — `stream_options: {include_usage: true}`
+  here — to the composed alist before the request fires; the generic is the
   documented extension mechanism, with no `quoth-openai-compose-request`
   signature change. The final SSE chunk then carries `usage` with an **empty
   `choices` array**; the parser tolerates it (the usage capture path is

@@ -71,7 +71,7 @@
 
 (ert-deftest quoth-test/hyper-compose-no-context ()
   "Without context, messages should be system + user with just the prompt."
-  (let* ((req (quoth-openai-compose-request "Hello" "m"))
+  (let* ((req (quoth-openai-compose-request "Hello" "m" "sys"))
          (msgs (alist-get 'messages req)))
     (should (string= (alist-get 'model req) "m"))
     (should (eq (alist-get 'stream req) t))
@@ -87,7 +87,7 @@ Session attributes are buffer-local; set them with `let'."
         (quoth-openai-temperature 0.5)
         (quoth--session-thinking t)
         (quoth--session-reasoning-effort "high"))
-    (let ((req (quoth-openai-compose-request "P" "my-model")))
+    (let ((req (quoth-openai-compose-request "P" "my-model" "sys")))
       (should (string= (alist-get 'model req) "my-model"))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
@@ -97,13 +97,13 @@ Session attributes are buffer-local; set them with `let'."
 (ert-deftest quoth-test/hyper-compose-model-default ()
   "When no model is set, the client default model is used."
   (let ((quoth-default-model nil))
-    (should (string= (alist-get 'model (quoth-openai-compose-request "P" nil))
+    (should (string= (alist-get 'model (quoth-openai-compose-request "P" nil "sys"))
                      quoth-openai-default-model))))
 
 (ert-deftest quoth-test/hyper-compose-tools-by-default ()
   "With `quoth-tools-enabled' t the body announces all registered tools.
 The default is non-nil, so `tool_choice' is `auto'."
-  (let ((req (quoth-openai-compose-request "P" "m")))
+  (let ((req (quoth-openai-compose-request "P" "m" "sys")))
     (should (assq 'tools req))
     (should (equal (alist-get 'tool_choice req) "auto"))
     (let ((tools (alist-get 'tools req)))
@@ -120,7 +120,7 @@ The default is non-nil, so `tool_choice' is `auto'."
   "With `quoth-tools-enabled' nil the body matches the pre-tools format.
 It is byte-identical, with no `tools' or `tool_choice' key."
   (let ((quoth-tools-enabled nil))
-    (let ((req (quoth-openai-compose-request "P" "m")))
+    (let ((req (quoth-openai-compose-request "P" "m" "sys")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
@@ -376,7 +376,7 @@ is dropped between chunks."
           (let ((quoth-openai-timeout 45))
             (quoth-openai-request
              "http://127.0.0.1:1" "tok"
-             (quoth-openai-compose-request "hi" "m")
+             (quoth-openai-compose-request "hi" "m" "sys")
              #'ignore #'ignore)))
       (delete-process proc))
     (should (string-match-p "max-time = 45"
@@ -398,7 +398,7 @@ XXH3-64 hash."
                   ((symbol-function 'process-send-eof) #'ignore))
           (quoth-openai-request
            "http://127.0.0.1:1" "tok"
-           (quoth-openai-compose-request "hi" "m")
+           (quoth-openai-compose-request "hi" "m" "sys")
            #'ignore #'ignore nil (quoth-xxh3-hash64 uuid)))
       (delete-process proc))
     (let ((config (mapconcat #'identity (nreverse received) "\n")))
@@ -420,7 +420,7 @@ XXH3-64 hash."
                   ((symbol-function 'process-send-eof) #'ignore))
           (quoth-openai-request
            "http://127.0.0.1:1" "tok"
-           (quoth-openai-compose-request "hi" "m")
+           (quoth-openai-compose-request "hi" "m" "sys")
            #'ignore #'ignore))
       (delete-process proc))
     (should (string-match-p
@@ -431,7 +431,7 @@ XXH3-64 hash."
   "The default setting passes a stable per-machine ID.
 Repeated sends resolve to the same value."
   (let ((captured nil))
-    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+    (cl-letf (((symbol-function 'quoth-context-async)
                (lambda (_buf on-ready)
                  (funcall on-ready "STAGED PROMPT") nil))
               ((symbol-function 'quoth-openai-request)
@@ -477,7 +477,7 @@ non-nil."
                               ((symbol-function 'process-send-eof) #'ignore))
                       (quoth-openai-request
                        "http://127.0.0.1:1" "tok"
-                       (quoth-openai-compose-request "hi" "m")
+                       (quoth-openai-compose-request "hi" "m" "sys")
                        #'ignore #'ignore nil nil id))
                   (delete-process proc))
                 (mapconcat #'identity (nreverse received) "\n"))))
@@ -498,7 +498,7 @@ non-nil."
                   ((symbol-function 'process-send-eof) #'ignore))
           (quoth-openai-request
            "http://127.0.0.1:1" "tok"
-           (quoth-openai-compose-request "hi" "m")
+           (quoth-openai-compose-request "hi" "m" "sys")
            #'ignore #'ignore))
       (delete-process proc))
     (let ((config (mapconcat #'identity (nreverse received) "\n")))
@@ -508,7 +508,7 @@ non-nil."
 (ert-deftest quoth-test/hyper-method-gates-session-id-on-defcustom ()
   "The session hash is computed only when the cache gate is on.\nWith the gate off, nil is passed for the session headers."
   (let ((captured-session nil))
-    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+    (cl-letf (((symbol-function 'quoth-context-async)
                (lambda (_buf on-ready)
                  (funcall on-ready "STAGED PROMPT") nil))
               ((symbol-function 'quoth-openai-request)
@@ -532,7 +532,7 @@ non-nil."
   "Test that with the cache gate on, the method passes the XXH3-64 hash.
 The hash is of the session UUID as the cache-affinity session id."
   (let ((captured-session nil))
-    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+    (cl-letf (((symbol-function 'quoth-context-async)
                (lambda (_buf on-ready)
                  (funcall on-ready "STAGED PROMPT") nil))
               ((symbol-function 'quoth-openai-request)
@@ -685,7 +685,7 @@ on stream completion instead of finalizing or touching buffers itself."
   (let ((quoth-test--captured-completion nil)
         (injected (lambda () (setq quoth-test--captured-completion 'called)))
         (base "http://127.0.0.1:1"))
-    (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+    (cl-letf (((symbol-function 'quoth-context-async)
                (lambda (_buf on-ready)
                  (funcall on-ready "STAGED PROMPT") nil))
               ((symbol-function 'quoth-openai-request)
@@ -822,7 +822,7 @@ test sees a clean capture (the server appends per-request).  Returns
                   (lambda (base)
                     (let ((proc (quoth-openai-request
                                  base "tok-rf"
-                                 (quoth-openai-compose-request "hi" "m")
+                                 (quoth-openai-compose-request "hi" "m" "sys")
                                  #'ignore #'ignore nil
                                  (quoth-xxh3-hash64
                                   "f47ac10b-58cc-4372-a567-0e02b2c3d479"))))
@@ -1006,7 +1006,7 @@ advising a resend; the parsed status is recorded on the process."
            (lambda (base)
              (setq-local quoth--response-start (point-marker))
              (let* ((proc (quoth-openai-request
-                           base "tok" (quoth-openai-compose-request "hi" "m")
+                           base "tok" (quoth-openai-compose-request "hi" "m" "sys")
                            (quoth-test--hyper-on-delta (current-buffer))
                            (quoth-test--hyper-completion (current-buffer))
                            (quoth-test--hyper-on-error (current-buffer))))
@@ -1052,7 +1052,7 @@ advising a resend; the parsed status is recorded on the process."
                     ((symbol-function 'process-send-eof) #'ignore))
             (quoth-openai-request
              "http://127.0.0.1:1" "sk-hyper-supersecret"
-             (quoth-openai-compose-request "hi" "m")
+             (quoth-openai-compose-request "hi" "m" "sys")
              #'ignore #'ignore)
             ;; Parse a response head so the `response: POST' diagnostic
             ;; line is logged too (the token is never in it).
@@ -1082,8 +1082,8 @@ advising a resend; the parsed status is recorded on the process."
   "Prior messages (alists) ride before the new user message."
   (let* ((req (quoth-openai-compose-request
                "second" "m"
-               (list (list (cons 'role "user") (cons 'content "first"))
-                     (list (cons 'role "assistant") (cons 'content "one")))))
+               "sys" (list (list (cons 'role "user") (cons 'content "first"))
+                           (list (cons 'role "assistant") (cons 'content "one")))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 4))
     (should (string= (quoth--openai-alist-get "role" (nth 0 msgs)) "system"))
@@ -1095,7 +1095,7 @@ advising a resend; the parsed status is recorded on the process."
 (ert-deftest quoth-test/hyper-history-compose-plain-with-no-turns ()
   "With no prior messages the request is exactly system + user.
 This covers the first prompt, or a limit of 0."
-  (let* ((req (quoth-openai-compose-request "second" "m" nil))
+  (let* ((req (quoth-openai-compose-request "second" "m" "sys" nil))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 2))
     (should (string= (quoth--openai-alist-get "content" (nth 1 msgs))
@@ -1106,7 +1106,7 @@ This covers the first prompt, or a limit of 0."
 the caller (quoth--history-turns) is responsible for dropping junk."
   (let* ((req (quoth-openai-compose-request
                "hi" "m"
-               (list (list (cons 'role "user") (cons 'content "a")))))
+               "sys" (list (list (cons 'role "user") (cons 'content "a")))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 3))
     (should (string= (quoth--openai-alist-get "content" (nth 1 msgs)) "a"))))
@@ -1306,8 +1306,8 @@ The second request is a plain [system, user]." :tags '(:integration)
   "Excluded reasoning: the assistant message has only `content'."
   (let* ((req (quoth-openai-compose-request
                "hello" "m"
-               (list (list (cons 'role "user") (cons 'content "first"))
-                     (list (cons 'role "assistant") (cons 'content "answer")))))
+               "sys" (list (list (cons 'role "user") (cons 'content "first"))
+                           (list (cons 'role "assistant") (cons 'content "answer")))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 4))
     (let ((a (nth 2 msgs)))
@@ -1321,10 +1321,10 @@ It carries both `content' and `reasoning_content'; there is no
 standalone reasoning message."
   (let* ((req (quoth-openai-compose-request
                "hello" "m"
-               (list (list (cons 'role "user") (cons 'content "first"))
-                     (list (cons 'role "assistant")
-                           (cons 'content "answer")
-                           (cons 'reasoning_content "trace")))))
+               "sys" (list (list (cons 'role "user") (cons 'content "first"))
+                           (list (cons 'role "assistant")
+                                 (cons 'content "answer")
+                                 (cons 'reasoning_content "trace")))))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 4))
     (let ((a (nth 2 msgs)))
@@ -1342,7 +1342,7 @@ standalone reasoning message."
   "A stray `reasoning' message with no assistant is dropped by the caller;
 history arrives pre-filtered here, so the request stays system + user."
   (let* ((req (quoth-openai-compose-request
-               "hello" "m" nil))
+               "hello" "m" "sys" nil))
          (msgs (alist-get 'messages req)))
     (should (= (length msgs) 2))))
 
@@ -1432,7 +1432,7 @@ The SSE state carries them and the parser reports them."
 (ert-deftest quoth-test/hyper-compose-disabled-tools-no-key ()
   "With `quoth-tools-enabled' nil the body lacks the tool keys.\nNeither `tools' nor `tool_choice' appears."
   (let ((quoth-tools-enabled nil))
-    (let ((req (quoth-openai-compose-request "P" "m")))
+    (let ((req (quoth-openai-compose-request "P" "m" "sys")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
@@ -1822,9 +1822,9 @@ already sends correct ids; this pins the history-replay path." :tags '(:integrat
 
 (ert-deftest quoth-test/hyper-provider-is-thin-shim ()
   "The hyper provider must not reimplement the OpenAI wire layer.
-It delegates to `quoth-openai-compose-request' and
-`quoth-openai-request', and defines no SSE/curl wire functions of its
-own (those live in quoth-openai.el)."
+The staged send (`compose-request' + `request') lives once in the
+shared base `quoth-openai-provider.el'; hyper defines no send, SSE,
+or curl functions of its own."
   (let* ((lib (or (locate-library "quoth-hyper-provider")
                   (expand-file-name "quoth-hyper-provider.el"
                                     (file-name-directory
@@ -1835,9 +1835,9 @@ own (those live in quoth-openai.el)."
          (src (with-temp-buffer
                 (insert-file-contents file)
                 (buffer-string))))
-    (should (string-match-p "quoth-openai-compose-request" src))
-    (should (string-match-p "quoth-openai-request" src))
-    ;; No wire/transport implementation in the provider.
+    ;; No send/wire implementation in the provider: all of it rides
+    ;; the shared base method.
+    (should-not (string-match-p "defmethod quoth-provider-send-prompt" src))
     (should-not (string-match-p "defun quoth--openai-\\(sse\\|curl\\|emit\\|http\\)" src))
     (should-not (string-match-p "defun quoth-openai-\\(sse\\|compose\\|request\\)" src))))
 
@@ -2064,7 +2064,7 @@ The curl transport lands in the handle once the staged prompt delivers."
                    :token "tok"))
         (curl (make-pipe-process :name "quoth-hyper-transport" :noquery t)))
     (unwind-protect
-        (cl-letf (((symbol-function 'quoth-openai--system-prompt-async)
+        (cl-letf (((symbol-function 'quoth-context-async)
                    (lambda (_buf on-ready)
                      (funcall on-ready "STAGED PROMPT") nil))
                   ((symbol-function 'quoth-openai-request)
@@ -2096,7 +2096,7 @@ is killed, its curl aborted, and the handle replaced."
           (list :stage-process old-stage :curl old-curl :done-p nil))
     (cl-letf* (((symbol-function 'quoth-openai-abort)
                 (lambda (_proc) (setq aborted t)))
-               ((symbol-function 'quoth-openai--system-prompt-async)
+               ((symbol-function 'quoth-context-async)
                 (lambda (_buf on-ready)
                   (funcall on-ready "STAGED PROMPT") nil))
                ((symbol-function 'quoth-openai-request)
@@ -2316,7 +2316,7 @@ so the JSON body must carry content as an array of text and
                         (lambda (base)
                           (let ((proc (quoth-openai-request
                                        base "tok-img"
-                                       (quoth-openai-compose-request content "m")
+                                       (quoth-openai-compose-request content "m" "sys")
                                        #'ignore #'ignore nil
                                        (quoth-xxh3-hash64
                                         "f47ac10b-58cc-4372-a567-0e02b2c3d479"))))
@@ -2375,7 +2375,7 @@ synthetic user message right after carries the image part
                               (let ((proc (quoth-openai-request
                                            base "tok-fan"
                                            (quoth-openai-compose-request
-                                            "" "m" nil continuation)
+                                            "" "m" "sys" nil continuation)
                                            #'ignore #'ignore nil
                                            (quoth-xxh3-hash64
                                             "f47ac10b-58cc-4372-a567-0e02b2c3d479"))))

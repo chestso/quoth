@@ -64,7 +64,7 @@
 
 ;;; Session state shared across the core, the OpenAI client, and the
 ;;; selector UI.  Lives here — in the protocol module — so that
-;;; `quoth-openai.el' and `quoth-select.el' depend on the protocol, not
+;;; `quoth-openai-client.el' and `quoth-select.el' depend on the protocol, not
 ;;; on `quoth.el'.  The core sets these buffer-locally at init time,
 ;;; seeded from the global defaults (`quoth-default-thinking',
 ;;; `quoth-default-reasoning-effort'); every transient selection the

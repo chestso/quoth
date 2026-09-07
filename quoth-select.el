@@ -49,9 +49,9 @@
 ;;; Prefer `require'; fall back to loading the siblings from this
 ;;; file's own directory so both flycheck and package-installed loads
 ;;; work.  The order follows the dependency graph: `quoth-provider'
-;;; first, then `quoth-openai'.
+;;; first, then `quoth-openai-client'.
 (eval-and-compile
-  (dolist (dep '("quoth-provider" "quoth-openai"))
+  (dolist (dep '("quoth-provider" "quoth-openai-client"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")

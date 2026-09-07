@@ -9,12 +9,12 @@ the same protocol, so pointing `quoth-ollama-base-url` at it is a user-side
 configuration; this reference keeps cloud-verified behavior in the foreground.
 
 Quoth consumes the **OpenAI-compatible surface** (`/v1/chat/completions`, usage
-streaming, vision content-parts) through the shared client `quoth-openai.el`,
-and the **native `/api` surface** for exactly one thing the OpenAI protocol
-cannot do: the model catalog, assembled from `GET /api/tags` (membership) plus a
-parallel `POST /api/show` fan-out (capabilities, context length). See
-[ARCHITECTURE.md](ARCHITECTURE.md) for the provider wiring and
-`test/ollama-server.py` for the wire-test fixture.
+streaming, vision content-parts) through the shared client
+`quoth-openai-client.el`, and the **native `/api` surface** for exactly one
+thing the OpenAI protocol cannot do: the model catalog, assembled from
+`GET /api/tags` (membership) plus a parallel `POST /api/show` fan-out
+(capabilities, context length). See [ARCHITECTURE.md](ARCHITECTURE.md) for the
+provider wiring and `test/ollama-server.py` for the wire-test fixture.
 
 Every claim marked "live test" or "verified" below was probed against the live
 cloud with a free-tier key (Sep 2026), not derived from upstream docs.

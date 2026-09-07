@@ -455,16 +455,20 @@ Buffer-local.")
 ;;; Backend abstraction
 
 ;;; The `quoth-provider' base struct and the `quoth-provider-*' protocol
-;;; live in `quoth-provider.el'; the reusable OpenAI client in
-;;; `quoth-openai.el'; the concrete provider in `quoth-hyper-provider.el'
-;;; (direct HTTP to the Charm Hyper gateway).
+;;; live in `quoth-provider.el'; the reusable OpenAI wire client in
+;;; `quoth-openai-client.el'; the system-prompt context assembly in
+;;; `quoth-context.el'; the shared OpenAI-provider base in
+;;; `quoth-openai-provider.el'; the concrete providers in
+;;; `quoth-hyper-provider.el' (Charm Hyper) and `quoth-ollama-provider.el'
+;;; (Ollama Cloud).
 ;;; The dependency files sit next to this file but are not guaranteed to
 ;;; be on `load-path': package.el adds the package dir, while direct
 ;;; `load' or flycheck's batch byte-compile do not.  Try `require'
 ;;; first, then fall back to loading from this file's own directory so
 ;;; both setups work.
 (eval-and-compile
-  (dolist (dep '("quoth-json" "quoth-provider" "quoth-openai" "quoth-xxh3"
+  (dolist (dep '("quoth-json" "quoth-provider" "quoth-openai-client"
+                 "quoth-context" "quoth-openai-provider" "quoth-xxh3"
                  "quoth-process" "quoth-hyper-provider" "quoth-ollama-provider"
                  "quoth-tools"
                  "quoth-searxng" "quoth-select"))
@@ -482,18 +486,18 @@ Buffer-local.")
 (declare-function quoth-xxh3-hash64 "quoth-xxh3" (input))
 (declare-function quoth-provider--tool-calls "quoth-provider" (provider process))
 (declare-function quoth-process--cleanup-buffer "quoth-process" (owner))
-(declare-function quoth-openai-parse-tool-args "quoth-openai" (args-json))
-(declare-function quoth-openai-execute-tool "quoth-openai" (tool-call on-done))
-(declare-function quoth-make-openai-tool-call "quoth-openai" (&rest args))
-(declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
-(declare-function quoth-openai-tool-call-result "quoth-openai" (tool-call))
-(declare-function quoth-openai-tool-call-exit "quoth-openai" (tool-call))
-(declare-function quoth--openai-alist-get "quoth-openai" (key alist))
-(declare-function quoth--openai-error-extract-message "quoth-openai" (body))
+(declare-function quoth-openai-parse-tool-args "quoth-openai-client" (args-json))
+(declare-function quoth-openai-execute-tool "quoth-openai-client" (tool-call on-done))
+(declare-function quoth-make-openai-tool-call "quoth-openai-client" (&rest args))
+(declare-function quoth-openai-tool-call-args "quoth-openai-client" (tool-call))
+(declare-function quoth-openai-tool-call-result "quoth-openai-client" (tool-call))
+(declare-function quoth-openai-tool-call-exit "quoth-openai-client" (tool-call))
+(declare-function quoth--openai-alist-get "quoth-openai-client" (key alist))
+(declare-function quoth--openai-error-extract-message "quoth-openai-client" (body))
 (declare-function quoth-process--shell-type "quoth-process" (shell-path))
 (declare-function quoth-provider-models-cached "quoth-provider" (provider))
 (declare-function quoth-provider-models-refresh "quoth-provider" (provider &optional force))
-(declare-function quoth-openai--system-prompt-async "quoth-openai" (buf on-ready))
+(declare-function quoth-context-async "quoth-context" (buf on-ready))
 (declare-function quoth-provider-request "quoth-provider" (provider))
 
 (declare-function quoth-select-model-menu "quoth-select" ())
@@ -1899,7 +1903,7 @@ re-syncs it after either side changed."
                    (quoth-provider-p quoth-active-provider))
           (quoth-provider-models-refresh quoth-active-provider)))
       (ignore-errors
-        (quoth-openai--system-prompt-async buf #'ignore)))))
+        (quoth-context-async buf #'ignore)))))
 
 (defun quoth--append-as-user-input (buf formatted)
   "Insert FORMATTED content into BUF as user input.
@@ -3423,8 +3427,8 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (setq-local quoth--continue nil)
   (setq-local quoth--follow-p nil)
   (setq-local quoth--last-follow-point 0)
-  (setq-local quoth-openai--cached-system-prompt nil)
-  (setq-local quoth-openai--cache-key nil)
+  (setq-local quoth-context--cached-system-prompt nil)
+  (setq-local quoth-context--cache-key nil)
   (quoth--init-session-uuid)
   (quoth--round-cancel)
   (quoth--stream-clear)

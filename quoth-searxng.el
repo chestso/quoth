@@ -57,7 +57,7 @@
 ;;; work.  The order follows the dependency graph: `quoth-json' first,
 ;;; then `quoth-openai' and `quoth-tools'.
 (eval-and-compile
-  (dolist (dep '("quoth-json" "quoth-openai" "quoth-tools"))
+  (dolist (dep '("quoth-json" "quoth-openai-client" "quoth-tools"))
     (unless (require (intern dep) nil t)
       (load (expand-file-name
              (concat dep ".el")
@@ -65,9 +65,9 @@
               (or buffer-file-name load-file-name default-directory)))
             nil t))))
 
-(declare-function quoth-openai-tool-call-args "quoth-openai" (tool-call))
+(declare-function quoth-openai-tool-call-args "quoth-openai-client" (tool-call))
 (declare-function quoth-exec--format-result "quoth-tools" (output exit-code))
-(declare-function quoth-openai-tool-error-result "quoth-openai" (message))
+(declare-function quoth-openai-tool-error-result "quoth-openai-client" (message))
 (declare-function quoth-exec--truncate-output "quoth-tools" (output))
 
 (defgroup quoth-searxng nil

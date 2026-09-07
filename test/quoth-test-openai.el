@@ -27,7 +27,7 @@
 ;;; SOFTWARE.
 
 ;;; Commentary:
-;;; The reusable OpenAI chat-completions client (quoth-openai.el): request
+;;; The reusable OpenAI chat-completions wire client (quoth-openai-client.el): request
 ;;; composition, history building, SSE parsing, and the wire helpers.
 
 ;;; Code:
@@ -47,7 +47,7 @@
 ;;; `require'; fall back to loading each dep from this file's directory
 ;;; or its parent (the package root) so flycheck and package loads work.
 (eval-and-compile
-  (dolist (dep '("quoth-openai"))
+  (dolist (dep '("quoth-openai-client" "quoth-context"))
     (unless (require (intern dep) nil t)
       (let* ((base (file-name-directory
                     (or buffer-file-name load-file-name default-directory)))
@@ -66,8 +66,10 @@
 
 (ert-deftest quoth-test/openai-compose-no-context ()
   "Without context, messages should be system + user with just the prompt.
-The system message should carry the dynamic system prompt (<env> block)."
-  (let* ((req (quoth-openai-compose-request "Hello" "m"))
+The system message rides the SYSTEM-PROMPT argument verbatim (the
+caller's staged prompt; here a real one built by the context module)."
+  (let* ((prompt (quoth-context--build-system-prompt-uncached))
+         (req (quoth-openai-compose-request "Hello" "m" prompt))
          (msgs (alist-get 'messages req)))
     (should (string= (alist-get 'model req) "m"))
     (should (eq (alist-get 'stream req) t))
@@ -85,7 +87,7 @@ Session attributes are buffer-local; set them with `let'."
         (quoth-openai-temperature 0.5)
         (quoth--session-thinking t)
         (quoth--session-reasoning-effort "high"))
-    (let ((req (quoth-openai-compose-request "P" "my-model")))
+    (let ((req (quoth-openai-compose-request "P" "my-model" "sys")))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
       (should (eq (alist-get 'thinking req) t))
@@ -96,13 +98,13 @@ Session attributes are buffer-local; set them with `let'."
 The fallback at compose time strips the routing prefix, so the
 request body carries the bare model id."
   (let ((quoth-default-model "ollama/gemma"))
-    (let ((req (quoth-openai-compose-request "P" nil)))
+    (let ((req (quoth-openai-compose-request "P" nil "sys")))
       (should (string= (alist-get 'model req) "gemma")))))
 
 (ert-deftest quoth-test/openai-compose-tools-by-default ()
   "With `quoth-tools-enabled' t the body announces all registered tools.
 The default is non-nil, so `tool_choice' is `auto'."
-  (let ((req (quoth-openai-compose-request "P" "m")))
+  (let ((req (quoth-openai-compose-request "P" "m" "sys")))
     (should (assq 'tools req))
     (should (equal (alist-get 'tool_choice req) "auto"))
     (let ((tools (alist-get 'tools req)))
@@ -121,7 +123,7 @@ The default is non-nil, so `tool_choice' is `auto'."
 (ert-deftest quoth-test/openai-compose-no-tools-when-disabled ()
   "With `quoth-tools-enabled' nil the body has no `tools' or `tool_choice'."
   (let ((quoth-tools-enabled nil))
-    (let ((req (quoth-openai-compose-request "P" "m")))
+    (let ((req (quoth-openai-compose-request "P" "m" "sys")))
       (should-not (assq 'tools req))
       (should-not (assq 'tool_choice req)))))
 
@@ -215,7 +217,7 @@ strip-before-write discipline."
   "A non-nil CONTINUATION replaces the user message with follow-up msgs."
   (let ((msgs (alist-get 'messages
                          (quoth-openai-compose-request
-                          "P" "m" nil
+                          "P" "m" "sys" nil
                           '(((role . "assistant") (content . nil)
                              (tool_calls . [(id . "c1")]))
                             ((role . "tool") (tool_call_id . "c1")
@@ -241,7 +243,7 @@ strip-before-write discipline."
                (list (cons 'role "tool")
                      (cons 'tool_call_id "call_1")
                      (cons 'content "<command>ls</command>\n<exit_code>0</exit_code>")))))
-    (let* ((req (quoth-openai-compose-request "explain" "m" history))
+    (let* ((req (quoth-openai-compose-request "explain" "m" "sys" history))
            (msgs (alist-get 'messages req)))
       (should (= (length msgs) 5))   ; system + 3 history + current user
       (should (string= (quoth--openai-alist-get "role" (nth 0 msgs)) "system"))
@@ -264,7 +266,7 @@ strip-before-write discipline."
                (list (cons 'role "assistant")
                      (cons 'content "short answer")
                      (cons 'reasoning_content "deep chain of thought")))))
-    (let* ((req (quoth-openai-compose-request "next" "m" history))
+    (let* ((req (quoth-openai-compose-request "next" "m" "sys" history))
            (msgs (alist-get 'messages req)))
       (should (= (length msgs) 4))   ; system + 2 history + current user
       (let ((a (nth 2 msgs)))
@@ -278,7 +280,7 @@ strip-before-write discipline."
   "The <env> block includes working dir, platform, and date.
 When not in a git repo, no git lines appear."
   (let* ((default-directory "/tmp/nonexistent-project/")
-         (env (quoth-openai--build-env-block)))
+         (env (quoth-context--build-env-block)))
     (should (string-match-p "<env>" env))
     (should (string-match-p "Working directory: /tmp/nonexistent-project" env))
     (should (string-match-p "Is directory a git repo: no" env))
@@ -291,7 +293,7 @@ When not in a git repo, no git lines appear."
   "The <env> block fields follow the CLI order with no reversal.
 Working directory, git repo status, platform, then date."
   (let* ((default-directory "/tmp/nonexistent-project/")
-         (env (quoth-openai--build-env-block))
+         (env (quoth-context--build-env-block))
          (wd-pos (string-match "Working directory:" env))
          (git-pos (string-match "Is directory a git repo:" env))
          (platform-pos (string-match "Platform:" env))
@@ -306,8 +308,8 @@ Uses the quoth.el repo root (always a git repo during tests)."
   (let ((default-directory
          (file-name-directory
           (or buffer-file-name load-file-name
-              (expand-file-name "quoth-openai.el" default-directory)))))
-    (let ((env (quoth-openai--build-env-block
+              (expand-file-name "quoth-openai-client.el" default-directory)))))
+    (let ((env (quoth-context--build-env-block
                 "Current branch: master\nStatus: clean\nRecent commits:\nabc def")))
       (should (string-match-p "<env>" env))
       (should (string-match-p "Is directory a git repo: yes" env))
@@ -322,9 +324,9 @@ Uses the quoth.el repo root (always a git repo during tests)."
   "Discover AGENTS.md in the working directory and return its content."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
-                         (expand-file-name "quoth-openai.el" default-directory))))
+                         (expand-file-name "quoth-openai-client.el" default-directory))))
          (default-directory repo-root)
-         (files (quoth-openai--discover-context-files
+         (files (quoth-context--discover-context-files
                  (list "AGENTS.md"))))
     (should files)
     (should (= (length files) 1))
@@ -335,7 +337,7 @@ Uses the quoth.el repo root (always a git repo during tests)."
 (ert-deftest quoth-test/openai-discover-context-files-missing-returns-nil ()
   "Non-existent files are omitted from the result."
   (let* ((default-directory "/tmp/")
-         (files (quoth-openai--discover-context-files
+         (files (quoth-context--discover-context-files
                  (list "DOES-NOT-EXIST.md"))))
     (should-not files)))
 
@@ -343,7 +345,7 @@ Uses the quoth.el repo root (always a git repo during tests)."
 
 (ert-deftest quoth-test/openai-project-context-block-with-files ()
   "The <project_context> block wraps file contents in XML."
-  (let ((block (quoth-openai--build-project-context-block
+  (let ((block (quoth-context--build-project-context-block
                 (list (cons "AGENTS.md" "Project rules here")
                       (cons "CRUSH.md" "More rules")))))
     (should (string-match-p "# Project-Specific Context" block))
@@ -357,11 +359,11 @@ Uses the quoth.el repo root (always a git repo during tests)."
 
 (ert-deftest quoth-test/openai-project-context-block-empty-returns-nil ()
   "Empty file list returns nil (no block)."
-  (should-not (quoth-openai--build-project-context-block nil)))
+  (should-not (quoth-context--build-project-context-block nil)))
 
 (ert-deftest quoth-test/openai-user-preferences-block-with-files ()
   "The <user_preferences> block wraps global file contents in XML."
-  (let ((block (quoth-openai--build-user-preferences-block
+  (let ((block (quoth-context--build-user-preferences-block
                 (list (cons "~/.config/crush/CRUSH.md" "Global rules")))))
     (should (string-match-p "# User context" block))
     (should (string-match-p "<user_preferences>" block))
@@ -371,7 +373,7 @@ Uses the quoth.el repo root (always a git repo during tests)."
 
 (ert-deftest quoth-test/openai-user-preferences-block-empty-returns-nil ()
   "Empty global file list returns nil (no block)."
-  (should-not (quoth-openai--build-user-preferences-block nil)))
+  (should-not (quoth-context--build-user-preferences-block nil)))
 
 ;;; 6. System prompt: full assembly
 
@@ -380,10 +382,10 @@ Uses the quoth.el repo root (always a git repo during tests)."
 Uses the quoth.el repo root so AGENTS.md is discovered."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
-                         (expand-file-name "quoth-openai.el" default-directory))))
+                         (expand-file-name "quoth-openai-client.el" default-directory))))
          (default-directory repo-root)
-         (quoth-openai-global-context-paths nil)
-         (prompt (quoth-openai--build-system-prompt-uncached)))
+         (quoth-context-global-paths nil)
+         (prompt (quoth-context--build-system-prompt-uncached)))
     (should (string-match-p "You are a helpful assistant" prompt))
     (should (string-match-p "<env>" prompt))
     (should (string-match-p "Working directory:" prompt))
@@ -397,9 +399,9 @@ Uses the quoth.el repo root so AGENTS.md is discovered."
 (ert-deftest quoth-test/openai-build-system-prompt-uncached-no-context ()
   "With no context files, system prompt still has base text and <env>."
   (let* ((default-directory "/tmp/")
-         (quoth-openai-context-paths nil)
-         (quoth-openai-global-context-paths nil)
-         (prompt (quoth-openai--build-system-prompt-uncached)))
+         (quoth-context-paths nil)
+         (quoth-context-global-paths nil)
+         (prompt (quoth-context--build-system-prompt-uncached)))
     (should (string-match-p "You are a helpful assistant" prompt))
     (should (string-match-p "<env>" prompt))
     (should (string-match-p "Working directory:" prompt))
@@ -412,9 +414,9 @@ Uses the quoth.el repo root so AGENTS.md is discovered."
   "Return (path . modtime) for existing files only; skip missing."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
-                         (expand-file-name "quoth-openai.el" default-directory))))
+                         (expand-file-name "quoth-openai-client.el" default-directory))))
          (default-directory repo-root)
-         (mods (quoth-openai--context-modtimes
+         (mods (quoth-context--modtimes
                 (list "AGENTS.md" "DOES-NOT-EXIST.md"))))
     (should (= (length mods) 1))
     (should (string= (car (nth 0 mods)) "AGENTS.md"))
@@ -423,7 +425,7 @@ Uses the quoth.el repo root so AGENTS.md is discovered."
 (ert-deftest quoth-test/openai-context-modtimes-empty-for-nothing ()
   "No existing files yields nil."
   (let* ((default-directory "/tmp/")
-         (mods (quoth-openai--context-modtimes
+         (mods (quoth-context--modtimes
                 (list "DOES-NOT-EXIST.md"))))
     (should-not mods)))
 
@@ -432,25 +434,25 @@ Uses the quoth.el repo root so AGENTS.md is discovered."
 The on-ready return equals the cached string."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
-                         (expand-file-name "quoth-openai.el" default-directory))))
+                         (expand-file-name "quoth-openai-client.el" default-directory))))
          (delivered nil))
     (setq-local default-directory repo-root)
-    (setq-local quoth-openai-context-paths nil)
-    (setq-local quoth-openai-global-context-paths nil)
-    (setq-local quoth-openai--cached-system-prompt nil)
-    (setq-local quoth-openai--cache-key nil)
+    (setq-local quoth-context-paths nil)
+    (setq-local quoth-context-global-paths nil)
+    (setq-local quoth-context--cached-system-prompt nil)
+    (setq-local quoth-context--cache-key nil)
     (unwind-protect
         (progn
-          (quoth-openai--system-prompt-async
+          (quoth-context-async
            (current-buffer)
            (lambda (prompt) (setq delivered prompt)))
           ;; Pump the real git stage (the repo root is a git repo).
           (should (quoth-test--wait-until (lambda () delivered)))
-          (should (string= delivered quoth-openai--cached-system-prompt))
+          (should (string= delivered quoth-context--cached-system-prompt))
           ;; Second call with the same key: inline cache hit, same string.
           (let ((first delivered))
             (setq delivered nil)
-            (quoth-openai--system-prompt-async
+            (quoth-context-async
              (current-buffer)
              (lambda (prompt) (setq delivered prompt)))
             (should (string= first delivered)))))))
@@ -460,16 +462,16 @@ The on-ready return equals the cached string."
 The next call rebuilds and delivers a different prompt."
   (let* ((repo-root (file-name-directory
                      (or buffer-file-name load-file-name
-                         (expand-file-name "quoth-openai.el" default-directory))))
+                         (expand-file-name "quoth-openai-client.el" default-directory))))
          (delivered nil))
     (setq-local default-directory repo-root)
-    (setq-local quoth-openai-context-paths nil)
-    (setq-local quoth-openai-global-context-paths nil)
-    (setq-local quoth-openai--cached-system-prompt nil)
-    (setq-local quoth-openai--cache-key nil)
+    (setq-local quoth-context-paths nil)
+    (setq-local quoth-context-global-paths nil)
+    (setq-local quoth-context--cached-system-prompt nil)
+    (setq-local quoth-context--cache-key nil)
     (unwind-protect
         (progn
-          (quoth-openai--system-prompt-async
+          (quoth-context-async
            (current-buffer)
            (lambda (prompt) (setq delivered prompt)))
           ;; Pump the real git stage (the repo root is a git repo).
@@ -478,10 +480,10 @@ The next call rebuilds and delivers a different prompt."
             ;; Non-git dir: the gitless prompt has no stage, but still
             ;; delivers on the schedule hop; flatten it.
             (setq-local default-directory "/tmp/")
-            (setq-local quoth-openai-context-paths nil)
+            (setq-local quoth-context-paths nil)
             (setq delivered nil)
             (quoth-test--with-immediate-schedule
-             (quoth-openai--system-prompt-async
+             (quoth-context-async
               (current-buffer)
               (lambda (prompt) (setq delivered prompt))))
             (should (stringp delivered))
@@ -494,15 +496,15 @@ The next call rebuilds and delivers the new content."
          (ctx-file (expand-file-name "AGENTS.md" tmp-dir))
          (delivered nil))
     (setq-local default-directory (file-name-as-directory tmp-dir))
-    (setq-local quoth-openai-context-paths (list "AGENTS.md"))
-    (setq-local quoth-openai-global-context-paths nil)
-    (setq-local quoth-openai--cached-system-prompt nil)
-    (setq-local quoth-openai--cache-key nil)
+    (setq-local quoth-context-paths (list "AGENTS.md"))
+    (setq-local quoth-context-global-paths nil)
+    (setq-local quoth-context--cached-system-prompt nil)
+    (setq-local quoth-context--cache-key nil)
     (unwind-protect
         (progn
           (write-region "version 1" nil ctx-file)
           (quoth-test--with-immediate-schedule
-           (quoth-openai--system-prompt-async
+           (quoth-context-async
             (current-buffer)
             (lambda (prompt) (setq delivered prompt))))
           (should (string-match-p "version 1" delivered))
@@ -510,12 +512,12 @@ The next call rebuilds and delivers the new content."
           (write-region "version 2" nil ctx-file)
           (setq delivered nil)
           (quoth-test--with-immediate-schedule
-           (quoth-openai--system-prompt-async
+           (quoth-context-async
             (current-buffer)
             (lambda (prompt) (setq delivered prompt))))
           (should (string-match-p "version 2" delivered))
           (should (string= delivered
-                           quoth-openai--cached-system-prompt)))
+                           quoth-context--cached-system-prompt)))
       (delete-directory tmp-dir t))))
 
 ;;; 8. SSE parser
