@@ -621,7 +621,8 @@ model slot."
 
 (ert-deftest quoth-test/header-line-shows-model-and-region ()
   "Test that the header line shows both the model and the region type.
-Both the current model and the region type at point appear."
+Both the current model and the region type at point appear, each under
+its fixed segment prefix."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -634,11 +635,12 @@ Both the current model and the region type at point appear."
           (goto-char (1- (point)))
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
-            (should (string= h "(my-model  user)")))))
+            (should (string= h
+                             "(M:my-model  U:-  C:-  B:user)")))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-dash-for-nil-region ()
-  "Untagged space renders `region: -' in the header line."
+  "Untagged space renders `B:-' in the header line."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -647,7 +649,7 @@ Both the current model and the region type at point appear."
           (goto-char (point-max))
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
-            (should (string= h "(my-model  -)")))))
+            (should (string= h "(M:my-model  U:-  C:-  B:-)")))))
     (quoth-test--cleanup)))
 
 ;;; 19. Input separator has prompt-id property
@@ -2391,7 +2393,7 @@ each accumulate overwrites it, it never sums."
 The hook runs in whatever buffer was current at delivery, so the
 subscriber must switch to the chat buffer before updating.  A
 refresh landing after a response finished turns the capacity
-cluster on without waiting for user input."
+segment's context part on without waiting for user input."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (quoth-test--with-models-cache
@@ -2404,13 +2406,14 @@ cluster on without waiting for user input."
                          (list :input-tokens 6000 :output-tokens 4000))
              (setq-local quoth--usage-last
                          (list :input-tokens 6000 :output-tokens 4000))
-             ;; Cold catalog: the capacity cluster is absent.
+             ;; Cold catalog: the capacity segment is a dash body.
              (quoth--update-header-line)
-             (should-not (string-match-p "ctx"
-                                         (format "%s"
-                                                 header-line-format)))
+             (should (string-match-p "C:-"
+                                     (format "%s"
+                                             header-line-format)))
              ;; The refresh lands (cache written from the delivery
-             ;; buffer) and its hook fires: the header gains ctx.
+             ;; buffer) and its hook fires: the header gains the
+             ;; context percentage.
              (puthash (quoth-provider--models-key quoth-active-provider)
                       (cons (list (list :id "my-model"
                                         :context-window 100000))
@@ -2419,7 +2422,7 @@ cluster on without waiting for user input."
              (with-temp-buffer
                (run-hooks 'quoth-provider-models-hook))
              (should (string-match-p
-                      "ctx"
+                      "C:10%%"
                       (format "%s" header-line-format))))))
       (quoth-test--cleanup))))
 
@@ -2596,7 +2599,7 @@ The only reset is `quoth-clear-buffer'."
 ;;; 18b. Header line: usage segment
 
 (ert-deftest quoth-test/header-line-shows-no-usage-before-response ()
-  "Before any response, the header has no usage segment."
+  "Before any response, the usage segment body is a dash."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -2605,7 +2608,7 @@ The only reset is `quoth-clear-buffer'."
           (setq-local quoth--usage-acc nil)
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
-            (should (string= h "(my-model  -)")))))
+            (should (string= h "(M:my-model  U:-  C:-  B:-)")))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-usage-after-accumulation ()
@@ -2628,7 +2631,7 @@ arrows), and the cache percentage divides cached by INPUT tokens only."
             ;; `%%' is the mode-line escape for a literal `%' (the raw
             ;; header-line-format string stores the escaped form).
             (should (string= h
-                             "(my-model  \u21918.9k \u219368 hc0.043 93%%  -)")))))
+                             "(M:my-model  U:\u21918.9k \u219368 hc0.043 93%%  C:-  B:-)")))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-dollars-when-currency-dollars ()
@@ -2647,52 +2650,68 @@ arrows), and the cache percentage divides cached by INPUT tokens only."
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
             (should (string= h
-                             "(my-model  \u21918.8k \u2193311 $0.0139 0%%  -)")))))
+                             "(M:my-model  U:\u21918.8k \u2193311 $0.0139 0%%  C:-  B:-)")))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-hist-under-limit ()
-  "The capacity cluster shows hist sent/limit from the first send.
+  "The capacity segment shows hist sent/limit from the first send.
 No marker while the window holds all available exchanges."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
           (setq-local quoth--history-last '(:sent 3 :total 3))
           (quoth--update-header-line)
-          (should (string-match-p "hist 3/200"
+          (should (string-match-p "C:3/200"
                                   (format "%s" header-line-format))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-hist-cut-marker ()
-  "A sliding window is marked in the hist part.
-The header shows hist 1/2! when the buffer held more exchanges than
-the limit sent."
+  "A sliding window is marked in the history part.
+The header shows 1/2! when the buffer held more exchanges than the
+limit sent."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
           (setq-local quoth-history-limit 2)
           (setq-local quoth--history-last '(:sent 1 :total 5))
           (quoth--update-header-line)
-          (should (string-match-p "hist 1/2!"
+          (should (string-match-p "C:1/2!"
                                   (format "%s" header-line-format))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-omits-hist-without-send ()
-  "Before the first send the hist part is absent.
-With usage recorded the capacity cluster still shows ctx alone."
+  "Before the first send the history part is absent.
+The capacity segment keeps whatever parts are known; with none known
+its body is the dash."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
           (setq-local quoth--history-last nil)
           (quoth--update-header-line)
-          (should-not (string-match-p "hist"
-                                      (format "%s" header-line-format))))
+          (should (string-match-p "C:-"
+                                  (format "%s" header-line-format))))
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/header-line-shows-tool-round-in-capacity ()
+  "The capacity segment shows the live tool round out of the cap.
+The round/count part renders from the first round on; a fresh buffer
+carries no standing 0/N."
+  (let ((default-directory quoth-test--root))
+    (unwind-protect
+        (with-current-buffer (quoth-test--fresh-buffer)
+          (quoth--update-header-line)
+          (should-not (string-match-p "C:.*0/8"
+                                      (format "%s" header-line-format)))
+          (setq-local quoth--tool-loop-count 2)
+          (quoth--update-header-line)
+          (should (string-match-p "C:.*2/8"
+                                  (format "%s" header-line-format))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-capacity-after-round ()
-  "A completed round with a known window shows the capacity cluster.
+  "A completed round with a known window shows the capacity segment.
 The percentage divides the last round's input+output tokens by the
-model's context window, labeled `ctx' to distinguish it from the
-cache percentage."
+model's context window."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (quoth-test--with-models-cache
@@ -2712,11 +2731,11 @@ cache percentage."
                          (list :input-tokens 6000 :output-tokens 4000))
              (quoth--update-header-line)
              (let ((h (format "%s" header-line-format)))
-               (should (string-match-p "ctx 10%%" h))))))
+               (should (string-match-p "C:10%%" h))))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-omits-capacity-without-catalog ()
-  "Without a cached catalog the capacity cluster is simply absent.
+  "Without a cached catalog the context percentage is simply absent.
 `unknown' capacity means omit, never a fabricated default."
   (let ((default-directory quoth-test--root))
     (unwind-protect
@@ -2728,7 +2747,7 @@ cache percentage."
           (setq-local quoth--usage-last
                       (list :input-tokens 6000 :output-tokens 4000))
           (quoth--update-header-line)
-          (should-not (string-match-p "ctx"
+          (should-not (string-match-p "C:[0-9]"
                                       (format "%s" header-line-format))))
       (quoth-test--cleanup))))
 
@@ -2767,7 +2786,7 @@ The input-based percentage is 50%."
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
             (should (string= h
-                             "(my-model  \u2191100 \u219320 hc0.010  -)"))))
+                             "(M:my-model  U:\u2191100 \u219320 hc0.010  C:-  B:-)"))))
         (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/group-number-compact-formats ()

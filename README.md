@@ -340,11 +340,13 @@ How attachments travel to the provider is documented in
 
 ### Header Line Display
 
-The header line shows up to four clusters joined by two spaces: the model name,
-session usage, capacity, and the region type at point.
+The header line shows four segments joined by two spaces, each under a fixed
+one-letter prefix: the model (`M:`), session usage (`U:`), capacity (`C:`), and
+the region type at point (`B:`). Segments are never hidden — one with no data
+yet shows a `-` body — so the layout is stable.
 
 ```
-deepseek-v4-flash  ↑9.0k ↓1.2k $0.0123 42%  ctx 7% hist 199/200  response
+M:deepseek-v4-flash  U:↑9.0k ↓1.2k $0.0123 42%  C:7% 199/200 2/8  B:response
 ```
 
 The model is the active provider's model (the buffer's session model, set at
@@ -353,17 +355,18 @@ selector). Usage — input (`↑`) and output (`↓`) tokens, accumulated cost, 
 cache percentage — appears after the first response completes and totals the
 whole session (tokens, cost, and cache percentage across all prompts and tool
 rounds; cleared by `C-c " k`). Providers that report no cost (ollama does not)
-show tokens only. The capacity cluster (`ctx 7% hist 199/200` in the example)
-shows two things about the **last request**. `ctx 7%` is its share of the
-model's context window — input and output tokens divided by the window from the
-model catalog; it appears once a round has finished and the catalog reports the
-window, and it disappears for models the catalog knows no window for.
-`hist 199/200` counts the exchanges actually sent against `quoth-history-limit`;
-a trailing `!` (`hist 200/200!`) means the buffer held more exchanges than the
-limit, so the oldest were cut and the request prefix moved — the moment history
-becomes a sliding window, which costs you the provider's prompt cache. The last
-cluster is the region type at point, or `-` on untagged text, which includes the
-input area before its first send.
+show tokens only. The capacity segment shows three things: the **last
+request's** share of the model's context window (`7%` in the example) — input
+and output tokens divided by the window from the model catalog; it appears once
+a round has finished and the catalog reports the window, and it disappears for
+models the catalog knows no window for. `199/200` counts the exchanges actually
+sent against `quoth-history-limit`; a trailing `!` (`200/200!`) means the buffer
+held more exchanges than the limit, so the oldest were cut and the request
+prefix moved — the moment history becomes a sliding window, which costs you the
+provider's prompt cache. `2/8` is the current prompt's tool-loop round out of
+the cap; it appears from the first round of a tool loop and resets with the next
+prompt. The last segment is the region type at point, or `-` on untagged text,
+which includes the input area before its first send.
 
 ### Model selection and persistence
 

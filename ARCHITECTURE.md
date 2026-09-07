@@ -768,35 +768,44 @@ that a prior turn was cut off.
 
 ### Header line
 
-`quoth--update-header-line` joins four cluster segments with two spaces, each
-built by a dedicated function: the model (`quoth--header-model-segment`, the
-active provider's model), session usage (`quoth--header-usage-segment` →
+`quoth--update-header-line` joins four segments with two spaces, each built by a
+dedicated body function and prefixed with a fixed letter so the layout never
+reflows: `M:` model (`quoth--header-model-segment` → `quoth--header-model`, the
+active provider's model), `U:` session usage (`quoth--header-usage-segment` →
 `quoth--usage-header-segment`: input/output tokens with k/M suffixes and `↑`/`↓`
 arrows, accumulated cost, and the cache percentage — cached ÷ **input** tokens
 only, since caching applies to the prompt side — from the session-scoped
-`quoth--usage-acc`, nil until the first response completes), capacity
-(`quoth--header-capacity-segment` → `quoth--capacity-header-segment`: the **last
-request's** share of the active model's context window, `ctx N%`, from the
+`quoth--usage-acc`), `C:` capacity (`quoth--header-capacity-segment` →
+`quoth--capacity-header-segment`), and `B:` the region type at point
+(`quoth--header-buffer-segment` → `quoth--region-label-at-point`, the
+`quoth-region-type` symbol as a string). No segment is ever hidden: a segment
+whose body function returns nil renders a `-` body, so all four prefixes are
+always visible; a segment's parts may individually be absent, but the segment
+itself stays.
+
+The capacity segment is label-free and shows up to three parts, joined by single
+spaces, each present only when its inputs are known. The context part is the
+**last request's** share of the active model's context window, `N%`, from the
 per-request `quoth--usage-last` and the cached catalog's `:context-window` via
 `quoth-provider-model-context-window`; omitted when either input is unknown — no
 finished round, an `:accumulated` provider whose per-request split is not
-reported, or a model the catalog carries no window for — plus the history part
-`hist S/L`: S exchanges actually sent against the limit L in force when the
-request composed — `quoth--history-turns` records the limit alongside the
-counts, so the header never mixes a stale send with a since-changed limit. A `!`
-(`hist 200/200!`) marks a sliding window — the buffer held more exchanges than
-L, so the oldest were cut and the request prefix moved, which is bad for the
-provider's prompt cache. The hist part is absent before the first send or when
-history is disabled (limit 0); the cluster hides only when both parts are
-absent), and the region type at point (`quoth--header-buffer-segment` →
-`quoth--region-label-at-point`, the `quoth-region-type` symbol as a string, `-`
-on untagged text).
+reported, or a model the catalog carries no window for. The history part is
+`S/L`: S exchanges actually sent against the limit L in force when the request
+composed — `quoth--history-turns` records the limit alongside the counts, so the
+header never mixes a stale send with a since-changed limit. A trailing `!`
+(`200/200!`) marks a sliding window — the buffer held more exchanges than L, so
+the oldest were cut and the request prefix moved, which is bad for the
+provider's prompt cache. The history part is absent before the first send or
+when history is disabled (limit 0). The tool part is the current prompt's
+tool-loop round out of `quoth-tool-loop-max` (`2/8` after the second round of an
+eight-round cap), from the buffer-local `quoth--tool-loop-count`; absent at zero
+rounds so an idle buffer carries no standing `0/8`.
 
 `header-line-format` is a mode-line construct: `%`-specifications are
 escape-processed at display, so the segment stores `42%%` and the user sees
 `42%`. The header refreshes on `post-command-hook`, at finalize, and when a
 model-catalog refresh lands (`quoth-provider-models-hook`, so a late catalog
-fills the capacity cluster without user input); the tool loop refreshes it
+fills the capacity segment without user input); the tool loop refreshes it
 explicitly because it runs synchronously inside one process-filter callback
 where `post-command-hook` never fires between rounds.
 

@@ -614,7 +614,7 @@ interrupting, clearing, and session management.
 (add-hook 'quoth-phase-change-hook
           (lambda (&rest _) (quoth--update-header-line)))
 ;; A catalog refresh landing after a response finished re-renders the
-;; header so the capacity cluster appears without user input.  The hook
+;; header so the capacity segment appears without user input.  The hook
 ;; runs in whatever buffer was current at delivery; visit live chat
 ;; buffers and update in place.
 (add-hook 'quoth-provider-models-hook
@@ -729,38 +729,44 @@ type, so untagged space is never mistaken for `user'."
       (symbol-name type))))
 
 (defun quoth--header-model-segment ()
-  "Return the model cluster for the header line, or nil.
-The model name only; the model's cost definition joins here later."
-  (let ((model (quoth--header-model)))
-    (or model "-")))
+  "Return the model segment body for the header line, or nil.
+The effective model name; the header renders a `-` body when nil.
+The model's cost definition joins here later."
+  (quoth--header-model))
 
 (defun quoth--header-usage-segment ()
-  "Return the usage cluster for the header line, or nil.
+  "Return the usage segment body for the header line, or nil.
 Session usage (tokens, cost, cache%); nil until the first response."
   (quoth--usage-header-segment))
 
-(defun quoth--header-buffer-segment ()
-  "Return the buffer cluster for the header line, or nil.
-The region type at point; the right-most cluster."
-  (or (quoth--region-label-at-point) "-"))
-
 (defun quoth--header-capacity-segment ()
-  "Return the capacity cluster for the header line, or nil.
-The last request's share of the model's context window; nil until a
-response has finished with a known window."
+  "Return the capacity segment body for the header line, or nil.
+The last request's share of the model's context window, the history
+window it carried, and the live tool round; nil when no part is known."
   (quoth--capacity-header-segment))
 
+(defun quoth--header-buffer-segment ()
+  "Return the buffer segment body for the header line, or nil.
+The region type at point; the right-most segment."
+  (quoth--region-label-at-point))
+
 (defun quoth--update-header-line ()
-  "Update the header line from its model, usage, and buffer clusters.
-Each cluster is built by a dedicated segment function; non-nil segments
-are joined by two spaces so related info stays adjacent."
-  (let ((segments (delq nil
-                        (list (quoth--header-model-segment)
-                              (quoth--header-usage-segment)
-                              (quoth--header-capacity-segment)
-                              (quoth--header-buffer-segment)))))
+  "Update the header line from its model, usage, capacity, and buffer segments.
+Each segment is built by a dedicated body function and carries a fixed
+one-letter prefix (`M:', `U:', `C:', `B:').  A nil body renders `-',
+so all four segments stay visible and the layout never reflows while
+data arrives.  Segments are joined by two spaces."
+  (let ((prefixes '("M" "U" "C" "B"))
+        (bodies (list (quoth--header-model-segment)
+                      (quoth--header-usage-segment)
+                      (quoth--header-capacity-segment)
+                      (quoth--header-buffer-segment)))
+        (segments nil))
+    (cl-mapc (lambda (prefix body)
+               (push (format "%s:%s" prefix (or body "-")) segments))
+             prefixes bodies)
     (setq header-line-format
-          (list (propertize (mapconcat #'identity segments "  ")
+          (list (propertize (mapconcat #'identity (nreverse segments) "  ")
                             'face 'bold)))))
 
 (defun quoth--lang-from-extension (filename)
@@ -2360,7 +2366,7 @@ with \u2191 and \u2193 arrows), accumulated cost (unit prefixed), and
 cache percentage, joined by single spaces.  The cache percentage
 divides cached by INPUT tokens only -- caching applies to the prompt
 side, never to completions.  Usage is session-scoped (accumulated in
-`quoth--usage-acc'), so it belongs to the buffer cluster, not the
+`quoth--usage-acc'), so it belongs to the usage segment, not the
 model."
   (when quoth--usage-acc
     (let* ((input  (or (plist-get quoth--usage-acc :input-tokens) 0))
@@ -2382,21 +2388,27 @@ model."
           (push (format "%d%%%%" pct) parts)))
       (mapconcat #'identity (nreverse parts) " "))))
 
+(defvar-local quoth--tool-loop-count 0
+  "Number of tool-loop rounds executed for the current prompt.")
+
 (defun quoth--capacity-header-segment ()
   "Return the compact capacity string for the header, or nil.
-The cluster shows the LAST request's share of the active model's
-context window and how much history it carried: `ctx N%% hist S/L',
-joined by single spaces, each part present only when its inputs are
-known.  The ctx part divides the last round's input+output tokens
-\(from `quoth--usage-last') by the window; absent when no round has
-finished, the provider reports accumulated totals only (its
-per-request split is not reported), or the catalog carries no window.
-The hist part shows S exchanges sent against the limit L in force when
-that request composed (from `quoth--history-last'); a `!' marks
-a sliding window (the buffer held more exchanges than L, so the oldest
-were cut and the request prefix moved -- bad for the provider's prompt
-cache).  Absent before the first send or when history is disabled
-\(limit 0).  The cluster hides only when both parts are absent."
+The segment is label-free: the LAST request's share of the active
+model's context window, the history window it carried, and the live
+tool round, joined by single spaces, each part present only when its
+inputs are known.  The context part divides the last round's
+input+output tokens \(from `quoth--usage-last') by the window; absent
+when no round has finished, the provider reports accumulated totals
+only \(its per-request split is not reported), or the catalog carries
+no window.  The history part shows S exchanges sent against the limit
+L in force when that request composed \(from `quoth--history-last');
+a `!' marks a sliding window \(the buffer held more exchanges than L,
+so the oldest were cut and the request prefix moved -- bad for the
+provider's prompt cache).  Absent before the first send or when
+history is disabled \(limit 0).  The tool part shows the current
+prompt's tool-loop round out of `quoth-tool-loop-max'; absent at zero
+rounds so an idle buffer carries no standing 0/N.  The segment body
+is nil only when every part is absent."
   (let ((parts nil))
     (when (and quoth--usage-last
                (numberp (plist-get quoth--usage-last :input-tokens))
@@ -2406,7 +2418,7 @@ cache).  Absent before the first send or when history is disabled
         (when (and (numberp window) (> window 0))
           (let ((total (+ (plist-get quoth--usage-last :input-tokens)
                           (plist-get quoth--usage-last :output-tokens))))
-            (push (format "ctx %d%%%%"
+            (push (format "%d%%%%"
                           (round (* 100.0 (/ (float total)
                                              (float window)))))
                   parts)))))
@@ -2417,9 +2429,12 @@ cache).  Absent before the first send or when history is disabled
             (limit (or (plist-get quoth--history-last :limit)
                        quoth-history-limit)))
         (push (if (> total sent)
-                  (format "hist %d/%d!" sent limit)
-                (format "hist %d/%d" sent limit))
+                  (format "%d/%d!" sent limit)
+                (format "%d/%d" sent limit))
               parts)))
+    (when (> quoth--tool-loop-count 0)
+      (push (format "%d/%d" quoth--tool-loop-count quoth-tool-loop-max)
+            parts))
     (when parts
       (mapconcat #'identity (nreverse parts) " "))))
 
@@ -2432,9 +2447,6 @@ between the transport finish and the hop already closed the turn."
     (with-current-buffer buf
       (when (quoth--busy-p)
         (quoth--finalize-response)))))
-
-(defvar-local quoth--tool-loop-count 0
-  "Number of tool-loop rounds executed for the current prompt.")
 
 (defvar-local quoth--round nil
   "Per-call state for the live tool round, or nil.
