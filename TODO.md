@@ -102,7 +102,8 @@ tracking, and the `quoth-chat-mode` minor mode.
       `quoth--input-start-marker`)
 - [x] Custom output filter (`quoth--openai-curl-filter`) inserting at the
       process mark
-- [x] Custom input ring (C-c " p/C-c " n) persisted to `~/.emacs.d/quoth-history`
+- [x] Custom input ring (C-c " p/C-c " n) persisted to
+      `~/.emacs.d/quoth-history`
 - [x] Font-lock guard so markdown refontification preserves reasoning fold
       properties
 - [x] Debug logging to `*quoth-debug*` buffer
@@ -136,8 +137,8 @@ Chat commands are all reachable via keys that markdown-mode does not bind.
       `quoth-minor-command-map` (`f` selection, `b` buffer, `p` path, `a`
       attach, `"` open)
 - [x] `RET`/`C-j` fall through to the parent mode's newline editing; `C-return`
-      sends in graphical/kitty terminals, and `C-c " p`/`C-c " n` navigate
-      input history; `quoth-minor-mode` source-buffer keys unchanged
+      sends in graphical/kitty terminals, and `C-c " p`/`C-c " n` navigate input
+      history; `quoth-minor-mode` source-buffer keys unchanged
 
 ### Phase 1e: Hyper provider phase 1 — primary path (complete)
 

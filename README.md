@@ -59,8 +59,8 @@ Not yet on MELPA. For now, install from one of the repositories:
 - **GitHub**: `https://github.com/chestso/quoth.git`
 - **Codeberg**: `https://codeberg.org/chestso/quoth.git`
 
-Both carry version tags (`v0.10.0`). A plain clone gets the latest commit, or pin
-to a tag for a stable release (see below).
+Both carry version tags (`v0.10.0`). A plain clone gets the latest commit, or
+pin to a tag for a stable release (see below).
 
 ### package-vc (Emacs 29+)
 
