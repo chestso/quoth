@@ -276,7 +276,13 @@ successful refresh runs `quoth-provider-models-hook`. Refreshes ride the async
 `quoth-provider--models-async` generic; a failed fetch keeps the cached entry.
 The selector's `g` suffix force-refreshes, buffer initialization prefetches
 (`quoth-provider-models-prefetch`), and `quoth-select-model` falls back to the
-static list when the cache is cold and no seed applies.
+static list when the cache is cold and no seed applies. The menu's suffix gates
+(`:if` on `t`/`e`, which read the cached catalog) evaluate only while transient
+builds the layout, so two paths rebuild the layout while it matters: the
+prefix's `:refresh-suffixes` re-runs the gates after every suffix command, and
+`quoth--select-refresh-menu` (on `quoth-provider-models-hook`) rebuilds an open
+menu when a refresh lands — a no-op when the menu is closed or suspended behind
+a suffix's minibuffer read.
 
 Each provider assembles its catalog its own way behind the generic — the cache,
 seed-stamping, TTL, and hook mechanics are shared:

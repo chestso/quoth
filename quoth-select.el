@@ -38,8 +38,11 @@
 ;; `quoth-provider--apply-model', and sets per-session attributes in
 ;; buffer-local variables (`quoth--session-thinking',
 ;; `quoth--session-reasoning-effort').  The `g' suffix force-refreshes
-;; the cache; the menu redraws when a background refresh lands
-;; (`quoth-provider-models-hook').
+;; the cache; the suffix gates re-run after every suffix command
+;; (`:refresh-suffixes') and when a background refresh lands
+;; (`quoth-provider-models-hook' through `quoth--select-refresh-menu'),
+;; so `t'/`e' follow the current model instead of the one the menu
+;; opened with.
 
 ;;; Code:
 
@@ -352,17 +355,41 @@ Never writes a global: the default for new buffers is
 (defun quoth--select-refresh-catalog (&rest _)
   "Force-refresh the model catalog cache and redraw the menu.
 The refreshed descriptions (model prices, reasoning levels) recompute
-on the next draw; a landing refresh runs
-`quoth-provider-models-hook', which also triggers a redraw when the
-menu is visible."
+when the landing refresh rebuilds the menu through
+`quoth--select-refresh-menu'."
   (interactive)
   (when (and quoth-active-provider
              (quoth-provider-p quoth-active-provider))
     (quoth-provider-models-refresh quoth-active-provider 'force)
     (message "refreshing model catalog...")))
 
+(defun quoth--select-refresh-menu ()
+  "Rebuild an open selector menu, re-running its suffix gates.
+Transient evaluates the `:if' gates \(`quoth--select-can-reason-p',
+`quoth--select-has-reasoning-levels-p') only while building the
+layout, so the suffix set is otherwise frozen at the model the menu
+opened with: switching provider or model in-session, or a catalog
+refresh landing while the menu is open, would leave the thinking and
+effort suffixes stuck in the state of the old catalog entry.  This
+rebuilds the layout of the
+visible menu so the gates follow the current buffer state.  Do
+nothing when the menu is closed, suspended \(e.g. behind a suffix's
+minibuffer read), or another transient is active."
+  (when (and transient--prefix
+             (eq (oref transient--prefix command)
+                 'quoth-select-model-menu)
+             (memq transient--transient-map
+                   overriding-terminal-local-map))
+    (transient--refresh-transient)))
+
+;; A catalog refresh landing while the menu is open rebuilds it; the
+;; suffix commands themselves are covered by the prefix's
+;; `:refresh-suffixes'.
+(add-hook 'quoth-provider-models-hook #'quoth--select-refresh-menu)
+
 (transient-define-prefix quoth-select-model-menu ()
                          "Model and attribute selector for Quoth."
+                         :refresh-suffixes t
                          [("p" quoth--select-provider-switch
                            :description quoth--select-info-provider :transient t)
                           ("m" quoth--select-model-picker

@@ -702,5 +702,101 @@ with reasoning levels enables the predicate."
 	  (should-not (quoth--select-has-reasoning-levels-p)))))
     (when (buffer-live-p buf) (kill-buffer buf))))
 
+;;; 108. Menu suffix-gate refresh
+
+(defun quoth-test--selector-has-suffix-p (command)
+  "Return non-nil when the open selector menu carries suffix COMMAND."
+  (cl-some (lambda (o) (eq (oref o command) command))
+           transient--suffixes))
+
+(defun quoth-test--exit-selector-menu ()
+  "Tear down an open transient menu and its global state."
+  (when (and (boundp 'transient--prefix) transient--prefix)
+    (transient--emergency-exit))
+  (setq transient--prefix nil))
+
+(defconst quoth-test--selector-catalog
+  (list '(:id "reasoning-model" :name "Reasoning" :can-reason t
+              :reasoning-levels ("low" "high" "max")
+              :default-reasoning-effort "high")
+        '(:id "plain-model" :name "Plain" :can-reason nil
+              :reasoning-levels nil))
+  "Mock catalog with one reasoning model and one plain model.")
+
+(ert-deftest quoth-test/select-menu-gates-refresh-after-suffix-command ()
+  "`:refresh-suffixes' re-runs the gates after a suffix command.
+Opening the menu, switching the session model, then running
+`transient--post-command' as the suffix command's tail must rebuild
+the suffix set for the new model: the thinking and effort suffixes
+present for the reasoning model, gone for the plain one, and back
+again once the model returns — a layout frozen at menu-open kept the
+effort suffix away from models that support it and showed it for
+models that do not."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "reasoning-model")
+          (cl-letf (((symbol-function 'quoth-provider-models-cached)
+                     (lambda (&rest _) quoth-test--selector-catalog)))
+            (transient-setup 'quoth-select-model-menu)
+            (should (quoth-test--selector-has-suffix-p
+                     'quoth--select-effort-picker))
+            (should (quoth-test--selector-has-suffix-p
+                     'quoth--select-thinking-toggle))
+            ;; The suffix command switches the model; transient's
+            ;; post-command then refreshes the layout.
+            (setq-local quoth--session-model "plain-model")
+            (let ((this-command 'quoth--select-model-picker))
+              (transient--post-command))
+            (should-not (quoth-test--selector-has-suffix-p
+                         'quoth--select-effort-picker))
+            (should-not (quoth-test--selector-has-suffix-p
+                         'quoth--select-thinking-toggle))
+            ;; Back on the reasoning model, the gates re-enable both.
+            (setq-local quoth--session-model "reasoning-model")
+            (let ((this-command 'quoth--select-model-picker))
+              (transient--post-command))
+            (should (quoth-test--selector-has-suffix-p
+                     'quoth--select-effort-picker))
+            (should (quoth-test--selector-has-suffix-p
+                     'quoth--select-thinking-toggle)))))
+    (quoth-test--exit-selector-menu)
+    (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/select-menu-refreshes-when-catalog-lands ()
+  "A catalog refresh landing while the menu is open rebuilds it.
+`quoth-provider-models-hook' carries a landing refresh to
+`quoth--select-refresh-menu', so a menu opened against a catalog
+that under-reports the current model gains `e' as soon as the
+refreshed catalog reports its reasoning levels.  A landing while no
+menu is open stays a quiet no-op."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer))
+            (catalog (list '(:id "plain-model" :name "Plain" :can-reason nil
+                                 :reasoning-levels nil))))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "plain-model")
+          (cl-letf (((symbol-function 'quoth-provider-models-cached)
+                     (lambda (&rest _) catalog)))
+            (transient-setup 'quoth-select-model-menu)
+            (should-not (quoth-test--selector-has-suffix-p
+                         'quoth--select-effort-picker))
+            ;; The landing refresh now reports reasoning levels for the
+            ;; same model; the hook rebuilds the open menu.
+            (setq catalog (list '(:id "plain-model" :name "Plain"
+                                      :can-reason t
+                                      :reasoning-levels ("low" "high"))))
+            (run-hooks 'quoth-provider-models-hook)
+            (should (quoth-test--selector-has-suffix-p
+                     'quoth--select-effort-picker))
+            (quoth-test--exit-selector-menu)
+            (should-not transient--prefix)
+            ;; A landing with no menu open neither errors nor leaves
+            ;; transient state behind.
+            (run-hooks 'quoth-provider-models-hook)
+            (should-not transient--prefix))))
+    (quoth-test--exit-selector-menu)
+    (quoth-test--cleanup)))
+
 (provide 'quoth-test-select)
 ;;; quoth-test-select.el ends here
