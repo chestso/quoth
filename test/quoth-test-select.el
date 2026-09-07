@@ -593,21 +593,6 @@ entry: the switch routes, it does not pick."
     (quoth--select-apply-thinking nil)
     (should (null quoth--session-thinking))))
 
-(ert-deftest quoth-test/select-effort-matrix-cell ()
-  "`quoth--select-effort-matrix-cell' reflects the observed interplay."
-  (should (string= (quoth--select-effort-matrix-cell 'off nil)
-                   "direct (no reason)"))
-  (should (string= (quoth--select-effort-matrix-cell 'off t)
-                   "reasoning"))
-  (should (string= (quoth--select-effort-matrix-cell 'on nil)
-                   "reasoning"))
-  (should (string= (quoth--select-effort-matrix-cell 'on t)
-                   "reasoning"))
-  (should (string= (quoth--select-effort-matrix-cell 'unset nil)
-                   "provider default"))
-  (should (string= (quoth--select-effort-matrix-cell 'unset t)
-                   "reasoning")))
-
 (ert-deftest quoth-test/select-thinking-toggle-cycles-on-off ()
   "`quoth--select-thinking-toggle' cycles on -> off -> on, never unset."
   (with-temp-buffer

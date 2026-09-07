@@ -103,21 +103,20 @@ requires only `json` (a fallback); it exposes `quoth-json-read` and
 that parses or emits JSON (`quoth-openai-client`, `quoth-openai-provider`,
 `quoth-hyper-provider`, `quoth-ollama-provider`, `quoth-searxng`) calls through
 it. `quoth-openai-client.el` requires only `quoth-provider` (for the session
-slots); `quoth-context.el` requires only the core's
-`quoth--schedule` (declared); `quoth-openai-provider.el` requires the protocol,
-the wire client, and the context module — it is the layer concrete
-OpenAI-compatible providers subclass; `quoth-xxh3.el` has no dependencies (pure
-math); `quoth-process.el` requires only `cl-lib` and `subr-x`;
-`quoth-hyper-provider.el` requires `quoth-openai-provider` and `quoth-xxh3`
-(for the affinity hash); `quoth-ollama-provider.el` requires
-`quoth-openai-provider` (no xxh3 — it sends no session-affinity headers);
-`quoth-tools.el` requires `quoth-openai-client` + `quoth-process` and registers
-its tools at load; `quoth-select.el` requires `quoth-provider` and
-`quoth-openai-client` (both leaves) and refreshes the UI through
-`quoth-after-model-change-hook` rather than calling core functions — it never
-requires `quoth.el`; `quoth.el` requires all of them (including `quoth-select`,
-for the `C-c " m` keybinding). Stream state, buffer rendering, and error
-handling (`quoth--append-delta`, `quoth--record-error`,
+slots); `quoth-context.el` requires only the core's `quoth--schedule`
+(declared); `quoth-openai-provider.el` requires the protocol, the wire client,
+and the context module — it is the layer concrete OpenAI-compatible providers
+subclass; `quoth-xxh3.el` has no dependencies (pure math); `quoth-process.el`
+requires only `cl-lib` and `subr-x`; `quoth-hyper-provider.el` requires
+`quoth-openai-provider` and `quoth-xxh3` (for the affinity hash);
+`quoth-ollama-provider.el` requires `quoth-openai-provider` (no xxh3 — it sends
+no session-affinity headers); `quoth-tools.el` requires `quoth-openai-client` +
+`quoth-process` and registers its tools at load; `quoth-select.el` requires
+`quoth-provider` and `quoth-openai-client` (both leaves) and refreshes the UI
+through `quoth-after-model-change-hook` rather than calling core functions — it
+never requires `quoth.el`; `quoth.el` requires all of them (including
+`quoth-select`, for the `C-c " m` keybinding). Stream state, buffer rendering,
+and error handling (`quoth--append-delta`, `quoth--record-error`,
 `quoth--stream-transition`, `quoth--debug-log`) all live in `quoth.el` — the
 providers call them through buffer-local process references and
 `declare-function` stubs.
@@ -774,10 +773,9 @@ Differences from hyper, all flowing from the wire facts in
 
 Thinking stays tri-state with no provider-specific code:
 `quoth-openai-compose-request` keeps emitting `thinking`/`reasoning_effort` from
-the session slots, and the server accepts unknown params silently (HTTP 200).
-The selector's reasoning matrix keeps its hyper-validated wording with the
-provider-dependent caveat already in place — ollama currently ignores both keys,
-so "off" is a no-op rather than a suppression there.
+the session slots, and the server accepts unknown params silently (HTTP 200);
+ollama currently ignores both keys, so "off" is a no-op rather than a
+suppression there.
 
 ## Chat Buffer Composition
 

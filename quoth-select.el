@@ -189,53 +189,6 @@ it)."
           (let ((levels (plist-get entry :reasoning-levels)))
             (and (consp levels) levels))))))
 
-(defun quoth--select-effort-matrix-cell (thinking effort-p)
-  "Return the reasoning outcome cell for THINKING with EFFORT-P.
-THINKING is `off', `on', or `unset'; EFFORT-P is non-nil when a
-`reasoning_effort' would be sent.  Behavior is provider specific
-\(the matrix wording was validated on the hyper provider with
-`deepseek-v4-pro-0813'): `thinking: false' suppresses reasoning when
-sent alone, but sending `reasoning_effort' alongside re-enables the
-reasoning trace."
-  (pcase thinking
-    ('off (if effort-p "reasoning" "direct (no reason)"))
-    ('on "reasoning")
-    ('unset (if effort-p "reasoning" "provider default"))
-    (_ "?")))
-
-(defun quoth--select-info-reasoning-matrix (&rest _)
-  "Return a compact visual matrix of the thinking/effort interplay.
-The wording is validated on the hyper provider
-\(`deepseek-v4-pro-0813'): `thinking: false' suppresses reasoning only
-when sent without `reasoning_effort'; sending one re-enables the
-reasoning trace.  Other providers may differ — the server decides what
-the keys mean."
-  (quoth--select-in-origin
-   (let* ((headers '("" "effort unset" "effort set"))
-          (rows (list
-                 (list "thinking off"
-                       (quoth--select-effort-matrix-cell 'off nil)
-                       (quoth--select-effort-matrix-cell 'off t))
-                 (list "thinking on"
-                       (quoth--select-effort-matrix-cell 'on nil)
-                       (quoth--select-effort-matrix-cell 'on t))
-                 (list "thinking unset"
-                       (quoth--select-effort-matrix-cell 'unset nil)
-                       (quoth--select-effort-matrix-cell 'unset t))))
-          (all (cons headers rows))
-          (widths (cl-loop for c below (length headers)
-                           collect (1+ (apply #'max
-                                              (mapcar (lambda (row)
-                                                        (length (nth c row)))
-                                                      all)))))
-          (fmt (concat "%-" (number-to-string (nth 0 widths)) "s   %-"
-                       (number-to-string (nth 1 widths)) "s   %-"
-                       (number-to-string (nth 2 widths)) "s")))
-     (concat
-      "Reasoning outcome (hyper-tested; provider-dependent):"
-      "\n"
-      (mapconcat (lambda (row) (apply #'format fmt row)) all "\n")))))
-
 (defun quoth--select-model-picker (&rest _)
   "Prompt for a model from the active provider's catalog.
 Reads the catalog from the protocol's global cache; a cold cache is
@@ -420,8 +373,6 @@ menu is visible."
                           ("e" quoth--select-effort-picker
                            :description quoth--select-info-effort
                            :transient t :if quoth--select-has-reasoning-levels-p)]
-                         [(" " :info* #'quoth--select-info-reasoning-matrix :format "%d"
-                           :if quoth--select-can-reason-p)]
                          [("g" quoth--select-refresh-catalog
                            :description "refresh model catalog" :transient t)
                           ("d" quoth--select-defaults-apply
