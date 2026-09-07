@@ -143,7 +143,7 @@ prune the list without the protocol changing. Each entry is a plist: `:name`
 working directory returning a configured provider instance, resolved at
 `funcall` time so the protocol file does not require `quoth.el`), and the
 optional `:default-model` (string) — the model a new buffer on this provider
-starts with when no sticky `quoth-model-by-provider` entry exists (ollama
+starts with when `quoth-model-by-provider` has no last-used entry for it (ollama
 carries `gpt-oss:20b`; hyper has no key and defers to the global fallback).
 Adding a provider is appending an entry with its own `:factory`. The first entry
 is the fallback active provider for new buffers when `quoth-default-provider`
@@ -158,14 +158,14 @@ qualified iff the prefix before its first `/` names a registered provider, so
 ids that legitimately contain a slash (`meta-llama/Llama-3`) pass through
 untouched — the registry-membership test, not a syntax rule, decides. The prefix
 is routing metadata only; everything downstream (request bodies, catalogs, the
-sticky memory) sees the bare id.
+per-provider model memory) sees the bare id.
 
 Routing is one compound operation, `quoth--apply-model-spec` in `quoth.el`:
 parse → abort in-flight request on the old provider → reinstantiate
 `quoth-active-provider` → set the session model → sync → run
 `quoth-after-model-change-hook` → prefetch the catalog. The selector's provider
 switch and the model picker's free-form qualified input both go through it; the
-picker's `quoth--set-model-spec` additionally writes the sticky
+picker's `quoth--set-model-spec` additionally writes the
 `quoth-model-by-provider` entry (an explicit model pick — under the target
 provider, bare; the provider switch alone never writes it). A qualified
 `quoth-default-model` seeds new buffers onto its provider at
@@ -183,15 +183,17 @@ client and the selector need no `quoth.el` dependency) and are seeded at
 `quoth--init-buffer` from the global defaults: `quoth-default-provider`,
 `quoth-default-model`, `quoth-default-thinking`,
 `quoth-default-reasoning-effort`, and the `quoth-history-limit` defcustom. The
-session model seeds from a provider chain instead: the sticky
-`quoth-model-by-provider` entry for the session provider (the last-used model on
-it, a plain `defvar` persisted by savehist), else — when `quoth-default-model`
-is provider-qualified and names the session provider — its bare model (an
-explicit user default outranks the registry's), else the registry entry's
-`:default-model`, else the bare `quoth-default-model` (a qualified one
-contributes nothing to any other provider's chain).
+session model seeds from a provider chain instead: the `quoth-model-by-provider`
+entry for the session provider — the last model picked on that provider; the
+pick outlives the buffer that made it, seeding every later buffer on the same
+provider (a plain `defvar` persisted by savehist; the docstrings call this the
+sticky memory) — else, when `quoth-default-model` is provider-qualified and
+names the session provider — its bare model (an explicit user default outranks
+the registry's), else the registry entry's `:default-model`, else the bare
+`quoth-default-model` (a qualified one contributes nothing to any other
+provider's chain).
 
-The sticky memory has a two-sided lifecycle: an explicit model pick
+The per-provider memory has a two-sided lifecycle: an explicit model pick
 (`quoth--set-model-spec`) writes the entry — under the target provider, bare —
 and the picker's `default` entry deletes it (`quoth--set-model-default`), so the
 next buffer on the provider starts from its chain again. A provider switch alone
@@ -205,9 +207,8 @@ the buffer initializes, and its model slot is a cache of the session value
 (`quoth--sync-provider-model` re-syncs it). Requests always read the model from
 the buffer's session slot at compose time, so nothing session-shaped lives only
 on the provider struct. No transient action ever writes a global: the selector's
-provider switch and model picker write the session slots (and the sticky
-per-provider entry), and the global defaults change only through
-Customize/`setq`.
+provider switch and model picker write the session slots (and the per-provider
+model memory), and the global defaults change only through Customize/`setq`.
 
 This shape is deliberate groundwork for persisting the session with the chat
 buffer itself (gptel-style file-local variables, the Phase 2 roadmap item):
@@ -845,8 +846,8 @@ where `post-command-hook` never fires between rounds.
 ### Model persistence
 
 `quoth-model-by-provider` is a plain `defvar`, not a defcustom: it is runtime
-state (the sticky last-used-model-per-provider memory) owned by savehist, not a
-user option owned by Customize, so the two never fight over it at startup. It is
+state (the last-used-model-per-provider memory) owned by savehist, not a user
+option owned by Customize, so the two never fight over it at startup. It is
 registered on `savehist-additional-variables` (alongside the
 `quoth-default-provider` defcustom) inside `with-eval-after-load 'savehist`, so
 savehist is never required at load time: when `savehist-mode` is on, the values
