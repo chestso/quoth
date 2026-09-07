@@ -440,20 +440,18 @@ writing a new consumer, not touching the wire layer:
 In every case the provider protocol, SSE parsing, curl transport, and tool
 dispatch are reused unchanged; only the buffer-aware consumer differs.
 
-## Hyper provider (default)
+## Wire behavior shared by all providers
 
-The hyper provider is Quoth's default: it posts the prompt to Hyper's
-OpenAI-compatible chat-completions endpoint (`POST {base-url}/chat/completions`,
-base URL defaulting to `https://hyper.charm.land/v1`) and streams the response
-directly. It needs no `quoth` binary — only `curl` (used the same way gptel and
-plz.el use it). The HTTP+SSE wire work lives in the reusable client
-`quoth-openai-client.el`, and the staged send + token plumbing live once in the
-shared base `quoth-openai-provider.el`; the provider is a thin subclass
-supplying hyper config (base URL, token, session-affinity hash, x-crush-id) and
-its catalog, overriding `quoth-provider--request-extras` for the affinity and
-crush-id headers.
+Both shipped providers subclass the shared base `quoth-openai-provider.el`, so
+the whole HTTP+SSE send path is written once: the wire work (request
+composition, SSE parsing, curl transport, tool dispatch) lives in the reusable
+client `quoth-openai-client.el`, and the staged send + token plumbing live in
+the shared base. No provider needs a vendor binary — only `curl` (used the same
+way gptel and plz.el use it). The send loop section above owns the buffer side
+of this boundary; this section documents the shared wire path, and the provider
+sections after it list only what each endpoint does differently.
 
-### How it works
+### How a send works
 
 1. `quoth-provider-send-prompt` (the shared base method) composes the request
    body via `quoth-openai-compose-request` (messages array with the staged
@@ -480,7 +478,7 @@ crush-id headers.
    preformatted strings): `:kind` is one of `http-error`, `truncated-stream`,
    `no-response`, or `server-event`, alongside what the wire captured — status,
    url, model, the trace header (`x-request-id` / `x-generation-id` /
-   `x-cloud-trace-context`, whichever the gateway sends), the received character
+   `x-cloud-trace-context`, whichever the server sends), the received character
    count, and for HTTP errors the response body itself (non-SSE responses are
    accumulated on the process, capped at `quoth-openai-error-body-max`, instead
    of being fed to the SSE parser). `quoth--record-error` renders the condition
@@ -491,9 +489,9 @@ crush-id headers.
    to do next. A plain string condition still renders one-line, for callers that
    have no wire detail.
 
-### Session continuity
+### Session continuity and history
 
-The hyper provider is stateful: prior conversation from the buffer's tagged
+Every provider re-sends history: prior conversation from the buffer's tagged
 regions is folded into each request's messages array as
 `[system, prior-user, prior-assistant, prior-tool, ..., current-user]` (tool
 rounds interleave as assistant `tool_calls` + `role: "tool"` result pairs). Set
@@ -509,13 +507,6 @@ travel, never the rendered tool block. A `tool`-tagged span without
 reconstructable `quoth-tool-call` metadata contributes nothing: the server pairs
 a tool result only with a matching assistant `tool_calls` declaration, so a call
 without its id cannot be replayed.
-
-Each buffer also owns an opaque session UUID (rotated by `C-c " k`), whose
-XXH3-64 hash is sent as the `x-session-id` / `x-session-affinity` headers on
-every hyper request, enabling server-side prefix/token caching (HYPER-API.md
-§3.1). The raw UUID never leaves the machine; only the 16-hex hash goes over
-TLS. Disable with `quoth-hyper-session-cache-p` (default t). Persistence of the
-UUID as a file local variable is planned but not yet implemented.
 
 ### Tool calls
 
@@ -563,18 +554,18 @@ Two do byte-exact file I/O (no process involved):
   `quoth.el`) reads as a one-line markdown image link (`![name](path)`) tagged
   `quoth-image` with `:attach t` by the block renderer — the buffer shows what
   was looked at, and the wire walk fans the pixels into a synthetic `user`
-  message (see the tool-loop section below). A past-cap image
-  (`quoth-image-max-raw-bytes`, the ~3.75MB raw size under the gateway's 5MB
-  base64 limit) or a model whose catalog entry lacks `supports-attachments` is
-  an **error result** naming the limit, so the model learns and can fall back to
-  describing the file; the blindness check reads the cached catalog only and
-  treats an unknown catalog as permissive (the server strips images silently
-  rather than erroring). Three optional args shape the read: `line_numbers`
-  (default off) prefixes each line with its 1-based true line number in `cat -n`
-  style — a fixed 6-char right-aligned width, then a tab — so models can refer
-  to lines by number and the user can cross-check in Emacs; `offset` is a
-  1-based first line; `limit` is a max line count. `offset < 1`,
-  `offset > line_count`, and `limit <= 0` are error results;
+  message (see Image attachments on the wire below). A past-cap image
+  (`quoth-image-max-raw-bytes`, the ~3.75MB raw size under the 5MB base64 server
+  limit this default assumes) or a model whose catalog entry lacks
+  `supports-attachments` is an **error result** naming the limit, so the model
+  learns and can fall back to describing the file; the blindness check reads the
+  cached catalog only and treats an unknown catalog as permissive (the server
+  strips images silently rather than erroring). Three optional args shape the
+  read: `line_numbers` (default off) prefixes each line with its 1-based true
+  line number in `cat -n` style — a fixed 6-char right-aligned width, then a tab
+  — so models can refer to lines by number and the user can cross-check in
+  Emacs; `offset` is a 1-based first line; `limit` is a max line count.
+  `offset < 1`, `offset > line_count`, and `limit <= 0` are error results;
   `offset + limit > line_count` clamps silently to EOF. **The budget is spent on
   whole rendered lines, head first**: when the read exceeds it, only the head is
   emitted and a marker names the dropped line range, the dropped count, and the
@@ -687,19 +678,19 @@ the model already emitted.
 
 #### Image fan-out in tool rounds
 
-The gateway **drops image content in `role: "tool"` messages** (validated
-against the live endpoint: the model received an empty string). A tool result
-carrying a `quoth-image` `:attach t` span — the image-link line an image-aware
-`read_file` produced — therefore emits as a **pair** at wire-build time
-(`quoth--tool-image-fanout`, run inside `quoth--tool-rounds`, so history replay
-rebuilds the same pair on every resend): the `tool` message keeps the result
-text _minus_ the image line(s), and a synthetic `user` message immediately after
-carries the image as an `image_url` content part plus a text part
-(`Image content from the tool result:`). The tool-call/tool-result pairing never
-changes — the server rejects an unpaired tool result on every later turn — only
-the split of where the pixels ride. When no image is readable at walk time (the
-file was deleted after the read), the link line stays in the tool content and no
-synthetic user message is emitted.
+OpenAI-compatible gateways **drop image content in `role: "tool"` messages**
+(validated against the live hyper endpoint: the model received an empty string).
+A tool result carrying a `quoth-image` `:attach t` span — the image-link line an
+image-aware `read_file` produced — therefore emits as a **pair** at wire-build
+time (`quoth--tool-image-fanout`, run inside `quoth--tool-rounds`, so history
+replay rebuilds the same pair on every resend): the `tool` message keeps the
+result text _minus_ the image line(s), and a synthetic `user` message
+immediately after carries the image as an `image_url` content part plus a text
+part (`Image content from the tool result:`). The tool-call/tool-result pairing
+never changes — the server rejects an unpaired tool result on every later turn —
+only the split of where the pixels ride. When no image is readable at walk time
+(the file was deleted after the read), the link line stays in the tool content
+and no synthetic user message is emitted.
 
 User-driven attachments ride the same mechanism from the other side:
 `quoth--user-turn-content` walks the prompt's `user` spans and, when an
@@ -731,10 +722,55 @@ whose wait was abandoned stays registered when its process exits on its own, so
 a later `write_stdin` poll still collects the final output.
 `quoth-process-max-sessions` (default 128) caps concurrent sessions.
 
-### Current limitations
+### Permissions
 
-- Manual token only (`quoth-hyper-token`); OAuth device flow is planned.
-- `quoth-provider-grant-permission` is a no-op (tools run without confirmation).
+`quoth-provider-grant-permission` is a no-op on the shared base: tools run
+without confirmation. A permission-handling UI is roadmap work, not current
+behavior.
+
+## Hyper provider (default)
+
+The hyper provider (`quoth-hyper-provider.el`) is Quoth's default: it targets
+the Charm Hyper gateway's OpenAI-compatible surface —
+`POST {base-url}/chat/completions`, base URL defaulting to
+`https://hyper.charm.land/v1` (the `HYPER_URL` environment variable or the
+`quoth-hyper-base-url` defcustom overrides it). It is the same subclass shape as
+ollama: the shared `quoth-openai-provider.el` base does the staged send and
+token plumbing (see Wire behavior shared by all providers above), and the
+provider supplies config (base URL, token via `quoth-hyper-token`, auth-source
+default `machine hyper.charm.land login apikey`) and its catalog, overriding
+`quoth-provider--request-extras` for the wire headers below.
+
+Provider-specific behavior, all flowing from the wire facts in
+[HYPER-API.md](HYPER-API.md):
+
+- **Session-affinity headers.** The buffer's opaque session UUID (see Session
+  slots and defaults above) is hashed with XXH3-64 and sent as the
+  `x-session-id` / `x-session-affinity` headers on every request, enabling
+  server-side prefix/token caching (HYPER-API.md §3.1). The raw UUID never
+  leaves the machine; only the 16-hex hash goes over TLS. Disable with
+  `quoth-hyper-session-cache-p` (default t).
+- **The x-crush-id machine header.** The Crush CLI sends a per-machine ID on
+  every Hyper chat-completions request, and quoth mirrors the convention:
+  `quoth-hyper-x-crush-id` defaults to `t` (a stable per-machine ID derived
+  locally), a string is sent verbatim, a function is called for the value, and
+  nil omits the header. The wire name is deliberately not renamed with the
+  package — it is specific to this provider.
+- **Usage carries a cost.** `quoth-provider--usage` adds
+  `:cost-unit`/`:cost-value` to the shared token keys, so the header line
+  renders a cost segment (see the usage contract above). Hyper reports both USD
+  and hypercredits per request; `quoth-hyper-usage-currency` selects which the
+  provider surfaces (default `credits`, unit "hc").
+- **Reasoning in history is opt-in.** The shared history walk drops CoT text;
+  `quoth-hyper-history-include-reasoning` (default nil) folds it back into each
+  prior exchange's trailing assistant message as `reasoning_content`.
+- **The catalog is one request.** `GET /v1/provider` returns the whole catalog;
+  it is normalized through `quoth-hyper--catalog-parse` +
+  `quoth-hyper--normalize-model` (see the catalog cache above), and the bundled
+  seed is the verbatim `/v1/provider` payload.
+- **Manual token; OAuth device flow planned.** Tokens come from
+  `quoth-hyper-token` (an auth-source lookup by default); the device flow
+  (HYPER-API.md §2) is roadmap work.
 
 ## Ollama provider
 
@@ -749,12 +785,14 @@ plumbing, and the provider supplies config (base URL, token via
 `quoth-ollama-token`, auth-source default `machine ollama.com login apikey`),
 its catalog, and the body extras below.
 
-Differences from hyper, all flowing from the wire facts in
+Differences from the shared send (see Wire behavior shared by all providers
+above), all flowing from the wire facts in
 [OLLAMA-CLOUD-API.md](OLLAMA-CLOUD-API.md):
 
 - **No session-affinity or machine-id headers.** Ollama has no prefix-cache
   protocol; session continuity rides the re-sent history alone, so the
-  buffer-rebuild principle holds with no extra headers.
+  buffer-rebuild principle holds with no extra headers (contrast hyper's
+  session-affinity and x-crush-id headers, above).
 - **One provider extra on the body.** The base send appends the
   `quoth-provider--body-extras` value — `stream_options: {include_usage: true}`
   here — to the composed alist before the request fires; the generic is the
