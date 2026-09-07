@@ -174,24 +174,37 @@ bare model to that provider's chain — never to another's.
 
 ### Session slots and defaults
 
-Every transient selection is **buffer-local**; globals exist only as defaults
-for new buffers. The session slots — `quoth--session-provider` (name string),
-`quoth--session-model` (id or nil), `quoth--session-thinking` (nil / `t` /
-`:json-false`), `quoth--session-reasoning-effort` (string or nil), and
-`quoth-history-limit` — live in `quoth-provider.el` (protocol-owned, so the
-client and the selector need no `quoth.el` dependency) and are seeded at
-`quoth--init-buffer` from the global defaults: `quoth-default-provider`,
-`quoth-default-model`, `quoth-default-thinking`,
-`quoth-default-reasoning-effort`, and the `quoth-history-limit` defcustom. The
-session model seeds from a provider chain instead: the `quoth-model-by-provider`
-entry for the session provider — the last model picked on that provider; the
-pick outlives the buffer that made it, seeding every later buffer on the same
-provider (a plain `defvar` persisted by savehist; the docstrings call this the
-sticky memory) — else, when `quoth-default-model` is provider-qualified and
-names the session provider — its bare model (an explicit user default outranks
-the registry's), else the registry entry's `:default-model`, else the bare
-`quoth-default-model` (a qualified one contributes nothing to any other
-provider's chain).
+Every quoth buffer is its own conversation, so all conversation state is
+**buffer-local**: two chat buffers can run different providers and models at the
+same time, a transient selection in one never leaks into another, and killing a
+buffer takes its conversation with it. Globals exist only as defaults that seed
+new buffers — plus two deliberate cross-buffer memories (the per-provider model
+memory and the model-catalog cache, both below).
+
+Four families of buffer-local state, each seeded differently:
+
+**Session slots** — the conversation's route and request attributes, live for
+the buffer's life and changed only by the selector. They live in
+`quoth-provider.el` (protocol-owned, so the client and the selector need no
+`quoth.el` dependency) and are seeded at `quoth--init-buffer`:
+
+| Slot                              | Seeded from                                                                                                                      |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `quoth--session-provider`         | the prefix of a provider-qualified `quoth-default-model`, else `quoth-default-provider`, else the first registry entry           |
+| `quoth--session-model`            | the provider chain (the paragraph below)                                                                                         |
+| `quoth--session-thinking`         | `quoth-default-thinking`                                                                                                         |
+| `quoth--session-reasoning-effort` | `quoth-default-reasoning-effort`                                                                                                 |
+| `quoth-history-limit`             | the `quoth-history-limit` defcustom (the buffer-local value shadows the same-named global; a session can tighten its own window) |
+
+The session model seeds from a provider chain instead: the
+`quoth-model-by-provider` entry for the session provider — the last model picked
+on that provider; the pick outlives the buffer that made it, seeding every later
+buffer on the same provider (a plain `defvar` persisted by savehist; the
+docstrings call this the sticky memory) — else, when `quoth-default-model` is
+provider-qualified and names the session provider — its bare model (an explicit
+user default outranks the registry's), else the registry entry's
+`:default-model`, else the bare `quoth-default-model` (a qualified one
+contributes nothing to any other provider's chain).
 
 The per-provider memory has a two-sided lifecycle: an explicit model pick
 (`quoth--set-model-spec`) writes the entry — under the target provider, bare —
@@ -200,15 +213,42 @@ next buffer on the provider starts from its chain again. A provider switch alone
 touches neither: switching re-seeds from the target's chain and preserves
 whatever the last pick left there.
 
-The **provider instance** (`quoth-active-provider`, buffer-local) is derived
-state, not session state: it is (re)instantiated from
-`quoth--session-provider` + `quoth--session-model` whenever either changes or
-the buffer initializes, and its model slot is a cache of the session value
-(`quoth--sync-provider-model` re-syncs it). Requests always read the model from
-the buffer's session slot at compose time, so nothing session-shaped lives only
-on the provider struct. No transient action ever writes a global: the selector's
-provider switch and model picker write the session slots (and the per-provider
-model memory), and the global defaults change only through Customize/`setq`.
+**Conversation identity** — generated, never seeded, because each conversation
+needs a wire identity of its own: `quoth--session-uuid` (a fresh random UUID at
+init, rotated by `quoth-clear-buffer`; the hyper provider hashes it for the
+`x-session-id`/`x-session-affinity` headers — the raw UUID never leaves the
+machine), its hash `quoth--session-id`, and `quoth--prompt-id` (fresh at init
+and rotated by every closed response, so each user turn tags its regions with a
+distinct ID). The session-scoped usage accounting lives here too:
+`quoth--usage-acc` / `quoth--usage-last` start nil and are reset only by
+`quoth-clear-buffer`, and `quoth--input-ring` + `quoth--input-ring-index` start
+empty in every buffer — the ring itself is per-buffer even though it is
+persisted to a single shared history file (`quoth--input-ring-file-name`).
+
+**Turn state** — reset as the turn advances, so two buffers streaming at the
+same time never interfere: the phase machine `quoth--phase` and its
+`quoth--round-timers`, `quoth--tool-loop-count`, the `quoth--response-start`
+marker (where the live response began), `quoth--pending-interrupt`, and
+`quoth--history-last` (the last send's history counts). Turn state is written
+only by event handlers through the single writer `quoth--phase-set`.
+
+**Derived state** — rebuilt from the families above, never seeded, so killing
+and reopening a buffer reconstructs it: `quoth-active-provider`, the provider
+instance (re)instantiated from the session slots, and the OpenAI client's
+`quoth-openai--cached-system-prompt` + `quoth-openai--cache-key` (the staged
+system prompt, rebuilt when the working directory or a context file's modtime
+changes). The **provider instance** is derived state, not session state: it is
+(re)instantiated from `quoth--session-provider` + `quoth--session-model`
+whenever either changes or the buffer initializes, and its model slot is a cache
+of the session value (`quoth--sync-provider-model` re-syncs it). Requests always
+read the model from the buffer's session slot at compose time, so nothing
+session-shaped lives only on the provider struct.
+
+No transient action ever writes a Customize default: the selector's provider
+switch and model picker write the session slots, and the global defaults change
+only through Customize/`setq`. The one deliberate exception is the global
+per-provider model memory above — a model pick writes it precisely so every
+future buffer on that provider inherits the choice.
 
 This shape is deliberate groundwork for persisting the session with the chat
 buffer itself (gptel-style file-local variables, the Phase 2 roadmap item):
