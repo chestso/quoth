@@ -44,6 +44,7 @@
 (declare-function quoth-test--fresh-buffer "quoth-test" ())
 (declare-function quoth-test--cleanup "quoth-test" ())
 (declare-function quoth-test--with-immediate-schedule "quoth-test" (&rest body))
+(declare-function quoth-test--wait-until "quoth-test-process" (pred &optional timeout))
 
 ;;; flycheck byte-compiles this file in isolation, and its batch child's
 ;;; `load-path' excludes the package root and test dir.  Prefer
@@ -540,6 +541,73 @@ dispatch runs the calls; the follow-up returns the phase to
        (should (= quoth--tool-loop-count 1))
        (should (= (plist-get quoth--phase :round) 1))
        (should (= (length quoth-test--round-sends) 1))))))
+
+;;; 8. The follow-up hop enters the chat buffer
+
+(ert-deftest quoth-test/round-followup-enters-chat-buffer ()
+  "The follow-up hop runs in the chat buffer, not the current one.
+The 0-timer hop fires with whatever buffer is current at delivery; a
+user switching away while the last tool call completes must not lose
+the follow-up request.  This wires the round by hand (no flattened
+schedule: the follow-up hop stays a real 0-timer), delivers the
+result from another buffer, and pumps the event loop there so the
+hop fires with that buffer current — then asserts the follow-up send
+happened in the chat buffer."
+  (let ((on-done nil))
+    (let ((entries (list (quoth-test--stub-entry
+                          "exec_command"
+                          (lambda (_call done)
+                            (setq on-done done)
+                            (lambda () nil)))))
+          (quoth-test--round-sends nil)
+          (quoth-tools-enabled t))
+      (unwind-protect
+          (with-current-buffer (quoth-test--fresh-buffer)
+            (setq-local quoth--response-start (point-marker))
+            (let ((fake-proc (make-pipe-process :name "quoth-round-test"
+                                                :noquery t
+                                                :coding 'binary)))
+              (process-put fake-proc :quoth-sse
+                           (list :tool-calls
+                                 (vector (quoth-test--call-entry
+                                          "call_1" "exec_command"
+                                          "{\"cmd\":\"echo hi\"}"))))
+              (setf (quoth-provider-request quoth-active-provider)
+                    (list :stage-process nil :curl fake-proc :done-p t))
+              (unwind-protect
+                  (let ((quoth-openai-tool-registry entries))
+                    (cl-letf
+                        (((symbol-function 'quoth-provider-send-prompt)
+                          (lambda (_provider prompt &rest args)
+                            (push (cons prompt args)
+                                  quoth-test--round-sends)
+                            nil)))
+                      (setq-local quoth--tool-loop-count 1)
+                      (quoth--phase-set 'tools :round 1)
+                      ;; Real schedule: the completion's follow-up hop
+                      ;; stays a pending 0-timer.
+                      (quoth--round-dispatch)
+                      (should (= (plist-get quoth--round :pending) 1))
+                      ;; Deliver from another buffer, then pump there
+                      ;; so both chained hops (the completion delivery
+                      ;; and the follow-up) fire with that buffer
+                      ;; current.
+                      (with-temp-buffer
+                        (funcall on-done
+                                 (cons "Process exited with code 0\nOutput:\nhi"
+                                       0))
+                        (should (null quoth-test--round-sends))
+                        (should (quoth-test--wait-until
+                                 (lambda () quoth-test--round-sends))))
+                      ;; Back in the chat buffer: the follow-up fired
+                      ;; here despite the hop landing elsewhere.
+                      (should (= (length quoth-test--round-sends) 1))
+                      (should (eq (plist-get quoth--phase :phase)
+                                  'streaming))))
+                (when (process-live-p fake-proc)
+                  (delete-process fake-proc)))))
+        (setq on-done nil)
+        (quoth-test--cleanup)))))
 
 (provide 'quoth-test-round)
 ;;; quoth-test-round.el ends here

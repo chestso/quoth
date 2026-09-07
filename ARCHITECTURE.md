@@ -671,10 +671,12 @@ vector's declared order, and runs the entries. Each completion hops through the
 0-timer hop, fills its own block's status span with the fenced result (tagging
 the raw result `tool-output`), and decrements the round's pending count; the
 last completion rebuilds the wire continuation from the buffer
-(`quoth--tool-rounds`) and sends the follow-up. Interrupt mid-round cancels
-every pending wait and fills the still-pending blocks with the interrupted
-result so the buffer holds a valid wire `role: "tool"` content for every call
-the model already emitted.
+(`quoth--tool-rounds`) and sends the follow-up — the follow-up hop re-enters the
+chat buffer itself, so the timer firing with another buffer current (the user
+switched away mid-round) cannot detach it from the round's buffer-local state.
+Interrupt mid-round cancels every pending wait and fills the still-pending
+blocks with the interrupted result so the buffer holds a valid wire
+`role: "tool"` content for every call the model already emitted.
 
 #### Image fan-out in tool rounds
 

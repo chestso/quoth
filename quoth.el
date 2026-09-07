@@ -2688,9 +2688,16 @@ round is gone (the turn was interrupted, cleared, or closed)."
     (quoth--tool-block-fill state (car result))
     (let ((pending (1- (plist-get quoth--round :pending))))
       (if (= pending 0)
-          (progn
+          (let ((buf (current-buffer)))
             (setq-local quoth--round nil)
-            (quoth--schedule #'quoth--round-followup))
+            ;; Enter BUF on the hop: the timer fires with whatever
+            ;; buffer is current, and the follow-up reads and writes
+            ;; only buffer-local state.
+            (quoth--schedule
+             (lambda ()
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (quoth--round-followup))))))
         (plist-put quoth--round :pending pending)
         (setq-local quoth--round quoth--round)))))
 
