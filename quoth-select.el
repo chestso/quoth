@@ -67,6 +67,9 @@
 (declare-function quoth--provider-default-model "quoth.el" (name))
 (declare-function quoth--instantiate-provider "quoth.el" (name buf dir))
 (declare-function quoth--seed-session-model "quoth.el" ())
+(declare-function quoth--set-model-spec "quoth.el" (spec))
+(declare-function quoth--set-model-default "quoth.el" ())
+(declare-function quoth--apply-model-spec "quoth.el" (spec))
 (declare-function quoth-provider-cleanup "quoth-provider" (provider &rest _))
 
 (defmacro quoth--select-in-origin (&rest body)
@@ -241,7 +244,9 @@ usually seeded from the bundled snapshot first
 seed-less cases while a background refresh runs, with the message
 noting it.  The choice writes the buffer's session model (and the
 provider's model slot cache) plus the sticky
-`quoth-model-by-provider' entry; `default' clears all three."
+`quoth-model-by-provider' entry; `default' clears all three.  A
+provider-qualified id (\"ollama/gemma\") typed free-form switches the
+buffer to that provider and sets the bare model in one step."
   (interactive)
   (let* ((models (and quoth-active-provider
 		      (quoth-provider-p quoth-active-provider)
@@ -256,28 +261,14 @@ provider's model slot cache) plus the sticky
 		  "Model: "
 		  (cons (cons "default" "default (provider default)")
 			choices)
-		  nil t nil)))
+		  ;; Require-match is off: candidates are the active
+		  ;; provider's catalog, but a provider-qualified id
+		  ;; ("ollama/gemma") typed free-form routes through
+		  ;; `quoth--set-model-spec' to another provider.
+		  nil nil nil)))
     (if (string= choice "default")
-	(progn
-	  (setq-local quoth--session-model nil)
-	  (setq quoth-model-by-provider
-		(assq-delete-all (intern quoth--session-provider)
-				 quoth-model-by-provider))
-	  (when (and quoth-active-provider
-		     (quoth-provider-p quoth-active-provider))
-	    (quoth-provider--apply-model
-	     quoth-active-provider '(:id nil))))
-      (setq-local quoth--session-model choice)
-      (setq quoth-model-by-provider
-	    (cons (cons (intern quoth--session-provider) choice)
-		  (assq-delete-all (intern quoth--session-provider)
-				   quoth-model-by-provider)))
-      (when (and quoth-active-provider
-		 (quoth-provider-p quoth-active-provider))
-	(quoth-provider--apply-model
-	 quoth-active-provider
-	 (list :id choice))))
-    (run-hooks 'quoth-after-model-change-hook)
+	(quoth--set-model-default)
+      (quoth--set-model-spec choice))
     (when cold
       (quoth-provider-models-refresh quoth-active-provider)
       (message "fetching model catalog..."))
@@ -382,39 +373,28 @@ as a hint when available."
 
 (defun quoth--select-provider-switch (&rest _)
   "Switch the active provider for the current buffer.
-Buffer-local only: writes `quoth--session-provider', aborts any active
-request, reinstantiates `quoth-active-provider' from the new name,
-re-seeds the session model from the new provider's chain (sticky
+Buffer-local only: routes through `quoth--apply-model-spec', which
+writes `quoth--session-provider', aborts any active request on the
+old provider, reinstantiates `quoth-active-provider', re-seeds the
+session model from the new provider's chain (sticky
 `quoth-model-by-provider' entry, registry `:default-model', global
 default), keeps thinking/effort \(provider-agnostic), prefetches the
 catalog, and refreshes the header line through
-`quoth-after-model-change-hook'.  Never writes a global: the default
-for new buffers is `quoth-default-provider' and changes only through
-Customize or `setq'."
+`quoth-after-model-change-hook'.  The sticky entry for the new
+provider is preserved, not overwritten: switching carries the last
+model used there, so this command never writes the sticky alist.
+Never writes a global: the default for new buffers is
+`quoth-default-provider' and changes only through Customize or
+`setq'."
   (interactive)
   (let* ((names (mapcar (lambda (e) (plist-get e :name)) quoth-providers))
 	 (choice (completing-read "Provider: " names nil t)))
     (when (and choice (not (string-empty-p choice))
 	       (not (string= choice quoth--session-provider)))
-      (setq-local quoth--session-provider choice)
-      ;; Abort any in-flight request on the old provider.
-      (when (and quoth-active-provider
-		 (quoth-provider-p quoth-active-provider))
-	(quoth-provider-cleanup quoth-active-provider))
-      (setq-local quoth-active-provider
-		  (quoth--instantiate-provider
-		   choice (current-buffer) default-directory))
-      (quoth--seed-session-model)
-      (when (and quoth-active-provider
-		 (quoth-provider-p quoth-active-provider))
-	(quoth-provider--apply-model
-	 quoth-active-provider
-	 (list :id quoth--session-model)))
-      (run-hooks 'quoth-after-model-change-hook)
-      (when (and quoth-active-provider
-		 (quoth-provider-p quoth-active-provider))
-	(quoth-provider-models-refresh quoth-active-provider))
-      (message "Provider: %s" choice))))
+      (let ((model (quoth--provider-default-model choice)))
+	(quoth--apply-model-spec
+	 (list :provider choice :model model))
+	(message "Provider: %s" choice)))))
 
 (defun quoth--select-refresh-catalog (&rest _)
   "Force-refresh the model catalog cache and redraw the menu.

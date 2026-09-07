@@ -707,16 +707,23 @@ Only logs when `quoth-debug-mode' is non-nil."
           (insert (ring-ref quoth--input-ring quoth--input-ring-index)))))))
 
 (defun quoth--header-model ()
-  "Return the effective model name for the header line, or nil.
-Reads the provider's model via the `quoth-provider-model' generic
-\(derived from `quoth--session-model' whenever it changes); falls
-back to `quoth-default-model', then `quoth-openai-default-model',
+  "Return the effective model id for the header line, or nil.
+Qualified as PROVIDER/MODEL whenever both the provider name and a
+model are known, so the header names the route unambiguously; a
+provider with no name (a bare struct in a test, say) shows the bare
+model.  Reads the provider's model via the `quoth-provider-model'
+generic \(derived from `quoth--session-model' whenever it changes);
+falls back to `quoth-default-model', then `quoth-openai-default-model',
 when the provider reports none."
-  (or (and quoth-active-provider
-           (quoth-provider-p quoth-active-provider)
-           (quoth-provider-model quoth-active-provider))
-      quoth-default-model
-      quoth-openai-default-model))
+  (let ((model (or (and quoth-active-provider
+                        (quoth-provider-p quoth-active-provider)
+                        (quoth-provider-model quoth-active-provider))
+                   (quoth-provider-bare-model-id quoth-default-model)
+                   quoth-openai-default-model)))
+    (if (and model quoth--session-provider
+             (stringp quoth--session-provider))
+        (format "%s/%s" quoth--session-provider model)
+      model)))
 
 (defun quoth--region-label-at-point ()
   "Return the `quoth-region-type' at point as a string, or nil.
@@ -1709,15 +1716,25 @@ the name is not found."
 
 (defun quoth--provider-default-model (name)
   "Return the initial model for a fresh buffer on provider NAME.
-The chain: the sticky `quoth-model-by-provider' entry for NAME, else
-the registry entry's :default-model, else `quoth-default-model'.
-nil when nothing applies — the request then falls back to the
-provider's own default at compose time."
+The chain: the sticky `quoth-model-by-provider' entry for NAME, else —
+when `quoth-default-model' is provider-qualified and names NAME — its
+bare model (an explicit user default outranks the registry's), else
+the registry entry's :default-model, else the bare
+`quoth-default-model'.  A qualified global default never leaks onto
+another provider's chain: it contributes nil there, so that provider
+falls back to its own registry default or nil.  nil when nothing
+applies — the request then falls back to the provider's own default
+at compose time."
   (let* ((entry (quoth--provider-entry name))
-         (pname (and entry (plist-get entry :name))))
+         (pname (and entry (plist-get entry :name)))
+         (route (and (stringp quoth-default-model)
+                     (quoth-provider-parse-model-id quoth-default-model))))
     (or (cdr (assq (intern pname) quoth-model-by-provider))
+        (and route
+             (string= (plist-get route :provider) pname)
+             (plist-get route :model))
         (and entry (plist-get entry :default-model))
-        quoth-default-model)))
+        (and (not route) quoth-default-model))))
 
 (defun quoth--seed-session-model ()
   "Seed this buffer's `quoth--session-model' from the provider chain.
@@ -1726,6 +1743,76 @@ Called at buffer init and after a provider switch: the sticky
 the registry entry's :default-model, else `quoth-default-model'."
   (setq-local quoth--session-model
               (quoth--provider-default-model quoth--session-provider)))
+
+(defun quoth--apply-model-spec (spec)
+  "Apply the route carried by SPEC to the current buffer.
+SPEC is the parsed result of `quoth-provider-parse-model-id':
+a plist with :provider and :model.  A qualified id changes the
+session provider (aborting any in-flight request on the old one,
+reinstantiating `quoth-active-provider') as well as the session
+model, then prefetches the new provider's model catalog, exactly as
+the selector's provider switch does.  The sticky
+`quoth-model-by-provider' alist is left alone: routing re-seeds the
+session model from the provider chain, and only an explicit model
+pick (`quoth--set-model-spec') writes a sticky entry.  Returns the
+model id applied."
+  (let ((old-provider quoth--session-provider)
+        (provider (plist-get spec :provider))
+        (model (plist-get spec :model)))
+    (unless (string= provider old-provider)
+      (setq-local quoth--session-provider provider)
+      (when (and quoth-active-provider
+                 (quoth-provider-p quoth-active-provider))
+        (quoth-provider-cleanup quoth-active-provider))
+      (setq-local quoth-active-provider
+                  (quoth--instantiate-provider
+                   provider (current-buffer) default-directory))
+      (when (and quoth-active-provider
+                 (quoth-provider-p quoth-active-provider))
+        (quoth-provider-models-refresh quoth-active-provider)))
+    (setq-local quoth--session-model model)
+    (quoth--sync-provider-model)
+    (run-hooks 'quoth-after-model-change-hook)
+    model))
+
+(defun quoth--set-model-spec (spec)
+  "Set the buffer's model to SPEC, a bare or provider-qualified id.
+A bare id (or any id whose prefix names no registered provider) sets
+the session model on the current provider.  A qualified id such as
+\"ollama/gemma\" routes: it applies the provider and model through
+`quoth--apply-model-spec', switching the buffer's provider and model
+together.  Either way the sticky `quoth-model-by-provider' entry is
+written under the target provider with the bare model, so the next
+buffer on it starts there.  Nil or empty SPEC is a no-op — the
+picker's free-form prompt can return an empty string, which must
+never clear the session model."
+  (when (and spec (not (string-empty-p spec)))
+    (let ((route (quoth-provider-parse-model-id spec)))
+      (if route
+          (quoth--apply-model-spec route)
+        (setq-local quoth--session-model spec))
+      (let ((provider (or (and route (plist-get route :provider))
+                          quoth--session-provider))
+            (model (if route (plist-get route :model) spec)))
+        (setq quoth-model-by-provider
+              (cons (cons (intern provider) model)
+                    (assq-delete-all (intern provider)
+                                     quoth-model-by-provider))))
+      (quoth--sync-provider-model)
+      (run-hooks 'quoth-after-model-change-hook)
+      spec)))
+
+(defun quoth--set-model-default ()
+  "Reset the buffer's model to the active provider's default.
+Clears the session model and the sticky `quoth-model-by-provider'
+entry for the session provider, and syncs the provider's model slot,
+so a new buffer on the provider starts from its chain again."
+  (setq-local quoth--session-model nil)
+  (setq quoth-model-by-provider
+        (assq-delete-all (intern quoth--session-provider)
+                         quoth-model-by-provider))
+  (quoth--sync-provider-model)
+  (run-hooks 'quoth-after-model-change-hook))
 
 (defun quoth--sync-provider-model ()
   "Sync the provider instance's model slot from the session slot.
@@ -1762,9 +1849,15 @@ re-syncs it after either side changed."
       (setq-local quoth--input-ring-index 0)
       (setq-local quoth--tool-loop-count 0)
       ;; Session slots: every transient selection is buffer-local,
-      ;; seeded from the global defaults here.
+      ;; seeded from the global defaults here.  A provider-qualified
+      ;; `quoth-default-model' routes the buffer onto its provider,
+      ;; overriding `quoth-default-provider'.
       (setq-local quoth--session-provider
-                  (or quoth-default-provider
+                  (or (plist-get (and (stringp quoth-default-model)
+                                      (quoth-provider-parse-model-id
+                                       quoth-default-model))
+                                 :provider)
+                      quoth-default-provider
                       (plist-get (car quoth-providers) :name)))
       (quoth--seed-session-model)
       (setq-local quoth--session-thinking quoth-default-thinking)
@@ -3363,7 +3456,9 @@ the cache warming lands on `quoth-provider-models-hook').  Picking a
 model sets the buffer's session model (and the provider's model slot
 cache) and writes the sticky `quoth-model-by-provider' entry for the
 active provider so the next buffer on it starts there.  Choosing the
-`default' entry clears both.  Never writes a global."
+`default' entry clears both.  A provider-qualified id such as
+\"ollama/gemma\" typed free-form switches the buffer to that provider
+and sets the bare model in one step.  Never writes a global."
   (interactive)
   (let* ((models (and quoth-active-provider
                       (quoth-provider-p quoth-active-provider)
@@ -3371,7 +3466,7 @@ active provider so the next buffer on it starts there.  Choosing the
          (cold (null models))
          (fallback (or quoth--session-model
                        (quoth--provider-default-model quoth--session-provider)
-                       quoth-default-model
+                       (quoth-provider-bare-model-id quoth-default-model)
                        quoth-openai-default-model))
          (choices (if models
                       (mapcar (lambda (m)
@@ -3384,20 +3479,14 @@ active provider so the next buffer on it starts there.  Choosing the
                   "Model: "
                   (cons (cons "default" "default (provider default)")
                         choices)
-                  nil t nil)))
+                  ;; Require-match is off: candidates are the active
+                  ;; provider's catalog, but a provider-qualified id
+                  ;; ("ollama/gemma") typed free-form routes through
+                  ;; `quoth--set-model-spec' to another provider.
+                  nil nil nil)))
     (if (string= choice "default")
-        (progn
-          (setq-local quoth--session-model nil)
-          (setq quoth-model-by-provider
-                (assq-delete-all
-                 (intern quoth--session-provider) quoth-model-by-provider))
-          (quoth--sync-provider-model))
-      (setq-local quoth--session-model choice)
-      (setq quoth-model-by-provider
-            (cons (cons (intern quoth--session-provider) choice)
-                  (assq-delete-all
-                   (intern quoth--session-provider) quoth-model-by-provider)))
-      (quoth--sync-provider-model))
+        (quoth--set-model-default)
+      (quoth--set-model-spec choice))
     (quoth--update-header-line)
     (when cold
       (quoth-provider-models-refresh quoth-active-provider)

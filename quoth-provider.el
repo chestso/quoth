@@ -109,10 +109,14 @@ sessions via `savehist-mode' when enabled."
 
 (defcustom quoth-default-model nil
   "Cross-provider fallback model id, or nil.
-Seeds a new buffer's session model when no per-provider default
-applies (the sticky `quoth-model-by-provider' entry and the registry
-entry's :default-model are consulted first).  nil defers to the
-provider's own fallback at request time."
+May be provider-qualified (\"ollama/gemma\"): when the prefix before
+the first `/' names a registered provider (see
+`quoth-provider-parse-model-id'), a new buffer starts on that
+provider with the bare model, overriding `quoth-default-provider'.
+An unqualified id seeds a new buffer's session model when no
+per-provider default applies (the sticky `quoth-model-by-provider'
+entry and the registry entry's :default-model are consulted first).
+nil defers to the provider's own fallback at request time."
   :type '(choice (const :tag "Provider default" nil) string)
   :group 'quoth)
 
@@ -175,6 +179,33 @@ Add a provider by appending an entry with its own :factory; nothing in
 the protocol changes."
   :type '(repeat (plist :name string :type symbol :factory function))
   :group 'quoth)
+
+(defun quoth-provider-parse-model-id (id)
+  "Split a provider-qualified model ID into its route, or nil.
+ID is qualified when the prefix before its first `/' names a
+registered provider (`quoth-providers'); return
+\(:provider \"ollama\" :model \"gemma\") for \"ollama/gemma\".
+Return nil for anything else — an id with no `/', one whose prefix
+names no provider (e.g. \"meta-llama/Llama-3\", a real model id that
+contains a slash), or an empty model part — so callers pass the
+string through untouched and only qualified ids route."
+  (when (and (stringp id)
+             (string-match "\\`\\([^/]+\\)/\\(.+\\)\\'" id))
+    (let* ((prefix (match-string 1 id))
+           (model (match-string 2 id))
+           (entry (cl-find prefix quoth-providers
+                           :test #'string=
+                           :key (lambda (e) (plist-get e :name)))))
+      (when entry
+        (list :provider prefix :model model)))))
+
+(defun quoth-provider-bare-model-id (id)
+  "Return ID's model part, stripped of a provider prefix when qualified.
+\"ollama/gemma\" yields \"gemma\"; any other string returns unchanged,
+so this is safe on any model id — unqualified ids pass through, and
+ids with a slash that names no provider keep their slash."
+  (or (plist-get (quoth-provider-parse-model-id id) :model)
+      id))
 
 (defvar-local quoth-active-provider nil
   "The active quoth provider for this buffer.

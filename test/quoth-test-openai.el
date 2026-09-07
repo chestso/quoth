@@ -91,6 +91,14 @@ Session attributes are buffer-local; set them with `let'."
       (should (eq (alist-get 'thinking req) t))
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 
+(ert-deftest quoth-test/openai-compose-strips-qualified-default-model ()
+  "A provider-qualified `quoth-default-model' never reaches the wire.
+The fallback at compose time strips the routing prefix, so the
+request body carries the bare model id."
+  (let ((quoth-default-model "ollama/gemma"))
+    (let ((req (quoth-openai-compose-request "P" nil)))
+      (should (string= (alist-get 'model req) "gemma")))))
+
 (ert-deftest quoth-test/openai-compose-tools-by-default ()
   "With `quoth-tools-enabled' t the body announces all registered tools.
 The default is non-nil, so `tool_choice' is `auto'."

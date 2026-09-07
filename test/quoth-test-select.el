@@ -333,6 +333,233 @@ with `savehist-additional-variables' so both survive restarts."
   (should (memq 'quoth-model-by-provider
                 (default-value 'savehist-additional-variables))))
 
+;;; 106. Provider-qualified model ids
+
+(ert-deftest quoth-test/parse-model-id-qualified ()
+  "`quoth-provider-parse-model-id' splits a registered-provider prefix.
+\"ollama/gemma\" routes to the ollama provider with the bare model."
+  (should (equal (quoth-provider-parse-model-id "ollama/gemma")
+                 '(:provider "ollama" :model "gemma"))))
+
+(ert-deftest quoth-test/parse-model-id-bare-is-nil ()
+  "A model id with no slash is never qualified."
+  (should (null (quoth-provider-parse-model-id "gemma")))
+  (should (null (quoth-provider-parse-model-id ""))))
+
+(ert-deftest quoth-test/parse-model-id-unknown-prefix-is-nil ()
+  "A slash-containing id whose prefix names no provider stays bare.
+`meta-llama/Llama-3' is a real model id, not a route, so the parser
+must leave it alone — the registry-membership test, not a syntax
+rule, decides qualification."
+  (should (null (quoth-provider-parse-model-id "meta-llama/Llama-3"))))
+
+(ert-deftest quoth-test/parse-model-id-empty-model-part-is-nil ()
+  "A prefix with no model after the slash is not a route."
+  (should (null (quoth-provider-parse-model-id "ollama/")))
+  (should (null (quoth-provider-parse-model-id "hyper/"))))
+
+(ert-deftest quoth-test/bare-model-id-passes-through ()
+  "`quoth-provider-bare-model-id' strips only a registered prefix.
+Qualified ids yield the bare model; every other id returns unchanged,
+including slash-containing ids that name no provider."
+  (should (string= (quoth-provider-bare-model-id "ollama/gemma") "gemma"))
+  (should (string= (quoth-provider-bare-model-id "gemma") "gemma"))
+  (should (string= (quoth-provider-bare-model-id "meta-llama/Llama-3")
+                   "meta-llama/Llama-3")))
+
+(ert-deftest quoth-test/set-model-spec-qualified-routes-provider ()
+  "`quoth--set-model-spec' with a qualified id switches the route.
+From a hyper buffer, \"ollama/gemma\" moves the session provider to
+ollama, the session model to the bare gemma, and reinstantiates
+`quoth-active-provider' as an ollama provider with gemma as its model
+slot."
+  (let ((quoth-model-by-provider nil))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (cl-letf (((symbol-function 'quoth-provider-models-refresh)
+                       #'ignore))
+              (should (string= quoth--session-provider "hyper"))
+              (quoth--set-model-spec "ollama/gemma")
+              (should (string= quoth--session-provider "ollama"))
+              (should (string= quoth--session-model "gemma"))
+              (should (quoth-ollama-provider-p quoth-active-provider))
+              (should (string= (quoth-ollama-provider-model
+                                quoth-active-provider)
+                               "gemma")))))
+      (setq quoth-model-by-provider nil)
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/set-model-spec-qualified-writes-target-sticky ()
+  "A qualified pick writes the sticky entry under the named provider.
+Picking \"ollama/gemma\" from a hyper buffer records gemma under
+ollama — the next ollama buffer starts there — and leaves the hyper
+entry alone."
+  (let ((quoth-model-by-provider (list (cons 'hyper "qwen3.7-plus"))))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (cl-letf (((symbol-function 'quoth-provider-models-refresh)
+                       #'ignore))
+              (quoth--set-model-spec "ollama/gemma")
+              (should (string= (cdr (assq 'ollama quoth-model-by-provider))
+                               "gemma"))
+              (should (string= (cdr (assq 'hyper quoth-model-by-provider))
+                               "qwen3.7-plus")))))
+      (setq quoth-model-by-provider nil)
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/set-model-spec-same-provider-no-cleanup ()
+  "A qualified id naming the active provider changes only the model.
+The provider switch branch (cleanup, reinstantiate) is skipped when
+the route names the buffer's current provider."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer))
+            (cleaned 0))
+        (with-current-buffer buf
+          (cl-letf (((symbol-function 'quoth-provider-models-refresh)
+                     #'ignore)
+                    ((symbol-function 'quoth-provider-cleanup)
+                     (lambda (&rest _) (cl-incf cleaned))))
+            (let ((provider quoth-active-provider))
+              (quoth--set-model-spec "hyper/qwen3.7-plus")
+              (should (= cleaned 0))
+              (should (eq quoth-active-provider provider))
+              (should (string= quoth--session-model "qwen3.7-plus"))
+              (should (string= (quoth-hyper-provider-model
+                                quoth-active-provider)
+                               "qwen3.7-plus"))))))
+    (quoth-test--cleanup)))
+
+(ert-deftest quoth-test/set-model-spec-bare-writes-active-sticky ()
+  "A bare id writes the sticky entry under the active provider.
+The session model, provider slot, and sticky entry all carry the id
+verbatim."
+  (let ((quoth-model-by-provider nil))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (quoth--set-model-spec "qwen3.7-plus")
+            (should (string= quoth--session-model "qwen3.7-plus"))
+            (should (string= (quoth-hyper-provider-model
+                              quoth-active-provider)
+                             "qwen3.7-plus"))
+            (should (string= (cdr (assq 'hyper quoth-model-by-provider))
+                             "qwen3.7-plus"))))
+      (setq quoth-model-by-provider nil)
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/set-model-spec-empty-is-noop ()
+  "`quoth--set-model-spec' ignores nil and empty input.
+The picker's free-form prompt can return an empty string; it must
+leave the session model, the provider slot, and the sticky alist
+untouched."
+  (let ((quoth-model-by-provider (list (cons 'hyper "qwen3.7-plus"))))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setq-local quoth--session-model "qwen3.7-plus")
+            (quoth--set-model-spec "")
+            (quoth--set-model-spec nil)
+            (should (string= quoth--session-model "qwen3.7-plus"))
+            (should (string= (cdr (assq 'hyper quoth-model-by-provider))
+                             "qwen3.7-plus"))))
+      (setq quoth-model-by-provider nil)
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/picker-free-form-qualified-id-routes ()
+  "The model picker accepts a typed qualified id.
+With require-match off and `completing-read' stubbed to a
+free-form \"ollama/gemma\", the picker routes the buffer onto
+ollama/gemma exactly as `quoth--set-model-spec' does."
+  (let ((quoth-model-by-provider nil))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (cl-letf (((symbol-function 'quoth-provider-models-cached)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'quoth-provider-models-refresh)
+                       #'ignore)
+                      ((symbol-function 'completing-read)
+                       (lambda (&rest _) "ollama/gemma")))
+              (quoth-select-model))
+            (should (string= quoth--session-provider "ollama"))
+            (should (string= quoth--session-model "gemma"))
+            (should (quoth-ollama-provider-p quoth-active-provider))
+            (should (string= (cdr (assq 'ollama quoth-model-by-provider))
+                             "gemma"))))
+      (setq quoth-model-by-provider nil)
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/set-model-default-clears-active-sticky ()
+  "`quoth--set-model-default' clears the session and sticky state.
+The session model, the provider's model slot, and the sticky entry
+for the active provider all reset, so the next buffer on the provider
+starts from its chain again."
+  (let ((quoth-model-by-provider (list (cons 'hyper "qwen3.7-plus"))))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (setq-local quoth--session-model "qwen3.7-plus")
+            (quoth--set-model-default)
+            (should (null quoth--session-model))
+            (should (null (quoth-hyper-provider-model
+                           quoth-active-provider)))
+            (should (null (assq 'hyper quoth-model-by-provider)))))
+      (setq quoth-model-by-provider nil)
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/qualified-default-model-seeds-provider-at-init ()
+  "A qualified `quoth-default-model' routes a fresh buffer.
+Buffer init seeds the session provider from the qualified prefix —
+overriding `quoth-default-provider' — and the session model from the
+bare model."
+  (let ((quoth-default-model "ollama/gemma")
+        (quoth-model-by-provider nil))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (should (string= quoth--session-provider "ollama"))
+            (should (string= quoth--session-model "gemma"))
+            (should (quoth-ollama-provider-p quoth-active-provider))))
+      (setq quoth-default-model nil
+            quoth-model-by-provider nil)
+      (quoth-test--cleanup))))
+
+(ert-deftest quoth-test/qualified-default-model-skips-other-providers ()
+  "A qualified `quoth-default-model' never leaks onto another chain.
+With \"ollama/gemma\" set, a hyper buffer's provider chain resolves
+to nil at the global-default step: the qualified value belongs to
+ollama only."
+  (let ((quoth-default-model "ollama/gemma")
+        (quoth-model-by-provider nil))
+    (unwind-protect
+        (should (null (quoth--provider-default-model "hyper")))
+      (setq quoth-default-model nil
+            quoth-model-by-provider nil))))
+
+(ert-deftest quoth-test/provider-switch-preserves-sticky-for-target ()
+  "`quoth--select-provider-switch' carries the sticky model across.
+Switching to ollama re-seeds the session model from ollama's chain
+\(the sticky entry, so gemma in this test) and writes no sticky
+entry: the switch routes, it does not pick."
+  (let ((quoth-model-by-provider (list (cons 'ollama "gemma"))))
+    (unwind-protect
+        (let ((buf (quoth-test--fresh-buffer)))
+          (with-current-buffer buf
+            (cl-letf (((symbol-function 'quoth-provider-models-refresh)
+                       #'ignore)
+                      ((symbol-function 'completing-read)
+                       (lambda (&rest _) "ollama")))
+              (quoth--select-provider-switch)
+              (should (string= quoth--session-provider "ollama"))
+              (should (string= quoth--session-model "gemma"))
+              (should (quoth-ollama-provider-p quoth-active-provider))
+              (should (equal quoth-model-by-provider
+                             (list (cons 'ollama "gemma")))))))
+      (setq quoth-model-by-provider nil)
+      (quoth-test--cleanup))))
+
 (provide 'quoth-test-select)
 ;;; quoth-test-select.el ends here
 

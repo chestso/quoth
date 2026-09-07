@@ -149,6 +149,29 @@ Adding a provider is appending an entry with its own `:factory`. The first entry
 is the fallback active provider for new buffers when `quoth-default-provider`
 names nothing.
 
+### Provider-qualified model ids
+
+A model id can name its provider: `ollama/gemma` routes to the ollama provider
+with the bare model `gemma`. `quoth-provider-parse-model-id` (in
+`quoth-provider.el`, where the registry lives) is the one parser: an id is
+qualified iff the prefix before its first `/` names a registered provider, so
+ids that legitimately contain a slash (`meta-llama/Llama-3`) pass through
+untouched — the registry-membership test, not a syntax rule, decides. The prefix
+is routing metadata only; everything downstream (request bodies, catalogs, the
+sticky memory) sees the bare id.
+
+Routing is one compound operation, `quoth--apply-model-spec` in `quoth.el`:
+parse → abort in-flight request on the old provider → reinstantiate
+`quoth-active-provider` → set the session model → sync → run
+`quoth-after-model-change-hook` → prefetch the catalog. The selector's provider
+switch and the model picker's free-form qualified input both go through it; the
+picker's `quoth--set-model-spec` additionally writes the sticky
+`quoth-model-by-provider` entry (an explicit model pick — under the target
+provider, bare; the provider switch alone never writes it). A qualified
+`quoth-default-model` seeds new buffers onto its provider at
+`quoth--init-buffer`, overriding `quoth-default-provider`, and contributes the
+bare model to that provider's chain — never to another's.
+
 ### Session slots and defaults
 
 Every transient selection is **buffer-local**; globals exist only as defaults
@@ -771,17 +794,17 @@ that a prior turn was cut off.
 `quoth--update-header-line` joins four segments with two spaces, each built by a
 dedicated body function and prefixed with a fixed letter so the layout never
 reflows: `M:` model (`quoth--header-model-segment` → `quoth--header-model`, the
-active provider's model), `U:` session usage (`quoth--header-usage-segment` →
-`quoth--usage-header-segment`: input/output tokens with k/M suffixes and `↑`/`↓`
-arrows, accumulated cost, and the cache percentage — cached ÷ **input** tokens
-only, since caching applies to the prompt side — from the session-scoped
-`quoth--usage-acc`), `C:` capacity (`quoth--header-capacity-segment` →
-`quoth--capacity-header-segment`), and `B:` the region type at point
-(`quoth--header-buffer-segment` → `quoth--region-label-at-point`, the
-`quoth-region-type` symbol as a string). No segment is ever hidden: a segment
-whose body function returns nil renders a `-` body, so all four prefixes are
-always visible; a segment's parts may individually be absent, but the segment
-itself stays.
+active provider's model qualified as `provider/model`), `U:` session usage
+(`quoth--header-usage-segment` → `quoth--usage-header-segment`: input/output
+tokens with k/M suffixes and `↑`/`↓` arrows, accumulated cost, and the cache
+percentage — cached ÷ **input** tokens only, since caching applies to the prompt
+side — from the session-scoped `quoth--usage-acc`), `C:` capacity
+(`quoth--header-capacity-segment` → `quoth--capacity-header-segment`), and `B:`
+the region type at point (`quoth--header-buffer-segment` →
+`quoth--region-label-at-point`, the `quoth-region-type` symbol as a string). No
+segment is ever hidden: a segment whose body function returns nil renders a `-`
+body, so all four prefixes are always visible; a segment's parts may
+individually be absent, but the segment itself stays.
 
 The capacity segment is label-free and shows up to three parts, joined by single
 spaces, each present only when its inputs are known. The context part is the

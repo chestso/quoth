@@ -594,8 +594,10 @@ model slot."
         (let ((buf (quoth-test--fresh-buffer)))
           (with-current-buffer buf
             ;; A fresh buffer is always a hyper provider; with a nil model
-            ;; slot the effective model must be the hyper default.
-            (should (string= (quoth--header-model) quoth-openai-default-model))
+            ;; slot the effective model must be the hyper default,
+            ;; qualified with the provider name.
+            (should (string= (quoth--header-model)
+                             (format "hyper/%s" quoth-openai-default-model)))
             ;; A hyper provider with an explicit model uses it.
             (setq-local quoth-active-provider
                         (quoth-make-hyper-provider
@@ -604,7 +606,7 @@ model slot."
                          :base-url quoth-hyper-base-url
                          :token quoth-hyper-token
                          :model "my-model"))
-            (should (string= (quoth--header-model) "my-model"))))
+            (should (string= (quoth--header-model) "hyper/my-model"))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-model-uses-provider-slot ()
@@ -616,7 +618,7 @@ model slot."
           (setf (quoth-hyper-provider-model quoth-active-provider)
                 "claude-sonnet-4-20250514")
           (should (string= (quoth--header-model)
-                           "claude-sonnet-4-20250514"))))
+                           "hyper/claude-sonnet-4-20250514"))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-model-and-region ()
@@ -636,7 +638,7 @@ its fixed segment prefix."
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
             (should (string= h
-                             "(M:my-model  U:-  C:-  B:user)")))))
+                             "(M:hyper/my-model  U:-  C:-  B:user)")))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-dash-for-nil-region ()
@@ -649,7 +651,7 @@ its fixed segment prefix."
           (goto-char (point-max))
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
-            (should (string= h "(M:my-model  U:-  C:-  B:-)")))))
+            (should (string= h "(M:hyper/my-model  U:-  C:-  B:-)")))))
     (quoth-test--cleanup)))
 
 ;;; 19. Input separator has prompt-id property
@@ -2608,7 +2610,7 @@ The only reset is `quoth-clear-buffer'."
           (setq-local quoth--usage-acc nil)
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
-            (should (string= h "(M:my-model  U:-  C:-  B:-)")))))
+            (should (string= h "(M:hyper/my-model  U:-  C:-  B:-)")))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-usage-after-accumulation ()
@@ -2631,7 +2633,7 @@ arrows), and the cache percentage divides cached by INPUT tokens only."
             ;; `%%' is the mode-line escape for a literal `%' (the raw
             ;; header-line-format string stores the escaped form).
             (should (string= h
-                             "(M:my-model  U:\u21918.9k \u219368 hc0.043 93%%  C:-  B:-)")))))
+                             "(M:hyper/my-model  U:\u21918.9k \u219368 hc0.043 93%%  C:-  B:-)")))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-dollars-when-currency-dollars ()
@@ -2650,7 +2652,7 @@ arrows), and the cache percentage divides cached by INPUT tokens only."
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
             (should (string= h
-                             "(M:my-model  U:\u21918.8k \u2193311 $0.0139 0%%  C:-  B:-)")))))
+                             "(M:hyper/my-model  U:\u21918.8k \u2193311 $0.0139 0%%  C:-  B:-)")))))
     (quoth-test--cleanup)))
 
 (ert-deftest quoth-test/header-line-shows-hist-under-limit ()
@@ -2786,7 +2788,7 @@ The input-based percentage is 50%."
           (quoth--update-header-line)
           (let ((h (format "%s" header-line-format)))
             (should (string= h
-                             "(M:my-model  U:\u2191100 \u219320 hc0.010  C:-  B:-)"))))
+                             "(M:hyper/my-model  U:\u2191100 \u219320 hc0.010  C:-  B:-)"))))
         (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/group-number-compact-formats ()

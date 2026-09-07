@@ -174,6 +174,15 @@ from the new provider's chain (the last model you used on it, else the
 provider's built-in default, else the global default). Thinking and effort carry
 over — they are provider-agnostic.
 
+A model id can name its provider: `ollama/gemma` means "route to the ollama
+provider, model gemma". The prefix is recognized only when it names a registered
+provider, so model ids that legitimately contain a slash (for example
+`meta-llama/Llama-3`) pass through untouched. Type a qualified id free-form at
+the model picker's prompt (completion offers the active provider's catalog, but
+any `provider/model` string is accepted) to switch provider and model in one
+step; a qualified `quoth-default-model` seeds new buffers onto that provider,
+overriding `quoth-default-provider`.
+
 The model you pick is remembered per provider across Emacs restarts via
 `savehist` (when `savehist-mode` is enabled), so a new buffer on a provider
 starts with the model you last used there. The provider default for new buffers
@@ -346,13 +355,14 @@ the region type at point (`B:`). Segments are never hidden — one with no data
 yet shows a `-` body — so the layout is stable.
 
 ```
-M:deepseek-v4-flash  U:↑9.0k ↓1.2k $0.0123 42%  C:7% 199/200 2/8  B:response
+M:hyper/deepseek-v4-flash  U:↑9.0k ↓1.2k $0.0123 42%  C:7% 199/200 2/8  B:response
 ```
 
 The model is the active provider's model (the buffer's session model, set at
 buffer creation from the provider's model chain and updated by the model
-selector). Usage — input (`↑`) and output (`↓`) tokens, accumulated cost, and
-cache percentage — appears after the first response completes and totals the
+selector), shown qualified as `provider/model` so the route is always readable
+off the header. Usage — input (`↑`) and output (`↓`) tokens, accumulated cost,
+and cache percentage — appears after the first response completes and totals the
 whole session (tokens, cost, and cache percentage across all prompts and tool
 rounds; cleared by `C-c " k`). Providers that report no cost (ollama does not)
 show tokens only. The capacity segment shows three things: the **last
@@ -383,7 +393,8 @@ The last model used on each provider persists across Emacs restarts via
 your init (`(savehist-mode 1)`) if you want the choice to persist. Users who
 want a fixed default instead of the per-provider memory can set
 `quoth-default-model`, the cross-provider fallback for buffers that have not
-chosen a model.
+chosen a model — provider-qualified (`ollama/gemma`) to pin both the provider
+and the model for new buffers.
 
 ## Rendering
 

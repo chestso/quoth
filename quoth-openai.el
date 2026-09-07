@@ -614,7 +614,9 @@ requests with tool results.  Both inputs are message alists, never
 \(ROLE . TEXT) conses.  When `quoth-tools-enabled' is non-nil (the
 default), the request announces the `bash' tool and
 `tool_choice: \"auto\"'."
-  (let* ((model (or model quoth-default-model quoth-openai-default-model))
+  (let* ((model (or model
+                    (quoth-provider-bare-model-id quoth-default-model)
+                    quoth-openai-default-model))
          (sys-prompt (or quoth-openai--cached-system-prompt
                          (quoth-openai--build-system-prompt-uncached)))
          (user-content prompt)
