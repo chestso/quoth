@@ -235,7 +235,7 @@ persisted to a single shared history file (`quoth--input-ring-file-name`).
 
 **Turn state** — reset as the turn advances, so two buffers streaming at the
 same time never interfere: the phase machine `quoth--phase` and its
-`quoth--round-timers`, `quoth--tool-loop-count`, the `quoth--response-start`
+`quoth--round-timers`, `quoth--tool-loop-rounds`, the `quoth--response-start`
 marker (where the live response began), `quoth--pending-interrupt`, and
 `quoth--history-last` (the last send's history counts). Turn state is written
 only by event handlers through the single writer `quoth--phase-set`.
@@ -930,8 +930,10 @@ the oldest were cut and the request prefix moved, which is bad for the
 provider's prompt cache. The history part is absent before the first send or
 when history is disabled (limit 0). The tool part is the current prompt's
 tool-loop round out of `quoth-tool-loop-max` (`2/8` after the second round of an
-eight-round cap), from the buffer-local `quoth--tool-loop-count`; absent at zero
-rounds so an idle buffer carries no standing `0/8`.
+eight-round cap), from the buffer-local `quoth--tool-loop-rounds`; it lingers
+after the turn closes so the header keeps the last prompt's round, and the next
+`quoth-send-input` resets it. Absent when no round has run, so an idle fresh
+buffer carries no standing `0/8`.
 
 `header-line-format` is a mode-line construct: `%`-specifications are
 escape-processed at display, so the segment stores `42%%` and the user sees

@@ -2695,19 +2695,34 @@ its body is the dash."
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-tool-round-in-capacity ()
-  "The capacity segment shows the live tool round out of the cap.
-The round/count part renders from the first round on; a fresh buffer
-carries no standing 0/N."
+  "The capacity segment shows the tool round out of the cap.
+The round part renders from the first round on; a fresh buffer
+carries no standing 0/N.  The count lingers after the turn closes,
+and the next send resets it."
   (let ((default-directory quoth-test--root))
     (unwind-protect
         (with-current-buffer (quoth-test--fresh-buffer)
           (quoth--update-header-line)
           (should-not (string-match-p "C:.*0/8"
                                       (format "%s" header-line-format)))
-          (setq-local quoth--tool-loop-count 2)
+          (setq-local quoth--tool-loop-rounds 2)
           (quoth--update-header-line)
           (should (string-match-p "C:.*2/8"
-                                  (format "%s" header-line-format))))
+                                  (format "%s" header-line-format)))
+          ;; Close the turn: the round lingers in the header.
+          (setq-local quoth--response-start (point-marker))
+          (quoth-test--simulate-response "response text")
+          (should (string-match-p "C:.*2/8"
+                                  (format "%s" header-line-format)))
+          ;; The next send resets it to absent.
+          (goto-char (point-max))
+          (insert "next prompt")
+          (cl-letf (((symbol-function 'quoth-provider-send-prompt)
+                     (lambda (&rest _args)
+                       (make-pipe-process :name "quoth-test-fake" :noquery t))))
+            (call-interactively #'quoth-send-input))
+          (should-not (string-match-p "C:.*[0-9]/[0-9]"
+                                      (format "%s" header-line-format))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/header-line-shows-capacity-after-round ()

@@ -387,9 +387,10 @@ sent against `quoth-history-limit`; a trailing `!` (`200/200!`) means the buffer
 held more exchanges than the limit, so the oldest were cut and the request
 prefix moved — the moment history becomes a sliding window, which costs you the
 provider's prompt cache. `2/8` is the current prompt's tool-loop round out of
-the cap; it appears from the first round of a tool loop and resets with the next
-prompt. The last segment is the region type at point, or `-` on untagged text,
-which includes the input area before its first send.
+the cap; it appears from the first round of a tool loop and lingers after the
+turn closes, then resets with the next prompt. The last segment is the region
+type at point, or `-` on untagged text, which includes the input area before its
+first send.
 
 ### Model selection and persistence
 

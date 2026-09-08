@@ -126,13 +126,13 @@ HANDLER's return value is the cancel thunk (or nil)."
 (defmacro quoth-test--with-dispatch (tool-calls entries &rest body)
   "Run BODY with the round dispatched in a fresh wired buffer.
 TOOL-CALLS seeds the SSE round and ENTRIES stubs the registry.
-Phase `tools' and a non-zero tool-loop count are preset (the state
+Phase `tools' and a non-zero tool-loop round count are preset (the state
 finalize leaves behind); BODY runs after dispatch."
   (declare (indent 2))
   `(quoth-test--with-round
     ,tool-calls ,entries
     (lambda ()
-      (setq-local quoth--tool-loop-count 1)
+      (setq-local quoth--tool-loop-rounds 1)
       (quoth--phase-set 'tools :round 1)
       (quoth--round-dispatch)
       ,@body)))
@@ -259,7 +259,7 @@ the assistant tool_calls + tool result pair."
        ;; on a real send); otherwise dispatch's region tagging
        ;; would retag the user text as response.
        (setq-local quoth--response-start (point-marker))
-       (setq-local quoth--tool-loop-count 1)
+       (setq-local quoth--tool-loop-rounds 1)
        (quoth--phase-set 'tools :round 1)
        (quoth--round-dispatch)
        (should (= (length quoth-test--round-sends) 1))
@@ -430,7 +430,7 @@ rendered (never dropped), and the follow-up composes from the buffer."
                                        "{\"cmd\":\"echo hi\"}"))
        entries
        (lambda ()
-         (setq-local quoth--tool-loop-count 1)
+         (setq-local quoth--tool-loop-rounds 1)
          (quoth--phase-set 'tools :round 1)
          (quoth--round-dispatch)
          ;; The user deletes the pending block's whole span, collapsing
@@ -469,7 +469,7 @@ rendered (never dropped), and the follow-up composes from the buffer."
        entries
        (lambda ()
          ;; Two rounds already ran.
-         (setq-local quoth--tool-loop-count 2)
+         (setq-local quoth--tool-loop-rounds 2)
          (quoth--phase-set 'streaming)
          (quoth--finalize-response)
          (should (eq (plist-get quoth--phase :phase) 'idle))
@@ -491,7 +491,7 @@ through the unified finalizer instead of hanging in `tools'."
              (list (cons 'id "no-fn")))
      entries
      (lambda ()
-       (setq-local quoth--tool-loop-count 1)
+       (setq-local quoth--tool-loop-rounds 1)
        (quoth--phase-set 'tools :round 1)
        (quoth--round-dispatch)
        (should (eq (plist-get quoth--phase :phase) 'idle))
@@ -532,13 +532,13 @@ dispatch runs the calls; the follow-up returns the phase to
                                      "{\"cmd\":\"echo hi\"}"))
      entries
      (lambda ()
-       (setq-local quoth--tool-loop-count 0)
+       (setq-local quoth--tool-loop-rounds nil)
        (quoth--phase-set 'streaming)
        (quoth--finalize-response)
        ;; With the hop flattened, finalize ran the whole chain inline:
        ;; dispatch, the inline completion, and the follow-up send.
        (should (eq (plist-get quoth--phase :phase) 'streaming))
-       (should (= quoth--tool-loop-count 1))
+       (should (= quoth--tool-loop-rounds 1))
        (should (= (plist-get quoth--phase :round) 1))
        (should (= (length quoth-test--round-sends) 1))))))
 
@@ -582,7 +582,7 @@ happened in the chat buffer."
                             (push (cons prompt args)
                                   quoth-test--round-sends)
                             nil)))
-                      (setq-local quoth--tool-loop-count 1)
+                      (setq-local quoth--tool-loop-rounds 1)
                       (quoth--phase-set 'tools :round 1)
                       ;; Real schedule: the completion's follow-up hop
                       ;; stays a pending 0-timer.

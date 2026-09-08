@@ -1851,7 +1851,7 @@ re-syncs it after either side changed."
       (setq-local quoth--input-start-marker nil)
       (setq-local quoth--input-ring nil)
       (setq-local quoth--input-ring-index 0)
-      (setq-local quoth--tool-loop-count 0)
+      (setq-local quoth--tool-loop-rounds nil)
       ;; Session slots: every transient selection is buffer-local,
       ;; seeded from the global defaults here.  A provider-qualified
       ;; `quoth-default-model' routes the buffer onto its provider,
@@ -2367,7 +2367,8 @@ completion.  Runs in the quoth buffer, which owns all response text."
         (set-window-point win (point-max)))
       (setq-local quoth--last-follow-point (point-max))))
   (setq-local quoth--response-start nil)
-  (setq-local quoth--tool-loop-count 0)
+  ;; The round count lingers past the turn so the header keeps the
+  ;; last prompt's round; the next `quoth-send-input' resets it.
   (quoth--input-ring-write)
   (quoth--update-header-line)
   (setq-local buffer-undo-list nil)
@@ -2485,8 +2486,12 @@ model."
           (push (format "%d%%%%" pct) parts)))
       (mapconcat #'identity (nreverse parts) " "))))
 
-(defvar-local quoth--tool-loop-count 0
-  "Number of tool-loop rounds executed for the current prompt.")
+(defvar-local quoth--tool-loop-rounds nil
+  "Rounds the current prompt's tool loop has executed, or nil.
+Lingers after the turn closes so the header still reads the last
+prompt's round; a fresh send of the next prompt resets it to nil
+\(absent at nil, so an idle fresh buffer carries no standing 0/N).
+Buffer-local.")
 
 (defun quoth--capacity-header-segment ()
   "Return the compact capacity string for the header, or nil.
@@ -2503,8 +2508,10 @@ a `!' marks a sliding window \(the buffer held more exchanges than L,
 so the oldest were cut and the request prefix moved -- bad for the
 provider's prompt cache).  Absent before the first send or when
 history is disabled \(limit 0).  The tool part shows the current
-prompt's tool-loop round out of `quoth-tool-loop-max'; absent at zero
-rounds so an idle buffer carries no standing 0/N.  The segment body
+prompt's tool-loop round out of `quoth-tool-loop-max'; it lingers
+after the turn closes so the header keeps the last prompt's round,
+and resets with the next send.  Absent when no round has run, so an
+idle fresh buffer carries no standing 0/N.  The segment body
 is nil only when every part is absent."
   (let ((parts nil))
     (when (and quoth--usage-last
@@ -2529,8 +2536,8 @@ is nil only when every part is absent."
                   (format "%d/%d!" sent limit)
                 (format "%d/%d" sent limit))
               parts)))
-    (when (> quoth--tool-loop-count 0)
-      (push (format "%d/%d" quoth--tool-loop-count quoth-tool-loop-max)
+    (when quoth--tool-loop-rounds
+      (push (format "%s/%s" quoth--tool-loop-rounds quoth-tool-loop-max)
             parts))
     (when parts
       (mapconcat #'identity (nreverse parts) " "))))
@@ -2563,14 +2570,14 @@ stack."
   (quoth--accumulate-usage)
   (if (and quoth-tools-enabled
            quoth-active-provider
-           (< quoth--tool-loop-count quoth-tool-loop-max)
+           (< (or quoth--tool-loop-rounds 0) quoth-tool-loop-max)
            (let ((tcs (quoth-provider--tool-calls
                        quoth-active-provider
                        (quoth-provider-request quoth-active-provider))))
              (and (vectorp tcs) (> (length tcs) 0))))
       (let ((buf (current-buffer)))
-        (setq-local quoth--tool-loop-count (1+ quoth--tool-loop-count))
-        (quoth--phase-set 'tools :round quoth--tool-loop-count)
+        (setq-local quoth--tool-loop-rounds (1+ (or quoth--tool-loop-rounds 0)))
+        (quoth--phase-set 'tools :round quoth--tool-loop-rounds)
         (quoth--schedule
          (lambda ()
            (when (buffer-live-p buf)
@@ -3392,7 +3399,7 @@ from the buffer."
     (quoth--insert-user-separator)
     (setq-local quoth--response-start (point-marker))
     (setq-local quoth--input-ring-index 0)
-    (setq-local quoth--tool-loop-count 0)
+    (setq-local quoth--tool-loop-rounds nil)
     (setq-local quoth--follow-p t)
     (setq-local quoth--last-follow-point (point-max))
     (quoth--send-prompt (or content prompt))))
@@ -3453,6 +3460,7 @@ cold hyperscale cache (new x-session-id / x-session-affinity)."
   (setq-local quoth--usage-acc nil)
   (setq-local quoth--usage-last nil)
   (setq-local quoth--history-last nil)
+  (setq-local quoth--tool-loop-rounds nil)
   (erase-buffer)
   (quoth--insert-input-separator)
   (setq-local buffer-undo-list nil))
