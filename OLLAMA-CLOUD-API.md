@@ -24,7 +24,8 @@ differ per tier are marked with which key they were verified on.
 - **Website:** https://ollama.com/
 - **Docs:** https://docs.ollama.com/
 - **API keys:** https://ollama.com/settings/keys
-- **Auth realms:** two disjoint surfaces (JSON API vs HTML) — see section 6.0
+- **Auth realms:** two disjoint surfaces (JSON API vs HTML), with a one-way
+  cookie→key bridge (the session cookie can mint API keys) — see section 6.0
 
 ---
 
@@ -93,11 +94,19 @@ Source: https://ollama.com/pricing
 > dates). The undocumented account meter `GET /api/usage` (section 6.17) is
 > **badly lagged** — on Sep 8 2026 it read
 > $0.008–0.009 while the settings
-> page showed $0.50 of $60 for the same account
+> page showed $0.50 of
+> $60 for the same account
+> (re-confirmed Sep 9 2026: $0.009 in JSON vs
+> $0.51 on the page)
 > — so treat it as a request-counter, not a billing total. A billing/usage API
 > has been requested upstream since Feb 2026 (ollama/ollama issue #12532, still
-> open — every third-party monitor currently scrapes `ollama.com/settings` with
-> a browser session cookie, exactly as documented above).
+> open — #15132 and #15663 were both closed as its duplicates; every third-party
+> monitor — the ollama-usage CLIs, CodexBar, Open WebUI extensions — currently
+> scrapes `ollama.com/settings` with a browser session cookie, exactly as
+> documented above). Note the settings page itself has moved to a monthly
+> **"Included usage"** dollar-credits layout (`$X
+> of $Y used`, per-model meter); the older session/hourly + weekly quota windows
+> are legacy (CodexBar still parses both).
 
 ---
 
@@ -206,8 +215,9 @@ using `https://ollama.com/api` (native) and `https://ollama.com/v1`
 ### 6.0. Authentication realms (verified Sep 2026)
 
 There are **two disjoint auth realms**, plus a third (signature) that shares the
-JSON realm's scope. They do not mix — each credential works only on its own
-surface:
+JSON realm's scope. They do not mix for reading — each credential works only on
+its own surface (but see the **cookie→key bridge** below: the session cookie can
+mint JSON-realm API keys):
 
 | Credential                                   | JSON API (`/api/*`, `/v1/*`) | HTML pages (`/settings`, `/connect`) |
 | -------------------------------------------- | ---------------------------- | ------------------------------------ |
@@ -230,14 +240,56 @@ only the browser session cookie. A non-browser client must copy it once:
 
 - Open `ollama.com` signed in → devtools → Storage → Cookies → copy the
   `__Secure-session` value (the companion `aid` cookie is an anonymous analytics
-  ID and is **not** needed).
+  ID and is **not** needed). Match `wos-session` as an alternate cookie name on
+  accounts where WorkOS AuthKit issues it (CodexBar observes it on some
+  sessions; this account does not).
 - Send `Cookie: __Secure-session=<value>`; a 303 to `/signin` means the cookie
   expired or was revoked (sign-out rotates it) — re-copy.
 - No User-Agent binding observed; the cookie stayed valid across hosts/hours in
-  testing. Treat it as a full account password (it unlocks billing, keys, and
-  account settings): store in `auth-source`, never log it.
+  testing. Treat it as a full account password — **more than that**: it can mint
+  and revoke API keys (see the cookie→key bridge below), so it unlocks billing,
+  keys, and account settings. Store in `auth-source`, never log it.
 
 `/pricing` (per-model rates — section 3) needs **no auth at all**.
+
+#### The cookie→key bridge: minting an API key with a session cookie
+
+The realms are disjoint for _reading_ — a key cannot read `/settings` and a
+cookie cannot call `/api/*` — but the bridge is one-way scriptable: **the
+session cookie can mint (and revoke) API keys**, discovered and verified
+end-to-end Sep 9 2026. A non-browser client holding a copied `__Secure-session`
+never needs the keys page at all:
+
+- **`POST /settings/keys/generate`** (form body `api-key-name=<name>`, name
+  optional, ≤20 chars) returns an HTML fragment whose readonly
+  `<textarea name="api-key">` holds a **fresh, working bearer key** in the shape
+  `<32-hex>.<24-alnum>`. The response never appears in the browser's stored key
+  list again — the plaintext is shown once, exactly like the web UI.
+  `HX-Request` is accepted but **not required**. Verified: the minted key
+  answered `POST /api/me` (full Pro account), `GET /api/usage`, and
+  `POST /api/chat` (200) immediately.
+- **`DELETE /settings/keys/<id>/?type=apikey&page=1`** revokes a key. `<id>` is
+  the hex half **before the dot** of the key (e.g. key `12a06a2b….KoAFB9…` → id
+  `12a06a2b…`). Revocation takes effect immediately (`/api/usage` → 401 seconds
+  later). **The trailing slash is required** — without it the server 307s to the
+  slashed URL and curl/htmx turn the redirect into a no-op (a footgun: a naive
+  revoke loop can silently miss, or sweep more keys than intended — list keys
+  from `GET /settings/keys` before/after).
+- **`POST /settings/keys`** binds an SSH **device key** — meaning the
+  `ollama signin` browser binding (below) is _also_ scriptable with a cookie,
+  not browser-only. Form body: `key-name=<label>` +
+  `public-key=<authorized_key>`. Format quirk: the public key must be
+  `ssh-ed25519 <b64>` **with no comment** — a `ssh-keygen -C` comment is
+  rejected as `invalid key: format must be ssh-ed25519`, a commentless key binds
+  fine. Revoke with `?type=pubkey` and `<id>` = base64 of the whole
+  authorized-key line.
+
+> Security reading: the `__Secure-session` cookie is not just read access to
+> billing HTML — it is a **credential factory** for the JSON realm. Anyone with
+> the cookie can mint unlimited first-class API keys. This raises the stakes of
+> the section-6.0 storage advice (treat it as a full account password; keep it
+> in `auth-source`). Upside for Quoth: a user who pastes the cookie once never
+> needs to visit `/settings/keys` to bootstrap an API key.
 
 #### JSON API (bearer + signature realms)
 
@@ -246,27 +298,57 @@ only the browser session cookie. A non-browser client must copy it once:
 - **ollama CLI signature**: how `ollama signin` actually authenticates. The CLI
   holds an SSH ed25519 keypair (`~/.ollama/id_ed25519`); `ollama signin` opens
   `https://ollama.com/connect?name=<hostname>&key=<ssh-pubkey>`, and approving
-  in the browser binds that public key to the account server-side (there is **no
-  API** to perform this binding — it is browser-only). Each request then signs
-  the challenge string `"<METHOD>,<path>?ts=<unix>"` (RawURL-encoded ed25519
-  over the ASCII bytes) and sends
-  `Authorization: <base64 ssh-pubkey>:<base64 signature>` with `ts` in the query
-  — see `auth.Sign`/`buildCloudSignatureChallenge` in the ollama source.
-  Reproduced end-to-end from a fresh key (Sep 8 2026): a self-generated key
-  without account binding gets `POST /api/me` 200 with an anonymous empty user —
-  proving the challenge format — and a bound key is a full first-class JSON
-  credential.
+  in the browser binds that public key to the account server-side. There is no
+  _API_ to perform this binding, but it is **not browser-only** — the settings
+  form does the same thing: `POST /settings/keys` with a session cookie binds a
+  device key directly (see the cookie→key bridge above for the exact format,
+  including the no-comment quirk). Each request then signs the challenge string
+  `"<METHOD>,<path>?ts=<unix>"` (RawURL-encoded ed25519 over the ASCII bytes)
+  and sends `Authorization: <base64 ssh-pubkey>:<base64 signature>` with `ts` in
+  the query — see `auth.Sign`/`buildCloudSignatureChallenge` in the ollama
+  source. Reproduced end-to-end from a fresh key (Sep 8 2026): a self-generated
+  key without account binding gets `POST /api/me` 200 with an anonymous empty
+  user — proving the challenge format — and a bound key is a full first-class
+  JSON credential.
 
 #### No OAuth for non-browser clients
 
 `/signin` is a 303 to **WorkOS AuthKit**
 (`api.workos.com/user_management/authorize?client_id=client_01JX0QMHD43PFFCCNXH82A6K8B&provider=authkit&redirect_uri=https://ollama.com/auth/callback&response_type=code`)
-— a standard Authorization Code flow that terminates in browser cookies. WorkOS
-AuthKit supports the OAuth Device Authorization Grant for CLIs, but ollama.com
-has not wired it up: `/api/oauth/token`, `/api/device`, `/api/device/code`,
-`/api/token` all 404 (probed Sep 8 2026). There is consequently **no flow that
-mints an HTML-session credential programmatically**; the cookie-copy workflow
-above is the only way a non-browser client reads `/settings` today.
+— a standard Authorization Code flow that terminates in browser cookies. Ollama
+has not wired the OAuth **Device Authorization Grant** into its own surface
+(`/api/oauth/token`, `/api/device`, `/api/device/code`, `/api/token` all 404,
+re-probed Sep 9 2026). But the WorkOS **backend** does serve Ollama's client_id
+(probed Sep 9 2026): `POST api.workos.com/user_management/authorize/device` with
+`{"client_id": "client_01JX0Q…"}` returns a working `device_code`/`user_code`
+pair (`verification_uri_complete` → `signin.ollama.com/device?user_code=…`), and
+the token exchange is `POST api.workos.com/user_management/authenticate` with
+`grant_type=urn:ietf:params:oauth:grant-type:device_code` (correctly returned
+`authorization_pending` while unapproved). Two blockers make it unusable for
+Quoth:
+
+1. **The approval page lives on `signin.ollama.com`, a separate AuthKit host
+   with its own session.** The `ollama.com` `__Secure-session` cookie does not
+   authenticate there (probed: the device page 307s to its own sign-in form —
+   email magic link / password / Google / GitHub / passkey). Completing device
+   approval still requires a full AuthKit browser sign-in.
+2. **The terminal `access_token` is a WorkOS user-management JWT, not an
+   ollama.com session or key** — whether ollama.com accepts it anywhere is
+   untested, and the cookie→key bridge above already provides a programmatic
+   credential without any of this.
+
+There is consequently **no flow that mints an HTML-session credential
+programmatically**; but thanks to `POST /settings/keys/generate` above, a
+programmatic _API-key_ credential is one cookie away. Upstream, a usage/billing
+API is still requested (ollama/ollama issue #12532, open; #15132 and #15663 both
+closed as its duplicates) — and every known third-party monitor (ollama-usage
+CLIs, CodexBar, Open WebUI extensions, Home Assistant integrations) scrapes
+`ollama.com/settings` with a session cookie, exactly as documented above.
+CodexBar additionally reports a `wos-session` cookie name on some sessions and a
+newer settings layout ("Included usage" monthly dollar credits replacing the old
+session/weekly windows); this account uses `__Secure-session` with the
+monthly-credits layout (Sep 9 2026) — match both cookie names and both layouts
+defensively.
 
 ### 6.1. POST /api/chat
 
