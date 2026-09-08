@@ -17,11 +17,14 @@ thing the OpenAI protocol cannot do: the model catalog, assembled from
 provider wiring and `test/ollama-server.py` for the wire-test fixture.
 
 Every claim marked "live test" or "verified" below was probed against the live
-cloud with a free-tier key (Sep 2026), not derived from upstream docs.
+cloud with a **free-tier key (Sep 2026)** and re-probed with a **paid Pro
+subscription key (Sep 2026)**, not derived from upstream docs. Findings that
+differ per tier are marked with which key they were verified on.
 
 - **Website:** https://ollama.com/
 - **Docs:** https://docs.ollama.com/
 - **API keys:** https://ollama.com/settings/keys
+- **Auth realms:** two disjoint surfaces (JSON API vs HTML) — see section 6.0
 
 ---
 
@@ -62,6 +65,39 @@ Source: https://ollama.com/pricing
 - Max subscriptions are currently paused for new signups due to capacity demands
   — existing Max subscribers keep their plan, limits, and pricing.
 - The free tier includes limited cloud model access with hourly/daily caps.
+
+> **Paid-tier verification (Sep 2026, Pro key):** with a paid subscription the
+> free-tier model gate (section 6.16) disappears — every cataloged model answers
+> chat with 200. Per-model token pricing is exposed by two machine-readable
+> sources, neither a JSON API (probed Sep 2026: `/api/pricing`, `/api/rates`,
+> `/api/prices`, `/api/models/pricing`, `/api/catalog`, `/api/cloud/models` all
+> 404; `/api/show`'s `model_info` carries no price keys):
+>
+> 1. **`https://ollama.com/pricing`** — server-rendered HTML table, one row per
+>    cloud model (name without the tag suffix; `deepseek-v4-flash:0731` → row
+>    `deepseek-v4-flash`) with Input / Cached input / Output columns, plus a
+>    separate peak-pricing table (12:00–18:00 UTC weekdays, currently
+>    deepseek-only, exactly 2× standard rates). No JS, no login. Reconciled
+>    against actual charges to the cent (Sep 2026).
+> 2. **`https://ollama.com/settings`** — the account page embeds the **exact
+>    per-request cost** (5-decimal USD in a `title` attribute; the visible text
+>    rounds to `<$0.01`), the true monthly usage, and a per-model segment meter.
+>    Requires browser session cookies (`aid` + `__Secure-session`); a bearer API
+>    key gets 303 → `/signin`. Paginates via the htmx fragment
+>    `GET /settings/usage/requests?before_id=<id>&before_t=<iso>&scope=self&shown=<n>`.
+>
+> There is no remaining-quota, plan-name, or reset-date API field anywhere. The
+> closest thing to an account API is **`POST /api/me`** (bearer key; verified
+> Sep 8 2026 — GET returns 405): it returns the account `ID`, email, name, and
+> `"Plan": "pro"` — and nothing else (no usage, no limits, no subscription
+> dates). The undocumented account meter `GET /api/usage` (section 6.17) is
+> **badly lagged** — on Sep 8 2026 it read
+> $0.008–0.009 while the settings
+> page showed $0.50 of $60 for the same account
+> — so treat it as a request-counter, not a billing total. A billing/usage API
+> has been requested upstream since Feb 2026 (ollama/ollama issue #12532, still
+> open — every third-party monitor currently scrapes `ollama.com/settings` with
+> a browser session cookie, exactly as documented above).
 
 ---
 
@@ -163,7 +199,74 @@ using `https://ollama.com/api` (native) and `https://ollama.com/v1`
 > `/api/generate`) return **401** without a key. Catalog and metadata endpoints
 > (`/v1/models`, `/v1/models/{model}`, `/api/tags`, `/api/show`) are **public**
 > — they answer 200 without any key. `/api/show` returns 404 for an unknown
-> model.
+> model. The account meter `GET /api/usage` (section 6.17) is key-only (401
+> without one); `/api/ps` and `/api/embed` return 401 even **with** a key on the
+> cloud.
+
+### 6.0. Authentication realms (verified Sep 2026)
+
+There are **two disjoint auth realms**, plus a third (signature) that shares the
+JSON realm's scope. They do not mix — each credential works only on its own
+surface:
+
+| Credential                                   | JSON API (`/api/*`, `/v1/*`) | HTML pages (`/settings`, `/connect`) |
+| -------------------------------------------- | ---------------------------- | ------------------------------------ |
+| **API key** as `Authorization: Bearer <KEY>` | ✅ 200                       | ❌ 303 → `/signin`                   |
+| **`__Secure-session` cookie** (browser)      | ❌ 401 `invalid credentials` | ✅ 200                               |
+| **ed25519 SSH signature** (ollama CLI realm) | ✅ 200 (same scope as key)   | ❌ —                                 |
+
+> **Verified Sep 8 2026.** The API key as a cookie (`__Secure-session=`,
+> `apikey=`, `token=`, `session=`, `api_key=`) on `/settings`: all 303. Bearer /
+> `x-api-key` / `Authorization: ApiKey` / `?apikey=` query: all 303. Session
+> cookie on `/api/usage`: 401. The realms are cryptographically disjoint — the
+> session cookie is a server-side `age`-encrypted envelope
+> (`age-encryption.org/v1`, X25519 header) that a client can only present, never
+> mint or derive from the API key.
+
+#### HTML pages (cookie realm)
+
+`/settings` (exact per-request costs, true monthly usage — section 3) accepts
+only the browser session cookie. A non-browser client must copy it once:
+
+- Open `ollama.com` signed in → devtools → Storage → Cookies → copy the
+  `__Secure-session` value (the companion `aid` cookie is an anonymous analytics
+  ID and is **not** needed).
+- Send `Cookie: __Secure-session=<value>`; a 303 to `/signin` means the cookie
+  expired or was revoked (sign-out rotates it) — re-copy.
+- No User-Agent binding observed; the cookie stayed valid across hosts/hours in
+  testing. Treat it as a full account password (it unlocks billing, keys, and
+  account settings): store in `auth-source`, never log it.
+
+`/pricing` (per-model rates — section 3) needs **no auth at all**.
+
+#### JSON API (bearer + signature realms)
+
+- **API key** (`Authorization: Bearer <KEY>`, from
+  `https://ollama.com/settings/keys`): the realm Quoth uses.
+- **ollama CLI signature**: how `ollama signin` actually authenticates. The CLI
+  holds an SSH ed25519 keypair (`~/.ollama/id_ed25519`); `ollama signin` opens
+  `https://ollama.com/connect?name=<hostname>&key=<ssh-pubkey>`, and approving
+  in the browser binds that public key to the account server-side (there is **no
+  API** to perform this binding — it is browser-only). Each request then signs
+  the challenge string `"<METHOD>,<path>?ts=<unix>"` (RawURL-encoded ed25519
+  over the ASCII bytes) and sends
+  `Authorization: <base64 ssh-pubkey>:<base64 signature>` with `ts` in the query
+  — see `auth.Sign`/`buildCloudSignatureChallenge` in the ollama source.
+  Reproduced end-to-end from a fresh key (Sep 8 2026): a self-generated key
+  without account binding gets `POST /api/me` 200 with an anonymous empty user —
+  proving the challenge format — and a bound key is a full first-class JSON
+  credential.
+
+#### No OAuth for non-browser clients
+
+`/signin` is a 303 to **WorkOS AuthKit**
+(`api.workos.com/user_management/authorize?client_id=client_01JX0QMHD43PFFCCNXH82A6K8B&provider=authkit&redirect_uri=https://ollama.com/auth/callback&response_type=code`)
+— a standard Authorization Code flow that terminates in browser cookies. WorkOS
+AuthKit supports the OAuth Device Authorization Grant for CLIs, but ollama.com
+has not wired it up: `/api/oauth/token`, `/api/device`, `/api/device/code`,
+`/api/token` all 404 (probed Sep 8 2026). There is consequently **no flow that
+mints an HTML-session credential programmatically**; the cookie-copy workflow
+above is the only way a non-browser client reads `/settings` today.
 
 ### 6.1. POST /api/chat
 
@@ -420,7 +523,8 @@ curl -H "Authorization: Bearer $OLLAMA_API_KEY" \
 >   `["completion", "tools", "thinking"]` (Sep 2026)
 > - Gated models return full `capabilities`/`model_info` too (`kimi-k3`:
 >   `["vision", "thinking", "completion", "tools"]`, context 1048576) — see the
->   402 note in section 6.16.
+>   402 note in section 6.16. On a paid subscription key the same model answers
+>   chat 200 with identical metadata (verified Sep 2026).
 
 ---
 
@@ -955,8 +1059,9 @@ curl -H "Authorization: Bearer $OLLAMA_API_KEY" \
 > and context-length info is only available via the native `/api/show` endpoint
 > (section 6.4). This endpoint also works **without authentication** (HTTP 200
 > with no API key); only chat/generate requests enforce auth. As of Sep 2026 the
-> cloud lists 19 models, several of which are gated behind a subscription (see
-> the 402 note in section 6.16).
+> cloud lists 19 models. On a free key several of them are gated behind a
+> subscription (see the 402 note in section 6.16); the catalog listing itself is
+> tier-independent — a paid Pro key sees the identical bare list.
 
 #### GET /v1/models/{model}
 
@@ -1057,7 +1162,13 @@ data: [DONE]
 > **Live testing note (Sep 2026):** confirmed working on the cloud. The usage
 > chunk carries an **empty `choices` array** (`"choices":[]`), not `null` —
 > parsers that assume a first choice must tolerate that. Without
-> `stream_options`, no usage is delivered in streaming mode at all.
+> `stream_options`, no usage is delivered in streaming mode at all. The usage
+> object carries only `prompt_tokens`, `completion_tokens`, and `total_tokens` —
+> no cached-token breakdown and no per-request cost, in the body or in the
+> response headers (non-streaming responses have the same three fields; the only
+> cost readout is the account-level `GET /api/usage` meter below). Response
+> headers of interest: `x-request-id` (echoable in support requests) and
+> `x-build-commit`/`x-build-time`.
 
 #### Parameter handling (cloud, Sep 2026 live tests)
 
@@ -1066,13 +1177,15 @@ data: [DONE]
 >
 > **`thinking`/`think` and `reasoning_effort` do not suppress reasoning on the
 > cloud OpenAI-compatible endpoint.** Live tests on `gpt-oss:20b` and
-> `gpt-oss:120b` (Sep 2026): sending `"thinking": false`,
-> `"reasoning_effort": "low"`, or the native `"think": false` still produced a
-> `reasoning`/`thinking` field in the response. The fields are accepted, not
-> rejected — but treat "disable reasoning" as unverified on cloud. Local-daemon
-> behavior may differ.
+> `gpt-oss:120b` (Sep 2026, free key) and `deepseek-v4-pro:0813` (Sep 2026, paid
+> Pro key): sending `"thinking": false`, `"reasoning_effort": "low"`, or the
+> native `"think": false` still produced a `reasoning`/`thinking` field in the
+> response. The fields are accepted, not rejected — but treat "disable
+> reasoning" as unverified on cloud. Local-daemon behavior may differ. Some
+> models emit `reasoning` by default even unasked (`qwen3.5:397b` returned a
+> `reasoning` delta before any content on the first chunk, Sep 2026).
 
-#### Subscription gating (HTTP 402)
+#### Subscription gating (HTTP 402, free tier only)
 
 > Models above the free tier are **listed in the catalog but rejected at request
 > time** with HTTP 402 and a readable body (Sep 2026 live test, `kimi-k3` on a
@@ -1091,6 +1204,133 @@ data: [DONE]
 >
 > `/api/show` and `/api/tags` still return full metadata for gated models, so a
 > client can surface capabilities for models the current key cannot run.
+>
+> **On a paid subscription (Pro, verified Sep 2026) the gate lifts entirely:**
+> every model in the catalog answers `/v1/chat/completions` with 200 —
+> `kimi-k3`, `mistral-large-3:675b`, and `qwen3.5:397b` were exercised and all
+> streamed normally. The catalog itself is tier-independent: the same 19 models,
+> the same bare `/v1/models` entries, the same `/api/tags` stub `details`, and
+> the same `/api/show` metadata on free and paid keys. Concurrency is
+> plan-metered (Pro allows several parallel requests; five parallel small
+> requests were observed to all succeed on Pro, Sep 2026).
+
+### 6.17. GET /api/usage (undocumented account meter)
+
+Account-level usage and limit readout for the current key's plan. Not in
+docs.ollama.com's API reference or its OpenAPI spec — found by probing (Sep
+2026, paid Pro key). Bearer realm only — the browser session cookie does not
+authenticate it (see section 6.0). Also see `POST /api/me` (section 3) for the
+account/plan identity companion, and section 6.18 for what the billing meter
+hides.
+
+```bash
+curl -H "Authorization: Bearer $OLLAMA_API_KEY" \
+  https://ollama.com/api/usage
+```
+
+**Response:**
+
+```json
+{
+  "activity": {
+    "cost": "0.00000",
+    "period": {
+      "type": "last_4_weeks",
+      "starting_at": "2026-08-17T00:00:00Z",
+      "ending_at": "2026-09-08T15:53:03.091440608Z"
+    },
+    "models": []
+  },
+  "limits": {
+    "monthly": {
+      "usage": 0.004,
+      "models": [
+        { "name": "glm-5.3-flash", "request_count": 65 },
+        { "name": "kimi-k3", "request_count": 2 }
+      ]
+    }
+  }
+}
+```
+
+**Fields:**
+
+| Field                                   | Type   | Description                                                                         |
+| --------------------------------------- | ------ | ----------------------------------------------------------------------------------- |
+| `activity.cost`                         | string | Metered cost this period, 5-decimal string; stayed `0.00000` while `limits` accrued |
+| `activity.period`                       | object | Fixed rolling window: `last_4_weeks` with ISO timestamps                            |
+| `activity.models`                       | array  | Empty in every probe; appears vestigial                                             |
+| `limits.monthly.usage`                  | number | **Dollars burned this period** (see note)                                           |
+| `limits.monthly.models`                 | array  | One entry per model touched this period                                             |
+| `limits.monthly.models[].name`          | string | Model name                                                                          |
+| `limits.monthly.models[].request_count` | number | Requests issued this period                                                         |
+
+> **Live testing notes (Sep 2026, paid Pro key):**
+>
+> - **Auth is enforced:** 401 `{"error":"invalid credentials"}` without a key
+>   (unlike the catalog endpoints).
+> - **`limits.monthly.usage` is the meter in dollars.** It moved 0 → 0.004
+>   seconds after a single kimi-k3 request (152 prompt + 6951 completion
+>   tokens). Updates within seconds of a request; `request_count` likewise ticks
+>   per request. There is no remaining-quota, plan-name, reset-date, or
+>   token-count field anywhere in the response.
+> - **The window is a fixed rolling 4 weeks** (`starting_at` was exactly four
+>   weeks before "now"). Query parameters are ignored — `?start=`,
+>   `?period=daily`, `?granularity=daily`, `?days=30` all return the same body;
+>   subpaths (`/api/usage/models` etc.) 404. POST returns 405.
+> - **No per-model pricing is exposed by this endpoint** (see section 3 for the
+>   two machine-readable sources that carry it). The only way to estimate
+>   per-model prices from this endpoint alone is a metering differential: burn a
+>   known token count on one model, read the `limits.monthly.usage` delta,
+>   repeat per model. Lossy (usage rounds to ~3-4 decimals) but workable as a
+>   calibration exercise.
+> - The `activity` block never accrued during testing while `limits.monthly` did
+>   — treat `activity` as informational and `limits.monthly` as the live meter.
+> - **This meter is badly lagged as a billing total.** On Sep 8 2026 (paid Pro
+>   key) it read
+>   $0.008–0.009 across a session that the account settings page
+>   (section 3) showed as $0.50
+>   of real spend. `limits.monthly.usage` moves, but at a small fraction of true
+>   cost — reconcile against the settings page, never against this endpoint. No
+>   pricing is exposed here (see section 3 for the machine-readable sources).
+
+### 6.18. Prefix-cache billing (measured)
+
+Server-side prefix caching is billed at the published **Cached input** rate
+(section 3) — roughly 1/30 of the uncached input rate for models with a cached
+tier (e.g. deepseek-v4-flash: $0.007/M cached vs $0.22/M standard). Measured Sep
+8 2026 (paid Pro key, peak window, deepseek-v4-flash) by reading the exact
+per-request cost out of the settings-page ledger (section 3):
+
+| Scenario (sequential)                                                                  | Charged  | Interpretation                                            |
+| -------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------- |
+| 21.7k-token prompt, first send                                                         | $0.00955 | full input rate (21.7k × $0.44/M ≈ $0.0095)               |
+| same prompt, 6 repeats within ~1 min each                                              | $0.00032 | full cache hit (21.7k × $0.014/M ≈ $0.0003) — ~97% rebate |
+| 51.5k prompt sharing that 21.7k prefix, first                                          | $0.01346 | partial hit: new 29.8k full ($0.0131) + shared cached     |
+| that 51.5k prompt, repeats                                                             | $0.00073 | full cache hit                                            |
+| 35.2k prompt (the cached 21.7k + 13.5k new), 13 min after the last touch of the prefix | $0.01551 | **no rebate at all** — cache had expired/been evicted     |
+| same 35.2k prompt, immediate repeats                                                   | $0.00051 | full cache hit                                            |
+| the 21.7k prompt again, ~1 min after a larger prompt displaced it                      | $0.00262 | **pro-rata partial hit** (~78% of blocks still cached)    |
+| the 21.7k prompt again, ~2 min later                                                   | $0.00032 | full hit restored (the partial-hit request re-cached it)  |
+
+> **What this means for a chat client that resends history (Quoth's model):**
+>
+> - **History resends are rebated.** Every turn after the first bills only the
+>   new tail tokens at the full input rate; the resent history bills at the
+>   cached rate (or free, within rounding, for tiny tails). A 125-request
+>   session on `glm-5.3-flash` showed flat per-request cost (~$0.003/request, no
+>   growth with history length) — caching absorbed the history.
+> - **The cache lifetime is short.** ~13 minutes of idle time was enough to lose
+>   the whole prefix (full re-bill); sub-minute gaps always hit. Treat the TTL
+>   as somewhere between 1 and 13 minutes under Sep 2026 load — do not rely on
+>   it across a long-idle session.
+> - **Eviction is partial and billed pro-rata**, not cliff-edge: a displaced
+>   prefix still returned most of its blocks as hits on the next request.
+> - **No session header is needed** — hits landed without `x-session-id` or
+>   `x-session-affinity` (routing is account-level or best-effort).
+> - Cost forecasting for a resend-based client: per turn,
+>   `new_tokens × input_rate + cached_tokens × cached_rate`; after an idle gap
+>   longer than the TTL, `history_tokens × input_rate` again.
 
 ---
 
@@ -1103,7 +1343,9 @@ Streaming is specified in detail in the endpoint sections above:
 - **OpenAI-compatible streaming:** Section 6.16 — SSE `data:` lines on
   `/v1/chat/completions`
 
-Both produce newline-delimited JSON chunks with incremental token content.
+Both produce newline-delimited JSON chunks with incremental token content. The
+account-level usage meter (`GET /api/usage`, section 6.17) is unrelated to
+streaming — it reports per-period billing aggregates, not per-request tokens.
 
 ---
 
