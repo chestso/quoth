@@ -488,28 +488,6 @@ Absent is distinct from rejected."
         (should (null (quoth-hyper--models-seed-read file)))
       (delete-file file))))
 
-(ert-deftest quoth-test/catalog-select-model-detail-shape ()
-  "`quoth--select-model-detail' annotates uncached in/out costs.
-When the catalog reports cache prices, both are shown under their
-truthful labels (write and hit); segments join with two spaces."
-  (let ((entry (list :id "m" :name "M" :context-window 1000
-                     :cost-in 1.5 :cost-out 2.5
-                     :cost-cache-write 0.75
-                     :cost-cache-hit 0.25)))
-    (let ((detail (quoth--select-model-detail (list entry) "m")))
-      (should (string= detail
-                       (concat "ctx 1000  $1.50/1M in  $2.50/1M out"
-                               "  cache-write $0.75/1M"
-                               "  cache-hit $0.25/1M"))))
-    ;; Without the cache prices both segments are simply absent.
-    (let ((detail (quoth--select-model-detail
-                   (list (list :id "m" :context-window 100
-                               :cost-in 1 :cost-out 1))
-                   "m")))
-      (should (string-match-p "ctx 100" detail))
-      (should-not (string-match-p "cache-write" detail))
-      (should-not (string-match-p "cache-hit" detail)))))
-
 (ert-deftest quoth-test/catalog-context-window-known-model ()
   "A cached catalog entry with a window returns its integer value."
   (quoth-test--with-models-cache

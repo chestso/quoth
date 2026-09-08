@@ -200,38 +200,6 @@ or nil (unset: omit the key, the provider default applies)."
   (setq-local quoth--session-thinking nil)
   (setq-local quoth--session-reasoning-effort nil))
 
-(defun quoth--select-model-detail (models model-id)
-  "Return a pricing/context string for the model with :id MODEL-ID, or nil.
-MODELS is the model list (plists) to look the id up in.
-Context window and per-token costs appear; the model id is shown
-by the caller.  The two cache prices (write: what building a fresh
-prefix costs; hit: what a conversation's turns after the first
-actually bill) appear when the catalog reports them.  Segments join
-with two spaces."
-  (let ((m (quoth--select-current-model-entry models model-id)))
-    (when m
-      (let ((ctx   (or (plist-get m :context-window) "?"))
-            (cin   (plist-get m :cost-in))
-            (cout  (plist-get m :cost-out))
-            (write (plist-get m :cost-cache-write))
-            (hit   (plist-get m :cost-cache-hit)))
-        (string-trim
-         (mapconcat
-          #'identity
-          (delq nil
-                (list (format "ctx %s" ctx)
-                      (if (numberp cin)
-                          (format "$%.2f/1M in" cin)
-                        "$?/1M in")
-                      (if (numberp cout)
-                          (format "$%.2f/1M out" cout)
-                        "$?/1M out")
-                      (when (numberp write)
-                        (format "cache-write $%.2f/1M" write))
-                      (when (numberp hit)
-                        (format "cache-hit $%.2f/1M" hit))))
-          "  "))))))
-
 ;;; Transient menu
 (defun quoth--select-current-model ()
   "Return the effective model id for the current buffer, or nil.
@@ -390,18 +358,21 @@ as a hint when available."
            (or quoth--session-provider "hyper"))))
 
 (defun quoth--select-info-model (&rest _)
-  "Return the current model with pricing detail as a suffix description."
+  "Return the current model with pricing detail as a suffix description.
+The detail is the same affixation suffix the model read renders
+\(`quoth--model-suffix'), so the menu's `m' line and the
+minibuffer candidates show identical pricing and capability text."
   (quoth--select-in-origin
    (let* ((models  (and quoth-active-provider
                         (quoth-provider-p quoth-active-provider)
                         (quoth-provider-models-cached quoth-active-provider)))
           (current (quoth--select-current-model))
           (prices  (and models current
-                        (quoth--select-model-detail models current))))
+                        (quoth--model-suffix models current))))
      (string-trim
       (format "%s%s%s" (quoth--select-label "model")
               (or current "-")
-              (if prices (format "  (%s)" prices) ""))))))
+              (if prices prices ""))))))
 
 (defun quoth--select-provider-switch (&rest _)
   "Switch the active provider for the current buffer.

@@ -266,7 +266,10 @@ carries the `quoth-model` category and an `affixation-function`
 renders each candidate's name, context window, prices, cache prices, effort
 levels, and vision support beside the bare id — matching and the returned string
 stay the bare id, keeping free-form qualified ids (`ollama/gemma`) working. A
-cold catalog falls back to a plain list of the resolved default candidate.
+cold catalog falls back to a plain list of the resolved default candidate. The
+menu's `m` suffix description (`quoth--select-info-model`) renders the same
+`quoth--model-suffix` text for the selected model, so the transient menu and the
+minibuffer candidates show identical pricing and capability detail.
 
 This shape is deliberate groundwork for persisting the session with the chat
 buffer itself (gptel-style file-local variables, the Phase 2 roadmap item):

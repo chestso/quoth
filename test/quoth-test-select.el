@@ -652,6 +652,31 @@ carry their suffix, and every suffix rides the
     (should (string-match-p "Qwen 3.7 Plus" (nth 2 rich)))
     (should (string-match-p "Mini No Reason" (nth 2 plain)))))
 
+(ert-deftest quoth-test/select-info-model-matches-affixation-suffix ()
+  "The menu's model line renders the same suffix as the model read.
+`quoth--select-info-model' builds the `m' suffix description from
+`quoth--model-suffix', so the transient menu and the minibuffer
+candidates show identical pricing and capability text."
+  (unwind-protect
+      (let ((buf (quoth-test--fresh-buffer)))
+        (with-current-buffer buf
+          (setq-local quoth--session-model "qwen3.7-plus")
+          (cl-letf (((symbol-function 'quoth-provider-models-cached)
+                     (lambda (&rest _) (quoth-test--models-fixture))))
+            (let ((line (quoth--select-info-model)))
+              (should (string-prefix-p "model:     qwen3.7-plus" line))
+              ;; The pricing tail is exactly the affixation suffix
+              ;; (shared lead spaces trimmed by the menu line).
+              (should (string-match-p
+                       "Qwen 3.7 Plus  262.1k ctx  in \\$0.20/1M"
+                       line))
+              (should (string-match-p "vision" line))
+              ;; A model absent from the catalog renders the bare id.
+              (setq-local quoth--session-model "no-such-model")
+              (should (string= (quoth--select-info-model)
+                               "model:     no-such-model")))))
+        (quoth-test--cleanup))))
+
 (ert-deftest quoth-test/select-model-completion-table-completes-ids ()
   "`quoth--model-completion-table' completes, matches, and lists ids.
 The bare id stays the completion text \(matching and the returned
