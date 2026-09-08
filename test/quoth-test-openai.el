@@ -85,13 +85,19 @@ caller's staged prompt; here a real one built by the context module)."
 Session attributes are buffer-local; set them with `let'."
   (let ((quoth-openai-max-tokens 1234)
         (quoth-openai-temperature 0.5)
-        (quoth--session-thinking t)
+        (quoth--session-thinking :json-false)
         (quoth--session-reasoning-effort "high"))
     (let ((req (quoth-openai-compose-request "P" "my-model" "sys")))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
-      (should (eq (alist-get 'thinking req) t))
+      (should (eq (alist-get 'thinking req) :json-false))
       (should (string= (alist-get 'reasoning_effort req) "high")))))
+
+(ert-deftest quoth-test/openai-compose-thinking-true-never-sent ()
+  "A `t' thinking value omits the key: true is a no-op on the wire."
+  (let ((quoth--session-thinking t))
+    (let ((req (quoth-openai-compose-request "P" "my-model" "sys")))
+      (should (null (alist-get 'thinking req))))))
 
 (ert-deftest quoth-test/openai-compose-strips-qualified-default-model ()
   "A provider-qualified `quoth-default-model' never reaches the wire.

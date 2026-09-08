@@ -86,10 +86,11 @@ the model picker.  nil means the request falls back to that same
 chain.")
 
 (defvar-local quoth--session-thinking nil
-  "Per-buffer thinking flag: nil (unset), t (on), or :json-false (off).
-nil (the default) omits the key so the model/gateway applies its own
-default.  t sends `thinking: true'; :json-false sends `thinking:
-false', explicitly disabling reasoning.")
+  "Per-buffer thinking flag: nil (unset) or :json-false (off).
+nil (the default) omits the key; every thinking model streams
+reasoning by default, so unset means reasoning on.  :json-false
+sends `thinking: false', which silences the reasoning trace.  There
+is no send-true state: `thinking: true' is a no-op on the wire.")
 
 (defvar-local quoth--session-reasoning-effort nil
   "Per-buffer reasoning effort, or nil.
@@ -123,10 +124,12 @@ nil defers to the provider's own fallback at request time."
 (defcustom quoth-default-thinking nil
   "Thinking state seeded into new quoth buffers.
 nil (the default) means unset: the request omits the key and the
-provider applies its own default.  t sends `thinking: true';
-:json-false sends `thinking: false'."
+provider applies its own default — every thinking model on the
+hyper gateway streams reasoning with no field sent.  :json-false
+sends `thinking: false', which silences the reasoning trace; there
+is no \"on\" state to send, as `thinking: true' is a no-op on the
+wire."
   :type '(choice (const :tag "Unset (provider default)" nil)
-                 (const :tag "On" t)
                  (const :tag "Off (send thinking: false)" :json-false))
   :group 'quoth)
 

@@ -313,7 +313,6 @@ see no models and no fetch fires."
                 (quoth-test--models "m")
                 (lambda (fetches)
                   (should (null (quoth--select-effective-model-entry)))
-                  (should-not (quoth--select-can-reason-p))
                   (should-not (quoth--select-has-reasoning-levels-p))
                   (should (= (funcall fetches) 0))
                   ;; Warm the cache: the entry appears without fetching.
@@ -427,7 +426,7 @@ The read returns nil and the caller's static fallback applies."
   "The hyper seed method only fires for the default gateway base URL;
 a custom base URL gets no snapshot."
   (let ((file (make-temp-file "quoth-seed-" nil ".json"
-                              "{\"name\":\"Charm Hyper\",\"models\":[]}")))
+                              "{\"object\":\"list\",\"data\":[]}")))
     (unwind-protect
         (let ((quoth-openai-provider--models-seed-directory
                (file-name-directory file))
@@ -453,20 +452,21 @@ a custom base URL gets no snapshot."
 
 (ert-deftest quoth-test/catalog-hyper-seed-read-parses-snapshot ()
   "`quoth-hyper--models-seed-read' parses and normalizes a snapshot.
-It goes through the same parse + normalize pipeline as the live fetch."
-  (let* ((body (concat "{\"name\":\"Charm Hyper\",\"models\":[{"
+It goes through the same parse + normalize pipeline as the live fetch.
+The fixture is the `/v1/models' schema: a top-level `data' array with
+`pricing' and the effort-selectable `reasoning' block."
+  (let* ((body (concat "{\"object\":\"list\",\"data\":[{"
                        "\"id\":\"deepseek-v4-flash\","
-                       "\"name\":\"DeepSeek V4 Flash\","
-                       "\"cost_per_1m_in\":0.2,"
-                       "\"cost_per_1m_out\":0.4,"
-                       "\"cost_per_1m_in_cached\":0,"
-                       "\"cost_per_1m_out_cached\":0.04,"
+                       "\"display_name\":\"DeepSeek V4 Flash\","
                        "\"context_window\":1000000,"
-                       "\"default_max_tokens\":384000,"
-                       "\"can_reason\":true,"
-                       "\"reasoning_levels\":[\"high\",\"xhigh\"],"
-                       "\"default_reasoning_effort\":\"high\","
-                       "\"supports_attachments\":false}]}"))
+                       "\"max_output_tokens\":384000,"
+                       "\"capabilities\":{\"vision\":false},"
+                       "\"reasoning\":{\"effort_levels\":["
+                       "{\"value\":\"high\",\"display\":\"High\"},"
+                       "{\"value\":\"xhigh\",\"display\":\"X-High\"}],"
+                       "\"default_effort_level\":\"high\"},"
+                       "\"pricing\":{\"input\":0.2,\"output\":0.4,"
+                       "\"cache_create\":0,\"cache_hit\":0.04}}]}"))
          (file (make-temp-file "quoth-seed-" nil ".json" body))
          (models (quoth-hyper--models-seed-read file)))
     (unwind-protect

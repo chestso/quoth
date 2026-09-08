@@ -5,7 +5,7 @@
 # read, so a first-ever `C-c " m' lists every model before the first
 # network refresh lands.  Run before releases and commit the results.
 #
-#   quoth-hyper-models.json   verbatim GET /v1/provider payload
+#   quoth-hyper-models.json   verbatim GET /v1/models payload
 #                             (pretty-printed for stable diffs).
 #   quoth-ollama-models.json  assembled from GET /api/tags (membership)
 #                             plus a POST /api/show fan-out per model
@@ -14,7 +14,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 # --- hyper -----------------------------------------------------------------
-url="${HYPER_MODELS_URL:-https://hyper.charm.land/v1/provider}"
+url="${HYPER_MODELS_URL:-https://hyper.charm.land/api/v1/models}"
 out="quoth-hyper-models.json"
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
@@ -30,7 +30,7 @@ import sys
 with open(sys.argv[1]) as f:
     payload = json.load(f)
 
-models = payload.get("models")
+models = payload.get("data")
 if not isinstance(models, list) or not models:
     sys.exit("models: payload has no models array; refusing to write")
 

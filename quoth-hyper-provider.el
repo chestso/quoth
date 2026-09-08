@@ -224,21 +224,22 @@ sums across rounds."
                                           0))
                     :accumulated     nil))))))))
 
-;;; Model catalog: GET /v1/provider, one request.
+;;; Model catalog: GET /v1/models (OpenAI list shape), one request.
 
 (defun quoth-hyper--catalog-parse (raw)
   "Parse the catalog RAW output into (CATALOG . MODELS), or nil.
-The raw is the JSON body (the request runs without `include', so no
-HTTP head arrives).  An empty, unparseable, or models-less payload
-yields nil; the failure is debug-logged so the cache keeps its entry."
+The raw is the JSON body in the OpenAI list shape: a top-level
+`data' key carrying the model array.  An empty, unparseable, or
+data-less payload yields nil; the failure is debug-logged so the
+cache keeps its entry."
   (condition-case err
       (progn
         (when (string-empty-p (string-trim raw))
           (error "Empty catalog response"))
         (let* ((catalog (quoth-json-read (string-trim raw)))
-               (models (quoth--openai-alist-get "models" catalog)))
+               (models (quoth--openai-alist-get "data" catalog)))
           (unless models
-            (error "Catalog has no models key"))
+            (error "Catalog has no data key"))
           (cons catalog models)))
     (error
      (quoth--debug-log
@@ -253,55 +254,78 @@ Keys: :id, :name, :context-window, :default-max-tokens, :cost-in,
 :reasoning-levels, :default-reasoning-effort,
 :supports-attachments.
 
-The gateway's cached-cost field names are misleading (verified
-against `/v1/models' on all 32 models, 2026-09): `cost_per_1m_in_cached'
-is the cache-WRITE price (what building a fresh prefix costs) and
-`cost_per_1m_out_cached' the cache-HIT read price (what replaying a
-cached prefix's input tokens costs) — not cached input/output.  Both
-are mapped under truthful names."
-  (let ((get (lambda (k) (quoth--openai-alist-get k m))))
+The `/v1/models' schema maps cleanly: `pricing' carries the same
+four prices under honest names (`cache_create' is the cache-WRITE
+price — what building a fresh prefix costs — and `cache_hit' the
+cache-HIT read price).  `capabilities.vision' maps to
+:supports-attachments.  The `reasoning' block exists only for
+effort-selectable models: its `effort_levels' carry {value,
+display} objects, and its absence does not mean the model cannot
+reason (most hyper models think by default with no catalog mark —
+validated on the wire, see HYPER-API.md §3.4); :can-reason falls
+back to t for every catalog entry."
+  (let* ((get     (lambda (k) (quoth--openai-alist-get k m)))
+         (caps    (funcall get "capabilities"))
+         (reason  (funcall get "reasoning"))
+         (pricing (funcall get "pricing"))
+         (levels  (and reason
+                       (quoth--openai-alist-get "effort_levels" reason))))
     (list :id                       (funcall get "id")
-          :name                     (funcall get "name")
+          :name                     (or (funcall get "display_name")
+                                        (funcall get "id"))
           :context-window           (funcall get "context_window")
-          :default-max-tokens       (funcall get "default_max_tokens")
-          :cost-in                  (funcall get "cost_per_1m_in")
-          :cost-out                 (funcall get "cost_per_1m_out")
-          :cost-cache-write         (funcall get "cost_per_1m_in_cached")
-          :cost-cache-hit           (funcall get "cost_per_1m_out_cached")
-          :can-reason               (eq (funcall get "can_reason") t)
-          :reasoning-levels         (let ((v (funcall get "reasoning_levels")))
-                                      (if (vectorp v) (append v nil) v))
-          :default-reasoning-effort (funcall get "default_reasoning_effort")
-          :supports-attachments     (eq (funcall get "supports_attachments") t))))
+          :default-max-tokens       (funcall get "max_output_tokens")
+          :cost-in                  (and pricing
+                                         (quoth--openai-alist-get "input" pricing))
+          :cost-out                 (and pricing
+                                         (quoth--openai-alist-get "output" pricing))
+          :cost-cache-write         (and pricing
+                                         (quoth--openai-alist-get "cache_create" pricing))
+          :cost-cache-hit           (and pricing
+                                         (quoth--openai-alist-get "cache_hit" pricing))
+          ;; Reasoning is default-on for every model; the effort block
+          ;; only adds level selection on top.
+          :can-reason               t
+          :reasoning-levels         (and levels
+                                         (mapcar
+                                          (lambda (e)
+                                            (quoth--openai-alist-get "value" e))
+                                          (append levels nil)))
+          :default-reasoning-effort (and reason
+                                         (quoth--openai-alist-get
+                                          "default_effort_level" reason))
+          :supports-attachments     (eq (and caps
+                                             (quoth--openai-alist-get "vision" caps))
+                                        t))))
 
 (defconst quoth-hyper--models-seed-file "quoth-hyper-models.json"
-  "Bundled `/v1/provider' snapshot that seeds the model catalog.
+  "Bundled `/v1/models' snapshot that seeds the model catalog.
 Regenerated by `make models'; shipped in the package tarball.")
 
 (defun quoth-hyper--fetch-models-async (base-url token on-done)
   "Fetch the model catalog from BASE-URL, delivering it to ON-DONE once.
 BASE-URL is the hyper gateway base (e.g. `https://hyper.charm.land/v1');
-the catalog lives at `BASE-URL/provider' (HYPER-API.md section 5).
+the catalog lives at the OpenAI-compatible `BASE-URL/models'.
 TOKEN is resolved via `quoth-hyper--resolve-token' and sent as a
 bearer header when present.  ON-DONE receives the cons
 \(CATALOG-ALIST . MODELS-VECTOR) — CATALOG-ALIST the parsed top-level
-JSON (with the `models' key), MODELS-VECTOR the `models' array — or nil
+JSON (with the `data' key), MODELS-VECTOR the `data' array — or nil
 when the fetch fails (network error, non-200, or unparseable body).
 Never logs the token; failures are debug-logged and swallowed so the
 cache keeps its entry.  Returns the curl process."
   (quoth-openai-provider--fetch-json
-   (concat base-url "/provider")
+   (concat base-url "/models")
    (quoth-hyper--resolve-token token) "GET" nil
    (lambda (parsed)
      (funcall on-done (and parsed (quoth-hyper--catalog-parse-obj parsed))))))
 
 (defun quoth-hyper--catalog-parse-obj (obj)
   "Validate the parsed catalog object OBJ into (CATALOG . MODELS).
-Returns nil when OBJ is nil or carries no `models' key; the failure is
+Returns nil when OBJ is nil or carries no `data' key; the failure is
 debug-logged so the cache keeps its entry."
-  (if (and obj (quoth--openai-alist-get "models" obj))
-      (cons obj (quoth--openai-alist-get "models" obj))
-    (quoth--debug-log 'model-catalog "catalog parse failed: no models")
+  (if (and obj (quoth--openai-alist-get "data" obj))
+      (cons obj (quoth--openai-alist-get "data" obj))
+    (quoth--debug-log 'model-catalog "catalog parse failed: no data")
     nil))
 
 (defun quoth-hyper--models-seed-read (file)

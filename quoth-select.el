@@ -112,7 +112,8 @@ and reasoning support, aligned in fixed-width columns."
 
 (defun quoth--select-apply-thinking (value)
   "Set `quoth--session-thinking' to VALUE in the current buffer.
-VALUE is one of t (on), :json-false (off), or nil (unset)."
+VALUE is :json-false (send `thinking: false', silencing reasoning)
+or nil (unset: omit the key, the provider default applies)."
   (setq-local quoth--session-thinking value))
 
 (defun quoth--select-apply-effort (effort)
@@ -178,12 +179,6 @@ it)."
     (and models current
          (quoth--select-current-model-entry models current))))
 
-(defun quoth--select-can-reason-p ()
-  "Return non-nil if the current model supports reasoning."
-  (quoth--select-in-origin
-   (let ((entry (quoth--select-effective-model-entry)))
-     (and entry (plist-get entry :can-reason)))))
-
 (defun quoth--select-has-reasoning-levels-p ()
   "Return non-nil if the current model has reasoning levels to pick from."
   (quoth--select-in-origin
@@ -231,16 +226,22 @@ buffer to that provider and sets the bare model in one step."
     (message "Model: %s" (or quoth--session-model fallback))))
 
 (defun quoth--select-thinking-toggle (&rest _)
-  "Toggle thinking on/off for the current buffer.
-Cycles off -> on -> off; the unset (provider default) state is only
-reachable via `quoth--select-defaults-apply'."
+  "Toggle reasoning on/off for the current buffer.
+Cycles unset -> off -> unset.  Every thinking model reasons by
+default with no field sent, so the toggle's only wire effect is the
+off state: `thinking: false' silences the reasoning trace.  The
+off state is lost when a `reasoning_effort' is picked (see
+`quoth--select-effort-picker'); the unset (provider default) state
+is also reachable via `quoth--select-defaults-apply'."
   (interactive)
-  (quoth--select-apply-thinking (if (eq quoth--session-thinking t)
-                                    :json-false
-                                  t)))
+  (quoth--select-apply-thinking
+   (if (eq quoth--session-thinking :json-false) nil :json-false)))
 
 (defun quoth--select-effort-picker (&rest _)
-  "Prompt for a reasoning effort level from the current model's levels."
+  "Prompt for a reasoning effort level from the current model's levels.
+Picking a level implies reasoning on: an explicit `reasoning_effort'
+overrides `thinking: false' on the wire, so a prior reasoning-off
+toggle is cleared when the level is applied."
   (interactive)
   (let ((entry (quoth--select-effective-model-entry)))
     (if entry
@@ -249,6 +250,7 @@ reachable via `quoth--select-defaults-apply'."
 	      (let ((choice (completing-read "Effort: " levels nil t)))
 		(when choice
 		  (quoth--select-apply-effort choice)
+		  (quoth--select-apply-thinking nil)
 		  (message "Effort: %s" choice)))
 	    (message "Effort: no reasoning levels for this model")))
       (message "Effort: no model catalog available"))))
@@ -259,7 +261,7 @@ reachable via `quoth--select-defaults-apply'."
   (quoth--select-apply-defaults))
 
 (defconst quoth--select-info-labels
-  '("provider" "model" "thinking" "effort")
+  '("provider" "model" "reasoning" "effort")
   "Labels shown by the selector info lines, in display order.")
 
 (defun quoth--select-label (label)
@@ -274,15 +276,15 @@ the colon to align the value with the longest selector label."
           " "))
 
 (defun quoth--select-info-thinking (&rest _)
-  "Return the thinking state as a suffix description.
-nil means the key is omitted (provider default); t sends
-`thinking: true'; :json-false sends `thinking: false'."
+  "Return the reasoning state as a suffix description.
+nil means the key is omitted (every thinking model reasons by
+default); :json-false sends `thinking: false', silencing the
+reasoning trace."
   (quoth--select-in-origin
-   (format "%s%s" (quoth--select-label "thinking")
-           (cond
-            ((eq quoth--session-thinking t) "on")
-            ((eq quoth--session-thinking :json-false) "off")
-            (t "unset (provider default)")))))
+   (format "%s%s" (quoth--select-label "reasoning")
+           (if (eq quoth--session-thinking :json-false)
+               "off (thinking: false)"
+             "on (provider default)"))))
 
 (defun quoth--select-info-effort (&rest _)
   "Return the effort level as a suffix description.
@@ -365,10 +367,10 @@ when the landing refresh rebuilds the menu through
 
 (defun quoth--select-refresh-menu ()
   "Rebuild an open selector menu, re-running its suffix gates.
-Transient evaluates the `:if' gates \(`quoth--select-can-reason-p',
-`quoth--select-has-reasoning-levels-p') only while building the
-layout, so the suffix set is otherwise frozen at the model the menu
-opened with: switching provider or model in-session, or a catalog
+Transient evaluates the `:if' gate \(`quoth--select-has-reasoning-levels-p')
+only while building the layout, so the suffix set is otherwise frozen
+at the model the menu opened with: switching provider or model
+in-session, or a catalog
 refresh landing while the menu is open, would leave the thinking and
 effort suffixes stuck in the state of the old catalog entry.  This
 rebuilds the layout of the
@@ -396,7 +398,7 @@ minibuffer read), or another transient is active."
                            :description quoth--select-info-model :transient t)
                           ("t" quoth--select-thinking-toggle
                            :description quoth--select-info-thinking
-                           :transient t :if quoth--select-can-reason-p)
+                           :transient t)
                           ("e" quoth--select-effort-picker
                            :description quoth--select-info-effort
                            :transient t :if quoth--select-has-reasoning-levels-p)]

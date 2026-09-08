@@ -1,72 +1,5 @@
 [
   {
-    "id": "deepseek-v4-pro:0813",
-    "capabilities": [
-      "completion",
-      "tools",
-      "thinking"
-    ],
-    "context_length": 1048576,
-    "parameter_size": "1650497936906",
-    "quantization_level": "FP8"
-  },
-  {
-    "id": "gpt-oss:120b",
-    "capabilities": [
-      "completion",
-      "tools",
-      "thinking"
-    ],
-    "context_length": 131072,
-    "parameter_size": "116829156672",
-    "quantization_level": "MXFP4"
-  },
-  {
-    "id": "glm-5.1",
-    "capabilities": [
-      "thinking",
-      "completion",
-      "tools"
-    ],
-    "context_length": 202752,
-    "parameter_size": "756162687872",
-    "quantization_level": "FP8"
-  },
-  {
-    "id": "nemotron-3-super",
-    "capabilities": [
-      "completion",
-      "thinking",
-      "tools"
-    ],
-    "context_length": 262144,
-    "parameter_size": "120000000000",
-    "quantization_level": "NVFP4"
-  },
-  {
-    "id": "kimi-k2.7-code",
-    "capabilities": [
-      "vision",
-      "thinking",
-      "completion",
-      "tools"
-    ],
-    "context_length": 262144,
-    "parameter_size": "1042000000000",
-    "quantization_level": "INT4"
-  },
-  {
-    "id": "deepseek-v4-flash:0731",
-    "capabilities": [
-      "completion",
-      "tools",
-      "thinking"
-    ],
-    "context_length": 1048576,
-    "parameter_size": "304180418494",
-    "quantization_level": "FP8"
-  },
-  {
     "id": "nemotron-3-nano:30b",
     "capabilities": [
       "completion",
@@ -78,71 +11,14 @@
     "quantization_level": "FP8"
   },
   {
-    "id": "glm-5.3",
+    "id": "glm-5.1",
     "capabilities": [
-      "completion",
       "thinking",
+      "completion",
       "tools"
     ],
-    "context_length": 1048576,
-    "parameter_size": "753329940480",
-    "quantization_level": "FP8"
-  },
-  {
-    "id": "minimax-m2.7",
-    "capabilities": [
-      "completion",
-      "tools",
-      "thinking"
-    ],
-    "context_length": 196608,
-    "parameter_size": "229000000000",
-    "quantization_level": ""
-  },
-  {
-    "id": "gemma4:31b",
-    "capabilities": [
-      "completion",
-      "thinking",
-      "tools",
-      "vision"
-    ],
-    "context_length": 262144,
-    "parameter_size": "32682372656",
-    "quantization_level": "BF16"
-  },
-  {
-    "id": "nemotron-3-ultra",
-    "capabilities": [
-      "completion",
-      "thinking",
-      "tools"
-    ],
-    "context_length": 262144,
-    "parameter_size": "550000000000",
-    "quantization_level": ""
-  },
-  {
-    "id": "minimax-m3",
-    "capabilities": [
-      "completion",
-      "tools",
-      "thinking",
-      "vision"
-    ],
-    "context_length": 512000,
-    "parameter_size": "0",
-    "quantization_level": ""
-  },
-  {
-    "id": "mistral-large-3:675b",
-    "capabilities": [
-      "completion",
-      "tools",
-      "vision"
-    ],
-    "context_length": 262144,
-    "parameter_size": "675000000000",
+    "context_length": 202752,
+    "parameter_size": "756162687872",
     "quantization_level": "FP8"
   },
   {
@@ -157,16 +33,16 @@
     "quantization_level": "MXFP4"
   },
   {
-    "id": "qwen3.5:397b",
+    "id": "minimax-m3",
     "capabilities": [
       "completion",
-      "thinking",
       "tools",
+      "thinking",
       "vision"
     ],
-    "context_length": 262144,
-    "parameter_size": "397000000000",
-    "quantization_level": "BF16"
+    "context_length": 512000,
+    "parameter_size": "0",
+    "quantization_level": ""
   },
   {
     "id": "glm-5.2",
@@ -180,6 +56,17 @@
     "quantization_level": ""
   },
   {
+    "id": "glm-5.3",
+    "capabilities": [
+      "completion",
+      "thinking",
+      "tools"
+    ],
+    "context_length": 1048576,
+    "parameter_size": "753329940480",
+    "quantization_level": "FP8"
+  },
+  {
     "id": "glm-5.3-flash",
     "capabilities": [
       "completion",
@@ -189,6 +76,51 @@
     ],
     "context_length": 1048576,
     "parameter_size": "321323031390",
+    "quantization_level": "FP8"
+  },
+  {
+    "id": "kimi-k3",
+    "capabilities": [
+      "vision",
+      "thinking",
+      "completion",
+      "tools"
+    ],
+    "context_length": 1048576,
+    "parameter_size": "2812000000000",
+    "quantization_level": "MXFP4"
+  },
+  {
+    "id": "gpt-oss:120b",
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "context_length": 131072,
+    "parameter_size": "116829156672",
+    "quantization_level": "MXFP4"
+  },
+  {
+    "id": "minimax-m2.7",
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "context_length": 196608,
+    "parameter_size": "229000000000",
+    "quantization_level": ""
+  },
+  {
+    "id": "mistral-large-3:675b",
+    "capabilities": [
+      "completion",
+      "tools",
+      "vision"
+    ],
+    "context_length": 262144,
+    "parameter_size": "675000000000",
     "quantization_level": "FP8"
   },
   {
@@ -204,15 +136,83 @@
     "quantization_level": "INT4"
   },
   {
-    "id": "kimi-k3",
+    "id": "kimi-k2.7-code",
     "capabilities": [
       "vision",
       "thinking",
       "completion",
       "tools"
     ],
+    "context_length": 262144,
+    "parameter_size": "1042000000000",
+    "quantization_level": "INT4"
+  },
+  {
+    "id": "deepseek-v4-pro:0813",
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
     "context_length": 1048576,
-    "parameter_size": "2812000000000",
-    "quantization_level": "MXFP4"
+    "parameter_size": "1650497936906",
+    "quantization_level": "FP8"
+  },
+  {
+    "id": "deepseek-v4-flash:0731",
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "context_length": 1048576,
+    "parameter_size": "304180418494",
+    "quantization_level": "FP8"
+  },
+  {
+    "id": "qwen3.5:397b",
+    "capabilities": [
+      "completion",
+      "thinking",
+      "tools",
+      "vision"
+    ],
+    "context_length": 262144,
+    "parameter_size": "397000000000",
+    "quantization_level": "BF16"
+  },
+  {
+    "id": "nemotron-3-super",
+    "capabilities": [
+      "completion",
+      "thinking",
+      "tools"
+    ],
+    "context_length": 262144,
+    "parameter_size": "120000000000",
+    "quantization_level": "NVFP4"
+  },
+  {
+    "id": "nemotron-3-ultra",
+    "capabilities": [
+      "completion",
+      "thinking",
+      "tools"
+    ],
+    "context_length": 262144,
+    "parameter_size": "550000000000",
+    "quantization_level": ""
+  },
+  {
+    "id": "gemma4:31b",
+    "capabilities": [
+      "completion",
+      "thinking",
+      "tools",
+      "vision"
+    ],
+    "context_length": 262144,
+    "parameter_size": "32682372656",
+    "quantization_level": "BF16"
   }
 ]

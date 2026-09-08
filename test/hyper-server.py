@@ -116,9 +116,9 @@ def main():
                 f.write(f"BODY {body}\n")
                 f.flush()
 
-            if path == "/provider":
-                # Model catalog endpoint (HYPER-API.md section 5). Returns
-                # a deterministic mini-catalog so tests can assert the
+            if path == "/models":
+                # Model catalog endpoint (OpenAI list shape). Returns a
+                # deterministic mini-catalog so tests can assert the
                 # parsed model entries.
                 conn.sendall(
                     (
@@ -127,59 +127,72 @@ def main():
                         "Connection: close\r\n\r\n"
                         + json.dumps(
                             {
-                                "name": "Charm Hyper",
-                                "id": "hyper",
-                                "api_endpoint": "http://127.0.0.1:0/v1/chat/completions",
-                                "type": "hyper",
-                                "default_large_model_id": "qwen3.7-plus",
-                                "default_small_model_id": "deepseek-v4-flash-0731",
-                                "models": [
+                                "object": "list",
+                                "data": [
                                     {
                                         "id": "deepseek-v4-flash-0731",
-                                        "name": "DeepSeek V4 Flash",
-                                        "cost_per_1m_in": 0.1,
-                                        "cost_per_1m_out": 0.3,
-                                        "cost_per_1m_in_cached": 0.0,
-                                        "cost_per_1m_out_cached": 0.0,
+                                        "object": "model",
+                                        "display_name": "DeepSeek V4 Flash",
                                         "context_window": 131072,
-                                        "default_max_tokens": 8192,
-                                        "can_reason": True,
-                                        "reasoning_levels": ["low", "medium", "high"],
-                                        "default_reasoning_effort": "high",
-                                        "supports_attachments": True,
+                                        "max_output_tokens": 8192,
+                                        "capabilities": {"vision": True},
+                                        "reasoning": {
+                                            "effort_levels": [
+                                                {"value": "low", "display": "Low"},
+                                                {
+                                                    "value": "medium",
+                                                    "display": "Medium",
+                                                },
+                                                {"value": "high", "display": "High"},
+                                            ],
+                                            "default_effort_level": "high",
+                                        },
+                                        "pricing": {
+                                            "input": 0.1,
+                                            "output": 0.3,
+                                            "cache_create": 0.0,
+                                            "cache_hit": 0.0,
+                                        },
                                     },
                                     {
                                         "id": "qwen3.7-plus",
-                                        "name": "Qwen 3.7 Plus",
-                                        "cost_per_1m_in": 0.2,
-                                        "cost_per_1m_out": 0.6,
-                                        "cost_per_1m_in_cached": 0.05,
-                                        "cost_per_1m_out_cached": 0.05,
+                                        "object": "model",
+                                        "display_name": "Qwen 3.7 Plus",
                                         "context_window": 262144,
-                                        "default_max_tokens": 16384,
-                                        "can_reason": True,
-                                        "reasoning_levels": [
-                                            "low",
-                                            "medium",
-                                            "high",
-                                            "max",
-                                        ],
-                                        "default_reasoning_effort": "max",
-                                        "supports_attachments": True,
+                                        "max_output_tokens": 16384,
+                                        "capabilities": {"vision": True},
+                                        "reasoning": {
+                                            "effort_levels": [
+                                                {"value": "low", "display": "Low"},
+                                                {
+                                                    "value": "medium",
+                                                    "display": "Medium",
+                                                },
+                                                {"value": "high", "display": "High"},
+                                                {"value": "max", "display": "Max"},
+                                            ],
+                                            "default_effort_level": "max",
+                                        },
+                                        "pricing": {
+                                            "input": 0.2,
+                                            "output": 0.6,
+                                            "cache_create": 0.05,
+                                            "cache_hit": 0.05,
+                                        },
                                     },
                                     {
                                         "id": "mini-no-reason",
-                                        "name": "Mini No Reason",
-                                        "cost_per_1m_in": 0.05,
-                                        "cost_per_1m_out": 0.1,
-                                        "cost_per_1m_in_cached": 0.0,
-                                        "cost_per_1m_out_cached": 0.0,
+                                        "object": "model",
+                                        "display_name": "Mini No Reason",
                                         "context_window": 32768,
-                                        "default_max_tokens": 4096,
-                                        "can_reason": False,
-                                        "reasoning_levels": [],
-                                        "default_reasoning_effort": None,
-                                        "supports_attachments": False,
+                                        "max_output_tokens": 4096,
+                                        "capabilities": {"vision": False},
+                                        "pricing": {
+                                            "input": 0.05,
+                                            "output": 0.1,
+                                            "cache_create": 0.0,
+                                            "cache_hit": 0.0,
+                                        },
                                     },
                                 ],
                             }

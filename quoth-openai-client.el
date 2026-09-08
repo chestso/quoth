@@ -269,7 +269,11 @@ non-nil (the default), the request announces the registered tools and
       (setq body (cons (cons 'max_tokens quoth-openai-max-tokens) body)))
     (when quoth-openai-temperature
       (setq body (cons (cons 'temperature quoth-openai-temperature) body)))
-    (when quoth--session-thinking
+    (when (eq quoth--session-thinking :json-false)
+      ;; The only state that reaches the wire is the silencer:
+      ;; `thinking: false'.  There is no on state — every thinking
+      ;; model reasons by default and `thinking: true' is a no-op on
+      ;; the hyper gateway — so unset (and a legacy `t') omits the key.
       (setq body (cons (cons 'thinking quoth--session-thinking) body)))
     (when quoth--session-reasoning-effort
       (setq body (append body

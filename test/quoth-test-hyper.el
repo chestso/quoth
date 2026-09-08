@@ -85,13 +85,13 @@
 Session attributes are buffer-local; set them with `let'."
   (let ((quoth-openai-max-tokens 1234)
         (quoth-openai-temperature 0.5)
-        (quoth--session-thinking t)
+        (quoth--session-thinking :json-false)
         (quoth--session-reasoning-effort "high"))
     (let ((req (quoth-openai-compose-request "P" "my-model" "sys")))
       (should (string= (alist-get 'model req) "my-model"))
       (should (= (alist-get 'max_tokens req) 1234))
       (should (= (alist-get 'temperature req) 0.5))
-      (should (eq (alist-get 'thinking req) t))
+      (should (eq (alist-get 'thinking req) :json-false))
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 
 (ert-deftest quoth-test/hyper-compose-model-default ()
@@ -1844,9 +1844,9 @@ or curl functions of its own."
 ;;; C6. Model catalog: fetch, choices, and interactive selection
 
 (ert-deftest quoth-test/hyper-fetch-models-parses-catalog ()
-  "`quoth-hyper--fetch-models-async' parses the /provider catalog.
+  "`quoth-hyper--fetch-models-async' parses the /models catalog.
 The dummy server's catalog has three models; the first must carry the
-id, name, context window, and reasoning flag." :tags '(:integration)
+id, name, context window, and the effort levels." :tags '(:integration)
   (let ((fetched (cons 'unset nil))
         (done nil))
     (let ((result (quoth-test--with-hyper-server
@@ -1861,26 +1861,26 @@ id, name, context window, and reasoning flag." :tags '(:integration)
       (should (consp fetched))
       (should-not (eq (car fetched) 'unset))
       (let* ((catalog (car fetched))
-             (models (quoth--openai-alist-get "models" catalog)))
+             (models (quoth--openai-alist-get "data" catalog)))
         (should (vectorp models))
         (should (= (length models) 3))
         (let ((m (aref models 0)))
           (should (string= (quoth--openai-alist-get "id" m)
                            "deepseek-v4-flash-0731"))
-          (should (string= (quoth--openai-alist-get "name" m)
+          (should (string= (quoth--openai-alist-get "display_name" m)
                            "DeepSeek V4 Flash"))
           (should (= (quoth--openai-alist-get "context_window" m) 131072))
-          (should (quoth--openai-alist-get "can_reason" m)))
+          (should (quoth--openai-alist-get "reasoning" m)))
         (let ((m (aref models 2)))
           (should (string= (quoth--openai-alist-get "id" m) "mini-no-reason"))
-          ;; `can_reason' is `:json-false' (Emacs's JSON false), which is
-          ;; truthy in Lisp; assert it is not a reason-capable model.
-          (should-not (eq (quoth--openai-alist-get "can_reason" m) t))))
-      ;; The capture records the GET /provider request.
+          ;; No `reasoning' block: the model carries no effort levels.
+          ;; (Reasoning itself is default-on for every model.)
+          (should-not (quoth--openai-alist-get "reasoning" m))))
+      ;; The capture records the GET /models request.
       (let ((requests (nth 1 result)))
         (should (= (length requests) 1))
         (should (string= (nth 0 (car requests)) "GET"))
-        (should (string= (nth 1 (car requests)) "/provider"))))))
+        (should (string= (nth 1 (car requests)) "/models"))))))
 
 (ert-deftest quoth-test/hyper-fetch-models-nil-on-failure ()
   "`quoth-hyper--fetch-models-async' delivers nil when unreachable."
@@ -1931,7 +1931,7 @@ it to the current buffer and the sticky per-provider alist." :tags '(:integratio
                                       (format "%s" header-line-format)))
               (let ((requests (nth 1 result)))
                 (should (string= (nth 0 (car requests)) "GET"))
-                (should (string= (nth 1 (car requests)) "/provider"))))))
+                (should (string= (nth 1 (car requests)) "/models"))))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/select-model-resets-to-default ()

@@ -205,11 +205,11 @@ or `nil` to omit).
 
 **Hyper-specific / notable fields:**
 
-| Field              | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reasoning_effort` | Reasoning level for models that support it; defaults come from the model catalog (`default_reasoning_effort`, e.g. `high`, `max`).                                                                                                                                                                                                                                                                                                                                                                             |
-| `thinking`         | Chain-of-thought switch (deepseek-style thinking mode). When `true` the model emits a `reasoning_content` trace before the final answer. When `false` and `reasoning_effort` is **omitted**, the model answers directly with no reasoning trace. Sending `reasoning_effort` alongside `false` re-enables the reasoning trace (validated empirically on the `hyper` provider). Equivalent to DeepSeek's `{"thinking": {"type": "enabled"}}` when true. Sent as a bare boolean by Crush on the `hyper` provider. |
-| `extra_body`       | Additional provider-specific fields are merged into the body for openai-compatible providers.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Field              | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reasoning_effort` | Reasoning level for models that support it; defaults come from the model catalog (`default_reasoning_effort`, e.g. `high`, `max`). On models whose catalog levels do not include `none`, an effort value outside the list is silently ignored.                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `thinking`         | Reasoning silencer, not an enabler. Every thinking model on the gateway streams `reasoning_content` with no field sent at all, and `thinking: true` is a no-op on every model (validated across all 33, 2026-09). `false` silences the trace on the 19 models that honor it — but is **ignored** on models whose catalog levels do not include `none` (e.g. `minimax-m2.7`, `qwen3.8-2.4t-a95b` think un-silenceably), and on class-B models (below) sending `reasoning_effort` alongside `false` re-enables the trace. Equivalent to DeepSeek's `{"thinking": {"type": "enabled"}}` when true. Sent as a bare boolean by Crush on the `hyper` provider. |
+| `extra_body`       | Additional provider-specific fields are merged into the body for openai-compatible providers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ### 3.3 Tool announcements
 
@@ -344,10 +344,32 @@ field on the assistant message. This field carries the model's chain-of-thought
 trace, produced when reasoning is active. Crush reads it from the raw JSON and
 surfaces it as a thinking/reasoning trace (streamed via `reasoning_content`
 deltas before the final `content` deltas), distinct from the visible `content`.
-On the `hyper` provider, `thinking: false` suppresses the trace only when
-`reasoning_effort` is omitted; sending `reasoning_effort` alongside it
-re-enables reasoning. When reasoning is enabled, the trace must be echoed back —
-as `reasoning_content` on the assistant message — on any subsequent request that
+Reasoning is on **by default for every thinking model** — no request field is
+needed to enable it, and `thinking: true` never changes behavior. The full
+taxonomy, validated by streaming `reasoning_content` counts across all 33
+catalog models (2026-09):
+
+- **Silenceable default-thinkers (17, no catalog levels):** `glm-5`, `glm-5.1`,
+  `kimi-k2-thinking`, `kimi-k2.5`, `kimi-k2.7-code`, the `qwen3.6`–`3.8` chat
+  models, `llama-3.3-70b`, `llama-4-maverick`, `gemma-4-26b` — think with no
+  field sent; `thinking: false` alone silences them (they have no `none` level,
+  so `reasoning_effort` cannot).
+- **Effort models (12):** `deepseek-v4-*`, `glm-5.2`/`5.3`, `gpt-oss-120b`,
+  `inkling`, `kimi-k2.6`, `kimi-k3`, `minimax-m3` — same default-on;
+  `thinking: false` silences deepseek/glm outright, while `gpt-oss-120b` cannot
+  be fully silenced (best case `reasoning_effort: "minimal"`, ~8× less trace).
+  Sending `reasoning_effort` alongside `thinking: false` re-enables the trace on
+  deepseek/glm (the effort field wins).
+- **Un-silenceable (`can_reason: false` but think anyway):** `minimax-m2.7`,
+  `qwen3.8-2.4t-a95b` — ignore `thinking: false` and offer no levels.
+- **Never think (`can_reason: false`):** `qwen3-next-80b-a3b-instruct`,
+  `qwen3-coder-480b` — emit no `reasoning_content` under any combination;
+  `thinking: true` does nothing.
+- **Trap:** `kimi-k2-thinking` with `thinking: false` returns an **empty
+  completion** — no reasoning _and_ no content.
+
+When reasoning is enabled, the trace must be echoed back — as
+`reasoning_content` on the assistant message — on any subsequent request that
 carries that turn (including tool-call rounds); some providers require it
 present (or empty) on assistant tool-call messages in the history.
 
@@ -392,27 +414,25 @@ refreshed via:
 GET /v1/provider        // go:generate wget -O provider.json https://hyper.charm.land/v1/provider
 ```
 
-Quoth bundles the same payload as `quoth-hyper-models.json` (regenerated by
-`make models`, a tracked file shipped in the package tarball). The seed primes
-the catalog cache before the first network refresh, so a first-ever model
-selection lists every model with prices and effort levels; the live refresh
-overrides it (the cache stamps the seed as stale, so the first read kicks a
-background `GET /v1/provider`).
+Quoth consumes the gateway's **OpenAI-compatible public list** instead:
+`GET /v1/models` (shape `{"object": "list", "data": [...]}`, no Bearer token
+required). Quoth bundles the same payload as `quoth-hyper-models.json`
+(regenerated by `make models`, a tracked file shipped in the package tarball).
+The seed primes the catalog cache before the first network refresh, so a
+first-ever model selection lists every model with prices and effort levels; the
+live refresh overrides it (the cache stamps the seed as stale, so the first read
+kicks a background `GET /v1/models`).
 
-The gateway also serves an OpenAI-compatible public list at `GET /v1/models`
-(shape `{"object": "list", "data": [...]}`); as of 2026-09 the two carry the
-same 32 model ids, and both answer without a Bearer token. Quoth consumes
-`/v1/provider`: its schema is the one `quoth-hyper--normalize-model` maps onto
-the selector's plists (`reasoning_levels`, `supports_attachments`, per-1M
-costs). `/v1/models` reports the same models in a different shape and offers a
-few extras — effort-level display labels (`reasoning.effort_levels` as
-`{value, display}` objects), `created`/`owned_by` per model, and clearer pricing
-names — but nothing quoth needs: `/v1/provider` carries both cache prices too
-(see the field table below). One semantic difference to know: the `reasoning`
-block in `/v1/models` marks effort-selectable models only and is absent for many
-models where `/v1/provider` reports `can_reason: true`, so the two endpoints do
-not agree on reasoning capability; gating on the `/v1/models` shape would
-silently drop the thinking toggle for those models.
+Rationale for `/v1/models` over `/v1/provider`: it is the standard
+OpenAI-compatible shape (`quoth--openai-alist-get` on `data`/`pricing` needs no
+provider-specific top level), its pricing names are the honest ones
+(`pricing.cache_create` is genuinely the cache-write price, vs the misleading
+`cost_per_1m_in_cached` on `/v1/provider`), and it carries `display_name` and
+effort display labels. The one semantic difference is the `reasoning` block: it
+exists only for effort-selectable models and is absent for models that reason
+implicitly, so `:can-reason` in quoth's normalize step defaults to `t` for every
+entry — reasoning is default-on for every thinking model anyway (§3.4), and the
+absent block only means "no effort levels to pick from".
 
 Top-level shape (structure only; the example values drift — the bundled
 `quoth-hyper-models.json` regenerated by `make models` is the authoritative
@@ -420,32 +440,22 @@ current payload):
 
 ```jsonc
 {
-  "name": "Charm Hyper",
-  "id": "hyper",
-  "api_endpoint": "/* chat-completions URL */",
-  "type": "hyper",
-  "default_large_model_id": "/* current default large model */",
-  "default_small_model_id": "/* current default small model */",
-  "models": [{/* see below */}],
+  "object": "list",
+  "data": [{/* see below */}],
 }
 ```
 
 Each model entry:
 
-| Field                      | Type     | Meaning                                                                                                                                                                                                                                |
-| -------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                       | string   | Model id passed as `model` in requests.                                                                                                                                                                                                |
-| `name`                     | string   | Display name.                                                                                                                                                                                                                          |
-| `cost_per_1m_in`           | number   | Uncached input cost per 1M tokens.                                                                                                                                                                                                     |
-| `cost_per_1m_out`          | number   | Output cost per 1M tokens.                                                                                                                                                                                                             |
-| `cost_per_1m_in_cached`    | number   | Cache-**write** cost per 1M tokens — the price of writing a prefix into the upstream cache (0 = free writes). Matches `pricing.cache_create` in `/v1/models`; quoth maps it to the selector's cache-write annotation.                  |
-| `cost_per_1m_out_cached`   | number   | Cache-**hit** read cost per 1M tokens — despite the `out` in the name, this is what cached _input_ replays bill, not cached output. Matches `pricing.cache_hit` in `/v1/models`; quoth maps it to the selector's cache-hit annotation. |
-| `context_window`           | integer  | Context window in tokens.                                                                                                                                                                                                              |
-| `default_max_tokens`       | integer  | Default `max_tokens` to send.                                                                                                                                                                                                          |
-| `can_reason`               | bool     | Whether the model supports reasoning/thinking. Broader than `/v1/models`'s `reasoning` block.                                                                                                                                          |
-| `reasoning_levels`         | string[] | Supported reasoning levels (`low`, `medium`, `high`, `max`, `xhigh`, ...). **Absent** (not empty) for models that reason but expose no effort selection; `default_reasoning_effort` is absent with it.                                 |
-| `default_reasoning_effort` | string   | Reasoned effort used when unset.                                                                                                                                                                                                       |
-| `supports_attachments`     | bool     | Whether the model accepts image attachments (see §3.4.1).                                                                                                                                                                              |
+| Field               | Type    | Meaning                                                                                                                                                                                                                                                                  |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                | string  | Model id passed as `model` in requests.                                                                                                                                                                                                                                  |
+| `display_name`      | string  | Display name.                                                                                                                                                                                                                                                            |
+| `context_window`    | integer | Context window in tokens.                                                                                                                                                                                                                                                |
+| `max_output_tokens` | integer | Default `max_tokens` to send.                                                                                                                                                                                                                                            |
+| `capabilities`      | object  | `{ "vision": bool }` — whether the model accepts image attachments (see §3.4.1).                                                                                                                                                                                         |
+| `reasoning`         | object? | **Absent** for models that reason implicitly with no effort selection. Present for effort-selectable models: `effort_levels` is a `{value, display}` array (`low`, `medium`, `high`, `max`, `xhigh`, ...), `default_effort_level` the effort used when unset.            |
+| `pricing`           | object  | Per-1M-token prices: `input` (uncached input), `output`, `cache_create` (cache-**write** cost — the price of writing a prefix into the upstream cache, 0 = free writes), `cache_hit` (cache-**hit** read cost — what replaying cached _input_ bills, not cached output). |
 
 ---
 
@@ -454,11 +464,12 @@ Each model entry:
 - **Full context is re-sent every turn.** Crush resends the entire message
   history plus the full tool catalogue on each request; only the new tail
   differs. The identical prefix (system prompt + prior turns) is what allows
-  server-side prefix caching. Two line items (the names are misleading, see §5):
-  writing the prefix bills at `cost_per_1m_in_cached` (the cache-**write** price
-  — free on deepseek/qwen3.7+/qwen3.8, a premium of up to 1.25× on
+  server-side prefix caching. Two line items (in `/v1/provider`'s misleading
+  naming — quoth reads `/v1/models`, whose names are honest, see §5): writing
+  the prefix bills at `pricing.cache_create` (the cache-**write** price — free
+  on deepseek/qwen3.7+/qwen3.8, a premium of up to 1.25× on
   qwen3.6/llama/gemma), and replaying a cached prefix bills the _input_ tokens
-  at `cost_per_1m_out_cached` (the cache-**hit** price, e.g. $0.04/1M on
+  at `pricing.cache_hit` (the cache-**hit** price, e.g. $0.04/1M on
   deepseek-v4-flash).
 - **Affinity by session.** The `x-session-id` / `x-session-affinity` headers
   keep a conversation pinned to the same upstream cache node.
@@ -482,11 +493,11 @@ Each model entry:
   token is stale/consumed and the client must re-run the device flow
   (`crush auth`).
 - **`thinking` and `reasoning_effort` interact nontrivially.** `thinking`
-  (boolean) is the chain-of-thought switch: `true` makes the model emit
-  `reasoning_content` deltas before the answer. `false` answers directly **only
-  when `reasoning_effort` is omitted**; sending `reasoning_effort` alongside
-  `false` re-enables reasoning (validated empirically on the `hyper` provider).
-  Hyper maps `thinking: true` to the DeepSeek thinking-mode format
+  (boolean) is a silencer, not an enabler: reasoning is on by default for every
+  thinking model, `thinking: true` is a no-op on every model, and `false`
+  silences the trace — except on the un-silenceable models (§3.4) and on effort
+  models where an accompanying `reasoning_effort` re-enables it (the effort
+  field wins). Hyper maps `thinking: true` to the DeepSeek thinking-mode format
   (`{"thinking": {"type": "enabled"}}`). Crush sets `thinking` from the
   per-model `think` config and injects a default `reasoning_effort` for
   reasoning-capable models.

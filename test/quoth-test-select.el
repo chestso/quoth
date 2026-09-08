@@ -104,7 +104,9 @@ entry seeds new buffers with its :default-model."
     (should (null (quoth-provider--apply-model provider '(:id "x"))))))
 
 (ert-deftest quoth-test/hyper-provider-models-normalizes-plist ()
-  "`quoth-provider--models-async' on hyper delivers structured plists."
+  "`quoth-provider--models-async' on hyper delivers structured plists.
+The input is the `/v1/models' schema: `pricing' sub-object,
+`capabilities.vision', and the effort-selectable `reasoning' block."
   (let ((provider (quoth-make-hyper-provider
                    :buffer (current-buffer)
                    :working-directory default-directory
@@ -113,34 +115,40 @@ entry seeds new buffers with its :default-model."
     (cl-letf (((symbol-function 'quoth-hyper--fetch-models-async)
                (lambda (_base _token on-done)
                  (funcall on-done
-                          (cons '((default_large_model_id . "qwen3.7-plus"))
+                          (cons '((object . "list"))
                                 (vector
                                  (list (cons "id" "deepseek-v4-flash-0731")
-                                       (cons "name" "DeepSeek V4 Flash")
-                                       (cons "cost_per_1m_in" 0.1)
-                                       (cons "cost_per_1m_out" 0.3)
-                                       (cons "cost_per_1m_in_cached" 0.07)
-                                       (cons "cost_per_1m_out_cached" 0.03)
+                                       (cons "display_name" "DeepSeek V4 Flash")
                                        (cons "context_window" 131072)
-                                       (cons "default_max_tokens" 8192)
-                                       (cons "can_reason" t)
-                                       (cons "reasoning_levels"
-                                             (vector "low" "medium" "high"))
-                                       (cons "default_reasoning_effort" "high")
-                                       (cons "supports_attachments" t))
+                                       (cons "max_output_tokens" 8192)
+                                       (cons "capabilities"
+                                             (list (cons "vision" t)))
+                                       (cons "reasoning"
+                                             (list (cons "effort_levels"
+                                                         (vector
+                                                          (list (cons "value" "low")
+                                                                (cons "display" "Low"))
+                                                          (list (cons "value" "medium")
+                                                                (cons "display" "Medium"))
+                                                          (list (cons "value" "high")
+                                                                (cons "display" "High"))))
+                                                   (cons "default_effort_level" "high")))
+                                       (cons "pricing"
+                                             (list (cons "input" 0.1)
+                                                   (cons "output" 0.3)
+                                                   (cons "cache_create" 0.07)
+                                                   (cons "cache_hit" 0.03))))
                                  (list (cons "id" "mini-no-reason")
-                                       (cons "name" "Mini No Reason")
-                                       (cons "cost_per_1m_in" 0.05)
-                                       (cons "cost_per_1m_out" 0.1)
-                                       (cons "cost_per_1m_in_cached" 0.0)
-                                       (cons "cost_per_1m_out_cached" 0.0)
+                                       (cons "display_name" "Mini No Reason")
                                        (cons "context_window" 32768)
-                                       (cons "default_max_tokens" 4096)
-                                       (cons "can_reason" :json-false)
-                                       (cons "reasoning_levels" (vector))
-                                       (cons "default_reasoning_effort" nil)
-                                       (cons "supports_attachments"
-                                             :json-false))))))))
+                                       (cons "max_output_tokens" 4096)
+                                       (cons "capabilities"
+                                             (list (cons "vision" :json-false)))
+                                       (cons "pricing"
+                                             (list (cons "input" 0.05)
+                                                   (cons "output" 0.1)
+                                                   (cons "cache_create" 0.0)
+                                                   (cons "cache_hit" 0.0))))))))))
       (quoth-provider--models-async
        provider (lambda (models) (push models delivered)))
       (let ((models (car delivered)))
@@ -161,7 +169,9 @@ entry seeds new buffers with its :default-model."
           (should (eq (plist-get m1 :supports-attachments) t)))
         (let ((m2 (cadr models)))
           (should (string= (plist-get m2 :id) "mini-no-reason"))
-          (should-not (eq (plist-get m2 :can-reason) t))
+          ;; Reasoning is default-on for every model; the absent
+          ;; `reasoning' block only means no effort levels.
+          (should (eq (plist-get m2 :can-reason) t))
           (should (null (plist-get m2 :reasoning-levels))))))))
 
 (ert-deftest quoth-test/hyper-provider-apply-model-sets-slot ()
@@ -192,19 +202,19 @@ entry seeds new buffers with its :default-model."
   "`quoth--session-thinking' and `-reasoning-effort' are buffer-local.
 Once set in a buffer, the value is local to that buffer (defvar-local)."
   (with-temp-buffer
-    (setq-local quoth--session-thinking t)
+    (setq-local quoth--session-thinking :json-false)
     (setq-local quoth--session-reasoning-effort "high")
     (should (local-variable-p (quote quoth--session-thinking)))
     (should (local-variable-p (quote quoth--session-reasoning-effort)))
-    (should (eq quoth--session-thinking t))
+    (should (eq quoth--session-thinking :json-false))
     (should (string= quoth--session-reasoning-effort "high"))))
 
 (ert-deftest quoth-test/compose-session-attrs-land-in-body ()
   "Session thinking + effort land in the request body when set."
-  (let ((quoth--session-thinking t)
+  (let ((quoth--session-thinking :json-false)
         (quoth--session-reasoning-effort "high"))
     (let ((req (quoth-openai-compose-request "P" "my-model" "sys")))
-      (should (eq (alist-get 'thinking req) t))
+      (should (eq (alist-get 'thinking req) :json-false))
       (should (string= (alist-get 'reasoning_effort req) "high")))))
 
 (ert-deftest quoth-test/compose-defaults-omit-attrs ()
@@ -214,12 +224,12 @@ Once set in a buffer, the value is local to that buffer (defvar-local)."
       (should-not (assq 'thinking req))
       (should-not (assq 'reasoning_effort req)))))
 
-(ert-deftest quoth-test/compose-thinking-only-omits-effort ()
-  "Thinking on, effort nil: body has thinking, no reasoning_effort."
-  (let ((quoth--session-thinking t)
+(ert-deftest quoth-test/compose-thinking-off-omits-effort ()
+  "Thinking off, effort nil: body has thinking: false, no reasoning_effort."
+  (let ((quoth--session-thinking :json-false)
         quoth--session-reasoning-effort)
     (let ((req (quoth-openai-compose-request "P" "m" "sys")))
-      (should (eq (alist-get 'thinking req) t))
+      (should (eq (alist-get 'thinking req) :json-false))
       (should-not (assq 'reasoning_effort req)))))
 
 (ert-deftest quoth-test/compose-effort-without-thinking-sends-effort ()
@@ -586,25 +596,41 @@ entry: the switch routes, it does not pick."
 (ert-deftest quoth-test/select-apply-thinking-sets-session ()
   "`quoth--select-apply-thinking' sets the buffer-local session slot."
   (with-temp-buffer
-    (quoth--select-apply-thinking t)
-    (should (eq quoth--session-thinking t))
     (quoth--select-apply-thinking :json-false)
     (should (eq quoth--session-thinking :json-false))
     (quoth--select-apply-thinking nil)
     (should (null quoth--session-thinking))))
 
-(ert-deftest quoth-test/select-thinking-toggle-cycles-on-off ()
-  "`quoth--select-thinking-toggle' cycles on -> off -> on, never unset."
+(ert-deftest quoth-test/select-thinking-toggle-cycles-unset-off ()
+  "`quoth--select-thinking-toggle' cycles unset -> off -> unset.
+There is no on state: every thinking model reasons by default, and
+`thinking: true' is a no-op on the wire, so the toggle only sends
+the off silencer."
   (with-temp-buffer
-    ;; unset -> on
-    (quoth--select-thinking-toggle)
-    (should (eq quoth--session-thinking t))
-    ;; on -> off
+    ;; unset -> off
     (quoth--select-thinking-toggle)
     (should (eq quoth--session-thinking :json-false))
-    ;; off -> on
+    ;; off -> unset
     (quoth--select-thinking-toggle)
-    (should (eq quoth--session-thinking t))))
+    (should (null quoth--session-thinking))
+    ;; and around again
+    (quoth--select-thinking-toggle)
+    (should (eq quoth--session-thinking :json-false))))
+
+(ert-deftest quoth-test/select-effort-picker-clears-thinking-off ()
+  "Picking an effort level clears a reasoning-off thinking flag.
+An explicit `reasoning_effort' overrides `thinking: false' on the
+wire, so keeping the off flag alongside a level would silently
+disable the silencer."
+  (with-temp-buffer
+    (setq-local quoth--session-thinking :json-false)
+    (cl-letf (((symbol-function 'quoth--select-effective-model-entry)
+               (lambda () '(:id "m" :reasoning-levels ("low" "high"))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt _coll &rest _) "high")))
+      (quoth--select-effort-picker))
+    (should (string= quoth--session-reasoning-effort "high"))
+    (should (null quoth--session-thinking))))
 
 (ert-deftest quoth-test/select-apply-effort-sets-session ()
   "`quoth--select-apply-effort' sets the buffer-local session slot."
@@ -617,7 +643,7 @@ entry: the switch routes, it does not pick."
 (ert-deftest quoth-test/select-apply-defaults-clears-session ()
   "`quoth--select-apply-defaults' clears both session slots."
   (with-temp-buffer
-    (setq-local quoth--session-thinking t)
+    (setq-local quoth--session-thinking :json-false)
     (setq-local quoth--session-reasoning-effort "high")
     (quoth--select-apply-defaults)
     (should (null quoth--session-thinking))
@@ -631,41 +657,6 @@ entry: the switch routes, it does not pick."
     (should (null (quoth--select-current-model-entry models "z")))))
 
 ;;; 107. Conditional visibility predicates
-
-(ert-deftest quoth-test/select-can-reason-p-with-reasoning-model ()
-  "`quoth--select-can-reason-p' returns non-nil for a reasoning model.
-The effective model comes from the buffer's session slot, so a model
-with `:can-reason' t enables the predicate."
-  (let ((buf (generate-new-buffer " *quoth-test-pred*")))
-    (with-current-buffer buf
-      (let ((quoth-active-provider (make-quoth-provider))
-            (quoth--session-model "m")
-            (transient--original-buffer (current-buffer)))
-        (cl-letf (((symbol-function 'quoth-provider-p)
-                   (lambda (&rest _) t))
-                  ((symbol-function 'quoth-provider-models-cached)
-                   (lambda (&rest _)
-                     (list '(:id "m" :can-reason t
-                                 :reasoning-levels ("low" "high"))))))
-          (should (quoth--select-can-reason-p)))))
-    (when (buffer-live-p buf) (kill-buffer buf))))
-
-(ert-deftest quoth-test/select-can-reason-p-with-non-reasoning-model ()
-  "`quoth--select-can-reason-p' returns nil for a non-reasoning model."
-  (let ((buf (generate-new-buffer " *quoth-test-pred*")))
-    (with-current-buffer buf
-      (let ((quoth-active-provider (make-quoth-provider))
-            (transient--original-buffer (current-buffer)))
-	(cl-letf (((symbol-function 'quoth-provider-p)
-		   (lambda (&rest _) t))
-		  ((symbol-function 'quoth-provider-models-cached)
-		   (lambda (&rest _)
-		     (list '(:id "m" :can-reason nil
-				 :reasoning-levels nil))))
-		  ((symbol-function 'quoth-provider-model)
-		   (lambda (&rest _) "m")))
-	  (should-not (quoth--select-can-reason-p)))))
-    (when (buffer-live-p buf) (kill-buffer buf))))
 
 (ert-deftest quoth-test/select-has-reasoning-levels-p-with-levels ()
   "`quoth--select-has-reasoning-levels-p' returns non-nil when levels exist.
@@ -727,11 +718,12 @@ with reasoning levels enables the predicate."
   "`:refresh-suffixes' re-runs the gates after a suffix command.
 Opening the menu, switching the session model, then running
 `transient--post-command' as the suffix command's tail must rebuild
-the suffix set for the new model: the thinking and effort suffixes
-present for the reasoning model, gone for the plain one, and back
-again once the model returns — a layout frozen at menu-open kept the
-effort suffix away from models that support it and showed it for
-models that do not."
+the suffix set for the new model: the effort suffix is present for
+the reasoning model and gone for the plain one, and back again once
+the model returns — a layout frozen at menu-open kept the effort
+suffix away from models that support it and showed it for models
+that do not.  The reasoning suffix has no gate (reasoning is
+default-on for every model), so it stays put."
   (unwind-protect
       (let ((buf (quoth-test--fresh-buffer)))
         (with-current-buffer buf
@@ -750,9 +742,7 @@ models that do not."
               (transient--post-command))
             (should-not (quoth-test--selector-has-suffix-p
                          'quoth--select-effort-picker))
-            (should-not (quoth-test--selector-has-suffix-p
-                         'quoth--select-thinking-toggle))
-            ;; Back on the reasoning model, the gates re-enable both.
+            ;; Back on the reasoning model, the gate re-enables it.
             (setq-local quoth--session-model "reasoning-model")
             (let ((this-command 'quoth--select-model-picker))
               (transient--post-command))
