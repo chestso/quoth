@@ -73,6 +73,7 @@
 (declare-function quoth--set-model-spec "quoth.el" (spec))
 (declare-function quoth--set-model-default "quoth.el" ())
 (declare-function quoth--apply-model-spec "quoth.el" (spec))
+(declare-function quoth--group-number-compact "quoth.el" (n))
 (declare-function quoth-provider-cleanup "quoth-provider" (provider &rest _))
 
 (defmacro quoth--select-in-origin (&rest body)
@@ -83,26 +84,99 @@
 
 ;;; Helper functions (testable without transient UI)
 
-(defun quoth--model-choices (models)
-  "Build (ID . DISPLAY) completion pairs from MODELS (a list of plists).
-DISPLAY annotates each model with name, context window, input cost,
-and reasoning support, aligned in fixed-width columns."
-  (mapcar
-   (lambda (m)
-     (let ((id    (or (plist-get m :id) "?"))
-           (name  (or (plist-get m :name) "?"))
-           (ctx   (or (plist-get m :context-window) "?"))
-           (cost  (plist-get m :cost-in))
-           (reason (plist-get m :can-reason)))
-       (cons id
-             (string-trim
-              (format "%-22s %-18s %8s  $%6s/1M in  %s"
-                      id name ctx
-                      (if (numberp cost)
-                          (format "%.2f" cost)
-                        "?")
-                      (if reason "reason" "no reason"))))))
-   models))
+(defun quoth--model-price (cost)
+  "Format the per-1M-token price COST compactly for the suffix.
+Sub-dollar prices keep two decimals, sub-dime ones three \(the
+distinguishing digits live there); zero renders bare.  Returns nil
+for non-numbers."
+  (when (numberp cost)
+    (cond ((zerop cost) "$0/1M")
+          ((< cost 0.1) (format "$%.3f/1M" cost))
+          (t            (format "$%.2f/1M" cost)))))
+
+(defun quoth--model-price-part (cost label)
+  "Return the suffix part for COST prefixed by LABEL, or nil.
+LABEL positions the price \(\"in\", \"out\", \"cache-write\",
+\"cache-hit\"); an unreported COST drops the whole part, label
+included."
+  (let ((price (quoth--model-price cost)))
+    (and price (format "%s %s" label price))))
+
+(defun quoth--model-suffix (models id)
+  "Return the display suffix annotating model ID in MODELS, or nil.
+Renders the catalog fields the protocol normalizes: display name,
+context window, per-token input/output costs, the two cache prices
+\(write: building a fresh prefix; hit: the conversation's turns
+after the first), reasoning-effort levels, and vision support —
+each part present only when the catalog reports it, joined by two
+spaces with a two-space lead \(completion UIs concatenate the
+suffix directly onto the candidate).  Returns nil when ID names
+no catalog entry."
+  (let ((m (quoth--select-current-model-entry models id)))
+    (when m
+      (let* ((name (and (not (equal (plist-get m :name) id))
+                        (plist-get m :name)))
+             (ctx  (plist-get m :context-window))
+             (lev  (plist-get m :reasoning-levels))
+             (vis  (plist-get m :supports-attachments))
+             (parts (delq nil
+                          (list name
+                                (when (numberp ctx)
+                                  (format "%s ctx"
+                                          (quoth--group-number-compact ctx)))
+                                (quoth--model-price-part
+                                 (plist-get m :cost-in) "in")
+                                (quoth--model-price-part
+                                 (plist-get m :cost-out) "out")
+                                (quoth--model-price-part
+                                 (plist-get m :cost-cache-write)
+                                 "cache-write")
+                                (quoth--model-price-part
+                                 (plist-get m :cost-cache-hit)
+                                 "cache-hit")
+                                (when (and (consp lev) lev)
+                                  (format "effort %s"
+                                          (mapconcat #'identity lev "|")))
+                                (when vis "vision")))))
+        (when parts
+          (concat "  " (mapconcat #'identity parts "  ")))))))
+
+(defun quoth--model-affixation (models)
+  "Return the affixation function annotating MODELS' candidates.
+Takes the visible candidate list and returns \(CANDIDATE \"\"
+SUFFIX) triples: the id stays the sole completion text \(matching
+and the returned string are untouched), while the suffix carries
+the model's name, pricing, and capabilities; `default' annotates
+as the provider default.  The suffix rides the stock
+`completions-annotations' face, so every completion UI \(the
+\*Completions\* buffer, icomplete, vertico, marginalia) renders it
+dim and consistent."
+  (lambda (cands)
+    (mapcar (lambda (c)
+              (list c ""
+                    (propertize
+                     (if (string= c "default")
+                         "  provider default"
+                       (or (quoth--model-suffix models c) ""))
+                     'face 'completions-annotations)))
+            cands)))
+
+(defun quoth--model-completion-table (models)
+  "Return a completion table over the ids in MODELS plus `default'.
+A table function answering the `metadata' action: candidates
+complete, match, and return as the bare id \(free-form qualified
+ids such as \"ollama/gemma\" still pass through), and the metadata
+carries the `quoth-model' category plus the affixation function
+from `quoth--model-affixation', so the minibuffer shows each
+model's name, pricing, and capabilities next to its id."
+  (let ((ids (mapcar (lambda (m) (plist-get m :id)) models)))
+    (lambda (string pred action)
+      (if (eq action 'metadata)
+          (list 'metadata
+                (cons 'category 'quoth-model)
+                (cons 'affixation-function
+                      (quoth--model-affixation models)))
+        (complete-with-action action (cons "default" ids) string pred)))))
 
 (defun quoth--select-current-model-entry (models model-id)
   "Find the model entry with :id MODEL-ID in MODELS, or nil."
@@ -193,25 +267,25 @@ Reads the catalog from the protocol's global cache; a cold cache is
 usually seeded from the bundled snapshot first
 \(`quoth-provider--models-seed'), and the static fallback covers the
 seed-less cases while a background refresh runs, with the message
-noting it.  The choice writes the buffer's session model (and the
-provider's model slot cache) plus the sticky
-`quoth-model-by-provider' entry; `default' clears all three.  A
-provider-qualified id (\"ollama/gemma\") typed free-form switches the
-buffer to that provider and sets the bare model in one step."
+noting it.  The completion table annotates every candidate with its
+name, pricing, and capabilities \(see `quoth--model-suffix').  The
+choice writes the buffer's session model (and the provider's model
+slot cache) plus the sticky `quoth-model-by-provider' entry;
+`default' clears all three.  A provider-qualified id
+\(\"ollama/gemma\") typed free-form switches the buffer to that
+provider and sets the bare model in one step."
   (interactive)
   (let* ((models (and quoth-active-provider
 		      (quoth-provider-p quoth-active-provider)
 		      (quoth-provider-models-cached quoth-active-provider)))
 	 (cold (null models))
 	 (fallback (quoth--select-current-model))
-	 (choices (if models
-		      (quoth--model-choices models)
-		    (list (cons fallback
-				(format "%s (default)" fallback)))))
+	 (table (if models
+		    (quoth--model-completion-table models)
+		  (list fallback)))
 	 (choice (completing-read
 		  "Model: "
-		  (cons (cons "default" "default (provider default)")
-			choices)
+		  table
 		  ;; Require-match is off: candidates are the active
 		  ;; provider's catalog, but a provider-qualified id
 		  ;; ("ollama/gemma") typed free-form routes through

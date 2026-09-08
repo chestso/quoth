@@ -579,7 +579,8 @@ A cold cache falls back to the static list while a refresh runs."
               ;; Cold cache: the fallback list, one background refresh.
               (cl-letf (((symbol-function 'completing-read)
                          (lambda (_prompt coll &rest _)
-                           (should (assoc "qwen3.7-plus" coll))
+                           (should (member "qwen3.7-plus"
+                                           (all-completions "" coll)))
                            "qwen3.7-plus")))
                 (quoth-select-model))
               (should (= (funcall fetches) 1))
@@ -589,7 +590,8 @@ A cold cache falls back to the static list while a refresh runs."
               ;; Warm cache: the cached list, no further fetch.
               (cl-letf (((symbol-function 'completing-read)
                          (lambda (_prompt coll &rest _)
-                           (should (assoc "qwen3.7-plus" coll))
+                           (should (member "qwen3.7-plus"
+                                           (all-completions "" coll)))
                            "qwen3.7-plus")))
                 (quoth-select-model))
               (should (= (funcall fetches) 1)))))

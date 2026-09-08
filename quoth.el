@@ -501,6 +501,7 @@ Buffer-local.")
 (declare-function quoth-provider-request "quoth-provider" (provider))
 
 (declare-function quoth-select-model-menu "quoth-select" ())
+(declare-function quoth--model-completion-table "quoth-select" (models))
 
 ;;; Buffer naming
 
@@ -3471,7 +3472,9 @@ Reads the catalog from the protocol's global cache; on a cold cache
 the bundled seed (`quoth-provider--models-seed') usually fills it
 first, and the static fallback list covers the seed-less cases while
 a refresh runs in the background (the refresh message notes it, and
-the cache warming lands on `quoth-provider-models-hook').  Picking a
+the cache warming lands on `quoth-provider-models-hook').  The
+completion table annotates every candidate with its name, pricing,
+and capabilities (see `quoth--model-suffix').  Picking a
 model sets the buffer's session model (and the provider's model slot
 cache) and writes the sticky `quoth-model-by-provider' entry for the
 active provider so the next buffer on it starts there.  Choosing the
@@ -3487,17 +3490,12 @@ and sets the bare model in one step.  Never writes a global."
                        (quoth--provider-default-model quoth--session-provider)
                        (quoth-provider-bare-model-id quoth-default-model)
                        quoth-openai-default-model))
-         (choices (if models
-                      (mapcar (lambda (m)
-                                (cons (plist-get m :id)
-                                      (plist-get m :id)))
-                              models)
-                    (list (cons fallback
-                                (format "%s (default)" fallback)))))
+         (table (if models
+                    (quoth--model-completion-table models)
+                  (list fallback)))
          (choice (completing-read
                   "Model: "
-                  (cons (cons "default" "default (provider default)")
-                        choices)
+                  table
                   ;; Require-match is off: candidates are the active
                   ;; provider's catalog, but a provider-qualified id
                   ;; ("ollama/gemma") typed free-form routes through

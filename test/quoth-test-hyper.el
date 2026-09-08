@@ -1977,7 +1977,8 @@ it to the current buffer and the sticky per-provider alist." :tags '(:integratio
                      #'ignore)
                     ((symbol-function 'completing-read)
                      (lambda (_prompt coll &rest _)
-                       (should (assoc "qwen3.7-plus" coll))
+                       (should (member "qwen3.7-plus"
+                                       (all-completions "" coll)))
                        "qwen3.7-plus")))
             (quoth-select-model))
           (should (string= quoth--session-model "qwen3.7-plus"))

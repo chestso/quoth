@@ -258,6 +258,16 @@ only through Customize/`setq`. The one deliberate exception is the global
 per-provider model memory above — a model pick writes it precisely so every
 future buffer on that provider inherits the choice.
 
+The model pickers (`quoth--select-model-picker` in the selector and
+`quoth-select-model` in the core, both over the cached catalog) complete over
+`quoth--model-completion-table`: a table function whose `metadata` action
+carries the `quoth-model` category and an `affixation-function`
+(`quoth--model-affixation` → `quoth--model-suffix`), so every completion UI
+renders each candidate's name, context window, prices, cache prices, effort
+levels, and vision support beside the bare id — matching and the returned string
+stay the bare id, keeping free-form qualified ids (`ollama/gemma`) working. A
+cold catalog falls back to a plain list of the resolved default candidate.
+
 This shape is deliberate groundwork for persisting the session with the chat
 buffer itself (gptel-style file-local variables, the Phase 2 roadmap item):
 every session slot is a named buffer-local variable seeded from a global, and
@@ -302,8 +312,8 @@ seed-stamping, TTL, and hook mechanics are shared:
   `model_info`'s architecture-prefixed `<arch>.context_length` key (matched on
   the `.context_length` suffix), `:can-reason` from the `thinking` capability,
   `:supports-attachments` from `vision`. The cloud reports no pricing or default
-  max-tokens, so those keys stay nil and the selector renders its `?`
-  placeholders.
+  max-tokens, so those keys stay nil and the picker's suffix drops those parts
+  entirely.
 
 A **bundled seed** fills the cold window before the first network refresh: on a
 cache miss, `quoth-provider-models-cached` stores the

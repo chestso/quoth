@@ -320,7 +320,8 @@ session slot, the provider slot, and the sticky entry."
                        #'ignore)
                       ((symbol-function 'completing-read)
                        (lambda (_prompt coll &rest _)
-                         (should (assoc quoth-openai-default-model coll))
+                         (should (member quoth-openai-default-model
+                                         (all-completions "" coll)))
                          "qwen3.7-plus")))
               (quoth-select-model))
             (should (string= quoth--session-model "qwen3.7-plus"))
@@ -575,23 +576,102 @@ entry: the switch routes, it does not pick."
 
 ;;; 106. Transient selector: affixation and apply functions
 
-(ert-deftest quoth-test/select-model-choices-builds-affixation ()
-  "`quoth--model-choices' returns (ID . DISPLAY) pairs with price info."
-  (let ((models (list '(:id "qwen3.7-plus" :name "Qwen 3.7 Plus"
-                            :context-window 262144 :cost-in 0.2 :cost-out 0.6
-                            :can-reason t
-                            :reasoning-levels ("low" "medium" "high" "max"))
-                      '(:id "mini-no-reason" :name "Mini No Reason"
-                            :context-window 32768 :cost-in 0.05 :cost-out 0.1
-                            :can-reason nil :reasoning-levels nil))))
-    (let ((choices (quoth--model-choices models)))
-      (should (= (length choices) 2))
-      (should (string= (car (car choices)) "qwen3.7-plus"))
-      (should (string-match-p "Qwen 3.7 Plus" (cdr (car choices))))
-      (should (string-match-p "262144" (cdr (car choices))))
-      (should (string-match-p "0.20" (cdr (car choices))))
-      (should (string-match-p "reason" (cdr (car choices))))
-      (should (string-match-p "no reason" (cdr (cadr choices)))))))
+(defun quoth-test--models-fixture ()
+  "Return a two-model catalog fixture with hyper-shaped fields.
+The first model carries the full field set; the second is the
+price-less, level-less shape the ollama cloud reports."
+  (list '(:id "qwen3.7-plus" :name "Qwen 3.7 Plus"
+              :context-window 262144 :cost-in 0.2 :cost-out 0.6
+              :cost-cache-write 0.1 :cost-cache-hit 0.02
+              :can-reason t
+              :reasoning-levels ("low" "medium" "high" "max")
+              :supports-attachments t)
+        '(:id "mini-no-reason" :name "Mini No Reason"
+              :context-window 32768 :cost-in nil :cost-out nil
+              :can-reason nil :reasoning-levels nil
+              :supports-attachments nil)))
+
+(ert-deftest quoth-test/select-model-suffix-renders-fields ()
+  "`quoth--model-suffix' renders the known catalog fields.
+Name, context, prices, cache prices, effort levels, and vision
+join in order after a two-space lead; unknown ids return nil."
+  (let ((models (quoth-test--models-fixture))
+        (suffix nil))
+    (setq suffix (quoth--model-suffix models "qwen3.7-plus"))
+    (should (string-match-p "\\`  Qwen 3.7 Plus  262.1k ctx" suffix))
+    (should (string-match-p "in \\$0.20/1M" suffix))
+    (should (string-match-p "out \\$0.60/1M" suffix))
+    (should (string-match-p "cache-write \\$0.10/1M" suffix))
+    (should (string-match-p "cache-hit \\$0.020/1M" suffix))
+    (should (string-match-p "effort low|medium|high|max" suffix))
+    (should (string-match-p "vision" suffix))
+    ;; The price-less shape renders name and context only.
+    (setq suffix (quoth--model-suffix models "mini-no-reason"))
+    (should (string-match-p "Mini No Reason" suffix))
+    (should (string-match-p "32.8k ctx" suffix))
+    (should-not (string-match-p "\\$" suffix))
+    (should-not (string-match-p "effort" suffix))
+    (should-not (string-match-p "vision" suffix))
+    ;; Unknown ids return nil.
+    (should (null (quoth--model-suffix models "no-such-model")))))
+
+(ert-deftest quoth-test/select-model-price-compacts ()
+  "`quoth--model-price' trims sub-dime prices to three decimals.
+Zero renders bare and non-numbers drop the part entirely."
+  (should (string= (quoth--model-price 0.2) "$0.20/1M"))
+  (should (string= (quoth--model-price 12) "$12.00/1M"))
+  (should (string= (quoth--model-price 0.0315752) "$0.032/1M"))
+  (should (string= (quoth--model-price 0) "$0/1M"))
+  (should (null (quoth--model-price nil))))
+
+(ert-deftest quoth-test/select-model-suffix-omits-id-like-name ()
+  "`quoth--model-suffix' drops a display name equal to the id.
+Ollama normalizes :name to the id; repeating it in the suffix is
+noise."
+  (let ((models (list '(:id "gemma" :name "gemma" :context-window 131072))))
+    (should (string-match-p "\\`  131.1k ctx\\'"
+                            (quoth--model-suffix models "gemma")))))
+
+(ert-deftest quoth-test/select-model-affixation-annotates-candidates ()
+  "`quoth--model-affixation' returns (CAND \"\" SUFFIX) triples.
+`default' annotates as the provider default, model candidates
+carry their suffix, and every suffix rides the
+`completions-annotations' face."
+  (let* ((models (quoth-test--models-fixture))
+         (affixed (funcall (quoth--model-affixation models)
+                           (list "default" "qwen3.7-plus" "mini-no-reason")))
+         (default (nth 0 affixed))
+         (rich (nth 1 affixed))
+         (plain (nth 2 affixed)))
+    (should (equal (car default) "default"))
+    (should (string-match-p "provider default" (nth 2 default)))
+    (dolist (entry affixed)
+      (should (string= (nth 1 entry) ""))
+      (should (eq (get-text-property 0 'face (nth 2 entry))
+                  'completions-annotations)))
+    (should (string-match-p "Qwen 3.7 Plus" (nth 2 rich)))
+    (should (string-match-p "Mini No Reason" (nth 2 plain)))))
+
+(ert-deftest quoth-test/select-model-completion-table-completes-ids ()
+  "`quoth--model-completion-table' completes, matches, and lists ids.
+The bare id stays the completion text \(matching and the returned
+string are untouched) and `default' heads the candidates; the
+metadata carries the category and affixation."
+  (let* ((models (quoth-test--models-fixture))
+         (table (quoth--model-completion-table models)))
+    (should (equal (sort (all-completions "" table nil) #'string<)
+                   (sort (list "default" "qwen3.7-plus" "mini-no-reason")
+                         #'string<)))
+    (should (string= (try-completion "qwen" table nil) "qwen3.7-plus"))
+    (should (test-completion "mini-no-reason" table nil))
+    (should-not (test-completion "no-such-model" table nil))
+    (let* ((md (funcall table "" nil 'metadata))
+           (aff (cdr (assq 'affixation-function (cdr md)))))
+      (should (eq (cdr (assq 'category (cdr md))) 'quoth-model))
+      (should (functionp aff))
+      (let ((triples (funcall aff (list "default" "qwen3.7-plus"))))
+        (should (equal (mapcar (lambda (e) (car e)) triples)
+                       (list "default" "qwen3.7-plus")))))))
 
 (ert-deftest quoth-test/select-apply-thinking-sets-session ()
   "`quoth--select-apply-thinking' sets the buffer-local session slot."
