@@ -59,7 +59,7 @@ Not yet on MELPA. For now, install from one of the repositories:
 - **GitHub**: `https://github.com/chestso/quoth.git`
 - **Codeberg**: `https://codeberg.org/chestso/quoth.git`
 
-Both carry version tags (`v0.10.1`). A plain clone gets the latest commit, or
+Both carry version tags (`v0.11.0`). A plain clone gets the latest commit, or
 pin to a tag for a stable release (see below).
 
 ### package-vc (Emacs 29+)
@@ -67,7 +67,7 @@ pin to a tag for a stable release (see below).
 ```elisp
 (use-package quoth
   :vc (:url "https://github.com/chestso/quoth.git"
-        :branch "v0.10.1")            ; omit :branch for latest
+        :branch "v0.11.0")            ; omit :branch for latest
   :hook (prog-mode . quoth-minor-mode))
 ```
 
@@ -76,14 +76,14 @@ pin to a tag for a stable release (see below).
 ```elisp
 (use-package quoth
   :straight (quoth :type git :host github :repo "chestso/quoth"
-                   :branch "v0.10.1")   ; omit :branch for latest
+                   :branch "v0.11.0")   ; omit :branch for latest
   :hook (prog-mode . quoth-minor-mode))
 ```
 
 ### Manual clone
 
 ```sh
-git clone --branch v0.10.1 https://github.com/chestso/quoth.git
+git clone --branch v0.11.0 https://github.com/chestso/quoth.git
 ```
 
 Then load with `load-path`:
