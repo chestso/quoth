@@ -185,7 +185,7 @@ Quoth's primary mode of operation.
       set, execute calls, feed results back as `role: "tool"` messages. Tools:
       `exec_command`, `write_stdin`, `write_file`, `read_file`, `edit_file`
       (`quoth-tools.el`), `web_search` (`quoth-searxng.el`)
-  - [x] Tool blocks rendered as markdown in the buffer (bold 🔧 tool name,
+  - [x] Tool blocks rendered as markdown in the buffer (bold ⚡ tool name,
         inline parameter summary, fenced code block for output)
   - [x] Tool blocks are tagged `quoth-region-type 'tool'` and carry
         `quoth-tool-call` for wire resume; the raw result span inside the block

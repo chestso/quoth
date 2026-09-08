@@ -621,7 +621,7 @@ Two do byte-exact file I/O (no process involved):
 
 The tool block is rendered in the buffer as valid markdown:
 
-**🔧 exec_command** — yield 10s, shell /bin/bash, login no
+**⚡ exec_command** — yield 10s, shell /bin/bash, login no
 
 ran:
 

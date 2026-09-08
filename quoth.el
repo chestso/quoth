@@ -2883,11 +2883,11 @@ SHELL-PATH is a shell binary path or name (nil means
 ;;; Tool-block display decoration
 
 (defconst quoth--tool-icons
-  '(("exec_command" . "🔧")
-    ("write_stdin" . "⌨️")
-    ("write_file" . "✍️")
-    ("read_file" . "📖")
-    ("edit_file" . "✂️")
+  '(("exec_command" . "⚡")
+    ("write_stdin" . "🔉")
+    ("write_file" . "💾")
+    ("read_file" . "📄")
+    ("edit_file" . "🩹")
     ("web_search" . "🔍"))
   "Alist mapping tool names to the emoji icon for their buffer header.")
 
@@ -3035,7 +3035,7 @@ what the tool actually ran."
   "Return the single markdown header line for TOOL and its ARGS plist.
 The line is bold icon + tool name, then a plain-text summary of the
 scalar clauses (no inline emphasis, comma-separated), e.g.
-\"**🔧 exec_command** — yield 10s, shell /bin/bash, login no\".
+\"**⚡ exec_command** — yield 10s, shell /bin/bash, login no\".
 Free-text argument values (cmd, workdir, input, query) are rendered
 below the header as `LABEL: VALUE' lines, or as fenced code blocks when
 they span multiple lines, so multiline values stay valid markdown.  The

@@ -538,7 +538,7 @@ output is a fenced code block tagged `text`."
                  :exit 0)
            quoth--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*🔧 exec_command\\*\\*" content))
+            (should (string-match-p "\\*\\*⚡ exec_command\\*\\*" content))
             (should (string-match-p (concat "ran:\n\n" (quoth-test--ran-fence-lang)
                                             "\nls\n```") content))
             (should (string-match-p "```text\n" content))
@@ -580,7 +580,7 @@ The blank line appears before the header so the block stays valid markdown."
                  :exit 0)
            quoth--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "what it does\n\n\\*\\*🔧 exec_command\\*\\*"
+            (should (string-match-p "what it does\n\n\\*\\*⚡ exec_command\\*\\*"
                                     content))))
       (quoth-test--cleanup))))
 
@@ -600,7 +600,7 @@ ending in a blank line."
                  :exit 0)
            quoth--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should-not (string-match-p "\n\n\n\n\\*\\*🔧" content))))
+            (should-not (string-match-p "\n\n\n\n\\*\\*⚡" content))))
       (quoth-test--cleanup))))
 
 (ert-deftest quoth-test/tool-block-exec-command-summary-fields ()
@@ -755,7 +755,7 @@ backtick run in the command text, even when the cmd is a single line."
                  :exit 0)
            quoth--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*⌨️ write_stdin\\*\\*" content))
+            (should (string-match-p "\\*\\*🔉 write_stdin\\*\\*" content))
             (should (string-match-p "session 7" content))
             (should (string-match-p "wrote: hello\n" content))
             (should (string-match-p "yield 1s" content))))
@@ -773,7 +773,7 @@ backtick run in the command text, even when the cmd is a single line."
                  :exit 0)
            quoth--prompt-id)
           (goto-char (point-min))
-          (search-forward "🔧 exec_command")
+          (search-forward "⚡ exec_command")
           (goto-char (match-beginning 0))
           (should (eq (get-text-property (point) 'quoth-region-type) 'tool)))
       (quoth-test--cleanup))))
@@ -909,7 +909,7 @@ extraction; argument blocks are display decoration."
                  :exit 0)
            quoth--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*✍️ write_file\\*\\*" content))
+            (should (string-match-p "\\*\\*💾 write_file\\*\\*" content))
             (should (string-match-p "path: /tmp/out.txt" content))
             (should (string-match-p "content:" content))))
       (quoth-test--cleanup))))
@@ -926,7 +926,7 @@ extraction; argument blocks are display decoration."
                  :exit 0)
            quoth--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*📖 read_file\\*\\*" content))
+            (should (string-match-p "\\*\\*📄 read_file\\*\\*" content))
             (should (string-match-p "path: /tmp/in.txt" content))))
       (quoth-test--cleanup))))
 
@@ -946,7 +946,7 @@ The `replace_all' clause is rendered when requested."
                  :exit 0)
            quoth--prompt-id)
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "\\*\\*✂️ edit_file\\*\\*" content))
+            (should (string-match-p "\\*\\*🩹 edit_file\\*\\*" content))
             (should (string-match-p "replace_all yes" content))
             (should (string-match-p "path: /tmp/in.txt" content))
             ;; Single-line spans are always fenced.
